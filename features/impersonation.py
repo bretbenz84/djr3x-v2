@@ -112,7 +112,7 @@ def find_famous_ref(name: str) -> Optional[local_tts.VoiceRef]:
 
 
 def save_person_capture(
-    person_id: int, audio_array: np.ndarray, transcript: str
+    person_id: Optional[int], audio_array: np.ndarray, transcript: str
 ) -> Optional[local_tts.VoiceRef]:
     """Persist a live capture as the person's reference clip: a 16 kHz mono PCM_16
     WAV + the transcript + a JSON sidecar. Returns a VoiceRef, or None on failure.
@@ -120,15 +120,21 @@ def save_person_capture(
     audio_array is float32 mono in [-1, 1] at config.AUDIO_SAMPLE_RATE (16000 Hz);
     the clone resamples it internally, so 16 kHz as-is is fine. The saved transcript
     is what was ACTUALLY said (describes the audio), which is what the clone needs.
+
+    person_id=None is an anonymous guest: the ref is written to a session-scoped
+    slot ("anon-latest", overwritten each capture) so a stranger can be cloned for
+    the bit without minting a durable per-person voice file.
     """
     ref_text = " ".join((transcript or "").split())
     if not ref_text:
         return None
     base = _voices_dir() / "people"
     base.mkdir(parents=True, exist_ok=True)
-    wav_path = base / f"{person_id}.wav"
-    txt_path = base / f"{person_id}.txt"
-    json_path = base / f"{person_id}.json"
+    stem = "anon-latest" if person_id is None else str(person_id)
+    label = "person:anon" if person_id is None else f"person:{person_id}"
+    wav_path = base / f"{stem}.wav"
+    txt_path = base / f"{stem}.txt"
+    json_path = base / f"{stem}.json"
     sr = int(getattr(config, "AUDIO_SAMPLE_RATE", 16000))
     try:
         import soundfile as sf
@@ -146,7 +152,7 @@ def save_person_capture(
     except Exception as exc:
         logger.warning("[impersonation] failed to save capture for %s: %s", person_id, exc)
         return None
-    return local_tts.voice_ref_from_files(wav_path, txt_path, f"person:{person_id}")
+    return local_tts.voice_ref_from_files(wav_path, txt_path, label)
 
 
 # ── Lines ─────────────────────────────────────────────────────────────────────
@@ -206,15 +212,18 @@ def resolve_target(
             line="My mimicry circuits aren't installed on this rig — no impressions today.",
         )
 
-    # "me" / "myself" → the current speaker (must be a known person for memory + a
-    # place to store the enrolled clip).
+    # "me" / "myself" → the current speaker. A KNOWN person gets a persistent ref
+    # + memory-mined material. An UNKNOWN speaker (a guest/stranger) still gets
+    # the bit — voice cloning needs only the captured clip, not a dossier: the
+    # capture runs with person_id=None, the ref is session-scoped, and the parody
+    # is a generic playful tease (live-requested 2026-07-19: Rex refused a guest).
     if _is_self(target):
+        name = speaker_name or "you"
         if speaker_person_id is None:
             return Resolution(
-                "refuse",
-                line="I'd have to actually know who you are first — introduce yourself and I'll take a crack at you.",
+                "capture", person_id=None, name="", is_self=True,
+                line=capture_line(),
             )
-        name = speaker_name or "you"
         ref = person_ref(speaker_person_id)
         if ref is not None:
             return Resolution("perform", ref=ref, person_id=speaker_person_id, name=name, is_self=True)
@@ -315,7 +324,10 @@ def _gather_material(person_id: int) -> tuple[list[str], list[str]]:
     return material, do_not
 
 
-def _script_prompt(name: str, material: list[str], do_not: list[str], *, is_self: bool, famous: bool) -> str:
+def _script_prompt(
+    name: str, material: list[str], do_not: list[str], *,
+    is_self: bool, famous: bool, stranger: bool = False,
+) -> str:
     who = "yourself" if is_self else name
     parts = [
         f"You are DJ-R3X, a witty Star Wars droid, doing a live comedic impression of {name} "
@@ -325,7 +337,15 @@ def _script_prompt(name: str, material: list[str], do_not: list[str], *, is_self
         "obsessions, and signature quirks for a warm laugh, never mean. PG. No stage directions, "
         "no quotation marks, no emoji, no bracketed tags, no preamble — just the spoken parody.",
     ]
-    if famous:
+    if stranger:
+        parts.append(
+            "You met this person SECONDS ago — you know absolutely nothing about them except "
+            "the sound of their voice and the one line they just performed for you. Do NOT "
+            "invent personal facts. Riff on the mystery itself: the bold move of handing a "
+            "droid your voice, generic delightful human quirks, first-person mock-confidence "
+            "('I'm the kind of person who...'). Keep it warm and silly."
+        )
+    elif famous:
         parts.append(
             "This is a well-known public figure; riff on their famous mannerisms and speaking "
             "style. Keep it light and playful — no politics-of-the-day or cheap shots."
@@ -341,15 +361,18 @@ def _script_prompt(name: str, material: list[str], do_not: list[str], *, is_self
 
 
 def build_parody_script(
-    subject_name: str, person_id: Optional[int] = None, *, is_self: bool = False
+    subject_name: str, person_id: Optional[int] = None, *,
+    is_self: bool = False, stranger: bool = False,
 ) -> Optional[str]:
     """Generate the short parody line via a one-off LLM completion. Returns the
-    cleaned script text, or None on failure."""
+    cleaned script text, or None on failure. `stranger` = an anonymous live guest
+    (no memory, no famous framing — a generic warm tease)."""
     material, do_not = ([], [])
     if person_id is not None:
         material, do_not = _gather_material(person_id)
     prompt = _script_prompt(
-        subject_name, material, do_not, is_self=is_self, famous=(person_id is None)
+        subject_name, material, do_not, is_self=is_self,
+        famous=(person_id is None and not stranger), stranger=stranger,
     )
     try:
         from intelligence import llm
@@ -375,8 +398,15 @@ def perform(
     optional Rex-voice button. Blocks until each line finishes. Logs an episode.
     Returns the parody text (the caller logs it once as Rex's turn); the intro/outro
     self-log. On a synthesis/script miss, covers in Rex's voice and returns that.
+
+    An anonymous guest (label 'person:anon' — captured live, no person row) gets
+    the stranger script mode: no invented facts, no famous framing.
     """
     from audio import speech_queue
+
+    stranger = (getattr(ref, "label", "") == "person:anon")
+    if stranger and not (subject_name or "").strip():
+        subject_name = "my mystery guest"
 
     def _say(line: str, emotion: str, *, voice_ref=None, log_text: bool) -> None:
         try:
@@ -392,7 +422,7 @@ def perform(
     _say(intro_line(), "excited", log_text=True)
 
     # 2. The parody in the cloned voice.
-    script = build_parody_script(subject_name, person_id, is_self=is_self)
+    script = build_parody_script(subject_name, person_id, is_self=is_self, stranger=stranger)
     if not script:
         cover = "...huh. My impression module just blew a fuse. We'll try that again later."
         _say(cover, "sheepish", log_text=False)

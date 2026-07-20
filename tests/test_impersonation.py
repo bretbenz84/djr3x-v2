@@ -92,6 +92,15 @@ class ReferenceDiscoveryTest(unittest.TestCase):
         audio = np.zeros(16000, dtype=np.float32)
         self.assertIsNone(impersonation.save_person_capture(1, audio, "   "))
 
+    def test_save_anonymous_capture_uses_session_slot(self):
+        audio = np.linspace(-0.5, 0.5, 16000 * 5, dtype=np.float32)
+        ref = impersonation.save_person_capture(None, audio, "A stranger's line.")
+        self.assertIsNotNone(ref)
+        self.assertEqual(ref.label, "person:anon")
+        people = self.voices / "people"
+        self.assertTrue((people / "anon-latest.wav").exists())
+        self.assertTrue((people / "anon-latest.txt").exists())
+
 
 class ResolveTargetTest(unittest.TestCase):
     def setUp(self):
@@ -117,9 +126,14 @@ class ResolveTargetTest(unittest.TestCase):
             r = impersonation.resolve_target("me", 1, "Bret")
         self.assertEqual(r.kind, "refuse")
 
-    def test_self_unknown_speaker_refuses(self):
+    def test_self_unknown_speaker_gets_anonymous_capture(self):
+        # A guest Rex doesn't know still gets the bit: voice cloning needs only
+        # the captured clip (live-requested 2026-07-19 after Rex refused a guest).
         r = impersonation.resolve_target("me", None, None)
-        self.assertEqual(r.kind, "refuse")
+        self.assertEqual(r.kind, "capture")
+        self.assertIsNone(r.person_id)
+        self.assertTrue(r.is_self)
+        self.assertTrue(r.line)
 
     def test_self_known_no_ref_opens_capture(self):
         r = impersonation.resolve_target("myself", 1, "Bret")
@@ -171,6 +185,27 @@ class ScriptPromptTest(unittest.TestCase):
     def test_famous_prompt_flags_no_cheap_shots(self):
         prompt = impersonation._script_prompt("Jimmy Carter", [], [], is_self=False, famous=True)
         self.assertIn("public figure", prompt.lower())
+
+    def test_stranger_prompt_forbids_invented_facts_and_famous_framing(self):
+        prompt = impersonation._script_prompt(
+            "my mystery guest", [], [], is_self=True, famous=False, stranger=True
+        )
+        self.assertIn("nothing about them", prompt.lower())
+        self.assertNotIn("public figure", prompt.lower())
+
+    def test_build_parody_stranger_mode_not_famous(self):
+        seen = {}
+        def fake_prompt(name, material, do_not, *, is_self, famous, stranger=False):
+            seen.update(famous=famous, stranger=stranger)
+            return "p"
+        with mock.patch.object(impersonation, "_script_prompt", side_effect=fake_prompt), \
+             mock.patch("intelligence.llm._client") as client:
+            client.chat.completions.create.return_value.choices = [
+                mock.Mock(message=mock.Mock(content="a script"))
+            ]
+            impersonation.build_parody_script("guest", None, is_self=True, stranger=True)
+        self.assertTrue(seen["stranger"])
+        self.assertFalse(seen["famous"])
 
 
 class PerformThreadingTest(unittest.TestCase):
@@ -465,6 +500,40 @@ class CaptureConsumerTest(unittest.TestCase):
         _line, spoken = r
         self.assertFalse(spoken)
         self.assertIsNotNone(self.itn._pending_impersonation_capture)
+
+    def test_anonymous_slot_rejects_known_speaker(self):
+        # A known person speaking in the gap must NOT be captured as the guest.
+        import time
+        self.itn._pending_impersonation_capture = {
+            "person_id": None, "name": "", "is_self": True, "asked_at": time.monotonic()
+        }
+        r = self.itn._handle_impersonation_capture(
+            "the cantina is open and the music is loud", self._good_audio(),
+            person_id=1, raw_best_id=1, speaker_score=0.9,
+        )
+        self.assertIsNone(r)
+        self.assertIsNotNone(self.itn._pending_impersonation_capture)
+
+    def test_anonymous_slot_accepts_unknown_speaker_and_performs(self):
+        import time
+        from features import impersonation
+        self.itn._pending_impersonation_capture = {
+            "person_id": None, "name": "", "is_self": True, "asked_at": time.monotonic()
+        }
+        fake_ref = local_tts.VoiceRef("/x.wav", "t", "person:anon")
+        with mock.patch.object(impersonation, "save_person_capture", return_value=fake_ref) as save, \
+             mock.patch.object(impersonation, "perform", return_value="I'm mysterious.") as perf:
+            r = self.itn._handle_impersonation_capture(
+                "the cantina is open and the music is loud", self._good_audio(),
+                person_id=None, raw_best_id=None, speaker_score=0.0,
+            )
+        _line, spoken = r
+        self.assertTrue(spoken)
+        save.assert_called_once()
+        self.assertIsNone(save.call_args.args[0])           # anonymous save
+        perf.assert_called_once()
+        self.assertEqual(perf.call_args.args[1], "my mystery guest")
+        self.assertIsNone(self.itn._pending_impersonation_capture)
 
     def test_good_clip_saves_and_performs(self):
         import time

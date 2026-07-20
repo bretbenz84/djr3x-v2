@@ -16311,8 +16311,13 @@ def _handle_impersonation_capture(
 
     # The clip must come from the target, not a bystander: if the live turn
     # confidently resolves to someone ELSE, leave the slot for the real target.
+    # An ANONYMOUS slot (person_id=None — a guest Rex doesn't know) is the
+    # mirror image: only an UNKNOWN voice may fill it; a known person speaking
+    # in the gap must not have their voice captured as the guest's.
     expected_id = ctx.get("person_id")
     if expected_id is not None and person_id is not None and person_id != expected_id:
+        return None
+    if expected_id is None and person_id is not None:
         return None
 
     min_secs = float(getattr(config, "IMPERSONATION_CAPTURE_MIN_SECS", 4.0))
@@ -16330,7 +16335,7 @@ def _handle_impersonation_capture(
         ctx["asked_at"] = time.monotonic()
         return ("My voice scanner hiccupped — run that line by me one more time?", False)
 
-    name = ctx.get("name") or "you"
+    name = ctx.get("name") or ("my mystery guest" if expected_id is None else "you")
     is_self = bool(ctx.get("is_self"))
     _pending_impersonation_capture = None
     _log.info("[impersonation] captured reference for person_id=%s — performing", expected_id)
