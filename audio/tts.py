@@ -907,7 +907,13 @@ def _speak_local(
         return False
 
     sr = local_tts.sample_rate()
-    cacheable = (getattr(voice_ref, "label", "") == "rex")
+    # Only Rex's own voice is ever cacheable (impersonation takes are one-off), and
+    # only when the local cache is enabled — off by default so --local-tts testing
+    # always hears freshly synthesized audio.
+    cacheable = (
+        getattr(voice_ref, "label", "") == "rex"
+        and bool(getattr(config, "LOCAL_TTS_CACHE_ENABLED", False))
+    )
 
     # Cache hit (Rex voice only) → play the stored WAV through the buffered path.
     cache_file = None
@@ -1308,8 +1314,11 @@ def is_cached(
     if not text or not text.strip():
         return False
     # In local mode Rex's takes cache under a different (backend) key; audio tags
-    # are stripped for Qwen, so the key is the plain normalized text.
+    # are stripped for Qwen, so the key is the plain normalized text. When the local
+    # cache is disabled (the default), nothing is ever cached → always "not cached".
     if _use_local_backend():
+        if not bool(getattr(config, "LOCAL_TTS_CACHE_ENABLED", False)):
+            return False
         return _local_cache_wav(strip_audio_tags(_normalize_for_speech(text))).exists()
     spoken_text = _normalize_for_speech(text)
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
@@ -1373,7 +1382,10 @@ def ensure_cached(
 
 def _ensure_cached_local(clean_text: str) -> bool:
     """Prefill Rex's local-voice WAV cache for `clean_text` (already tag-stripped)
-    without playing. Used at startup so the first --local-tts line is instant."""
+    without playing. Used at startup so the first --local-tts line is instant. No-op
+    when the local cache is disabled (the default) — every line synthesizes fresh."""
+    if not bool(getattr(config, "LOCAL_TTS_CACHE_ENABLED", False)):
+        return False
     wav = _local_cache_wav(clean_text)
     if wav.exists():
         return True

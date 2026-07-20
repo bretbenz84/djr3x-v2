@@ -1575,6 +1575,13 @@ LOCAL_TTS_FRONT_PAD_MS = 150           # silence pad written at stream start (an
 # Run one tiny throwaway generation right after the model loads, so the FIRST real
 # line doesn't pay one-time Metal kernel compilation (~4-5s observed cold).
 LOCAL_TTS_WARMUP_ON_LOAD = True
+# Cache Rex's on-device takes as WAV so a repeated line replays instantly instead
+# of re-synthesizing. OFF by default: local synthesis is fast (no network round-
+# trip), and hearing FRESH audio every line is what you want while testing
+# --local-tts. Turn on for a production local-only deployment where reusing boot/
+# stock lines across launches matters. (The ElevenLabs cache is separate and
+# unaffected; impersonation takes are never cached regardless.)
+LOCAL_TTS_CACHE_ENABLED = _env_bool("LOCAL_TTS_CACHE_ENABLED", False)
 
 # Automatic ElevenLabs -> local fallback. Works even without --local-tts, as long
 # as the model weights are installed; if they aren't, behavior is unchanged from

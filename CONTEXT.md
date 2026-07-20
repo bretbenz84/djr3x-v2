@@ -282,8 +282,10 @@ API timeout per sentence; the hold expires and the next line re-probes ElevenLab
 success clears it early). Both streamed paths share one playback-parity implementation
 (`_begin_speech`/`_drive_mouth_chunk`/`_end_speech`: output gate, AEC, mouth LEDs,
 servo speech motion, barge-in). Local synthesis is tag-free (Qwen would read `[audio
-tags]` aloud) and, for Rex's own voice, cached as WAV under a backend-distinct key;
-impersonation takes are never cached. `speech_queue.enqueue(..., voice_ref=...)` threads
+tags]` aloud) and, for Rex's own voice, cached as WAV under a backend-distinct key
+only when `LOCAL_TTS_CACHE_ENABLED` is on — **off by default** so `--local-tts`
+testing always hears freshly synthesized audio (the ElevenLabs cache is separate and
+unaffected); impersonation takes are never cached. `speech_queue.enqueue(..., voice_ref=...)` threads
 the cloned voice to the worker's `tts.speak()` call.
 
 ### Web Search (current-info replies)

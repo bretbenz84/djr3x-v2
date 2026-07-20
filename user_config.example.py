@@ -73,6 +73,10 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 #   Preload the local model at boot even in ElevenLabs mode, so the first fallback
 #   line is instant instead of paying a one-time model load:
 # LOCAL_TTS_WARM_ON_BOOT = False
+#   Cache local takes so a repeated line replays instantly. OFF by default so
+#   --local-tts testing always hears freshly synthesized audio; turn on for a
+#   production local-only deployment:
+# LOCAL_TTS_CACHE_ENABLED = False
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 2. PERSONALITY & VOICE CHARACTER
