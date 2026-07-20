@@ -300,6 +300,65 @@ class RouterGateTest(unittest.TestCase):
         self.assertIsNone(itn._router_execution_block_reason(d, text="impersonate me"))
 
 
+class PreDialogueGateTakeoverTest(unittest.TestCase):
+    """The dev-mac 21:09 failure: Rex asked 'what's up?', the user said
+    'impersonate me', the dialogue act bound it as an answer (skip_action_router)
+    and the whole fast lane was bypassed. The fix mirrors _explicit_motion_takeover:
+    an explicit impersonation request runs BEFORE the dialogue gate."""
+
+    @classmethod
+    def setUpClass(cls):
+        from intelligence import interaction
+        cls.itn = interaction
+
+    def setUp(self):
+        self.itn._pending_impersonation_capture = None
+
+    def tearDown(self):
+        self.itn._pending_impersonation_capture = None
+
+    def test_takeover_fires_and_opens_capture_slot(self):
+        # End-to-end through the REAL resolve_target: known speaker, no stored
+        # ref → the takeover must speak the capture prompt and open the slot.
+        from audio import local_tts
+        with mock.patch.object(self.itn, "_speak_blocking") as speak, \
+             mock.patch.object(local_tts, "is_available", return_value=True), \
+             mock.patch("features.impersonation.person_ref", return_value=None):
+            result = self.itn._explicit_impersonation_takeover(
+                "impersonate me", person_id=1, person_name="Bret",
+            )
+        self.assertIsNotNone(result)
+        speak.assert_called_once()
+        slot = self.itn._pending_impersonation_capture
+        self.assertIsNotNone(slot)
+        self.assertEqual(slot["person_id"], 1)
+
+    def test_takeover_ignores_non_requests(self):
+        self.assertIsNone(
+            self.itn._explicit_impersonation_takeover(
+                "that was a good impression", person_id=1, person_name="Bret",
+            )
+        )
+        self.assertIsNone(self.itn._pending_impersonation_capture)
+
+    def test_takeover_runs_before_the_dialogue_gate(self):
+        # Structural regression guard for the exact bug: the impersonation
+        # takeover call must appear BEFORE the skip_action_router-gated fast-lane
+        # call inside interaction.py, so an answer_to_rex binding can't swallow it.
+        import inspect
+        src = Path(inspect.getsourcefile(self.itn)).read_text()
+        takeover_pos = src.find("fast_takeover_response = _explicit_impersonation_takeover(")
+        gated_pos = src.find(
+            "if fast_takeover_response is None and not dialogue_decision.skip_action_router:"
+        )
+        self.assertGreater(takeover_pos, 0)
+        self.assertGreater(gated_pos, 0)
+        self.assertLess(
+            takeover_pos, gated_pos,
+            "impersonation takeover must run before the dialogue-gated fast lane",
+        )
+
+
 class CaptureConsumerTest(unittest.TestCase):
     """The interaction.py pending-slot consumer _handle_impersonation_capture."""
 

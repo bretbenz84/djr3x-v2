@@ -16338,6 +16338,42 @@ def _handle_impersonation_capture(
     return (parody, True)
 
 
+def _explicit_impersonation_takeover(
+    text: str,
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    router_audit: Optional["_RouterDecisionAudit"] = None,
+) -> Optional[str]:
+    """Explicit impersonation request, run BEFORE the dialogue-act gate.
+
+    A deterministic "impersonate me" / "do an impression of X" is a COMMAND, not
+    an answer to Rex's last question — so it must execute even inside an
+    answer_to_rex frame, which sets skip_action_router and bypasses the whole fast
+    lane. Same treatment as _explicit_motion_takeover (same failure mode,
+    live-logged twice: 2026-06-23 for motion, 2026-07-19 21:09 for impersonation —
+    Rex asked "what's up?", the user said "impersonate me", and the turn was
+    swallowed as conversation). Returns the spoken line, or None when the text is
+    not an explicit impersonation request or the gate blocks it."""
+    decision = action_router.classify_explicit_impersonation(text)
+    if decision is None:
+        return None
+    _router_audit_note_decision(router_audit, decision)
+    if not _router_decision_executable(decision, text=text):
+        return None
+    target = _router_arg_text(decision, "target")
+    _log.info(
+        "[impersonation] explicit request (pre-dialogue-gate) person_id=%s target=%r",
+        person_id, target,
+    )
+    result = _handle_router_impersonation(decision, text, person_id, person_name, target)
+    if result is not None:
+        _router_audit_note_fast_local_action(
+            router_audit, decision.action, reason=decision.reason
+        )
+    return result
+
+
 def _handle_router_performance_action(
     decision: action_router.ActionDecision,
     text: str,
@@ -21640,6 +21676,17 @@ def _handle_speech_segment(
             # "turn around" is still a turn.
             if fast_takeover_response is None:
                 fast_takeover_response = _explore_invite_takeover(
+                    text,
+                    person_id=person_id,
+                    person_name=person_name,
+                    router_audit=router_audit,
+                )
+            # An explicit "impersonate me" is likewise a command, not an answer —
+            # it must run even when the dialogue gate would skip the router
+            # (answer_to_rex sets skip_action_router; live-logged 2026-07-19 21:09:
+            # Rex asked "what's up?" and "impersonate me" was swallowed as chat).
+            if fast_takeover_response is None:
+                fast_takeover_response = _explicit_impersonation_takeover(
                     text,
                     person_id=person_id,
                     person_name=person_name,
