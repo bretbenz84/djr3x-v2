@@ -1614,6 +1614,8 @@ IMPERSONATION_ENABLED = _env_bool("IMPERSONATION_ENABLED", True)
 # Live-capture tuning for the "impersonate me" flow.
 IMPERSONATION_CAPTURE_MIN_SECS = 4.0          # reject a too-short reference clip
 IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0     # pending capture slot expiry
+IMPERSONATION_CAPTURE_END_PAD_SECS = 0.5      # min trailing silence on the saved clip
+                                              # (topped up, so the clone isn't clipped)
 # Lines Rex asks the person to repeat (fixed, so the reference transcript is known
 # exactly). Each is ~2 short sentences — enough audio to condition the clone.
 IMPERSONATION_CAPTURE_LINES = [

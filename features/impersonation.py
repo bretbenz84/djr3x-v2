@@ -111,6 +111,22 @@ def find_famous_ref(name: str) -> Optional[local_tts.VoiceRef]:
     )
 
 
+def _pad_tail(arr: np.ndarray, sr: int) -> np.ndarray:
+    """Ensure the clip ends with at least IMPERSONATION_CAPTURE_END_PAD_SECS of
+    silence, so the clone isn't clipped on the final phoneme. Measures the trailing
+    silence already present and only appends the shortfall."""
+    target = int(round(float(getattr(config, "IMPERSONATION_CAPTURE_END_PAD_SECS", 0.5)) * sr))
+    if target <= 0 or arr.size == 0:
+        return arr
+    # Where does audible signal end? (float32 in [-1, 1]; ~-60 dBFS threshold.)
+    nonsilent = np.flatnonzero(np.abs(arr) > 1e-3)
+    trailing = arr.size - (int(nonsilent[-1]) + 1) if nonsilent.size else arr.size
+    shortfall = target - trailing
+    if shortfall <= 0:
+        return arr
+    return np.concatenate([arr, np.zeros(shortfall, dtype=np.float32)])
+
+
 def save_person_capture(
     person_id: Optional[int], audio_array: np.ndarray, transcript: str
 ) -> Optional[local_tts.VoiceRef]:
@@ -139,6 +155,7 @@ def save_person_capture(
     try:
         import soundfile as sf
         arr = np.asarray(audio_array, dtype=np.float32).reshape(-1)
+        arr = _pad_tail(arr, sr)
         sf.write(str(wav_path), arr, sr, subtype="PCM_16")
         txt_path.write_text(ref_text, encoding="utf-8")
         json_path.write_text(
