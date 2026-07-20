@@ -615,6 +615,12 @@ _pending_introduction: Optional[dict] = None
 _pending_intro_followup: Optional[dict] = None
 _pending_intro_voice_capture: Optional[dict] = None
 
+# Impersonation live-capture flow: "do an impersonation of me" opens this slot,
+# Rex asks the person to repeat a fixed line, and the next speech segment from that
+# person is saved as their voice-clone reference before the parody performs.
+#   keys: person_id, name, ref_text (the line to repeat), is_self, asked_at
+_pending_impersonation_capture: Optional[dict] = None
+
 # "Tell me about someone" pre-briefing flow ("I'd like to tell you about my
 # coworker Daniel"). The subject is NOT present; Rex collects gossip/facts and
 # pre-populates the person DB so the dossier is warm before they ever visit.
@@ -16216,6 +16222,122 @@ def _roast_visual_material(
         return ""
 
 
+# ── Impersonation (performance.impersonate + live voice capture) ──────────────
+
+def _impersonation_capture_fresh(ctx: Optional[dict]) -> bool:
+    if not ctx:
+        return False
+    ttl = float(getattr(config, "IMPERSONATION_CAPTURE_TIMEOUT_SECS", 45.0))
+    return (time.monotonic() - float(ctx.get("asked_at") or 0.0)) <= ttl
+
+
+def _handle_router_impersonation(
+    decision: "action_router.ActionDecision",
+    text: str,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    target: str,
+) -> Optional[str]:
+    """Execute performance.impersonate: resolve who to imitate, then either perform
+    the parody in the cloned voice, open a live voice-capture slot, or refuse in
+    character. Speaks internally; returns the spoken text for the caller to log."""
+    global _pending_impersonation_capture
+    try:
+        from features import impersonation
+    except Exception as exc:
+        _log.warning("[impersonation] module import failed: %s", exc)
+        return None
+
+    resolution = impersonation.resolve_target(target, person_id, person_name)
+
+    if resolution.kind == "refuse":
+        _speak_blocking(resolution.line, emotion="amused", log_text=False)
+        return resolution.line
+
+    if resolution.kind == "capture":
+        _pending_impersonation_capture = {
+            "person_id": resolution.person_id,
+            "name": resolution.name,
+            "expected_text": resolution.line,
+            "is_self": resolution.is_self,
+            "asked_at": time.monotonic(),
+        }
+        _log.info(
+            "[impersonation] opened capture slot person_id=%s name=%r",
+            resolution.person_id, resolution.name,
+        )
+        _speak_blocking(resolution.line, emotion="curious", pre_beat_ms=100, log_text=False)
+        return resolution.line
+
+    # perform
+    _log.info(
+        "[impersonation] performing person_id=%s name=%r label=%s",
+        resolution.person_id, resolution.name,
+        getattr(resolution.ref, "label", "?"),
+    )
+    return impersonation.perform(
+        resolution.ref, resolution.name, resolution.person_id, is_self=resolution.is_self
+    )
+
+
+def _handle_impersonation_capture(
+    text: str,
+    audio_array: Optional[np.ndarray],
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    speaker_score: float,
+) -> Optional[tuple[str, bool]]:
+    """Consume a pending impersonation voice-capture. Returns (line, already_spoken)
+    or None to fall through the pending-slot ladder. already_spoken=True means the
+    parody was already voiced by perform() and the caller should only LOG the text.
+    """
+    global _pending_impersonation_capture
+    ctx = _pending_impersonation_capture
+    if ctx is None:
+        return None
+    if not _impersonation_capture_fresh(ctx):
+        _pending_impersonation_capture = None
+        return None
+
+    try:
+        from features import impersonation
+    except Exception:
+        _pending_impersonation_capture = None
+        return None
+
+    if impersonation.sounds_like_cancel(text):
+        _pending_impersonation_capture = None
+        return ("No worries — no impression today.", False)
+
+    # The clip must come from the target, not a bystander: if the live turn
+    # confidently resolves to someone ELSE, leave the slot for the real target.
+    expected_id = ctx.get("person_id")
+    if expected_id is not None and person_id is not None and person_id != expected_id:
+        return None
+
+    min_secs = float(getattr(config, "IMPERSONATION_CAPTURE_MIN_SECS", 4.0))
+    if audio_array is None or _audio_duration_secs(audio_array) < min_secs:
+        ctx["asked_at"] = time.monotonic()
+        first = _first_name_or(ctx.get("name"), "hey")
+        return (
+            f"{first}, that was a blink — give me one more full sentence so I have "
+            "something to work with.",
+            False,
+        )
+
+    ref = impersonation.save_person_capture(expected_id, audio_array, text)
+    if ref is None:
+        ctx["asked_at"] = time.monotonic()
+        return ("My voice scanner hiccupped — run that line by me one more time?", False)
+
+    name = ctx.get("name") or "you"
+    is_self = bool(ctx.get("is_self"))
+    _pending_impersonation_capture = None
+    _log.info("[impersonation] captured reference for person_id=%s — performing", expected_id)
+    parody = impersonation.perform(ref, name, expected_id, is_self=is_self)
+    return (parody, True)
+
+
 def _handle_router_performance_action(
     decision: action_router.ActionDecision,
     text: str,
@@ -16682,6 +16804,14 @@ def _handle_router_takeover_action(
             person_id,
             router_audit=router_audit,
         )
+
+    if action == "performance.impersonate":
+        target = _router_arg_text(decision, "target", "person", "who", "name")
+        _log.info(
+            "[action_router] executing performance.impersonate person_id=%s target=%r text=%r",
+            person_id, target, text,
+        )
+        return _handle_router_impersonation(decision, text, person_id, person_name, target)
 
     if action == "character.preference_query":
         return _handle_router_character_preference(
@@ -20574,6 +20704,25 @@ def _handle_speech_segment(
             conv_log.log_rex(intro_voice_response)
             _session_exchange_count += 1
             _register_rex_utterance(intro_voice_response)
+            return
+
+        impersonation_capture = _handle_impersonation_capture(
+            text,
+            audio_array,
+            person_id,
+            raw_best_id,
+            speaker_score,
+        )
+        if impersonation_capture is not None:
+            imp_line, imp_already_spoken = impersonation_capture
+            _record_heard_turn_once()
+            # already_spoken → perform() voiced the bit (intro/clone/outro); just log.
+            if not imp_already_spoken:
+                _speak_blocking(imp_line, emotion="curious", pre_beat_ms=100)
+            conv_memory.add_to_transcript("Rex", imp_line)
+            conv_log.log_rex(imp_line)
+            _session_exchange_count += 1
+            _register_rex_utterance(imp_line)
             return
 
         # A standalone shutdown/sleep command outranks an opportunistic

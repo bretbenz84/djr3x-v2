@@ -130,7 +130,7 @@ class _Item:
         "neg_priority", "seq", "text", "emotion", "audio_path",
         "done", "tag", "pre_beat_ms", "post_beat_ms", "voice_settings",
         "on_start", "log_text", "on_audio_end",
-        "comedy_mode", "suppress_audio_tag", "previous_text",
+        "comedy_mode", "suppress_audio_tag", "previous_text", "voice_ref",
     )
 
     def __init__(
@@ -151,6 +151,7 @@ class _Item:
         comedy_mode: Optional[str] = None,
         suppress_audio_tag: bool = False,
         previous_text: Optional[str] = None,
+        voice_ref: Optional[object] = None,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -168,6 +169,7 @@ class _Item:
         self.comedy_mode = comedy_mode
         self.suppress_audio_tag = suppress_audio_tag
         self.previous_text = previous_text
+        self.voice_ref = voice_ref
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -214,6 +216,7 @@ class _SpeechQueue:
         comedy_mode: Optional[str] = None,
         suppress_audio_tag: bool = False,
         previous_text: Optional[str] = None,
+        voice_ref: Optional[object] = None,
     ) -> threading.Event:
         """Enqueue text for TTS. Returns an Event set when playback finishes.
 
@@ -227,13 +230,17 @@ class _SpeechQueue:
         use_speaker_boost) overrides ElevenLabs voice parameters for this item.
         Cached separately from the default-voice take.
 
+        voice_ref (a local_tts.VoiceRef) forces on-device synthesis in THAT voice
+        — the impersonation feature uses it to clone an arbitrary person. Rex's
+        normal lines pass None.
+
         log_text=False suppresses the per-item conversation-log/GUI write — used
         by streaming so a reply split across sentences is logged once as a turn.
         """
         return self._add(
             text, emotion, None, priority, tag,
             pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
-            on_audio_end, comedy_mode, suppress_audio_tag, previous_text,
+            on_audio_end, comedy_mode, suppress_audio_tag, previous_text, voice_ref,
         )
 
     def enqueue_audio_file(
@@ -312,6 +319,7 @@ class _SpeechQueue:
         comedy_mode: Optional[str] = None,
         suppress_audio_tag: bool = False,
         previous_text: Optional[str] = None,
+        voice_ref: Optional[object] = None,
     ) -> threading.Event:
         done = threading.Event()
         if _state_suppresses_output():
@@ -349,7 +357,8 @@ class _SpeechQueue:
                 self._heap,
                 _Item(priority, seq, text, emotion, audio_path, done, tag,
                       pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
-                      on_audio_end, comedy_mode, suppress_audio_tag, previous_text),
+                      on_audio_end, comedy_mode, suppress_audio_tag, previous_text,
+                      voice_ref),
             )
             self._not_empty.notify()
 
@@ -471,6 +480,7 @@ class _SpeechQueue:
                         comedy_mode=item.comedy_mode,
                         suppress_audio_tag=item.suppress_audio_tag,
                         previous_text=item.previous_text,
+                        voice_ref=item.voice_ref,
                         **_playback_handoff_options(item.text),
                     )
 
@@ -643,12 +653,13 @@ def enqueue(
     comedy_mode: Optional[str] = None,
     suppress_audio_tag: bool = False,
     previous_text: Optional[str] = None,
+    voice_ref: Optional[object] = None,
 ) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
     return _queue.enqueue(
         text, emotion, priority, tag, pre_beat_ms, post_beat_ms,
         voice_settings, on_start, log_text, on_audio_end, comedy_mode, suppress_audio_tag,
-        previous_text,
+        previous_text, voice_ref,
     )
 
 

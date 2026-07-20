@@ -145,6 +145,15 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "performance.impersonate",
+        "performance",
+        "User explicitly asks Rex to do an impersonation/impression of themselves or "
+        "a named person, or to copy/imitate/'talk like' someone's voice. Put who to "
+        "imitate in args.target: use 'speaker' for the user themselves, otherwise the "
+        "provided name.",
+        executable=True,
+    ),
+    ActionSpec(
         "character.preference_query",
         "character",
         "User asks Rex about Rex's own likes, dislikes, favorites, beliefs, taste, or preference between options.",
@@ -360,6 +369,13 @@ Rules:
   mood names in args.mood: agreement, disagreement, disbelief, disgusted,
   embarrassed, annoyed, angry, proud, suspicious, thinking, happy, giddy,
   sad, surprised, offended.
+- Use performance.impersonate when the user explicitly asks Rex to do an
+  impersonation/impression of someone, to copy/imitate someone's voice, or to
+  "talk/sound like" a person: "do an impersonation of me", "impersonate Jimmy
+  Carter", "can you do my voice", "talk like Patrick Stewart". Put who to imitate
+  in args.target — use "speaker" for the user themselves, otherwise the provided
+  name. Do NOT use it for a passing compliment about an impression ("that was a
+  good impression").
 - Use character.preference_query when the user asks Rex about Rex's own taste,
   favorites, beliefs, or preferences: "do you like X?", "do you hate X?",
   "how do you feel about X?", "what's your favorite X?", "do you prefer X or Y?".
