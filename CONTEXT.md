@@ -50,6 +50,7 @@ Startup flags owned by `main.py`:
 | `-jeopardy`, `--jeopardy` | Start directly in Jeopardy mode. |
 | `-noaudio`, `--noaudio`, `--no-audio` | Disable microphone capture, wake word, audio output, and ElevenLabs calls. |
 | `-noservos`, `--noservos`, `--no-servos` | Disable the Pololu Maestro entirely for the run, even with `MAESTRO_PORT` configured. Seeded as `DJR3X_NO_SERVOS` before the config imports (mirrors `--noaudio`'s env-seed mechanism) so `config_loader.SERVOS_ENABLED` computes False; every servo call is already a no-op when servos are disabled (`hardware/servos.py`). |
+| `-local-tts`, `--local-tts` | Use the on-device Qwen3-TTS voice clone instead of ElevenLabs for the run. Seeded as `DJR3X_LOCAL_TTS` before config imports (mirrors `--noaudio`) so `config.LOCAL_TTS_MODE` computes True; `main.py` preloads the model (hard-fail if missing) and skips the ElevenLabs warmup. See "Conversation Voice / TTS backends" below. |
 
 In no-audio mode, `main.py` sets runtime-only config values:
 
@@ -100,7 +101,13 @@ audio/
                          Resemblyzer-calibrated scale all thresholds are tuned on).
   wake_word.py           OpenWakeWord loop.
   speech_queue.py        Prioritized response queue and playback/text completion.
-  tts.py                 ElevenLabs TTS, cache, no-audio bypass.
+  tts.py                 TTS backends + cache + no-audio bypass. Dispatches per
+                         line to ElevenLabs (default) or the local engine
+                         (_speak_local) for --local-tts mode / an impersonation
+                         voice_ref / when the ElevenLabs fallback breaker is open.
+  local_tts.py           On-device Qwen3-TTS voice clone (mlx-audio): model
+                         lifecycle + raw streaming synthesis only. Loads offline
+                         from assets/models/qwen_tts/. VoiceRef(wav, ref_text, label).
   echo_cancel.py         Playback suppression/AEC state.
   scene.py               Background audio scene analysis.
 
@@ -148,6 +155,12 @@ features/
   games.py               Game orchestration.
   jeopardy.py            Jeopardy mode.
   trivia.py              Trivia.
+  impersonation.py       "Do an impersonation of me/<person>": target resolution
+                         (me/known/famous), live voice-capture persistence, the
+                         boundary-excluding parody-script prompt, and the spoken
+                         performance (clones a voice via audio/local_tts). The
+                         interaction.py glue is the router branch + a pending
+                         voice-capture slot.
 
 hardware/
   servos.py              Pololu Maestro and servo behaviors.
@@ -255,6 +268,23 @@ a pointer note, not a copy of the text).
 `audio/speech_queue.py` is the central response queue. It handles priority, coalescing, playback start callbacks, and completion.
 
 `audio/tts.py` handles ElevenLabs cache lookup/fetch/playback. In no-audio mode, `speak()` and `ensure_cached()` return before network or playback work. By default `speak()` derives expressive ElevenLabs `voice_settings` from the line's emotion (`emotion_orchestrator.voice_settings_for_emotion`, backed by `config.TTS_VOICE_SETTINGS_*`); an explicit empathy/grief override passed by the caller takes precedence.
+
+**TTS backends.** ElevenLabs is Rex's TRUE voice and the default. `audio/local_tts.py`
+is a second, on-device backend (mlx-audio Qwen3-TTS voice clone) that `tts.speak()`
+dispatches to per line when: (a) `--local-tts` mode is on (`config.LOCAL_TTS_MODE`),
+(b) an explicit `voice_ref` was passed (impersonation — an arbitrary cloned voice),
+or (c) the **ElevenLabs fallback circuit breaker** is open. That breaker
+(`_note_api_failure`/`_note_api_success`/`_api_circuit_open`) opens on any ElevenLabs
+failure — network down, quota exhausted, API error — so Rex finishes the reply in his
+local voice instead of dropping the line, and holds the fallback for
+`LOCAL_TTS_FALLBACK_HOLD_SECS` (default 120) so the rest of the reply doesn't pay the
+API timeout per sentence; the hold expires and the next line re-probes ElevenLabs (a
+success clears it early). Both streamed paths share one playback-parity implementation
+(`_begin_speech`/`_drive_mouth_chunk`/`_end_speech`: output gate, AEC, mouth LEDs,
+servo speech motion, barge-in). Local synthesis is tag-free (Qwen would read `[audio
+tags]` aloud) and, for Rex's own voice, cached as WAV under a backend-distinct key;
+impersonation takes are never cached. `speech_queue.enqueue(..., voice_ref=...)` threads
+the cloned voice to the worker's `tts.speak()` call.
 
 ### Web Search (current-info replies)
 

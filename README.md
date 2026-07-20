@@ -8,7 +8,9 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 
 - Wake-word and always-listening conversation flow
 - Local Whisper transcription with OpenAI fallback support
-- ElevenLabs TTS with cached speech output
+- ElevenLabs TTS with cached speech output — ElevenLabs is Rex's "true voice" and the default
+- On-device TTS voice clone (mlx-audio Qwen3-TTS) as a second backend: run Rex's whole voice offline with the `--local-tts` flag, and — always on — **automatic fallback** to the local voice whenever ElevenLabs is unreachable, errors, or runs out of credits, so Rex never goes silent (toggle with `LOCAL_TTS_FALLBACK_ENABLED`). The ~2.9 GB model is downloaded by `setup_assets.py`
+- Voice impersonations for fun — "do an impersonation of me / of Jimmy Carter": Rex clones a voice and delivers a short, affectionate parody in it. For someone he knows, he captures a quick voice sample (asks you to repeat a line) and mines that person's memory for the material — while hard-excluding any boundaries or sensitive topics; for a famous person, drop a clip + transcript in `assets/voices/famous/` (toggle with `IMPERSONATION_ENABLED`; needs the local TTS model)
 - Camera-based scene, face, appearance, and animal awareness — face detection/recognition runs on InsightFace (SCRFD detector + ArcFace 512-dim embeddings via ONNX Runtime; `FACE_BACKEND=dlib` restores the legacy stack); local animal/object detection runs on RF-DETR nano (`OBJECT_DETECTOR_BACKEND=mediapipe` restores EfficientDet)
 - Voice and face enrollment for known people — speaker ID runs on ECAPA-TDNN embeddings (SpeechBrain, 192-dim; `VOICE_EMBEDDER=resemblyzer` restores the legacy stack)
 - Persistent memory database for people, relationships, preferences, and events (`people.db`)
@@ -100,6 +102,7 @@ Startup flags:
 | `-jeopardy`, `--jeopardy` | Start directly in Jeopardy mode and skip startup introductions. |
 | `-noaudio`, `--noaudio`, `--no-audio` | Disable microphone capture, wake word listening, audio output, and ElevenLabs TTS calls. Responses are written as text to the conversation log and GUI. |
 | `-noservos`, `--noservos`, `--no-servos` | Disable the Pololu Maestro servo controller entirely for this run, even when `MAESTRO_PORT` is configured. All servo motion (head tracking, gestures, animations) is skipped; everything else runs normally. |
+| `-local-tts`, `--local-tts` | Use the on-device Qwen3-TTS voice clone instead of ElevenLabs for this run (no ElevenLabs calls at all). Runs fully offline; the model is preloaded at startup. See the on-device-TTS feature note below. |
 
 Open the optional GUI dashboard:
 
@@ -193,6 +196,7 @@ logs/           Runtime logs
 - Face recognition uses InsightFace by default (`config.FACE_BACKEND`). Its models (~190MB) are downloaded by `setup_assets.py` and are gitignored — run the script once on each machine. If they fail to load, the module falls back to the legacy dlib backend automatically. InsightFace (512-dim) and dlib (128-dim) face embeddings are incompatible: people enrolled under one backend must have their face re-enrolled after switching (voice ID is unaffected). Note the InsightFace pretrained weights are licensed for non-commercial use only, consistent with this project's license.
 - Speaker ID uses ECAPA-TDNN by default (`config.VOICE_EMBEDDER`; SpeechBrain model ~80MB, downloaded by `setup_assets.py`, gitignored). If it fails to load, the legacy Resemblyzer embedder is used automatically. ECAPA (192-dim) and Resemblyzer (256-dim) voice prints are incompatible: re-enroll voices after switching (`venv/bin/python tools/test_voice_id.py --enroll "Name" --replace`, then `--calibrate "Name"` to verify your score band). All speaker-ID thresholds stay on the original calibrated scale — ECAPA scores are mapped onto it by `audio/voice_score.py`.
 - Local animal/object detection uses RF-DETR nano by default (`config.OBJECT_DETECTOR_BACKEND`; Apache 2.0, ~350MB weights downloaded by `setup_assets.py`, gitignored, ~40ms/frame CPU). If it fails to load, the legacy MediaPipe EfficientDet-Lite0 detector is used automatically. No re-enrollment involved — species lists, thresholds, and the no-screens exclusion rule are backend-independent.
+- On-device TTS uses mlx-community Qwen3-TTS (`config.LOCAL_TTS_MODEL_VARIANT`, default `1.7B-Base-8bit`; ~2.9GB weights downloaded by `setup_assets.py` into `assets/models/qwen_tts/`, gitignored). It is Rex's voice only when `--local-tts` is set or when ElevenLabs fails; otherwise it is not loaded. Voice reference clips live under `assets/voices/` (also gitignored): `rex/` (Rex's own reference), `people/` (live-captured for impersonations), and `famous/` (user-supplied `<name>.wav` + `<name>.txt` for famous-person impressions). The Qwen pretrained weights are licensed for non-commercial use, consistent with this project's license.
 - Logs are written to `logs/djr3x.log` and `logs/conversation.log`.
 - Real API keys should never be committed.
 - Two SQLite databases under `assets/memory/` (both gitignored, both created by `setup_assets.py`):

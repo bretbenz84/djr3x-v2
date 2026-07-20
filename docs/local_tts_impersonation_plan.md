@@ -1,5 +1,13 @@
 # Local TTS (Qwen3-TTS) + Impersonation Mode — Implementation Plan
 
+> **Status: IMPLEMENTED (2026-07-19).** All four phases shipped to `main`.
+> `--local-tts` mode + automatic ElevenLabs→local fallback (commit `29bd63b`),
+> impersonation (`ae71267`), docs (this pass). See "Step 0 verification results"
+> at the bottom for what was confirmed on this machine and the handful of
+> as-built deltas from the original plan. Live/participatory verification (real
+> playback quality, barge-in feel, fallback with the network pulled, an actual
+> impersonation) is still owed and gated on Bret's go-ahead per the house rule.
+
 Handoff plan for implementing two related features on top of the proven POC in
 `~/qwen-tts-test/rex_streaming.py`:
 
@@ -503,3 +511,66 @@ per phase or coherent sub-step.
   at boot) and that camera/wake-word threads don't starve during a long bit.
 - Qwen quality on very short lines (one-word "Yes." replies in local mode) —
   if clipped/odd, consider a minimum-length pad or accept the quirk.
+
+---
+
+## 11. Step 0 verification results (as-built, 2026-07-19)
+
+The open questions in §10 were resolved by a read-only recon (mlx-audio source +
+the POC venv + package metadata) plus a real offline load/synth smoke test. What
+was confirmed on this machine:
+
+- **`load_model` local path / offline** — CONFIRMED. `mlx_audio.tts.utils.load_model`
+  → `get_model_path` returns an existing local dir directly and never touches the
+  network; a non-existent absolute path raises rather than downloading. The model
+  needs the FULL repo tree including the nested `speech_tokenizer/` (the vocoder) —
+  without it the model loads but makes no audio. `audio/local_tts.py` loads by
+  absolute path from `assets/models/qwen_tts/<variant>/` and scopes
+  `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` to the load call (the model's
+  `post_load_hook` builds a transformers `AutoTokenizer`; those flags close its only
+  theoretical network reach) without leaking the flags to the rest of the process.
+- **16 kHz mic captures as reference** — CONFIRMED, with a caveat. Passed as a FILE
+  PATH, the model auto-downmixes to mono and resamples any rate → 24 kHz (Rex's own
+  `RX24-pure.wav` is in fact 44.1 kHz stereo and resamples every run). Passed as an
+  in-memory array it does NEITHER (→ chipmunk voice). So captures are saved as
+  16 kHz mono PCM_16 WAV and handed to the engine by path — never as an array.
+- **Model size / sentinel** — 2.9 GB full HF repo, two weight files. `setup_assets.py`
+  uses `snapshot_download(local_dir=...)` with NO `allow_patterns` and a two-file
+  sentinel (`model.safetensors` AND `speech_tokenizer/model.safetensors`) — `config.json`
+  alone is a false-positive risk on an interrupted download. `huggingface_hub` 1.18.0
+  dropped `local_dir_use_symlinks`, so it is NOT passed (the existing
+  `download_whisper_model` still passes it — a latent TypeError, dormant only because
+  whisper is pre-downloaded; flagged separately).
+- **Dependency install** — GO. `mlx-audio[tts]==0.4.5` adds 15 packages and, on the
+  target's Python 3.11, downgrades **numpy 2.4.6 → 2.3.5** (mistral-common caps
+  `numpy<2.4` on py≤3.12; the POC never saw this on py3.14). Verified safe: `pip check`
+  clean, and numba/scipy/opencv/mlx-whisper all import and their constraints accept
+  2.3.5. mlx is NOT bumped (mlx-lm 0.31.3 needs `mlx>=0.31.2`, exactly satisfied).
+- **First-generation latency** — a cold first `generate` pays one-time Metal kernel
+  compilation (~4–5 s). `local_tts.preload()` now does a tiny throwaway warmup
+  synthesis so the first real line is fast. Steady-state RTF measured ~1.0–1.2 on
+  this (busy) machine vs the POC's cited ~0.41 — a load/thermal difference on
+  identical code; streaming + the 0.25 s pre-roll tolerate it. **Still a live-test
+  item** on the actual robot at rest.
+
+### As-built deltas from the plan
+
+- Model dir is `assets/models/qwen_tts/<variant>/` (variant subdir) so switching
+  `LOCAL_TTS_MODEL_VARIANT` never collides; runtime loads that absolute path.
+- Phases 1 and 2 shipped together (the backend dispatch and the fallback circuit
+  breaker share the same `speak()` choke point — splitting them was artificial).
+- `IMPERSONATION_CAPTURE_TIMEOUT_SECS` doubles as the capture-slot TTL (no separate
+  `_WINDOW_SECS` constant).
+- The impersonation capture consumer returns `(line, already_spoken)`: `already_spoken`
+  is True when `perform()` already voiced the bit (intro in Rex's voice → parody in
+  the clone → outro in Rex's voice), so the pending-slot ladder only LOGS it.
+- The `performance.impersonate` action is deliberately kept off the deterministic
+  `classify_explicit_performance` path (LLM-router only) — a deterministic match
+  would be dropped by the fast-local performance-plan pipeline, which only serves
+  dj_bit/body_beat/mood_pose.
+
+### Owed live verification (ask Bret first — house rule)
+
+`python main.py --local-tts` end to end; barge-in mid-line; fallback with the
+network pulled mid-session; an actual "impersonate me" capture→perform; and RTF on
+the robot at rest. Passive checks (import, offline load, synth-to-file) are done.

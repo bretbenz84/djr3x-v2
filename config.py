@@ -1572,6 +1572,9 @@ LOCAL_TTS_SPLIT_THRESHOLD = 120        # chars; longer lines split on sentence e
 LOCAL_TTS_STREAMING_INTERVAL = 0.32    # model.generate streaming_interval (s)
 LOCAL_TTS_PREROLL_SEC = 0.25           # audio buffered before opening the output stream
 LOCAL_TTS_FRONT_PAD_MS = 150           # silence pad written at stream start (anti-underrun)
+# Run one tiny throwaway generation right after the model loads, so the FIRST real
+# line doesn't pay one-time Metal kernel compilation (~4-5s observed cold).
+LOCAL_TTS_WARMUP_ON_LOAD = True
 
 # Automatic ElevenLabs -> local fallback. Works even without --local-tts, as long
 # as the model weights are installed; if they aren't, behavior is unchanged from

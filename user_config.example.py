@@ -58,6 +58,22 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # ELEVENLABS_VOICE_ID = "no5jvDWvnx2leN3dFOS7"
 # TTS_MODEL_ID = "eleven_multilingual_v2"
 
+# On-device TTS (Qwen3-TTS voice clone). ElevenLabs stays Rex's TRUE voice; the
+# local engine runs entirely offline. It powers three things: the `--local-tts`
+# runtime flag (no ElevenLabs at all this run), automatic fallback when ElevenLabs
+# is unreachable / out of credits, and the impersonation feature. Model weights
+# (~2.9 GB) are downloaded by setup_assets.py.
+#   Keep Rex talking in his local voice if ElevenLabs fails (master switch):
+# LOCAL_TTS_FALLBACK_ENABLED = True
+#   Which mlx-community Qwen3-TTS variant to run ("1.7B-Base-8bit" = best speed/
+#   quality on Apple Silicon; "0.6B-Base-bf16" = lighter):
+# LOCAL_TTS_MODEL_VARIANT = "1.7B-Base-8bit"
+#   Rex's local reference clip name (assets/voices/rex/<name>.wav + .txt):
+# LOCAL_TTS_VOICE = "RX24-pure"
+#   Preload the local model at boot even in ElevenLabs mode, so the first fallback
+#   line is instant instead of paying a one-time model load:
+# LOCAL_TTS_WARM_ON_BOOT = False
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 2. PERSONALITY & VOICE CHARACTER
 # ═════════════════════════════════════════════════════════════════════════════
@@ -162,6 +178,7 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # IDLE_BANTER_ENABLED = True             # re-engage when a present person goes quiet
 # ONBOARDING_ENABLED = True              # first-meeting question burst for strangers
 # WEB_SEARCH_ENABLED = True              # answer current-info questions via web search
+# IMPERSONATION_ENABLED = True           # "do an impersonation of me/<person>" (needs local TTS)
 # ANIMAL_DETECTION_ENABLED = True        # react to pets / animals
 # VISUAL_CURIOSITY_ENABLED = True        # camera-grounded riffs / questions
 # SPEAKER_GAZE_ENABLED = True            # env: turn head toward whoever is speaking
@@ -256,6 +273,35 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 #     "Give me a tick, scanning the feeds.",
 #     "Patience — consulting the galaxy's databanks.",
 # ]
+
+# ── Impersonation ────────────────────────────────────────────────────────────
+# On/off lives in the feature switches above (IMPERSONATION_ENABLED). Requires the
+# local TTS model. For "impersonate me", Rex asks you to repeat one of these fixed
+# lines so he has a clean voice sample with a known transcript. Keep each ~2 short
+# sentences (long enough to clone from). Edit freely.
+# IMPERSONATION_CAPTURE_LINES = [
+#     "Say this exactly like you mean it: the cantina's open, the music's loud, "
+#     "and I fly better than I sing. Strap in.",
+#     "Repeat after me: I have a very good feeling about this, which historically "
+#     "means it is about to go sideways.",
+# ]
+
+# What Rex says (in HIS voice) just before an impression — also covers the one-time
+# model-load pause. One picked at random.
+# IMPERSONATION_INTRO_LINES = [
+#     "Okay, okay — clearing my vocal buffers. Ahem.",
+#     "Alright, loading the impression module. This is going to be uncanny.",
+# ]
+
+# Optional Rex-voice button spoken right after the impression (a cheap laugh).
+# IMPERSONATION_OUTRO_ENABLED = True
+# IMPERSONATION_OUTRO_LINES = [
+#     "...I do not sound like that.",
+#     "Tip your droid.",
+# ]
+
+# Drop your own famous-person clips (with a matching transcript) in
+# assets/voices/famous/<name>.wav + <name>.txt to enable "impersonate <that name>".
 
 # ── Drive base feel (motion) ─────────────────────────────────────────────────
 # Dead-stop breakaway punch for the drive wheels (PWM duty, 0..1023). The
