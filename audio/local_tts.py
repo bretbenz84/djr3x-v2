@@ -141,7 +141,13 @@ def _load_model():
     try:
         from mlx_audio.tts.utils import load_model
         with MLX_LOCK:
-            return load_model(model_path)
+            model = load_model(model_path)
+            try:
+                import mlx.core as mx
+                mx.synchronize()   # drain load-time Metal work before releasing
+            except Exception:
+                pass
+            return model
     finally:
         for k, v in saved.items():
             if v is None:
@@ -305,10 +311,19 @@ def generate_stream(text: str, voice_ref: VoiceRef) -> Iterator[np.ndarray]:
                         yield chunk
             finally:
                 # Close under the lock too — teardown of a half-consumed MLX
-                # generator (barge-in mid-line) is also MLX work.
+                # generator (barge-in mid-line) is also MLX work. Then DRAIN all
+                # pending Metal work (mx.synchronize) before releasing: the
+                # second dev-mac crash (2026-07-19) fired right AFTER a
+                # generation finished, from a Metal-side thread with no Python
+                # thread state — async work must not outlive the generation.
                 with MLX_LOCK:
                     try:
                         gen.close()
+                    except Exception:
+                        pass
+                    try:
+                        import mlx.core as mx
+                        mx.synchronize()
                     except Exception:
                         pass
 

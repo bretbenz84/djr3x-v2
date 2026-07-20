@@ -3,7 +3,11 @@
 # Requires macOS Apple Silicon. Run setup_macos.sh first for system libs.
 
 # ── Apple Silicon ML (mlx must come before mlx-whisper) ──────────────────────
-mlx>=0.16.0
+# mlx floor raised to 0.32.0: with the Qwen3-TTS engine in-process, mlx 0.31.2
+# hit a fatal native crash right after a generation completed (a Metal-side
+# thread calling into Python with no thread state — PyThreadState_Get / trap 5,
+# dev mac 2026-07-19, twice). 0.32.0 is the version the proven-stable POC ran.
+mlx>=0.32.0
 mlx-whisper>=0.4.0
 
 # ── On-device TTS (Qwen3-TTS voice clone — --local-tts mode + ElevenLabs
