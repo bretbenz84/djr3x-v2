@@ -69,6 +69,28 @@ class EngineHelpersTest(unittest.TestCase):
              mock.patch.object(local_tts, "_model_dir", return_value=__import__("pathlib").Path(d)):
             self.assertFalse(local_tts.is_available())
 
+    def test_unavailable_reason_missing_model(self):
+        from pathlib import Path
+        with TemporaryDirectory() as d, \
+             mock.patch.object(local_tts, "_model_dir", return_value=Path(d)):
+            reason = local_tts.unavailable_reason()
+            self.assertIsNotNone(reason)
+            self.assertIn("setup_assets", reason)
+            self.assertFalse(local_tts.is_available())
+
+    def test_unavailable_reason_no_mlx_audio(self):
+        with mock.patch("importlib.util.find_spec", return_value=None):
+            reason = local_tts.unavailable_reason()
+            self.assertIsNotNone(reason)
+            self.assertIn("mlx-audio", reason)
+
+    def test_unavailable_reason_find_spec_raises_is_surfaced(self):
+        # A raising find_spec must be reported, not silently swallowed to False.
+        with mock.patch("importlib.util.find_spec", side_effect=RuntimeError("boom")):
+            reason = local_tts.unavailable_reason()
+            self.assertIsNotNone(reason)
+            self.assertIn("boom", reason)
+
     def test_voice_ref_from_files_missing(self):
         self.assertIsNone(
             local_tts.voice_ref_from_files("/no/a.wav", "/no/a.txt", "x")

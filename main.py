@@ -1243,41 +1243,42 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     _preload_breath()
 
     # ── Local Qwen3-TTS preload ──────────────────────────────────────────────
-    # In --local-tts mode the on-device voice is REQUIRED: preload it now (like
-    # the Ollama sidecar) and abort with a clear message if the weights are
-    # missing. In normal (ElevenLabs) mode, preload only when LOCAL_TTS_WARM_ON_BOOT
-    # is set, so the first fallback line is instant; otherwise the ~2.9 GB model
-    # is loaded lazily on first use. Never blocks in --noaudio.
+    # Preload the on-device voice when it's in use this run: --local-tts mode, or
+    # LOCAL_TTS_WARM_ON_BOOT (so the first fallback line is instant). Otherwise the
+    # ~2.9 GB model loads lazily on first use. This is NON-FATAL: ElevenLabs is
+    # Rex's default and works, so a local-TTS problem logs a clear reason and Rex
+    # degrades to ElevenLabs for the run (the per-line dispatch re-checks
+    # availability, so a transient issue self-heals). Never blocks in --noaudio.
     if not no_audio:
+        local_tts = None
         try:
             from audio import local_tts
         except Exception as exc:
-            local_tts = None
-            if local_tts_mode:
-                print(f"[FATAL] Local TTS engine import failed: {exc}", file=sys.stderr)
-                print("Run:  pip install -r requirements.txt", file=sys.stderr)
-                sys.exit(1)
-            logger.debug("Local TTS engine unavailable (%s); fallback disabled.", exc)
-        if local_tts is not None and (
-            local_tts_mode or bool(getattr(config, "LOCAL_TTS_WARM_ON_BOOT", False))
-        ):
+            logger.error(
+                "Local TTS engine import failed (%s) — Rex will use ElevenLabs.%s",
+                exc, " Run: pip install -r requirements.txt" if local_tts_mode else "",
+            )
+        want_local = local_tts_mode or bool(getattr(config, "LOCAL_TTS_WARM_ON_BOOT", False))
+        if local_tts is not None and want_local:
             _abort_startup_if_shutdown("local TTS preload")
-            logger.info("Pre-loading local Qwen3-TTS voice model...")
-            if not local_tts.is_available():
-                if local_tts_mode:
-                    print(
-                        "[FATAL] Local TTS model not found "
-                        f"({getattr(config, 'LOCAL_TTS_MODEL_ID', '?')}).",
-                        file=sys.stderr,
+            reason = local_tts.unavailable_reason()
+            if reason is not None:
+                logger.error(
+                    "Local TTS unavailable: %s.%s",
+                    reason,
+                    " Rex will use ElevenLabs for this run." if local_tts_mode
+                    else " Fallback voice disabled.",
+                )
+            else:
+                logger.info("Pre-loading local Qwen3-TTS voice model...")
+                if local_tts.preload():
+                    logger.info("Local Qwen3-TTS voice model ready.")
+                else:
+                    logger.error(
+                        "Local TTS model failed to load (see the [local_tts] error above).%s",
+                        " Rex will use ElevenLabs for this run." if local_tts_mode
+                        else " Fallback voice disabled.",
                     )
-                    print("Run:  python setup_assets.py", file=sys.stderr)
-                    sys.exit(1)
-                logger.warning("Local TTS model not installed; fallback voice unavailable.")
-            elif not local_tts.preload():
-                if local_tts_mode:
-                    print("[FATAL] Local TTS model failed to load.", file=sys.stderr)
-                    sys.exit(1)
-                logger.warning("Local TTS preload failed; fallback voice unavailable.")
             _preload_breath()
 
     if bool(getattr(config, "OPENAI_WARMUP_ON_STARTUP", True)):

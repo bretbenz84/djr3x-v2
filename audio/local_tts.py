@@ -79,23 +79,37 @@ def sample_rate() -> int:
     return int(getattr(config, "LOCAL_TTS_SAMPLE_RATE", 24000))
 
 
-def is_available() -> bool:
-    """True when mlx-audio is importable AND the model weights are fully present.
+def unavailable_reason() -> Optional[str]:
+    """None when the engine is fully usable; otherwise a short human-readable reason.
 
-    Cheap enough to call per-turn: a find_spec (no import) plus two stat()s. The
-    sentinel checks BOTH weight files — the top-level talker and the nested
-    speech_tokenizer vocoder — because the model loads but produces no audio if
-    the vocoder is missing.
+    Kept cheap enough to call per-turn: a find_spec (no import) plus two stat()s.
+    Startup logs this so a failed --local-tts run explains itself instead of a
+    silent fall-through. The sentinel checks BOTH weight files — the top-level
+    talker and the nested speech_tokenizer vocoder — since the model loads but
+    makes no audio if the vocoder is missing.
     """
     try:
-        if importlib.util.find_spec("mlx_audio") is None:
-            return False
-    except Exception:
-        return False
+        spec = importlib.util.find_spec("mlx_audio")
+    except Exception as exc:
+        # Don't swallow this to a bare "unavailable" — a raising find_spec is
+        # exactly the kind of thing we need to SEE, not guess at.
+        return f"mlx-audio import check errored: {exc!r}"
+    if spec is None:
+        return "mlx-audio is not installed (run: pip install -r requirements.txt)"
     d = _model_dir()
-    return (d / "model.safetensors").exists() and (
-        d / "speech_tokenizer" / "model.safetensors"
-    ).exists()
+    if not (d / "model.safetensors").exists():
+        return f"model weights not found at {d} (run: python setup_assets.py)"
+    if not (d / "speech_tokenizer" / "model.safetensors").exists():
+        return (
+            f"vocoder weights not found at {d / 'speech_tokenizer'} "
+            "(re-run: python setup_assets.py)"
+        )
+    return None
+
+
+def is_available() -> bool:
+    """True when mlx-audio is importable AND the model weights are fully present."""
+    return unavailable_reason() is None
 
 
 def is_loaded() -> bool:
