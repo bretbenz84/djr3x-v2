@@ -849,13 +849,27 @@ def _note_api_success() -> None:
         logger.info("[tts] ElevenLabs recovered — resuming Rex's primary voice")
 
 
+_local_ref_missing_warned = False
+
+
 def _rex_local_ref():
-    """Rex's local voice reference, or None if the model/ref isn't installed."""
+    """Rex's local voice reference, or None if the model/ref isn't installed.
+    A None while the local backend is WANTED is exactly the silent-ElevenLabs-
+    fallback failure the dev mac hit — warn loudly (once per run), never quietly."""
+    global _local_ref_missing_warned
     try:
         from audio import local_tts
         if not local_tts.is_available():
             return None
-        return local_tts.rex_voice_ref()
+        ref = local_tts.rex_voice_ref()
+        if ref is None and not _local_ref_missing_warned:
+            _local_ref_missing_warned = True
+            logger.warning(
+                "[tts] local voice wanted but Rex's reference clip is missing "
+                "(%s) — falling back to ElevenLabs",
+                local_tts.unavailable_reason(require_rex_ref=True),
+            )
+        return ref
     except Exception:
         return None
 

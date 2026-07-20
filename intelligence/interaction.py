@@ -17123,6 +17123,20 @@ def _handle_fast_local_takeover(
     if performance_decision is not None:
         _router_audit_note_decision(router_audit, performance_decision)
     if _router_decision_executable(performance_decision):
+        if performance_decision.action == "performance.impersonate":
+            # Impersonate is NOT a plan-pipeline action — _handle_router_performance_action
+            # would silently reject it. Dispatch to its own handler. Running here (the
+            # fast lane, BEFORE the dialogue-act gate) is what lets an explicit
+            # "impersonate me" win even when it also reads as an answer to Rex's
+            # last question — the dev-mac failure mode (2026-07-19 log).
+            target = _router_arg_text(performance_decision, "target")
+            _log.info(
+                "[impersonation] fast-lane explicit request person_id=%s target=%r",
+                person_id, target,
+            )
+            return _handle_router_impersonation(
+                performance_decision, text, person_id, person_name, target
+            )
         return _handle_router_performance_action(
             performance_decision,
             text,

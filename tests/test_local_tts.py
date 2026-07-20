@@ -91,6 +91,23 @@ class EngineHelpersTest(unittest.TestCase):
             self.assertIsNotNone(reason)
             self.assertIn("boom", reason)
 
+    def test_unavailable_reason_requires_rex_ref_when_asked(self):
+        # Model present but Rex's reference clip missing: fine for impersonation
+        # (default), a named failure for --local-tts (require_rex_ref=True) —
+        # the dev-mac silent-ElevenLabs-fallback failure mode.
+        from pathlib import Path
+        with TemporaryDirectory() as d:
+            md = Path(d) / "model"
+            (md / "speech_tokenizer").mkdir(parents=True)
+            (md / "model.safetensors").write_bytes(b"x")
+            (md / "speech_tokenizer" / "model.safetensors").write_bytes(b"x")
+            with mock.patch.object(local_tts, "_model_dir", return_value=md), \
+                 mock.patch.object(local_tts, "rex_voice_ref", return_value=None):
+                self.assertIsNone(local_tts.unavailable_reason())
+                reason = local_tts.unavailable_reason(require_rex_ref=True)
+                self.assertIsNotNone(reason)
+                self.assertIn("reference", reason)
+
     def test_voice_ref_from_files_missing(self):
         self.assertIsNone(
             local_tts.voice_ref_from_files("/no/a.wav", "/no/a.txt", "x")

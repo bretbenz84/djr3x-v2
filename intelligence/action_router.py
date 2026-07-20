@@ -735,6 +735,67 @@ _DJ_BIT_RE = re.compile(
     r"\bgive\s+(?:me|us)\s+(?:some\s+)?cantina\s+patter\b",
     re.IGNORECASE,
 )
+# Impersonation — deterministic, so an explicit "impersonate me" beats BOTH the
+# dialogue-act answer-binding (which frames the turn as a reply to Rex's last
+# question) and a hesitant LLM route. Each pattern captures the target. Kept to
+# unambiguous verb shapes; softer phrasings ("talk like X") stay on the LLM route.
+_IMPERSONATE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # "do an impersonation/impression of X", "give us your impression of X"
+    re.compile(
+        r"\b(?:do|give\s+(?:me|us)|perform)\s+(?:an?\s+|your\s+(?:best\s+)?)?"
+        r"(?:impersonation|impression)\s+of\s+(?P<target>.+)$",
+        re.IGNORECASE,
+    ),
+    # "impersonate X", "imitate X", "mimic X"
+    re.compile(r"\b(?:impersonate|imitate|mimic)\s+(?P<target>.+)$", re.IGNORECASE),
+    # "do/copy/clone my voice", "do Jimmy Carter's voice"
+    re.compile(
+        r"\b(?:do|copy|clone|steal)\s+(?P<target>.+?)(?:'s)?\s+voice\b",
+        re.IGNORECASE,
+    ),
+)
+_IMPERSONATE_NEGATION_RE = re.compile(
+    r"\b(?:don'?t|do\s+not|never|stop|quit|no\s+more)\b", re.IGNORECASE
+)
+_IMPERSONATE_SELF_RE = re.compile(r"^(?:me|myself|my|mine)$", re.IGNORECASE)
+
+
+def _clean_impersonate_target(raw: str) -> str:
+    """Normalize a captured impersonation target: strip punctuation/filler, map
+    self-references to the canonical 'speaker'."""
+    target = " ".join((raw or "").strip().split())
+    target = re.sub(r"[.!?,;:]+$", "", target).strip()
+    # Trailing politeness/filler: "impersonate me please", "... for me"
+    target = re.sub(r"\b(?:please|for\s+(?:me|us)|right\s+now|now)$", "", target,
+                    flags=re.IGNORECASE).strip()
+    target = re.sub(r"[.!?,;:]+$", "", target).strip()
+    if _IMPERSONATE_SELF_RE.match(target):
+        return "speaker"
+    return target
+
+
+def classify_explicit_impersonation(text: str) -> ActionDecision | None:
+    """Deterministically classify an explicit impersonation request, or None."""
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+    for pattern in _IMPERSONATE_PATTERNS:
+        m = pattern.search(cleaned)
+        if not m:
+            continue
+        # "don't impersonate me" / "stop imitating him" must not fire.
+        if _IMPERSONATE_NEGATION_RE.search(cleaned[: m.start()]):
+            return None
+        target = _clean_impersonate_target(m.group("target"))
+        if not target:
+            return None
+        return ActionDecision(
+            action="performance.impersonate",
+            confidence=0.95,
+            args={"target": target},
+            reason="explicit impersonation request",
+        )
+    return None
 _BODY_BEAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
@@ -1485,6 +1546,10 @@ def classify_explicit_performance(text: str) -> ActionDecision | None:
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
         return None
+
+    impersonation = classify_explicit_impersonation(cleaned)
+    if impersonation is not None:
+        return impersonation
 
     if _DJ_BIT_RE.search(cleaned):
         return ActionDecision(

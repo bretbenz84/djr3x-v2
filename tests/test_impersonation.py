@@ -220,6 +220,56 @@ class PerformThreadingTest(unittest.TestCase):
             self.assertIsNone(call.kwargs.get("voice_ref"))
 
 
+class ExplicitClassifierTest(unittest.TestCase):
+    """Deterministic impersonation routing — must beat the dialogue-act answer-
+    binding that swallowed 'impersonate me' on the dev mac (2026-07-19 log)."""
+
+    def _classify(self, phrase):
+        from intelligence import action_router as ar
+        return ar.classify_explicit_performance(phrase)
+
+    def test_dev_mac_phrases_route(self):
+        for phrase in ("I'd like you to impersonate me", "impersonate me"):
+            d = self._classify(phrase)
+            self.assertIsNotNone(d, phrase)
+            self.assertEqual(d.action, "performance.impersonate")
+            self.assertEqual(d.args.get("target"), "speaker")
+            self.assertGreaterEqual(d.confidence, 0.85)
+
+    def test_named_and_possessive_targets(self):
+        cases = {
+            "do an impersonation of Jimmy Carter": "Jimmy Carter",
+            "give us your impression of Patrick Stewart": "Patrick Stewart",
+            "can you imitate Jimmy Carter": "Jimmy Carter",
+            "copy Bret's voice": "Bret",
+            "do my voice": "speaker",
+            "mimic me please": "speaker",
+        }
+        for phrase, target in cases.items():
+            d = self._classify(phrase)
+            self.assertIsNotNone(d, phrase)
+            self.assertEqual(d.args.get("target"), target, phrase)
+
+    def test_negations_and_non_requests_do_not_fire(self):
+        for phrase in (
+            "don't impersonate me",
+            "stop imitating him",
+            "never impersonate my mother",
+            "that was a good impression",
+            "what's your first impression of the room",
+        ):
+            d = self._classify(phrase)
+            self.assertTrue(
+                d is None or d.action != "performance.impersonate", phrase
+            )
+
+    def test_other_performance_patterns_unaffected(self):
+        from intelligence import action_router as ar
+        d = ar.classify_explicit_performance("do your dj thing")
+        self.assertIsNotNone(d)
+        self.assertEqual(d.action, "performance.dj_bit")
+
+
 class RouterGateTest(unittest.TestCase):
     def test_impersonate_not_blocked_by_evidence_gate(self):
         from intelligence import action_router as ar

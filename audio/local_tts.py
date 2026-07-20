@@ -79,14 +79,18 @@ def sample_rate() -> int:
     return int(getattr(config, "LOCAL_TTS_SAMPLE_RATE", 24000))
 
 
-def unavailable_reason() -> Optional[str]:
+def unavailable_reason(require_rex_ref: bool = False) -> Optional[str]:
     """None when the engine is fully usable; otherwise a short human-readable reason.
 
-    Kept cheap enough to call per-turn: a find_spec (no import) plus two stat()s.
+    Kept cheap enough to call per-turn: a find_spec (no import) plus a few stat()s.
     Startup logs this so a failed --local-tts run explains itself instead of a
     silent fall-through. The sentinel checks BOTH weight files — the top-level
     talker and the nested speech_tokenizer vocoder — since the model loads but
     makes no audio if the vocoder is missing.
+
+    require_rex_ref=True additionally checks Rex's OWN reference clip — required
+    to speak in Rex's local voice (--local-tts / fallback), but NOT for
+    impersonation, which brings its own VoiceRef; hence opt-in.
     """
     try:
         spec = importlib.util.find_spec("mlx_audio")
@@ -103,6 +107,13 @@ def unavailable_reason() -> Optional[str]:
         return (
             f"vocoder weights not found at {d / 'speech_tokenizer'} "
             "(re-run: python setup_assets.py)"
+        )
+    if require_rex_ref and rex_voice_ref() is None:
+        voice = getattr(config, "LOCAL_TTS_VOICE", "RX24-pure")
+        base = _project_root() / getattr(config, "VOICES_DIR", "assets/voices") / "rex"
+        return (
+            f"Rex voice reference missing: expected {base / voice}.wav + .txt "
+            "(tracked in git — git pull, or restore assets/voices/rex/)"
         )
     return None
 

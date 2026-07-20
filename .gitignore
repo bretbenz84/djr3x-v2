@@ -238,10 +238,14 @@ assets/models/pose/*
 assets/audio/tts_cache/
 
 # Voice reference clips for the local Qwen3-TTS clone + impersonation feature.
-# Rex's own reference is third-party (Star Tours) audio; person clips are
-# personal/biometric-ish data; famous-person clips are user-supplied. None belong
-# in git. Dirs are recreated by setup_assets.py (create_directories).
-assets/voices/
+# Person clips (people/) are personal/biometric-ish data and famous-person clips
+# (famous/) are user-supplied — neither belongs in git. Rex's OWN reference
+# (rex/) IS tracked: --local-tts is dead without it on a fresh checkout (the
+# dev-mac silently fell back to ElevenLabs when it was missing, 2026-07-19), and
+# the repo already ships Star Tours audio (assets/audio/startup/*.mp3), so the
+# licensing posture is unchanged. Dirs are recreated by setup_assets.py.
+assets/voices/*
+!assets/voices/rex/
 
 # Local music files — user-supplied, not part of the project
 assets/music/

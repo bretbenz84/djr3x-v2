@@ -1261,7 +1261,10 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         want_local = local_tts_mode or bool(getattr(config, "LOCAL_TTS_WARM_ON_BOOT", False))
         if local_tts is not None and want_local:
             _abort_startup_if_shutdown("local TTS preload")
-            reason = local_tts.unavailable_reason()
+            # require_rex_ref: speaking in Rex's LOCAL voice needs his reference
+            # clip too — the dev-mac run had the model but not the (then-
+            # gitignored) ref and silently fell back to ElevenLabs.
+            reason = local_tts.unavailable_reason(require_rex_ref=True)
             if reason is not None:
                 logger.error(
                     "Local TTS unavailable: %s.%s",
