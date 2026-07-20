@@ -281,6 +281,24 @@ class RouterGateTest(unittest.TestCase):
         reason = ar.missing_required_evidence_reason("do an impression of me", decision)
         self.assertIsNone(reason)
 
+    def test_impersonate_in_execute_allowlist(self):
+        # The dev-mac refusal (2026-07-19 21:05 log): the classifier fired at 0.95
+        # but ACTION_ROUTER_EXECUTE_ACTIONS didn't list the action, so the gate
+        # returned not_in_execute_allowlist and Rex improvised a refusal.
+        self.assertIn(
+            "performance.impersonate",
+            getattr(config, "ACTION_ROUTER_EXECUTE_ACTIONS", set()),
+        )
+
+    def test_full_execution_gate_passes_for_dev_mac_phrase(self):
+        # End-to-end: the exact phrase → deterministic decision → the REAL
+        # interaction.py execution gate must return no block reason.
+        from intelligence import action_router as ar
+        from intelligence import interaction as itn
+        d = ar.classify_explicit_performance("impersonate me")
+        self.assertIsNotNone(d)
+        self.assertIsNone(itn._router_execution_block_reason(d, text="impersonate me"))
+
 
 class CaptureConsumerTest(unittest.TestCase):
     """The interaction.py pending-slot consumer _handle_impersonation_capture."""
