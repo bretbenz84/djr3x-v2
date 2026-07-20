@@ -6,6 +6,13 @@
 mlx>=0.16.0
 mlx-whisper>=0.4.0
 
+# ── On-device TTS (Qwen3-TTS voice clone — --local-tts mode + ElevenLabs
+#    fallback + impersonation). Pulls in transformers/tokenizers/mistral-common;
+#    on Python <=3.12 mistral-common caps numpy<2.4, so installing this downgrades
+#    numpy from 2.4.x to 2.3.x (verified compatible with numba/scipy/opencv here).
+#    Model weights (~2.9 GB) are fetched by setup_assets.py, not pip. ──────────
+mlx-audio[tts]==0.4.5
+
 # ── Hugging Face (model download for whisper) ─────────────────────────────────
 huggingface-hub>=0.23.0
 

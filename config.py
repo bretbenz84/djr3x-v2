@@ -627,6 +627,14 @@ WHISPER_MODEL_DIR     = "assets/models/whisper"
 FACE_MODELS_DIR       = "assets/models/face"
 WAKE_WORD_MODELS_DIR  = "assets/models/wake_word"
 RESEMBLYZER_MODEL_DIR = "assets/models/resemblyzer"
+# On-device Qwen3-TTS voice-clone weights (mlx-audio). Base dir; the active
+# variant lives in <QWEN_TTS_MODEL_DIR>/<LOCAL_TTS_MODEL_VARIANT>/ so switching
+# variants never collides. ~2.9 GB, downloaded by setup_assets.py, gitignored.
+QWEN_TTS_MODEL_DIR    = "assets/models/qwen_tts"
+# Voice reference clips for the local TTS clone + impersonation feature (Rex's
+# own reference, live-captured person refs, user-supplied famous-person clips).
+# Gitignored (third-party audio + personal biometric-ish data).
+VOICES_DIR            = "assets/voices"
 
 FACE_LANDMARK_MODEL   = "assets/models/face/shape_predictor_68_face_landmarks.dat"
 FACE_RECOGNITION_MODEL = "assets/models/face/dlib_face_recognition_resnet_model_v1.dat"
@@ -1526,6 +1534,100 @@ TTS_V3_LLM_INLINE_TAGS_ENABLED = True
 # leading affect-mapped tag doesn't count against this — it only fires when NO inline
 # tag survived. 0 = unlimited.
 TTS_V3_INLINE_TAG_CAP = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TTS — LOCAL (on-device Qwen3-TTS voice clone)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# An on-device TTS engine (mlx-audio Qwen3-TTS) that clones Rex's voice from a
+# short reference clip. ElevenLabs stays Rex's TRUE voice and the default; the
+# local engine serves three roles:
+#   1. --local-tts runtime mode — run entirely on-device, no ElevenLabs calls.
+#   2. Automatic fallback — if ElevenLabs is unreachable / errors / out of
+#      credits, Rex keeps talking in his local voice instead of going silent.
+#   3. Impersonation — clone ANOTHER voice for a comedic bit (see below).
+# Weights (~2.9 GB) are fetched by setup_assets.py into QWEN_TTS_MODEL_DIR and
+# are gitignored. Runtime loads them fully offline (no network) from that dir.
+
+# --local-tts runtime mode. Seeded by main.py from the --local-tts CLI flag
+# (DJR3X_LOCAL_TTS env) BEFORE config import, mirroring --noaudio. When True and
+# the model is available, EVERY spoken line is synthesized on-device.
+LOCAL_TTS_MODE = _env_bool("DJR3X_LOCAL_TTS", False)
+
+# Which mlx-community Qwen3-TTS variant to run. "1.7B-Base-8bit" measured RTF
+# ~0.41 on Apple Silicon (2.5x faster than realtime) — the quality/speed pick.
+# "0.6B-Base-bf16" is a lighter alternative. The full repo id is derived below.
+LOCAL_TTS_MODEL_VARIANT = "1.7B-Base-8bit"
+LOCAL_TTS_MODEL_ID = f"mlx-community/Qwen3-TTS-12Hz-{LOCAL_TTS_MODEL_VARIANT}"
+
+# Rex's reference voice: VOICES_DIR/rex/<LOCAL_TTS_VOICE>.{wav,txt}. The .wav is
+# a short clean sample; the .txt is its exact transcript (the clone conditions on
+# both). The clip's own sample rate is irrelevant — mlx-audio resamples it.
+LOCAL_TTS_VOICE = "RX24-pure"
+
+# Synthesis + streaming-playback params (carried over verbatim from the verified
+# POC ~/qwen-tts-test/rex_streaming.py).
+LOCAL_TTS_SAMPLE_RATE = 24000          # Qwen3-TTS output rate (Hz)
+LOCAL_TTS_SPLIT_THRESHOLD = 120        # chars; longer lines split on sentence ends
+LOCAL_TTS_STREAMING_INTERVAL = 0.32    # model.generate streaming_interval (s)
+LOCAL_TTS_PREROLL_SEC = 0.25           # audio buffered before opening the output stream
+LOCAL_TTS_FRONT_PAD_MS = 150           # silence pad written at stream start (anti-underrun)
+
+# Automatic ElevenLabs -> local fallback. Works even without --local-tts, as long
+# as the model weights are installed; if they aren't, behavior is unchanged from
+# today (a failed API call simply drops the line). Kill switch.
+LOCAL_TTS_FALLBACK_ENABLED = _env_bool("LOCAL_TTS_FALLBACK_ENABLED", True)
+# Circuit breaker: after an ElevenLabs failure, route straight to the local voice
+# for this long instead of paying a multi-second API timeout on every sentence.
+# Any successful ElevenLabs round-trip clears it early.
+LOCAL_TTS_FALLBACK_HOLD_SECS = 120.0
+# Preload the local model at boot even in normal (ElevenLabs) mode, so the FIRST
+# fallback line is instant instead of paying the one-time model load. Off by
+# default (only load the ~2.9 GB model when local TTS is actually in use).
+LOCAL_TTS_WARM_ON_BOOT = _env_bool("LOCAL_TTS_WARM_ON_BOOT", False)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMPERSONATION — Rex clones a voice for a comedic bit
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# "Rex, do an impersonation of me / of <famous person>." Rex clones a voice from
+# a short reference clip + transcript (via the local Qwen3-TTS engine) and
+# delivers a short, LLM-written parody in that voice. Two reference sources:
+#   - Known people: captured live (Rex asks them to repeat a line), saved under
+#     VOICES_DIR/people/<person_id>.{wav,txt,json}; the parody script is mined
+#     from that person's memory entries for affectionate mockery.
+#   - Famous people: user-supplied VOICES_DIR/famous/<slug>.{wav,txt} clips.
+# Requires the local TTS model (ElevenLabs cannot clone an arbitrary voice on the
+# fly). Kill switch — when off, the action resolves to an in-character refusal.
+IMPERSONATION_ENABLED = _env_bool("IMPERSONATION_ENABLED", True)
+
+# Live-capture tuning for the "impersonate me" flow.
+IMPERSONATION_CAPTURE_MIN_SECS = 4.0          # reject a too-short reference clip
+IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0     # pending capture slot expiry
+# Lines Rex asks the person to repeat (fixed, so the reference transcript is known
+# exactly). Each is ~2 short sentences — enough audio to condition the clone.
+IMPERSONATION_CAPTURE_LINES = [
+    "Say this exactly like you mean it: the cantina's open, the music's loud, "
+    "and I fly better than I sing. Strap in.",
+    "Repeat after me: I have a very good feeling about this, which historically "
+    "means it is about to go sideways.",
+    "Give me this one: I am the main character, the room is my set, and yes, "
+    "I did land that ship on the first try.",
+]
+# Rex-voice setup/stall lines spoken (in HIS voice) before the impersonation. Also
+# covers the one-time model-load latency, the way the web-search stall line does.
+IMPERSONATION_INTRO_LINES = [
+    "Okay, okay — clearing my vocal buffers. Ahem.",
+    "Alright, loading the impression module. This is going to be uncanny.",
+    "Give me a second to calibrate the sarcasm. There we go.",
+]
+# Optional Rex-voice button after the bit — a cheap laugh to close it out.
+IMPERSONATION_OUTRO_ENABLED = True
+IMPERSONATION_OUTRO_LINES = [
+    "...I do not sound like that.",
+    "Tip your droid.",
+    "I'll be here all week.",
+]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — EXPRESSIVE VOICE (anti-monotone)

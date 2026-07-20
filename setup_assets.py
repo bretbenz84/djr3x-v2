@@ -37,6 +37,9 @@ from config import (
     RESEMBLYZER_MODEL_DIR,
     WHISPER_LOCAL_MODEL,
     WHISPER_MODEL_DIR,
+    QWEN_TTS_MODEL_DIR,
+    LOCAL_TTS_MODEL_ID,
+    LOCAL_TTS_MODEL_VARIANT,
 )
 
 # ── Directories required by the project ──────────────────────────────────────
@@ -50,6 +53,10 @@ REQUIRED_DIRS = [
     "assets/models/whisper",
     "assets/models/ecapa",
     "assets/models/resemblyzer",
+    "assets/models/qwen_tts",
+    "assets/voices/rex",
+    "assets/voices/people",
+    "assets/voices/famous",
     "assets/audio/clips",
     "assets/audio/startup",
     "assets/audio/tts_cache",
@@ -734,6 +741,52 @@ def download_resemblyzer_model(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 6b — Qwen3-TTS voice-clone model (mlx-audio, the on-device TTS engine
+#           powering --local-tts, the ElevenLabs fallback, and impersonation)
+# ─────────────────────────────────────────────────────────────────────────────
+def download_qwen_tts_model(
+    root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    # Weights live under <QWEN_TTS_MODEL_DIR>/<variant>/ so switching variants
+    # never collides. The runtime loads this dir by absolute path — fully offline.
+    local_dir = root / QWEN_TTS_MODEL_DIR / LOCAL_TTS_MODEL_VARIANT
+    label = f"qwen_tts/{LOCAL_TTS_MODEL_ID}"
+
+    # Sentinel: BOTH weight files. config.json alone is a false-positive risk —
+    # it's a tiny file snapshot_download fetches before the 2.4 GB weights, so an
+    # interrupted first run would leave config.json present but the model broken.
+    # This repo also ships a SECOND weight set under speech_tokenizer/ (the
+    # vocoder) — without it the model loads but produces no audio, so check both.
+    if (local_dir / "model.safetensors").exists() and (
+        local_dir / "speech_tokenizer" / "model.safetensors"
+    ).exists():
+        return [], [label], []
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return [], [], [
+            f"{label}: huggingface_hub not installed — "
+            f"run: {sys.executable} -m pip install huggingface_hub"
+        ]
+
+    try:
+        print(f"    Downloading {LOCAL_TTS_MODEL_ID}")
+        print("    (~2.9 GB, may take several minutes on first run)")
+        # No allow_patterns: the full repo is needed, including the nested
+        # speech_tokenizer/ subdir. No local_dir_use_symlinks: huggingface_hub
+        # >=1.0 removed that kwarg (passing it raises TypeError) and already
+        # writes real files into local_dir.
+        snapshot_download(
+            repo_id=LOCAL_TTS_MODEL_ID,
+            local_dir=str(local_dir),
+        )
+        return [label], [], []
+    except Exception as exc:
+        return [], [], [f"{label}: {exc}"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 7 — Ollama local sidecar model
 # ─────────────────────────────────────────────────────────────────────────────
 def _ollama_url(path: str) -> str:
@@ -1118,7 +1171,7 @@ def main() -> None:
     print("DJ-R3X v2 — setup_assets.py")
     print()
 
-    print("[1/12] Creating project directories ...")
+    print("[1/13] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
@@ -1127,57 +1180,62 @@ def main() -> None:
     all_skipped: list[str] = []
     all_failed:  list[str] = []
 
-    print("[2/12] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
+    print("[2/13] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
     c, s, f = download_insightface_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/12] dlib face recognition models (legacy fallback backend) ...")
+    print("[3/13] dlib face recognition models (legacy fallback backend) ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/12] MediaPipe Face Landmarker model ...")
+    print("[4/13] MediaPipe Face Landmarker model ...")
     c, s, f = download_mediapipe_face_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/12] MediaPipe Pose Landmarker model ...")
+    print("[5/13] MediaPipe Pose Landmarker model ...")
     c, s, f = download_mediapipe_pose_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[6/12] MediaPipe Object Detector model ...")
+    print("[6/13] MediaPipe Object Detector model ...")
     c, s, f = download_mediapipe_object_detector(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[7/12] RF-DETR object-detector model (primary local detector) ...")
+    print("[7/13] RF-DETR object-detector model (primary local detector) ...")
     c, s2, f = download_rfdetr_model(root)
     all_created += c; all_skipped += s2; all_failed += f
     _report(c, s2, f)
 
-    print("[8/12] mlx-whisper large-v3-turbo model ...")
+    print("[8/13] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[9/12] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
+    print("[9/13] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
     c, s, f = download_ecapa_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[10/12] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
+    print("[10/13] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[11/12] Ollama local sidecar model ...")
+    print("[11/13] Qwen3-TTS voice-clone model (on-device TTS engine) ...")
+    c, s, f = download_qwen_tts_model(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[12/13] Ollama local sidecar model ...")
     c, s, f = install_ollama_model()
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[12/12] Database schema and personality defaults ...")
+    print("[13/13] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)

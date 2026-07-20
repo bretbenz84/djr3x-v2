@@ -237,6 +237,12 @@ assets/models/pose/*
 # TTS audio cache — rebuilt automatically from ElevenLabs
 assets/audio/tts_cache/
 
+# Voice reference clips for the local Qwen3-TTS clone + impersonation feature.
+# Rex's own reference is third-party (Star Tours) audio; person clips are
+# personal/biometric-ish data; famous-person clips are user-supplied. None belong
+# in git. Dirs are recreated by setup_assets.py (create_directories).
+assets/voices/
+
 # Local music files — user-supplied, not part of the project
 assets/music/
 
@@ -269,3 +275,6 @@ kokoro_samples/
 piper_samples/
 piper_voices/
 tts_samples/
+
+# Local-LLM evaluation POC (venv, downloaded models, generated results — evaluation only)
+tests/local_llm_poc/

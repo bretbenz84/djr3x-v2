@@ -11,6 +11,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 _PROJECT_VENV = (_PROJECT_ROOT / "venv").resolve()
 _NO_AUDIO_ARGS = frozenset({"-noaudio", "--noaudio", "--no-audio"})
 _NO_SERVO_ARGS = frozenset({"-noservos", "--noservos", "--no-servos"})
+_LOCAL_TTS_ARGS = frozenset({"-local-tts", "--local-tts", "--localtts"})
 
 
 def _seed_startup_runtime_flags(argv: list[str] | None = None) -> None:
@@ -23,6 +24,10 @@ def _seed_startup_runtime_flags(argv: list[str] | None = None) -> None:
     # imports — same mechanism as --noaudio above.
     if any(arg in _NO_SERVO_ARGS for arg in args):
         os.environ["DJR3X_NO_SERVOS"] = "1"
+    # config.LOCAL_TTS_MODE is computed at config import time from DJR3X_LOCAL_TTS,
+    # so --local-tts must be seeded here BEFORE config imports — same mechanism.
+    if any(arg in _LOCAL_TTS_ARGS for arg in args):
+        os.environ["DJR3X_LOCAL_TTS"] = "1"
 
 
 def _verify_project_virtualenv() -> None:
@@ -1109,9 +1114,20 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.info("Starting audio.stream...")
         stream.start()
 
+    local_tts_mode = bool(getattr(config, "LOCAL_TTS_MODE", False))
     if no_audio:
         logger.info("Skipping audio output prewarm (--noaudio)")
+    elif local_tts_mode:
+        logger.info(
+            "TTS: local on-device Qwen3-TTS (%s, voice=%s) — ElevenLabs disabled for this run",
+            getattr(config, "LOCAL_TTS_MODEL_VARIANT", "?"),
+            getattr(config, "LOCAL_TTS_VOICE", "?"),
+        )
+        logger.info("Pre-warming audio output device...")
+        tts.prewarm()
+        # No ElevenLabs warmup in local mode — the model is preloaded below instead.
     else:
+        logger.info("TTS: ElevenLabs (Rex's true voice)")
         logger.info("Pre-warming audio output device...")
         tts.prewarm()
         # Open the ElevenLabs TLS connection in the background so the first live
@@ -1225,6 +1241,44 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     if not local_llm_ok:
         logger.warning("Local LLM preload failed; continuing without local sidecar model.")
     _preload_breath()
+
+    # ── Local Qwen3-TTS preload ──────────────────────────────────────────────
+    # In --local-tts mode the on-device voice is REQUIRED: preload it now (like
+    # the Ollama sidecar) and abort with a clear message if the weights are
+    # missing. In normal (ElevenLabs) mode, preload only when LOCAL_TTS_WARM_ON_BOOT
+    # is set, so the first fallback line is instant; otherwise the ~2.9 GB model
+    # is loaded lazily on first use. Never blocks in --noaudio.
+    if not no_audio:
+        try:
+            from audio import local_tts
+        except Exception as exc:
+            local_tts = None
+            if local_tts_mode:
+                print(f"[FATAL] Local TTS engine import failed: {exc}", file=sys.stderr)
+                print("Run:  pip install -r requirements.txt", file=sys.stderr)
+                sys.exit(1)
+            logger.debug("Local TTS engine unavailable (%s); fallback disabled.", exc)
+        if local_tts is not None and (
+            local_tts_mode or bool(getattr(config, "LOCAL_TTS_WARM_ON_BOOT", False))
+        ):
+            _abort_startup_if_shutdown("local TTS preload")
+            logger.info("Pre-loading local Qwen3-TTS voice model...")
+            if not local_tts.is_available():
+                if local_tts_mode:
+                    print(
+                        "[FATAL] Local TTS model not found "
+                        f"({getattr(config, 'LOCAL_TTS_MODEL_ID', '?')}).",
+                        file=sys.stderr,
+                    )
+                    print("Run:  python setup_assets.py", file=sys.stderr)
+                    sys.exit(1)
+                logger.warning("Local TTS model not installed; fallback voice unavailable.")
+            elif not local_tts.preload():
+                if local_tts_mode:
+                    print("[FATAL] Local TTS model failed to load.", file=sys.stderr)
+                    sys.exit(1)
+                logger.warning("Local TTS preload failed; fallback voice unavailable.")
+            _preload_breath()
 
     if bool(getattr(config, "OPENAI_WARMUP_ON_STARTUP", True)):
         # Warm both OpenAI clients (answer LLM + action router) in the background
@@ -1802,6 +1856,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="noservos",
         action="store_true",
         help="disable the Pololu Maestro servo controller entirely for this run",
+    )
+    parser.add_argument(
+        "-local-tts",
+        "--local-tts",
+        "--localtts",
+        dest="local_tts",
+        action="store_true",
+        help="use the on-device Qwen3-TTS voice clone instead of ElevenLabs for this run",
     )
     return parser.parse_args(argv)
 

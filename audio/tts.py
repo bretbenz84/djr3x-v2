@@ -278,6 +278,7 @@ def speak(
     comedy_mode: Optional[str] = None,
     suppress_audio_tag: bool = False,
     previous_text: Optional[str] = None,
+    voice_ref: Optional[object] = None,
 ) -> None:
     """Convert text to speech and play it, blocking until playback finishes.
 
@@ -290,6 +291,13 @@ def speak(
     (see config.TTS_VOICE_SETTINGS_*), so normal lines are no longer rendered with
     the clone's flat defaults. The resolved settings are folded into the cache key,
     so each (text, emotion) take caches separately.
+
+    `voice_ref` (a local_tts.VoiceRef) forces on-device synthesis in THAT voice —
+    used by the impersonation feature to clone an arbitrary person. ElevenLabs
+    cannot do this, so a voice_ref always routes to the local engine (tags
+    stripped, no caching). Independent of `voice_ref`, the local engine also
+    renders Rex's own voice when --local-tts mode is on or the ElevenLabs breaker
+    is open.
     """
     if not text or not text.strip():
         return
@@ -324,6 +332,32 @@ def speak(
         gaze_engine.note_about_to_speak(spoken_text)
     except Exception:
         pass
+
+    # ── Backend dispatch ─────────────────────────────────────────────────────
+    # An explicit voice_ref (impersonation) always routes local. Otherwise Rex's
+    # own voice goes local when --local-tts mode is on or the ElevenLabs breaker
+    # is open. Local synthesizes clean_text (Qwen would read [audio tags] aloud).
+    local_ref = voice_ref if voice_ref is not None else (
+        _rex_local_ref() if _use_local_backend() else None
+    )
+    if local_ref is not None:
+        try:
+            if _speak_local(
+                clean_text, local_ref, emotion,
+                on_playback_start=on_playback_start,
+                post_playback_tail_secs=post_playback_tail_secs,
+                flush_on_playback_stop=flush_on_playback_stop,
+                log_text=log_text,
+            ):
+                return
+        except Exception as exc:
+            logger.warning("[tts] local backend error (%s)", exc)
+        if voice_ref is not None:
+            # Explicit impersonation voice failed — do NOT speak the parody in
+            # Rex's ElevenLabs voice; the caller covers the miss.
+            logger.warning("[tts] impersonation voice synth failed — skipping line")
+            return
+        # Rex's own voice failed locally → fall through to ElevenLabs (best effort).
 
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
@@ -367,6 +401,25 @@ def speak(
         )
         audio_bytes = _fetch_from_api(synth_text, voice_id, model_id, voice_settings, previous_text)
         if not audio_bytes:
+            # ElevenLabs failed (network / quota / error) and the streaming path
+            # above already failed too. Rather than drop the line, keep Rex
+            # talking in his on-device voice (and the breaker, opened by
+            # _fetch_from_api, routes the rest of the reply straight to local).
+            if _use_local_backend():
+                fallback_ref = _rex_local_ref()
+                if fallback_ref is not None:
+                    logger.info("[tts] ElevenLabs unavailable — speaking locally")
+                    try:
+                        if _speak_local(
+                            clean_text, fallback_ref, emotion,
+                            on_playback_start=on_playback_start,
+                            post_playback_tail_secs=post_playback_tail_secs,
+                            flush_on_playback_stop=flush_on_playback_stop,
+                            log_text=log_text,
+                        ):
+                            return
+                    except Exception as exc:
+                        logger.warning("[tts] local fallback error (%s)", exc)
             return
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_bytes(audio_bytes)
@@ -474,6 +527,93 @@ def _stream_pcm_samplerate() -> int:
         return 22050
 
 
+# ── Shared streamed-playback scaffolding ──────────────────────────────────────
+# Factored out of _speak_streaming so the local (Qwen3-TTS) path in _speak_local
+# reuses the exact same LED/servo/AEC/mouth-drive behavior. Both streamed backends
+# share these; the buffered _play() path keeps its own (it drives LEDs from a
+# separate thread and guards sd.wait() early-return, which streaming doesn't).
+
+def _begin_speech(emotion: str, ttl_secs: float):
+    """Playback prologue: publish the emotion frame, start servo/animation speech
+    motion, light eyes/mouth/chest, and arm AEC suppression. Returns
+    (emotion_frame, led_emotion)."""
+    emotion_frame = emotion_orchestrator.frame_for_speech(emotion)
+    led_emotion = emotion_frame.led_style
+    emotion_orchestrator.publish_frame(emotion_frame, ttl_secs=ttl_secs)
+    try:
+        animations.speech_activity_start()
+        servos.begin_speech_motion(emotion_frame)
+    except Exception as exc:
+        logger.debug("[tts] speech servo start failed: %s", exc)
+    leds_head.speak(led_emotion)
+    leds_head.ensure_eyes_on(led_emotion)
+    leds_chest.speak(led_emotion)
+    echo_cancel.set_playing(True)
+    return emotion_frame, led_emotion
+
+
+def _drive_mouth_chunk(samples: np.ndarray, last_led: int, min_delta: int) -> int:
+    """Drive mouth LED brightness + speech-reactive servo from one chunk's RMS,
+    throttled by min_delta. Returns the new last_led."""
+    rms = float(np.sqrt(np.mean(samples ** 2))) if len(samples) else 0.0
+    brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
+    if last_led < 0 or abs(brightness - last_led) >= min_delta or (
+        brightness == 0 and last_led != 0
+    ):
+        try:
+            leds_head.speak_level(brightness)
+            servos.speech_reactive_move(brightness / 255.0)
+        except Exception:
+            pass
+        return brightness
+    return last_led
+
+
+def _end_speech(
+    stream,
+    post_playback_tail_secs: Optional[float],
+    flush_on_playback_stop: Optional[bool],
+) -> None:
+    """Playback epilogue for the streamed paths: close the stream, restore
+    LEDs/servo/animation, release AEC suppression, clear the speaking flag."""
+    global _speaking
+    if stream is not None:
+        try:
+            stream.close()
+        except Exception:
+            pass
+    shutdown_now = _is_shutdown_state()
+    try:
+        if shutdown_now:
+            leds_head.off()
+        else:
+            leds_head.speak_stop()
+    except Exception as exc:
+        logger.warning("[tts] head LED cleanup failed: %s", exc)
+    try:
+        if shutdown_now:
+            leds_chest.off()
+        else:
+            leds_chest.active()
+    except Exception as exc:
+        logger.debug("[tts] chest LED cleanup failed: %s", exc)
+    try:
+        servos.end_speech_motion()
+    except Exception as exc:
+        logger.debug("[tts] speech servo stop failed: %s", exc)
+    try:
+        animations.speech_activity_stop()
+    except Exception as exc:
+        logger.debug("[tts] speech activity clear failed: %s", exc)
+    echo_cancel.set_playing(
+        False,
+        tail_secs=post_playback_tail_secs,
+        flush=flush_on_playback_stop,
+    )
+    with _speaking_lock:
+        _speaking = False
+
+
 def _speak_streaming(
     synth_text: str,
     spoken_text: str,
@@ -544,6 +684,7 @@ def _speak_streaming(
     logger.info(
         "[tts] streaming first audio bytes in %.2fs", time.monotonic() - requested_at
     )
+    _note_api_success()   # a completed streaming round-trip clears the fallback breaker
 
     if log_text:
         try:
@@ -604,17 +745,7 @@ def _speak_streaming(
                     )
                     all_samples.append(samples)
                     # Inline mouth drive from this chunk's RMS (parity with _drive_leds).
-                    rms = float(np.sqrt(np.mean(samples ** 2))) if len(samples) else 0.0
-                    brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
-                    if last_led < 0 or abs(brightness - last_led) >= min_delta or (
-                        brightness == 0 and last_led != 0
-                    ):
-                        try:
-                            leds_head.speak_level(brightness)
-                            servos.speech_reactive_move(brightness / 255.0)
-                        except Exception:
-                            pass
-                        last_led = brightness
+                    last_led = _drive_mouth_chunk(samples, last_led, min_delta)
                     stream.write(samples)   # blocks on buffer space — natural pacing
                 chunk = next(chunk_iter, None)
 
@@ -638,41 +769,7 @@ def _speak_streaming(
             logger.error("[tts] streamed playback error: %s", exc)
             # Audio may have partially played; do NOT fall back (would double-speak).
         finally:
-            if stream is not None:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-            shutdown_now = _is_shutdown_state()
-            try:
-                if shutdown_now:
-                    leds_head.off()
-                else:
-                    leds_head.speak_stop()
-            except Exception as exc:
-                logger.warning("[tts] head LED cleanup failed: %s", exc)
-            try:
-                if shutdown_now:
-                    leds_chest.off()
-                else:
-                    leds_chest.active()
-            except Exception as exc:
-                logger.debug("[tts] chest LED cleanup failed: %s", exc)
-            try:
-                servos.end_speech_motion()
-            except Exception as exc:
-                logger.debug("[tts] speech servo stop failed: %s", exc)
-            try:
-                animations.speech_activity_stop()
-            except Exception as exc:
-                logger.debug("[tts] speech activity clear failed: %s", exc)
-            echo_cancel.set_playing(
-                False,
-                tail_secs=post_playback_tail_secs,
-                flush=flush_on_playback_stop,
-            )
-            with _speaking_lock:
-                _speaking = False
+            _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop)
 
         logger.info(
             "[tts] streamed playback %s in %.2fs",
@@ -707,6 +804,263 @@ def _speak_streaming(
         except Exception as exc:
             logger.debug("[tts] streamed cache write failed: %s", exc)
     return True
+
+
+# ── ElevenLabs → local fallback circuit breaker ───────────────────────────────
+# When ElevenLabs fails (network down / quota exhausted / API error), Rex keeps
+# talking in his on-device voice instead of going silent. The breaker holds the
+# fallback for LOCAL_TTS_FALLBACK_HOLD_SECS so the rest of a reply doesn't pay a
+# multi-second API timeout per sentence; the hold naturally expires and the next
+# line probes ElevenLabs again (a success clears it early).
+_api_down_until = 0.0
+_api_breaker_lock = threading.Lock()
+
+
+def _api_circuit_open() -> bool:
+    """True while the fallback breaker is holding (recent ElevenLabs failure)."""
+    if not bool(getattr(config, "LOCAL_TTS_FALLBACK_ENABLED", True)):
+        return False
+    with _api_breaker_lock:
+        return time.monotonic() < _api_down_until
+
+
+def _note_api_failure() -> None:
+    """Record an ElevenLabs failure; open the breaker for the configured hold."""
+    global _api_down_until
+    if not bool(getattr(config, "LOCAL_TTS_FALLBACK_ENABLED", True)):
+        return
+    hold = float(getattr(config, "LOCAL_TTS_FALLBACK_HOLD_SECS", 120.0))
+    with _api_breaker_lock:
+        was_open = time.monotonic() < _api_down_until
+        _api_down_until = time.monotonic() + hold
+    if not was_open:
+        logger.warning(
+            "[tts] ElevenLabs down — holding on Rex's local voice for %.0fs", hold
+        )
+
+
+def _note_api_success() -> None:
+    """Any successful ElevenLabs round-trip clears the breaker."""
+    global _api_down_until
+    with _api_breaker_lock:
+        was_open = time.monotonic() < _api_down_until
+        _api_down_until = 0.0
+    if was_open:
+        logger.info("[tts] ElevenLabs recovered — resuming Rex's primary voice")
+
+
+def _rex_local_ref():
+    """Rex's local voice reference, or None if the model/ref isn't installed."""
+    try:
+        from audio import local_tts
+        if not local_tts.is_available():
+            return None
+        return local_tts.rex_voice_ref()
+    except Exception:
+        return None
+
+
+def _use_local_backend() -> bool:
+    """True when the local Qwen3-TTS engine should render Rex's OWN voice this
+    turn: --local-tts mode is on (or the ElevenLabs circuit breaker is open) and
+    the model is installed."""
+    if not (
+        bool(getattr(config, "LOCAL_TTS_MODE", False)) or _api_circuit_open()
+    ):
+        return False
+    try:
+        from audio import local_tts
+        return local_tts.is_available()
+    except Exception:
+        return False
+
+
+def _speak_local(
+    clean_text: str,
+    voice_ref,
+    emotion: str,
+    *,
+    on_playback_start: Optional[Callable[[], None]] = None,
+    post_playback_tail_secs: Optional[float] = None,
+    flush_on_playback_stop: Optional[bool] = None,
+    log_text: bool = True,
+) -> bool:
+    """Synthesize `clean_text` on-device in `voice_ref`'s voice and play it with
+    full parity (output gate, AEC, mouth LEDs, servo motion, barge-in). Returns
+    True when handled (played or deliberately skipped); False = caller should fall
+    back to ElevenLabs.
+
+    `clean_text` must already be audio-tag-free — Qwen would read [tags] aloud.
+    Rex's own voice (label 'rex') is cached as WAV keyed on the local backend so
+    repeat lines are instant; impersonation voices are never cached (one-off).
+    """
+    global _speaking
+    try:
+        import sounddevice as sd
+    except ImportError:
+        logger.error("[tts] sounddevice not installed — cannot play local audio")
+        return False
+    try:
+        from audio import local_tts
+    except Exception as exc:
+        logger.warning("[tts] local TTS engine unavailable (%s)", exc)
+        return False
+
+    sr = local_tts.sample_rate()
+    cacheable = (getattr(voice_ref, "label", "") == "rex")
+
+    # Cache hit (Rex voice only) → play the stored WAV through the buffered path.
+    cache_file = None
+    if cacheable:
+        cache_file = _cache_path(
+            clean_text, f"local:{voice_ref.label}",
+            str(getattr(config, "LOCAL_TTS_MODEL_ID", "qwen-tts")),
+        )
+        wav_path = cache_file.with_suffix(".wav")
+        if wav_path.exists():
+            logger.info("[tts] local cache hit: %s", wav_path.name)
+            audio, samplerate = _read_audio(wav_path)
+            if audio is not None and len(audio):
+                if log_text:
+                    try:
+                        conv_log.log_rex(clean_text)
+                    except Exception as exc:
+                        logger.debug("[tts] conversation log write failed: %s", exc)
+                _play(
+                    audio, samplerate, emotion,
+                    on_playback_start=on_playback_start,
+                    post_playback_tail_secs=post_playback_tail_secs,
+                    flush_on_playback_stop=flush_on_playback_stop,
+                )
+                return True
+
+    front_pad = np.zeros(
+        int(sr * float(getattr(config, "LOCAL_TTS_FRONT_PAD_MS", 150)) / 1000.0),
+        dtype=np.float32,
+    )
+    preroll_samples = int(sr * float(getattr(config, "LOCAL_TTS_PREROLL_SEC", 0.25)))
+    min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
+    requested_at = time.monotonic()
+
+    # The generator holds local_tts._generate_lock for its whole lifetime, so it
+    # MUST be closed on every exit path (including barge-in mid-stream) or the next
+    # synthesis deadlocks. gen.close() raises GeneratorExit inside it, releasing it.
+    gen = local_tts.generate_stream(clean_text, voice_ref)
+    try:
+        # Prime the pre-roll cushion (or drain fully if the line is short) so the
+        # output stream never underruns waiting on the first model chunk.
+        buffered: list[np.ndarray] = []
+        buffered_n = 0
+        canceled = False
+        try:
+            for chunk in gen:
+                if echo_cancel.was_canceled():
+                    canceled = True
+                    break
+                buffered.append(chunk)
+                buffered_n += chunk.size
+                if buffered_n >= preroll_samples:
+                    break
+        except Exception as exc:
+            logger.warning("[tts] local synth failed to start (%s)", exc)
+            return False
+        if not buffered:
+            logger.warning("[tts] local synth produced no audio")
+            return False
+
+        if log_text:
+            try:
+                conv_log.log_rex(clean_text)
+            except Exception as exc:
+                logger.debug("[tts] conversation log write failed: %s", exc)
+
+        with output_gate.hold("tts") as acquired:
+            if not acquired:
+                logger.debug("[tts] local playback skipped — output gate busy")
+                return True   # handled: deliberately skipped, same as _play()
+
+            with _speaking_lock:
+                _speaking = True
+            _begin_speech(emotion, ttl_secs=8.0)
+
+            all_samples: list[np.ndarray] = list(buffered)
+            last_led = -1
+            ttfa_logged = False
+            play_started_at = time.monotonic()
+            stream = None
+            try:
+                stream = sd.OutputStream(
+                    samplerate=sr, channels=1, dtype="float32",
+                    **playback_stream_kwargs(),
+                )
+                stream.start()
+                if on_playback_start is not None:
+                    try:
+                        on_playback_start()
+                    except Exception:
+                        pass
+                if not canceled:
+                    stream.write(front_pad)
+                for samples in buffered:
+                    if echo_cancel.was_canceled():
+                        canceled = True
+                        break
+                    last_led = _drive_mouth_chunk(samples, last_led, min_delta)
+                    stream.write(samples)
+                    if not ttfa_logged:
+                        logger.info(
+                            "[tts] local first audio in %.2fs",
+                            time.monotonic() - requested_at,
+                        )
+                        ttfa_logged = True
+                if not canceled:
+                    for samples in gen:
+                        if echo_cancel.was_canceled():
+                            canceled = True
+                            break
+                        all_samples.append(samples)
+                        last_led = _drive_mouth_chunk(samples, last_led, min_delta)
+                        stream.write(samples)
+
+                if canceled:
+                    stream.abort()
+                else:
+                    pad_ms = float(getattr(config, "TTS_STREAM_END_PAD_MS", 200.0) or 0.0)
+                    if pad_ms > 0:
+                        try:
+                            stream.write(np.zeros(int(sr * pad_ms / 1000.0), dtype=np.float32))
+                        except Exception:
+                            pass
+                    stream.stop()
+            except Exception as exc:
+                logger.error("[tts] local playback error: %s", exc)
+            finally:
+                _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop)
+
+            logger.info(
+                "[tts] local playback %s in %.2fs (backend=local, voice=%s)",
+                "canceled" if canceled else "done",
+                time.monotonic() - play_started_at,
+                getattr(voice_ref, "label", "?"),
+            )
+
+        # Cache the full take (Rex voice only) for future hits.
+        if cacheable and cache_file is not None and all_samples and not canceled:
+            try:
+                import soundfile as sf
+                full = _trim_trailing_silence(np.concatenate(all_samples), sr)
+                wav_out = cache_file.with_suffix(".wav")
+                wav_out.parent.mkdir(parents=True, exist_ok=True)
+                sf.write(str(wav_out), full, sr)
+                logger.info("[tts] saved local take to cache: %s", wav_out.name)
+            except Exception as exc:
+                logger.debug("[tts] local cache write failed: %s", exc)
+        return True
+    finally:
+        try:
+            gen.close()
+        except Exception:
+            pass
 
 
 def _play(
@@ -930,6 +1284,15 @@ def _cache_path(
     return Path(config.TTS_CACHE_DIR) / f"{digest}.mp3"
 
 
+def _local_cache_wav(clean_text: str) -> Path:
+    """Cache WAV path for Rex's OWN voice on the local backend (impersonation
+    voices are never cached). Keyed on backend + model, distinct from ElevenLabs."""
+    return _cache_path(
+        clean_text, "local:rex",
+        str(getattr(config, "LOCAL_TTS_MODEL_ID", "qwen-tts")),
+    ).with_suffix(".wav")
+
+
 def is_cached(
     text: str,
     voice_settings: Optional[dict] = None,
@@ -944,6 +1307,10 @@ def is_cached(
     """
     if not text or not text.strip():
         return False
+    # In local mode Rex's takes cache under a different (backend) key; audio tags
+    # are stripped for Qwen, so the key is the plain normalized text.
+    if _use_local_backend():
+        return _local_cache_wav(strip_audio_tags(_normalize_for_speech(text))).exists()
     spoken_text = _normalize_for_speech(text)
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
     synth_text, voice_settings = _apply_audio_tags(
@@ -980,6 +1347,9 @@ def ensure_cached(
     ):
         logger.info("[tts] cache prefill skipped — audio suppressed")
         return False
+    # Local mode: prefill via the on-device engine (never touch ElevenLabs).
+    if _use_local_backend():
+        return _ensure_cached_local(strip_audio_tags(_normalize_for_speech(text)))
     spoken_text = _normalize_for_speech(text)
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
     synth_text, voice_settings = _apply_audio_tags(
@@ -999,6 +1369,31 @@ def ensure_cached(
     cache_file.write_bytes(audio_bytes)
     logger.info("[tts] prefilled cache: %s", cache_file.name)
     return True
+
+
+def _ensure_cached_local(clean_text: str) -> bool:
+    """Prefill Rex's local-voice WAV cache for `clean_text` (already tag-stripped)
+    without playing. Used at startup so the first --local-tts line is instant."""
+    wav = _local_cache_wav(clean_text)
+    if wav.exists():
+        return True
+    try:
+        from audio import local_tts
+        ref = local_tts.rex_voice_ref()
+        if ref is None or not local_tts.is_available():
+            return False
+        audio, sr = local_tts.synthesize(clean_text, ref)
+        if audio is None or not len(audio):
+            return False
+        audio = _trim_trailing_silence(audio, sr)
+        import soundfile as sf
+        wav.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(wav), audio, sr)
+        logger.info("[tts] prefilled local cache: %s", wav.name)
+        return True
+    except Exception as exc:
+        logger.debug("[tts] local cache prefill failed: %s", exc)
+        return False
 
 
 _el_client = None
@@ -1035,6 +1430,7 @@ def warmup_api() -> bool:
             if type(exc).__name__ != "ApiError":
                 raise             # network-level problem — genuinely cold
         logger.info("[tts] ElevenLabs connection warmed")
+        _note_api_success()      # a completed round-trip clears the fallback breaker
         return True
     except Exception as exc:
         logger.debug("[tts] ElevenLabs warmup failed (non-fatal): %s", exc)
@@ -1071,10 +1467,13 @@ def _fetch_from_api(
         data = b"".join(chunks)
         if not data:
             logger.error("[tts] ElevenLabs returned empty audio stream")
+            _note_api_failure()
             return None
+        _note_api_success()
         return data
     except Exception as exc:
         logger.error("[tts] ElevenLabs API error: %s", exc)
+        _note_api_failure()
         return None
 
 
