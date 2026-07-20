@@ -130,14 +130,18 @@ def is_loaded() -> bool:
 def _load_model():
     """Load the model from the local dir, offline. Scoped HF offline flags so the
     tokenizer build in post_load_hook can't reach the network, without leaking
-    the flags to whisper / the rest of the process."""
+    the flags to whisper / the rest of the process. Holds MLX_LOCK: the load is
+    itself MLX/Metal compute and must not overlap a whisper transcription."""
+    from utils.mlx_lock import MLX_LOCK
+
     model_path = str(_model_dir())
     saved = {k: os.environ.get(k) for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     try:
         from mlx_audio.tts.utils import load_model
-        return load_model(model_path)
+        with MLX_LOCK:
+            return load_model(model_path)
     finally:
         for k, v in saved.items():
             if v is None:
@@ -259,26 +263,54 @@ def _split_line(text: str) -> list[str]:
 
 def generate_stream(text: str, voice_ref: VoiceRef) -> Iterator[np.ndarray]:
     """Yield float32 mono audio chunks at ``sample_rate()`` Hz for ``text`` in
-    the reference voice. Segments a long line and streams each segment. The
-    generation lock is held for the whole iteration (one synthesis at a time)."""
+    the reference voice. Segments a long line and streams each segment.
+
+    Locking discipline (this is what prevents the fatal MLX GIL crash observed
+    live 2026-07-19): _generate_lock serializes synthesis-vs-synthesis for the
+    whole iteration; the process-wide MLX_LOCK is additionally held around EACH
+    compute step (one streamed chunk, ~0.3 s) — and released between chunks,
+    where the caller is busy writing audio to the device — so an mlx_whisper
+    transcription on another thread interleaves between chunks instead of
+    colliding with a concurrent MLX evaluation (native crash) or stalling for a
+    whole utterance."""
+    from utils.mlx_lock import MLX_LOCK
+
     if not text or not text.strip():
         return
     model = _ensure_model()
     interval = float(getattr(config, "LOCAL_TTS_STREAMING_INTERVAL", 0.32))
     with _generate_lock:
         for seg in _split_line(text):
-            for result in model.generate(
-                text=seg,
-                ref_audio=voice_ref.wav_path,
-                ref_text=voice_ref.ref_text,
-                stream=True,
-                streaming_interval=interval,
-            ):
-                chunk = np.ascontiguousarray(
-                    np.asarray(result.audio, dtype=np.float32).reshape(-1)
+            with MLX_LOCK:   # generator construction may already run MLX setup
+                gen = model.generate(
+                    text=seg,
+                    ref_audio=voice_ref.wav_path,
+                    ref_text=voice_ref.ref_text,
+                    stream=True,
+                    streaming_interval=interval,
                 )
-                if chunk.size:
-                    yield chunk
+            try:
+                while True:
+                    with MLX_LOCK:   # one compute step per acquisition
+                        try:
+                            result = next(gen)
+                        except StopIteration:
+                            break
+                        # The numpy conversion EVALUATES the lazy mx.array —
+                        # that's MLX compute; keep it under the lock.
+                        chunk = np.ascontiguousarray(
+                            np.asarray(result.audio, dtype=np.float32).reshape(-1)
+                        )
+                    if chunk.size:
+                        yield chunk
+            finally:
+                # Close under the lock too — teardown of a half-consumed MLX
+                # generator (barge-in mid-line) is also MLX work.
+                with MLX_LOCK:
+                    try:
+                        gen.close()
+                    except Exception:
+                        pass
 
 
 def synthesize(text: str, voice_ref: VoiceRef) -> tuple[Optional[np.ndarray], int]:

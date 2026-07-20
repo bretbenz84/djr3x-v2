@@ -47,11 +47,13 @@ def preload() -> bool:
     try:
         start = time.monotonic()
         dummy = np.zeros(int(config.AUDIO_SAMPLE_RATE * 0.25), dtype=np.float32)
-        mlx_whisper.transcribe(
-            dummy,
-            path_or_hf_repo=str(_WHISPER_LOCAL_DIR),
-            **_mlx_decode_options(),
-        )
+        from utils.mlx_lock import MLX_LOCK
+        with MLX_LOCK:   # serialize vs the local-TTS engine (shared MLX runtime)
+            mlx_whisper.transcribe(
+                dummy,
+                path_or_hf_repo=str(_WHISPER_LOCAL_DIR),
+                **_mlx_decode_options(),
+            )
         logger.info("[transcription] preloaded local Whisper in %.3fs", time.monotonic() - start)
         return True
     except Exception as exc:
@@ -193,11 +195,18 @@ def transcribe(audio_array: np.ndarray) -> str:
     if _MLX_AVAILABLE:
         if local_model_ready:
             try:
-                result = mlx_whisper.transcribe(
-                    audio_array,
-                    path_or_hf_repo=str(_WHISPER_LOCAL_DIR),
-                    **_mlx_decode_options(),
-                )
+                # MLX_LOCK: mlx_whisper shares the MLX/Metal runtime with the
+                # local Qwen3-TTS engine; concurrent evaluation from two threads
+                # is a fatal native crash (PyThreadState_Get / trap 5, observed
+                # live 2026-07-19). TTS holds the lock per ~0.3s chunk, so a
+                # transcription waits at most one chunk, never a whole utterance.
+                from utils.mlx_lock import MLX_LOCK
+                with MLX_LOCK:
+                    result = mlx_whisper.transcribe(
+                        audio_array,
+                        path_or_hf_repo=str(_WHISPER_LOCAL_DIR),
+                        **_mlx_decode_options(),
+                    )
                 raw = result.get("text", "").strip()
                 backend = "mlx_whisper"
                 local_decoded_ok = True
