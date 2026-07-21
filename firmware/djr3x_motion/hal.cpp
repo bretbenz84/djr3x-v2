@@ -165,8 +165,14 @@ void hal_read_odom(Odom& out, float dt) {
 // speeds sit below breakaway friction (weak + slow to start) and duty only scales up
 // as the integrator climbs (strong only once fast) — the reported feel. With them the
 // wheel is strong and responsive from the first tick; the PID just corrects.
+// vcomp: battery-voltage feedforward compensation (>= 1.0). The gains/feedforward are
+// duty at a nominal pack; vcomp = V_nominal/V_batt scales the whole effort up as the
+// pack sags so effective volts (duty*V_batt) stay on the calibrated curve. Applied
+// BEFORE the physical PWM_DUTY_MAX clamp so anti-windup sees the true saturation point
+// (a 1.0 caller is the exact pre-compensation behaviour).
 static int wheel_pid(float target, float meas, float& integ, float& eprev, float dt,
-                     float kp, float ki, float kd, float kff, float min_duty) {
+                     float kp, float ki, float kd, float kff, float min_duty,
+                     float vcomp) {
   if (fabsf(target) < WHEEL_STOP_EPS_MS) {
     integ = 0; eprev = 0;            // commanded stop: don't chase, drop windup
     return 0;
@@ -178,15 +184,27 @@ static int wheel_pid(float target, float meas, float& integ, float& eprev, float
   const float base = ff + kp * err + kd * deriv;
   const float next_i = clampf(integ + ki * err * dt,
                               -WHEEL_PID_I_CLAMP, WHEEL_PID_I_CLAMP);
-  const float candidate = base + next_i;
+  // Anti-windup tests the COMPENSATED effort against the ceiling — once the boosted
+  // duty saturates, the integrator must stop winding just as it would uncompensated.
+  const float candidate = (base + next_i) * vcomp;
   // Conditional integration: do not wind the integrator farther into saturation.
   // It may still integrate in the opposite direction, which unwinds it promptly.
   if (!((candidate > (float)PWM_DUTY_MAX && err > 0.0f) ||
         (candidate < -(float)PWM_DUTY_MAX && err < 0.0f))) {
     integ = next_i;
   }
-  const float u = base + integ;
+  const float u = (base + integ) * vcomp;
   return (int)clampf(u, -(float)PWM_DUTY_MAX, (float)PWM_DUTY_MAX);
+}
+
+// Battery-voltage compensation factor for this tick (see calib.h "Battery-voltage
+// feedforward compensation"). Unknown or out-of-range pack voltage -> 1.0 (no-op);
+// otherwise V_nominal/V_batt clamped to [1.0, BATT_COMP_MAX] so it only ever boosts a
+// sagging pack, never trims a fresh one, and never more than the bound.
+static float batt_comp_factor() {
+  const int16_t mv = g_ctx.batt_mv;   // caller holds the state lock
+  if (mv < BATT_COMP_MIN_VALID_MV || mv > BATT_COMP_MAX_VALID_MV) return 1.0f;
+  return clampf((float)BATT_COMP_NOMINAL_MV / (float)mv, 1.0f, BATT_COMP_MAX);
 }
 
 // Stateful launch detector. The high breakaway tier stays active through brief
@@ -299,8 +317,11 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float 
   // PID runs in the forward=+ convention; MOTOR_SIGN_* maps its effort onto each
   // H-bridge, so a wheel that spins backwards is fixed in software, not by rewiring.
   const float gl = g_ctx.params.gain_scale_l, gr = g_ctx.params.gain_scale_r;
-  const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp*gl, ki*gl, kd*gl, kff*gl, kick_l);
-  const int duty_r = MOTOR_SIGN_R * wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp*gr, ki*gr, kd*gr, kff*gr, kick_r);
+  // Battery-voltage compensation: boost duty as the pack sags so a sustained run holds
+  // speed instead of drooping (both wheels share the one pack, so one factor).
+  const float vcomp = batt_comp_factor();
+  const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp*gl, ki*gl, kd*gl, kff*gl, kick_l, vcomp);
+  const int duty_r = MOTOR_SIGN_R * wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp*gr, ki*gr, kd*gr, kff*gr, kick_r, vcomp);
   apply_wheel_duty(PIN_L_RPWM, PIN_L_LPWM, duty_l);
   apply_wheel_duty(PIN_R_RPWM, PIN_R_LPWM, duty_r);
   g_ctx.wheels.dl = (int16_t)duty_l;   // telemetry diag (caller holds the state lock)

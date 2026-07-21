@@ -148,6 +148,26 @@
                                     // needs ~240 total duty; at the old 120 the wheel
                                     // re-stalled one tick after breakaway (100 Hz
                                     // stick-slip chatter, "only moves at full throttle")
+// ---- Battery-voltage feedforward compensation -----------------------------
+// Duty is a fraction of PACK voltage: applied_volts = (duty/PWM_DUTY_MAX)*V_batt.
+// KFF/MIN_DUTY/breakaway above are all calibrated in DUTY at a healthy pack, so as
+// a LiFePO4 pack sags under sustained drive current (and worse across the ~160mOhm
+// junction) the SAME duty delivers fewer volts -> the wheels slow, and near the top
+// of the range the ~90% feedforward has too little PID headroom left to claw it back
+// (the "full-speed run audibly slows over time" report, 2026-07-20). Compensation
+// scales the commanded duty by V_NOMINAL/V_batt so effective volts stay constant as
+// the pack droops — bounded so a bad/absent sensor can only ever be a no-op or a
+// modest, physically-clamped boost.
+//   • batt_mv unknown (-1, no INA226) or outside [MIN,MAX]_VALID -> factor = 1.0 (off).
+//   • Factor is clamped to [1.0, COMP_MAX]: only ever BOOSTS a sagging pack, never
+//     trims a fresh one (keeps present full-charge top-speed feel unchanged).
+//   • The boost is still hard-limited by PWM_DUTY_MAX in wheel_pid — 100% duty is the
+//     physical ceiling; comp only recovers headroom BELOW it, it can't exceed the pack.
+#define BATT_COMP_NOMINAL_MV   12800   // LiFePO4 4S nominal; the voltage KFF assumes
+#define BATT_COMP_MAX          1.30f   // never boost duty more than +30%
+#define BATT_COMP_MIN_VALID_MV 9000    // below this, treat the reading as a glitch -> off
+#define BATT_COMP_MAX_VALID_MV 16000   // above this, treat the reading as a glitch -> off
+
 // STRAIGHT-drive breakaway (owner 2026-07-12: the full-weight robot needs a
 // substantial duty punch to leave a dead stop — below it, low commands just hummed).
 // STALL-GATED like the pivot tiers: while a wheel is COMMANDED but measured
