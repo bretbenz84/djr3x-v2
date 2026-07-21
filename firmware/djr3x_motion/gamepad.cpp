@@ -62,7 +62,16 @@ static void apply_surface_mode() {
 }
 
 static void onConnect(ControllerPtr c) {
-  if (!s_ctl) { s_ctl = c; ctl_set_gamepad(true); }   // take the first pad; filter reads in tick
+  if (!s_ctl) {
+    s_ctl = c;
+    ctl_set_gamepad(true);   // take the first pad; filter reads in tick
+    // Observability (field lesson 2026-07-20: pad state was invisible in every
+    // log, so a no-pair bug took raw-serial archaeology). Callbacks run inside
+    // BP32.update() on the loopTask, so emitting here is as safe as in tick.
+    emit_event_kv("gamepad", "state", "connected");
+  } else {
+    emit_event_kv("gamepad", "state", "ignored_second_pad");
+  }
 }
 
 static void onDisconnect(ControllerPtr c) {
@@ -75,6 +84,7 @@ static void onDisconnect(ControllerPtr c) {
     ctl_set_gamepad(false);
     LOCK_STATE(); g_ctx.gp_live.connected = false; UNLOCK_STATE();  // GUI: pad gone
     ctl_manual_stop();        // failsafe: stop now, KEEP manual — never silently resume AUTO
+    emit_event_kv("gamepad", "state", "disconnected");
   }
 }
 
@@ -183,6 +193,7 @@ void gamepad_init() {
   BP32.enableVirtualDevice(false);          // real gamepads only (no virtual mouse/kbd)
   BP32.enableNewBluetoothConnections(true); // accept a pad in pairing mode
   apply_surface_mode();                     // boot in the HARDWOOD profile (incl. spin kick)
+  emit_log("info", "gamepad: Bluepad32 ready - accepting pad connections");
 }
 
 void gamepad_tick() {

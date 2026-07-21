@@ -206,13 +206,32 @@ def _clear_tx() -> None:
 # the EN-low reset state. Re-asserting DTR releases EN into a normal boot (IO0
 # stays high at the release edge). Not a serial WRITE, so it rides its own flag.
 _reset_flag = threading.Event()
+_reset_queued_at = 0.0   # when the last click queued a pulse
+_reset_sent_at = 0.0     # when the last pulse actually went out
 
 
 def _queue_esp32_reset() -> None:
+    # Field bug 2026-07-20: a queued click vanished without a pulse (or a
+    # failure log) for 61 s — the user reasonably concluded "restart doesn't
+    # help". The timer below turns any such miss into a loud warning.
+    global _reset_queued_at
+    _reset_queued_at = time.time()
     _reset_flag.set()
+    threading.Timer(6.0, _warn_if_reset_unserviced, args=[_reset_queued_at]).start()
+
+
+def _warn_if_reset_unserviced(queued_at: float) -> None:
+    if _reset_sent_at >= queued_at:
+        return   # pulse went out — all good
+    state = "still queued" if _reset_flag.is_set() else "LOST without a pulse"
+    log.warning("ESP32 reset %s %.0fs after the click — board has NOT restarted.",
+                state, time.time() - queued_at)
+    _notify("Rex Battery",
+            "ESP32 reset did not fire — the board has NOT restarted. Try again.")
 
 
 def _service_reset(ser) -> None:
+    global _reset_sent_at
     if not _reset_flag.is_set():
         return
     _reset_flag.clear()
@@ -224,7 +243,9 @@ def _service_reset(ser) -> None:
             ser.reset_input_buffer()   # drop any partial pre-reset line
         except Exception:
             pass
-        log.info("ESP32 reset pulse sent (DTR toggle) — board rebooting.")
+        _reset_sent_at = time.time()
+        log.info("ESP32 reset pulse sent (DTR toggle, %.1fs after click) — board rebooting.",
+                 _reset_sent_at - _reset_queued_at)
         _notify("Rex Battery", "ESP32 restarted.")
     except Exception as exc:
         log.warning("ESP32 reset failed: %s", exc)
@@ -374,6 +395,9 @@ def _worker() -> None:
             ser = None
         # A queued click must not fire surprisingly late on a future reconnect.
         _clear_tx()
+        if _reset_flag.is_set():
+            log.warning("Pending ESP32 reset dropped by port close/handoff — "
+                        "click Restart again once the meter is live.")
         _reset_flag.clear()
 
     while not _stop.is_set():

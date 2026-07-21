@@ -96,10 +96,18 @@ def connect(port: "str | None" = None) -> bool:
 # via config.MOTION_GAMEPAD_BUTTON_ACTIONS — data-driven, no code change to remap.
 
 def _on_motion_event(msg: dict) -> None:
-    """Reader-thread callback for firmware `event` messages. Only `button` events are
-    handled here; everything else (estop/comms/zone_block/...) is consumed elsewhere."""
+    """Reader-thread callback for firmware `event` messages. `button` and `gamepad`
+    events are handled here; everything else (estop/comms/zone_block/...) is consumed
+    elsewhere."""
     try:
-        if not isinstance(msg, dict) or msg.get("event") != "button":
+        if not isinstance(msg, dict):
+            return
+        if msg.get("event") == "gamepad":
+            # Firmware pad connect/disconnect events — surfaced at INFO so pairing
+            # problems are diagnosable from djr3x.log (added 2026-07-21).
+            _log.info("[gamepad] pad %s", msg.get("state"))
+            return
+        if msg.get("event") != "button":
             return
         btn = str(msg.get("btn") or "").strip().lower()
         if not btn:
