@@ -225,7 +225,7 @@ class FlinchTest(unittest.TestCase):
             self._state_val = state
         MA.step({"people": []}, profile or _profile())
 
-    def _approach(self, close_mm=350, rear_mm=None, far_mm=1500, confirm=2, profile=None):
+    def _approach(self, close_mm=250, rear_mm=None, far_mm=1500, confirm=2, profile=None):
         """One far tick to seat the baseline, then `confirm` close ticks."""
         self._tick(front_mm=far_mm, rear_mm=rear_mm, profile=profile)
         for _ in range(confirm):
@@ -235,18 +235,24 @@ class FlinchTest(unittest.TestCase):
 
     def test_front_approach_backs_up(self):
         self._tick(front_mm=1500)      # far — seats the "came from" baseline
-        self._tick(front_mm=350)       # intruding tick 1 -> confirm not yet met
+        self._tick(front_mm=250)       # intruding tick 1 -> confirm not yet met
         self.move.assert_not_called()
-        self._tick(front_mm=350)       # intruding tick 2 -> flinch
+        self._tick(front_mm=250)       # intruding tick 2 -> flinch
         self.move.assert_called_once()
         dist, speed = self.move.call_args[0]
         self.assertLess(dist, 0)                              # reverse
         self.assertAlmostEqual(abs(dist), 0.30, places=2)    # full backup, rear open
         self.assertAlmostEqual(speed, config.MOTION_FLINCH_SPEED_MS, places=3)
 
+    def test_person_at_35_cm_stays_outside_new_trigger_zone(self):
+        self._tick(front_mm=1500)
+        self._tick(front_mm=350)
+        self._tick(front_mm=350)
+        self.move.assert_not_called()
+
     def test_slow_creep_still_flinches(self):
         # ~5 cm/tick creep to contact — the case the old fixed-window version missed.
-        for mm in (600, 550, 500, 450, 400, 350, 300, 250, 200, 150):
+        for mm in (600, 550, 500, 450, 400, 350, 300, 250, 200, 150, 100, 90, 80):
             self._tick(front_mm=mm)
         self.assertTrue(self.move.called)
         self.assertLess(self.move.call_args[0][0], 0)
@@ -255,15 +261,15 @@ class FlinchTest(unittest.TestCase):
         # fr pinned by a static object at 0.30 m; fl sees a real walk-up.
         self._tick(fl_mm=1500, fr_mm=300)
         self._tick(fl_mm=1500, fr_mm=300)   # baselines settle: fl~1.5, fr frozen 0.30
-        self._tick(fl_mm=350, fr_mm=300)    # fl intrudes (1/2)
-        self._tick(fl_mm=350, fr_mm=300)    # fl intrudes (2/2) -> flinch
+        self._tick(fl_mm=250, fr_mm=200)    # fl intrudes (1/2)
+        self._tick(fl_mm=250, fr_mm=200)    # fl intrudes (2/2) -> flinch
         self.move.assert_called_once()
 
     # ── false-positive rejection ────────────────────────────────────────────────
 
     def test_static_close_object_never_flinches(self):
         for _ in range(6):
-            self._tick(front_mm=350)   # always close, never CLOSING
+            self._tick(front_mm=250)   # always close, never CLOSING
         self.move.assert_not_called()
 
     def test_single_near_glitch_does_not_fire(self):
@@ -273,9 +279,9 @@ class FlinchTest(unittest.TestCase):
         self.move.assert_not_called()
 
     def test_far_flyer_does_not_fake_an_approach(self):
-        # Static person at 0.35 m with one dropout-to-max frame: the capped baseline
+        # Static person at 0.25 m with one dropout-to-max frame: the capped baseline
         # drift means the flyer can't manufacture a large drop.
-        for mm in (350, 350, 3500, 350, 350):
+        for mm in (250, 250, 3500, 250, 250):
             self._tick(front_mm=mm)
         self.move.assert_not_called()
 
@@ -302,8 +308,8 @@ class FlinchTest(unittest.TestCase):
     def test_backup_uses_nearer_rear_of_pair(self):
         # rl open, rr close: the nearer rear (rr) must cap the retreat.
         self._tick(front_mm=1500, rl_mm=4000, rr_mm=500)
-        self._tick(front_mm=350, rl_mm=4000, rr_mm=500)
-        self._tick(front_mm=350, rl_mm=4000, rr_mm=500)
+        self._tick(front_mm=250, rl_mm=4000, rr_mm=500)
+        self._tick(front_mm=250, rl_mm=4000, rr_mm=500)
         self.move.assert_called_once()
         self.assertAlmostEqual(abs(self.move.call_args[0][0]), 0.20, places=2)
 
@@ -312,7 +318,7 @@ class FlinchTest(unittest.TestCase):
         self.move.assert_not_called()
         self.assertEqual(MA._state["last_flinch_at"], 0.0)   # hold must NOT burn cooldown
         # rear clears the next tick -> he should be free to flinch immediately.
-        self._tick(front_mm=350, rear_mm=1500)
+        self._tick(front_mm=250, rear_mm=1500)
         self.move.assert_called_once()
 
     def test_blind_rear_holds_no_token_step(self):
@@ -360,9 +366,9 @@ class FlinchTest(unittest.TestCase):
             prof = _profile(user_mid_sentence=True)
             self._tick(front_mm=1500, profile=prof)
             for _ in range(8):                     # crowded the whole long sentence
-                self._tick(front_mm=350, profile=prof)
+                self._tick(front_mm=250, profile=prof)
             self.move.assert_not_called()          # deferred throughout
-        self._tick(front_mm=350)                   # sentence ends -> still fires
+        self._tick(front_mm=250)                   # sentence ends -> still fires
         self.move.assert_called_once()
 
     def test_suppressed_move_fires_when_gate_reopens(self):
@@ -370,10 +376,10 @@ class FlinchTest(unittest.TestCase):
         self.move.return_value = None
         self._tick(front_mm=1500)
         for _ in range(8):
-            self._tick(front_mm=350)               # attempted but suppressed each tick
+            self._tick(front_mm=250)               # attempted but suppressed each tick
         self.assertTrue(self.move.called)
         self.move.return_value = 9                 # gate reopens
-        self._tick(front_mm=350)                   # cooldown never stamped -> fires
+        self._tick(front_mm=250)                   # cooldown never stamped -> fires
         self.assertLess(self.move.call_args[0][0], 0)
 
     def test_kill_switch_disables_flinch(self):
