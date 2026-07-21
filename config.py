@@ -6898,6 +6898,14 @@ MOTION_STOP_ZONE_M = 0.15             # hard-stop line at full speed
 MOTION_SLOW_ZONE_M = 0.60             # braking starts here at full speed (raised 0.50->0.60
                                       # when units became real: full teleop ~0.72 m/s)
 MOTION_COME_STOP_AT_M = 0.60
+# Explicit "come here" is a person-seeking sequence: scan in place until face
+# tracking acquires somebody, square the chassis to them, then use the firmware's
+# obstacle-gated `come` command. This stop distance is deliberately separate from
+# MOTION_COME_STOP_AT_M, which remains the spontaneous social-approach distance.
+MOTION_COME_REQUEST_STOP_AT_M = 1.00
+MOTION_COME_SEARCH_TURN_DEG = 45.0
+MOTION_COME_SEARCH_MAX_TURNS = 8       # one full 360-degree scan
+MOTION_COME_SEARCH_TIMEOUT_SECS = 45.0
 MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
 MOTION_DEFAULT_TURN_RATE = 40.0       # deg/s
 MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated distance

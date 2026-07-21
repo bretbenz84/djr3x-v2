@@ -1,8 +1,14 @@
 """
 intelligence/motion_agency.py — autonomous base motion (owner spec 2026-07-06).
 
-Three behaviors, evaluated once per consciousness tick (~1 Hz), highest priority
+Four behaviors, evaluated once per consciousness tick (~1 Hz), highest priority
 first:
+
+REQUESTED COME — after an explicit "come here" command, rotate in bounded search
+steps until face tracking acquires a person, use the tracked neck offset to turn the
+base toward them, then issue the firmware `come` command with a 1 m stop distance.
+The forward ToF target may be the person or an intervening obstacle, so furniture and
+walls stop the approach just as safely as the intended person does.
 
 FLINCH — a reflexive back-off when someone crowds Rex from the front, the way an
 animal edges back when you get in its face. Each front matrix ToF half (fl/fr,
@@ -68,6 +74,12 @@ _state = {
     "last_flinch_at": 0.0,
 }
 
+_requested_come = {
+    "active": False,
+    "started_at": 0.0,
+    "search_turns": 0,
+}
+
 # Flinch detector state, sampled every idle tick and reset whenever the base is
 # busy/exploring/gone (see _reset_flinch). Per FRONT SIDE (fl/fr, tracked separately
 # so static clutter on one side can't mask a real approach on the other) we keep an
@@ -99,6 +111,77 @@ def _num(name: str, default: float) -> float:
 def _reset(*counters: str) -> None:
     for key in counters:
         _state[key] = 0
+
+
+def requested_come_active() -> bool:
+    """Whether an explicit person-seeking come-here sequence owns the base."""
+    return bool(_requested_come["active"])
+
+
+def request_come_here() -> bool:
+    """Arm a bounded search/align/approach sequence for an explicit voice request."""
+    if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
+        return False
+    _requested_come.update(
+        active=True,
+        started_at=time.monotonic(),
+        search_turns=0,
+    )
+    _reset("neck_hits", "far_hits")
+    _log.info("[motion_agency] requested come: searching for a visible person")
+    return True
+
+
+def cancel_requested_come(reason: str = "cancelled") -> None:
+    if _requested_come["active"]:
+        _log.info("[motion_agency] requested come: %s", reason)
+    _requested_come.update(active=False, started_at=0.0, search_turns=0)
+
+
+def _step_requested_come(snapshot: dict, now: float) -> bool:
+    """Run one idle-state step. True means this mode consumed the autonomy tick."""
+    if not requested_come_active():
+        return False
+    timeout = _num("MOTION_COME_SEARCH_TIMEOUT_SECS", 45.0)
+    max_turns = max(1, int(_num("MOTION_COME_SEARCH_MAX_TURNS", 8)))
+    if ((now - float(_requested_come["started_at"])) >= timeout
+            or int(_requested_come["search_turns"]) >= max_turns):
+        cancel_requested_come("no person found before search limit")
+        return True
+
+    person = _tracked_person(snapshot)
+    if person is None:
+        deg = abs(_num("MOTION_COME_SEARCH_TURN_DEG", 45.0))
+        seq = motion_controller.turn(deg)
+        if seq is not None:
+            _requested_come["search_turns"] += 1
+            _log.info(
+                "[motion_agency] requested come: scan turn %d/%d (%+.0f deg)",
+                _requested_come["search_turns"], max_turns, deg,
+            )
+        return True
+
+    frac = neck_offset_fraction()
+    centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
+    if frac is not None and abs(frac) >= centered:
+        deg = _turn_degrees_for(frac)
+        if motion_controller.turn(deg) is not None:
+            _log.info(
+                "[motion_agency] requested come: acquired person %s, aligning %+.0f deg",
+                person.get("person_db_id") or person.get("id"), deg,
+            )
+        return True
+
+    stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
+    seq = motion_controller.come(0.0, stop_at=stop_at)
+    if seq is not None:
+        _log.info(
+            "[motion_agency] requested come: approaching person %s "
+            "(stop_at=%.2fm, obstacle-gated)",
+            person.get("person_db_id") or person.get("id"), stop_at,
+        )
+        cancel_requested_come("approach issued")
+    return True
 
 
 def _min_valid_m(*vals) -> Optional[float]:
@@ -356,6 +439,7 @@ def _step_inner(snapshot: dict, profile) -> None:
         # walked up while autonomy was OFF isn't read as an "approach" on re-enable.
         _reset("neck_hits", "far_hits")
         _reset_flinch()
+        cancel_requested_come("autonomous motion disabled")
         return
     # A room-exploration session OWNS the base while it wanders — realign/approach
     # must not interleave a maneuver between its legs.
@@ -364,12 +448,14 @@ def _step_inner(snapshot: dict, profile) -> None:
         if exploration.active():
             _reset("neck_hits", "far_hits")
             _reset_flinch()
+            cancel_requested_come("room exploration owns the base")
             return
     except Exception:
         pass
     if not motion_controller.available():
         _reset("neck_hits", "far_hits")
         _reset_flinch()
+        cancel_requested_come("drive base unavailable")
         return
 
     st = motion.state()
@@ -383,6 +469,15 @@ def _step_inner(snapshot: dict, profile) -> None:
         return
 
     now = time.monotonic()
+
+    # An explicit request owns the social-motion lane. While idle it searches,
+    # aligns, or starts the approach. A blocked search turn cannot safely continue;
+    # the firmware remains the final authority for every turn and forward move.
+    if requested_come_active():
+        if st == "blocked":
+            cancel_requested_come("search blocked by an obstacle")
+        elif _step_requested_come(snapshot, now):
+            return
 
     # ── FLINCH: reflexive back-off when someone crowds the front ─────────────────
     # A raw ToF reflex: no tracked/known person required, and it may fire even while

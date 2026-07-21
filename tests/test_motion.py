@@ -291,6 +291,10 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(self._act("come here"), "motion.come")
         self.assertEqual(self._act("halt"), "motion.stop")
 
+    def test_requested_come_phrases(self):
+        for text in ("come here", "come over here", "come to me"):
+            self.assertEqual(self._act(text), "motion.come")
+
     def test_turn_args(self):
         d = ar.classify_explicit_motion("turn right 45 degrees")
         self.assertEqual(d.args, {"direction": "right", "deg": 45.0})
@@ -443,6 +447,18 @@ class MotionTakeoverTest(_MotionTestBase):
         self.assertIsNotNone(self._last("turn"))
         self.assertEqual(I._explicit_motion_takeover("move forward"), "Rolling forward.")
         self.assertIsNotNone(self._last("move"))
+
+    def test_explicit_come_arms_person_search_instead_of_driving_blind(self):
+        from intelligence import interaction as I
+        from intelligence import motion_agency
+        self._connect()
+        motion_agency.cancel_requested_come("test reset")
+        try:
+            self.assertEqual(I._explicit_motion_takeover("come to me"), "On my way.")
+            self.assertTrue(motion_agency.requested_come_active())
+            self.assertIsNone(self._last("come"))
+        finally:
+            motion_agency.cancel_requested_come("test cleanup")
 
     def test_non_motion_is_noop(self):
         from intelligence import interaction as I

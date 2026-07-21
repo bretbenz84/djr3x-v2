@@ -28,6 +28,7 @@ def _snapshot(distance_zone="social", slot="person_1"):
 
 class MotionAgencyTest(unittest.TestCase):
     def setUp(self):
+        MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
                          last_approach_at=0.0)
         self._patches = [
@@ -50,6 +51,7 @@ class MotionAgencyTest(unittest.TestCase):
         self._neck = 6000  # neutral (SERVO_CHANNELS neck: 1984/9984/6000)
 
     def tearDown(self):
+        MA.cancel_requested_come("test cleanup")
         self._ws.stop()
         for p in self._patches:
             p.stop()
@@ -152,6 +154,45 @@ class MotionAgencyTest(unittest.TestCase):
         self.available.return_value = False
         self._tick(4, zone="public")
         self.come.assert_not_called()
+
+    # ── explicit requested come ───────────────────────────────────────────────
+
+    def test_requested_come_scans_until_a_person_is_visible(self):
+        self._tracking = {"locked": False, "visible": False}
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.turn.assert_called_once_with(config.MOTION_COME_SEARCH_TURN_DEG)
+        self.come.assert_not_called()
+        self.assertTrue(MA.requested_come_active())
+
+    def test_requested_come_approaches_visible_centered_person_at_one_meter(self):
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.come.assert_called_once_with(
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+        )
+        self.assertFalse(MA.requested_come_active())
+
+    def test_requested_come_aligns_before_approaching(self):
+        self._neck = 7594
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.turn.assert_called_once()
+        self.come.assert_not_called()
+
+        self._neck = 6000
+        self._tick()
+        self.come.assert_called_once_with(
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+        )
+
+    def test_requested_come_stops_after_full_search(self):
+        self._tracking = {"locked": False, "visible": False}
+        with mock.patch.object(config, "MOTION_COME_SEARCH_MAX_TURNS", 2, create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(3)
+        self.assertEqual(self.turn.call_count, 2)
+        self.assertFalse(MA.requested_come_active())
 
 
 class TurnMathTest(unittest.TestCase):

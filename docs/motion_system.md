@@ -269,17 +269,16 @@ ESP32 has enough usable GPIO for this; lay out PWM and interrupt pins first.
 | **"move back"** | Reverse a default/stated distance; **gated by the rear ToF** — slow then stop if something's behind. |
 | **"move forward"/"go"** | Drive forward a default/stated distance; front ToF gated. |
 | **"stop"** | Immediate controlled stop (always honored, highest priority). |
-| **"come here"** | Turn toward a heading, then advance until the nearest forward obstacle is at the social-distance stop (`stop_at`, e.g. 0.6 m), then stop. |
+| **"come here" / "come over here" / "come to me"** | Rotate in bounded search steps until face tracking acquires a person, align the chassis from the tracked neck offset, then advance until the nearest forward obstacle is 1.0 m away. Furniture or a wall stops the approach before the person if it is closer. |
 
-**"Come here" heading — open design point.** With no camera navigation, "here" has no
-spatial target. Options, in order of preference:
-1. **One-shot heading hint** from the existing system (the speaker's face bearing /
-   `speaker_gaze`, or mic-array sound-source direction if available) — used *only* to
-   point the base before it advances. Obstacle avoidance stays 100% ToF. (This uses the
-   camera to *orient*, not to *navigate* — consistent with the non-goal.)
-2. **No heading** → just advance forward and stop at `stop_at` (assumes the caller is
-   roughly ahead). Simplest; fine for v1.
-3. Defer "come here" to a later phase; ship turn/move/stop first.
+**"Come here" person acquisition.** `intelligence/motion_agency.py` owns the deliberate
+sequence. It rotates the base by `MOTION_COME_SEARCH_TURN_DEG` after each settled turn,
+up to `MOTION_COME_SEARCH_MAX_TURNS` or `MOTION_COME_SEARCH_TIMEOUT_SECS`. Once normal
+face tracking locks onto a visible person, the neck offset supplies the chassis bearing;
+Rex makes a proportional alignment turn and then sends firmware `come` with
+`MOTION_COME_REQUEST_STOP_AT_M` (default 1.0 m). The camera selects and orients toward a
+person but does not navigate the path. The ESP32's forward ToF remains authoritative, so
+any nearer obstacle ends the approach.
 
 ---
 

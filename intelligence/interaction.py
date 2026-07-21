@@ -16624,11 +16624,21 @@ def _handle_router_motion_action(
     args = decision.args or {}
 
     if action == "motion.stop":
+        try:
+            from intelligence import motion_agency
+            motion_agency.cancel_requested_come("stopped by user")
+        except Exception:
+            pass
         motion_controller.stop()
         return "Stopping."
 
     if action == "motion.come":
-        return "On my way." if motion_controller.come_here() is not None else None
+        try:
+            from intelligence import motion_agency
+            return "On my way." if motion_agency.request_come_here() else None
+        except Exception as exc:
+            _log.debug("requested come start failed: %s", exc)
+            return None
 
     def _f(key: str) -> Optional[float]:
         try:
@@ -16721,9 +16731,16 @@ def _explicit_motion_takeover(
         )
         return denial
     motion_decision = action_router.classify_explicit_motion(text)
+    requested_come_active = False
+    if motion_decision is None and _BARE_MOTION_STOP_RE.match(text or ""):
+        try:
+            from intelligence import motion_agency
+            requested_come_active = motion_agency.requested_come_active()
+        except Exception:
+            pass
     if (
         motion_decision is None
-        and motion_controller.is_moving()
+        and (motion_controller.is_moving() or requested_come_active)
         and _BARE_MOTION_STOP_RE.match(text or "")
     ):
         motion_decision = action_router.ActionDecision(

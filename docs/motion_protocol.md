@@ -465,6 +465,10 @@ autonomous caps no longer slows the human operator.
 | `slow_zone_m` | `MOTION_SLOW_ZONE_M` | m | 0.60 | — |
 | `stop_zone_m` | `MOTION_STOP_ZONE_M` | m | 0.15 | — |
 | `come_stop_at_m` | `MOTION_COME_STOP_AT_M` | m | 0.6 | — |
+
+The host may override `stop_at` per command. The explicit person-seeking voice sequence
+uses `MOTION_COME_REQUEST_STOP_AT_M` (1.0 m by default), while spontaneous social
+approach retains the shorter `MOTION_COME_STOP_AT_M` default.
 | `default_turn_deg` | `MOTION_DEFAULT_TURN_DEG` | deg | 90 | — |
 | `default_turn_rate` | `MOTION_DEFAULT_TURN_RATE` | deg/s | 40 | board limit |
 | `heartbeat_ms` | `MOTION_HEARTBEAT_MS` | ms | 150 | — (Mac-side send rate) |
