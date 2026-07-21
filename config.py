@@ -7015,27 +7015,36 @@ EXPLORE_ENABLED = _env_bool("EXPLORE_ENABLED", True)  # master kill switch
 EXPLORE_MAX_DURATION_SECS = _env_float(
     "EXPLORE_MAX_DURATION_SECS", 180.0, min_value=20.0, max_value=900.0,
 )  # whole-session watchdog
-EXPLORE_MAX_STOPS = _env_int("EXPLORE_MAX_STOPS", 6, min_value=2, max_value=20)  # stop budget
+EXPLORE_MAX_STOPS = _env_int("EXPLORE_MAX_STOPS", 8, min_value=2, max_value=20)  # stop budget
 EXPLORE_MIN_STOPS_BEFORE_FIXATE = _env_int(
     "EXPLORE_MIN_STOPS_BEFORE_FIXATE", 2, min_value=1, max_value=10,
 )  # HARD rule: never fixate at the first stop
+EXPLORE_MIN_LEGS_BEFORE_FIXATE = _env_int(
+    "EXPLORE_MIN_LEGS_BEFORE_FIXATE", 3, min_value=0, max_value=10,
+)  # mobile sessions wander before settling on a find (ignored for head-only mode)
 EXPLORE_VISION_MAX_CALLS = _env_int(
     "EXPLORE_VISION_MAX_CALLS", 8, min_value=1, max_value=30,
 )  # OpenAI spend cap per session
 EXPLORE_VISION_MAX_FAILURES = _env_int(
     "EXPLORE_VISION_MAX_FAILURES", 2, min_value=1, max_value=10,
 )  # consecutive vision errors before aborting (never wander blind)
-# ── Locomotion (short, slow, closed-loop legs — no streamed drive, no `come`) ──
+# ── Locomotion (varied, ToF-gated finite legs — no streamed drive, no `come`) ──
 EXPLORE_LOCOMOTION_ENABLED = _env_bool("EXPLORE_LOCOMOTION_ENABLED", True)
-EXPLORE_LEG_DIST_M = _env_float("EXPLORE_LEG_DIST_M", 0.5, min_value=0.1, max_value=2.0)
+EXPLORE_LEG_DIST_M = _env_float("EXPLORE_LEG_DIST_M", 0.80, min_value=0.1, max_value=2.0)
+EXPLORE_LEG_DIST_JITTER_M = _env_float(
+    "EXPLORE_LEG_DIST_JITTER_M", 0.25, min_value=0.0, max_value=1.0,
+)  # each leg varies around EXPLORE_LEG_DIST_M instead of marching a fixed distance
 EXPLORE_LEG_SPEED_MS = _env_float(
-    "EXPLORE_LEG_SPEED_MS", 0.12, min_value=0.03, max_value=0.25,  # << MOTION_MAX_LINEAR_MS
+    "EXPLORE_LEG_SPEED_MS", 0.16, min_value=0.03, max_value=0.25,  # lively but below the base cap
 )
+EXPLORE_TURN_MIN_DEG = _env_float(
+    "EXPLORE_TURN_MIN_DEG", 35.0, min_value=5.0, max_value=120.0,
+)  # side-look hints choose a varied turn between this and the max
 EXPLORE_TURN_MAX_DEG = _env_float(
-    "EXPLORE_TURN_MAX_DEG", 75.0, min_value=10.0, max_value=180.0,  # max heading change per leg
+    "EXPLORE_TURN_MAX_DEG", 120.0, min_value=10.0, max_value=180.0,  # max heading change per leg
 )
 EXPLORE_TURN_RATE_DEG_S = _env_float(
-    "EXPLORE_TURN_RATE_DEG_S", 30.0, min_value=5.0, max_value=60.0,  # slow spins (aft-axle sweep)
+    "EXPLORE_TURN_RATE_DEG_S", 40.0, min_value=5.0, max_value=60.0,
 )
 EXPLORE_TETHER_RADIUS_M = _env_float(
     "EXPLORE_TETHER_RADIUS_M", 3.0, min_value=0.5, max_value=10.0,  # odometry leash from start pose
@@ -7051,6 +7060,10 @@ EXPLORE_GAZE_VIEWS = ("left", "center", "right")  # head sweep poses per stop
 EXPLORE_SETTLE_SECS = _env_float(
     "EXPLORE_SETTLE_SECS", 0.35, min_value=0.05, max_value=2.0,  # camera settle per pose (I Spy default)
 )
+EXPLORE_TRAVEL_GAZE_ENABLED = _env_bool("EXPLORE_TRAVEL_GAZE_ENABLED", True)
+EXPLORE_TRAVEL_GAZE_HOLD_SECS = _env_float(
+    "EXPLORE_TRAVEL_GAZE_HOLD_SECS", 0.8, min_value=0.1, max_value=4.0,
+)  # independent head glances continue while the base is turning/driving
 EXPLORE_FIXATE_MIN_SCORE = _env_float(
     "EXPLORE_FIXATE_MIN_SCORE", 0.75, min_value=0.0, max_value=1.0,  # interest to fixate
 )

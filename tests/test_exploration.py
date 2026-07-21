@@ -428,6 +428,67 @@ class LocomotionTests(unittest.TestCase):
             ex._travel_one_leg(sess)
         move.assert_not_called()  # forward leg cancelled by the pause
 
+    def test_mobile_session_requires_real_wandering_before_fixation(self):
+        sess = _new_session()
+        sess.had_base = True
+        sess.stops_done = 6
+        sess.best = _cand("neon sign", 0.95)
+        with mock.patch.object(config, "EXPLORE_MIN_LEGS_BEFORE_FIXATE", 3):
+            sess.legs_done = 2
+            self.assertFalse(ex._should_fixate(sess))
+            sess.legs_done = 3
+            self.assertTrue(ex._should_fixate(sess))
+
+    def test_headonly_session_does_not_wait_for_impossible_legs(self):
+        sess = _new_session()
+        sess.had_base = False
+        sess.stops_done = 2
+        sess.legs_done = 0
+        sess.best = _cand("neon sign", 0.95)
+        self.assertTrue(ex._should_fixate(sess))
+
+    def test_heading_and_distance_are_varied_from_configured_ranges(self):
+        sess = _new_session()
+        sess.last_open_direction = "left"
+        with mock.patch("intelligence.exploration.random.uniform", return_value=88.0):
+            self.assertEqual(ex._plan_leg_heading(sess), 88.0)
+        with mock.patch.object(config, "EXPLORE_LEG_DIST_M", 0.8), \
+                mock.patch.object(config, "EXPLORE_LEG_DIST_JITTER_M", 0.25), \
+                mock.patch("intelligence.exploration.random.uniform", return_value=0.93) as uniform:
+            self.assertEqual(ex._plan_leg_distance(), 0.93)
+        uniform.assert_called_once_with(0.55, 1.05)
+
+    def test_travel_gaze_spans_the_turn_and_move(self):
+        sess = _new_session()
+        sess.last_open_direction = "left"
+        gaze_handle = object()
+        events = []
+
+        def _turn(*args, **kwargs):
+            events.append("turn")
+            return 11
+
+        def _move(*args, **kwargs):
+            events.append("move")
+            return 12
+
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch.object(
+                    ex, "_start_travel_gaze",
+                    side_effect=lambda s: events.append("gaze_start") or gaze_handle,
+                ), \
+                mock.patch.object(
+                    ex, "_stop_travel_gaze",
+                    side_effect=lambda h: events.append("gaze_stop"),
+                ) as stop_gaze, \
+                mock.patch("intelligence.motion_controller.turn", side_effect=_turn), \
+                mock.patch("intelligence.motion_controller.move", side_effect=_move), \
+                mock.patch("hardware.motion.wait_done", return_value={"result": "completed", "odom": {}}):
+            ex._travel_one_leg(sess)
+
+        self.assertEqual(events, ["gaze_start", "turn", "move", "gaze_stop"])
+        stop_gaze.assert_called_once_with(gaze_handle)
+
 
 # ── 7. Invite dispatch (interaction wiring) ───────────────────────────────────
 

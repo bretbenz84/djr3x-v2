@@ -2,7 +2,6 @@
 #include "proto_io.h"
 #include <math.h>
 
-#define SAFETY_EPS       0.005f
 // NOTE: this radial ToF layout (8 horizontal sensors) has NO down-facing cliff
 // sensor, so cliff/stair-edge detection is NOT available — the base will drive off
 // a drop-off. Reflex protection here is obstacle-only (front/rear zones).
@@ -100,10 +99,18 @@ void safety_tick() {
   const MotionZone z  = (zf >= zr) ? zf : zr;   // worst-of, for state/telemetry/rumble
 
   c.zone = z;
-  if      (zf == Z_STOP && zr == Z_STOP) c.blocked_dir = DIR_BOTH;
-  else if (zf == Z_STOP)                 c.blocked_dir = DIR_FRONT;
-  else if (zr == Z_STOP)                 c.blocked_dir = DIR_REAR;
-  else                                   c.blocked_dir = DIR_NONE;
+  MotionDir stop_dir = DIR_NONE;
+  if      (zf == Z_STOP && zr == Z_STOP) stop_dir = DIR_BOTH;
+  else if (zf == Z_STOP)                 stop_dir = DIR_FRONT;
+  else if (zr == Z_STOP)                 stop_dir = DIR_REAR;
+
+  // Outside BLOCKED, blocked_dir mirrors what would trip the reflex this tick.
+  // Once BLOCKED, however, the direction is a LATCH: braking makes measured speed
+  // fall, which shrinks the speed-adaptive STOP envelope and can reclassify the
+  // exact same obstacle as SLOW. Clearing blocked_dir at that point let a still-held
+  // gamepad stick accelerate again, expand the envelope, and immediately re-block
+  // (violent brake/go oscillation on the tall robot).
+  if (c.state != ST_BLOCKED) c.blocked_dir = stop_dir;
 
   // ---- Reflex stop: only toggles within the IDLE/MOVING/BLOCKED group ----
   // A gamepad operator holding full-override (docs §11.4) deliberately bypasses the
@@ -112,15 +119,34 @@ void safety_tick() {
   if ((c.state == ST_IDLE || c.state == ST_MOVING) && !c.full_override) {
     if (z == Z_STOP || z == Z_CLIFF) {
       c.state = ST_BLOCKED;
+      c.blocked_dir = stop_dir;
     }
   } else if (c.state == ST_BLOCKED) {
-    // Release on CLEAR (as before) — or once the base has come to REST in the SLOW
-    // band: the block was earned at speed (big envelope), and a stopped base gets the
-    // small at-rest envelope, so the operator may creep the remaining distance under
-    // the taper's creep floor; it re-blocks at the (tiny) at-rest stop line.
-    if (z == Z_CLEAR || c.full_override ||
-        (z == Z_SLOW && fabsf(c.odom.lin) <= SAFETY_EPS)) {
-      c.state = ST_IDLE;   // control_tick re-promotes to MOVING if still commanded
+    if (c.full_override) {
+      c.state = ST_IDLE;
+      c.blocked_dir = DIR_NONE;
+    } else {
+      // Add a newly blocked direction while preserving the original latch. This
+      // matters if backing away from a front obstacle discovers a rear obstacle.
+      const bool latched_front =
+          c.blocked_dir == DIR_FRONT || c.blocked_dir == DIR_BOTH;
+      const bool latched_rear =
+          c.blocked_dir == DIR_REAR || c.blocked_dir == DIR_BOTH;
+      bool keep_front = latched_front && zf != Z_CLEAR;
+      bool keep_rear  = latched_rear  && zr != Z_CLEAR;
+      if (zf == Z_STOP) keep_front = true;
+      if (zr == Z_STOP) keep_rear = true;
+
+      if      (keep_front && keep_rear) c.blocked_dir = DIR_BOTH;
+      else if (keep_front)              c.blocked_dir = DIR_FRONT;
+      else if (keep_rear)               c.blocked_dir = DIR_REAR;
+      else {
+        // A latched direction releases only after that direction reaches CLEAR.
+        // SLOW is intentionally not enough: the stick may still be held toward the
+        // obstacle, and the progressive taper resumes safely after genuine clearance.
+        c.state = ST_IDLE;
+        c.blocked_dir = DIR_NONE;
+      }
     }
   }
 

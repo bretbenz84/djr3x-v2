@@ -2,7 +2,7 @@
 
 Someone invites Rex to look around ("feel free to explore the room", "make
 yourself at home"). The normal turn-based conversation hands off to this mode:
-Rex takes the floor, drives a few short legs around the room, snaps pictures at
+Rex takes the floor, drives several varied legs around the room, snaps pictures at
 each stop, sends them to one OpenAI vision call that ranks what is interesting
 (art / oddities / people over generic furniture), riffs whimsically, and
 eventually FIXATES on something worth a bigger beat — never on the first stop.
@@ -18,12 +18,12 @@ motion completion + multi-second vision calls and must not stall the ~1 Hz
 consciousness tick. The worker re-checks an abort `Event` between every step; the
 consciousness tick only SUPERVISES (`supervise()` force-cleans a wedged session).
 
-Hardware reality (see config's EXPLORE_* header): the live firmware ships with
-ToF STILL STUBBED, so the base cannot yet stop itself for an obstacle. All driving
-is short, slow, closed-loop `turn`+`move` legs (never streamed `drive`, never the
-person-seeking `come`), gated by a per-stop VISION floor-check. Real ToF slots in
-later with no API change (the leg primitive already goes through
-`motion_controller.move`, which the firmware ToF-gates once sensors are wired).
+Hardware reality (see config's EXPLORE_* header): the live robot build enables the
+front 8x8 matrix ToF, so the ESP32 applies its own forward SLOW/STOP reflex. ToF is
+compile-time gated and bare-board firmware builds still report clear. All driving
+uses finite, closed-loop `turn`+`move` legs (never streamed `drive`, never the
+person-seeking `come`) and retains a per-stop VISION floor-check for cables, clutter,
+and navigation context the distance sensor cannot classify.
 
 Every heavy dependency is imported LAZILY inside functions: this module is
 imported by speech_engine / motion_agency / consciousness / interaction, so a
@@ -703,8 +703,9 @@ def _appraise(sess: "_Session", views: list) -> Optional[dict]:
     """
     if not views:
         # No frames at all (dead/blind camera) counts as a vision FAILURE so the
-        # "never wander blind" cap trips — otherwise the loop would keep driving legs
-        # with no floor read (ToF is still stubbed). Also clears the floor-known flag.
+        # "never wander blind" cap trips — otherwise the loop would keep navigating
+        # with no visual floor read. Firmware ToF remains the hard reflex on equipped
+        # builds, but it is not permission for exploration to navigate blind.
         sess.last_appraise_ok = False
         sess.vision_failures += 1
         return None
@@ -952,9 +953,17 @@ def _update_best(sess: "_Session", appraisal: dict) -> Optional[dict]:
 
 
 def _should_fixate(sess: "_Session") -> bool:
-    """Fixation gate: min-stops (never the first stop), threshold, not boring."""
+    """Fixation gate: enough observation and travel, threshold, not boring."""
     min_stops = int(getattr(config, "EXPLORE_MIN_STOPS_BEFORE_FIXATE", 2))
     if sess.stops_done < min_stops:
+        return False
+    # A mobile Rex should actually wander before the first strong visual candidate
+    # ends the mode. Head-only fallback has no locomotion requirement.
+    if (
+        sess.had_base
+        and bool(getattr(config, "EXPLORE_LOCOMOTION_ENABLED", True))
+        and sess.legs_done < int(getattr(config, "EXPLORE_MIN_LEGS_BEFORE_FIXATE", 3))
+    ):
         return False
     if sess.best is None:
         return False
@@ -979,9 +988,10 @@ def _travel_one_leg(sess: "_Session") -> None:
         return
     if sess.halt_requested():
         return
-    # NEVER DRIVE BLIND: with ToF still stubbed, the per-stop vision read is the only
-    # floor sense. If the previous stop produced no real appraisal (dead camera / vision
-    # error / budget), stay put and re-survey rather than move without a floor check.
+    # NEVER DRIVE BLIND: firmware ToF is the hard distance reflex on the live build;
+    # the per-stop vision read is complementary protection for cables/clutter and also
+    # confirms that this particular firmware/hardware session can perceive the route.
+    # If the prior appraisal failed, stay put and re-survey.
     if not sess.last_appraise_ok:
         _log.info("[explore] no vision read from the last stop — holding position (no blind leg)")
         return
@@ -990,49 +1000,50 @@ def _travel_one_leg(sess: "_Session") -> None:
     except Exception:
         return
 
-    # PLAN_LEG: pick a heading change, biased by the last open-floor hint + tether.
+    # PLAN_LEG: pick a varied heading change, biased by open floor + the tether.
     deg = _plan_leg_heading(sess)
+    gaze = _start_travel_gaze(sess)
 
-    # Turn (bounded, slow) — closed-loop, wait for done.
-    rate = float(getattr(config, "EXPLORE_TURN_RATE_DEG_S", 30.0))
-    if abs(deg) >= 1.0:
-        seq = motion_controller.turn(deg, rate=rate)
+    try:
+        # Turn (bounded, closed-loop) while the head independently looks around.
+        rate = float(getattr(config, "EXPLORE_TURN_RATE_DEG_S", 40.0))
+        if abs(deg) >= 1.0:
+            seq = motion_controller.turn(deg, rate=rate)
+            if seq is None:
+                _log.info("[explore] turn suppressed (gated) — skipping leg")
+                return
+            if not _wait_leg_done(sess, seq):
+                return
+
+        # A stop/abort OR a pause that landed during the turn must cancel the forward
+        # move. Checked immediately before the send to keep the TOCTOU window minimal.
+        if sess.halt_requested():
+            return
+
+        # Vision adds a semantic floor gate on top of the firmware ToF reflex.
+        if sess.last_floor_hazard:
+            _log.info("[explore] floor hazard ahead (%r) — turn-only leg", sess.last_floor_hazard)
+            sess.last_floor_hazard = ""
+            return
+
+        # MOVE a varied distance. The command remains finite and ESP32 ToF-gated.
+        dist = _plan_leg_distance()
+        speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.16))
+        seq = motion_controller.move(dist, speed=speed)
         if seq is None:
-            _log.info("[explore] turn suppressed (gated) — skipping leg")
+            _log.info("[explore] move suppressed (gated)")
             return
-        if not _wait_leg_done(sess, seq):
-            return
-
-    # A stop/abort OR a pause that landed during the turn must cancel the forward
-    # move — otherwise the base drives a full leg right after the user interrupted
-    # (with ToF stubbed it can't self-stop). Checked immediately before the send to
-    # keep the TOCTOU window minimal.
-    if sess.halt_requested():
-        return
-
-    # Floor gate: if the last appraisal flagged a hazard straight ahead, don't drive
-    # forward this leg (ToF is still stubbed — vision is the only floor sense).
-    if sess.last_floor_hazard:
-        _log.info("[explore] floor hazard ahead (%r) — turn-only leg", sess.last_floor_hazard)
-        sess.last_floor_hazard = ""
-        return
-
-    # MOVE forward one short leg — closed-loop, ToF-gated by the firmware (once wired).
-    dist = float(getattr(config, "EXPLORE_LEG_DIST_M", 0.5))
-    speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.12))
-    seq = motion_controller.move(dist, speed=speed)
-    if seq is None:
-        _log.info("[explore] move suppressed (gated)")
-        return
-    result = _wait_leg_done(sess, seq)
-    sess.legs_done += 1
-    if result == "blocked":
-        sess.blocked_legs += 1
-        sess.dead_headings.add(_heading_bucket(sess))
-        _log.info("[explore] leg blocked — heading marked dead")
-    elif result:
-        sess.blocked_legs = 0
-    _note_tether(sess)
+        result = _wait_leg_done(sess, seq)
+        sess.legs_done += 1
+        if result == "blocked":
+            sess.blocked_legs += 1
+            sess.dead_headings.add(_heading_bucket(sess))
+            _log.info("[explore] leg blocked — heading marked dead")
+        elif result:
+            sess.blocked_legs = 0
+        _note_tether(sess)
+    finally:
+        _stop_travel_gaze(gaze)
 
 
 def _plan_leg_heading(sess: "_Session") -> float:
@@ -1042,7 +1053,8 @@ def _plan_leg_heading(sess: "_Session") -> float:
     from dead headings; else a small pseudo-random wobble. Biased back toward the
     session-start pose when the tether radius is exceeded.
     """
-    max_deg = float(getattr(config, "EXPLORE_TURN_MAX_DEG", 75.0))
+    max_deg = float(getattr(config, "EXPLORE_TURN_MAX_DEG", 120.0))
+    min_deg = min(max_deg, float(getattr(config, "EXPLORE_TURN_MIN_DEG", 35.0)))
     # Tether: if we've wandered past the leash, turn back toward start.
     if _beyond_tether(sess):
         toward = _heading_toward_start(sess)
@@ -1051,15 +1063,24 @@ def _plan_leg_heading(sess: "_Session") -> float:
     # Open-direction hint from the last appraisal.
     hint = (sess.last_open_direction or "").lower()
     if hint == "left":
-        return min(max_deg, 45.0)
+        return random.uniform(min_deg, max_deg)
     if hint == "right":
-        return -min(max_deg, 45.0)
+        return -random.uniform(min_deg, max_deg)
     if hint == "center":
-        return 0.0
-    # No hint: a modest alternating wobble seeded by stop index (deterministic —
-    # Math.random is unavailable in some contexts; keep it reproducible for tests).
-    wobble = 30.0 if (sess.legs_done % 2 == 0) else -30.0
-    return max(-max_deg, min(max_deg, wobble))
+        # Keep following the opening, but add a shallow alternating reorientation
+        # so successive legs never become a rigid straight-line march.
+        small = random.uniform(min(15.0, max_deg), min(35.0, max_deg))
+        return small if sess.legs_done % 2 == 0 else -small
+    # No hint: alternate sides, but vary the amount substantially.
+    wobble = random.uniform(min_deg, max_deg)
+    return wobble if (sess.legs_done % 2 == 0) else -wobble
+
+
+def _plan_leg_distance() -> float:
+    """Choose a bounded non-uniform leg distance around the configured nominal."""
+    nominal = float(getattr(config, "EXPLORE_LEG_DIST_M", 0.80))
+    jitter = float(getattr(config, "EXPLORE_LEG_DIST_JITTER_M", 0.25))
+    return max(0.1, min(2.0, random.uniform(nominal - jitter, nominal + jitter)))
 
 
 def _wait_leg_done(sess: "_Session", seq) -> "str | bool":
@@ -1160,6 +1181,73 @@ def _wrap_angle(a: float) -> float:
 
 
 # ── Head / gaze ownership ─────────────────────────────────────────────────────
+
+
+def _start_travel_gaze(
+    sess: "_Session",
+) -> Optional[tuple[threading.Event, threading.Thread]]:
+    """Start independent head motion for the duration of one base leg.
+
+    The base worker continues issuing and waiting on finite ESP32 commands while
+    this companion thread chooses its own glance sequence. Camera appraisal still
+    happens only after both settle at the next stop, avoiding motion-blurred frames.
+    Returns an opaque ``(stop_event, thread)`` handle or None.
+    """
+    if not bool(getattr(config, "EXPLORE_TRAVEL_GAZE_ENABLED", True)):
+        return None
+    try:
+        from hardware import servos
+        if not servos.connected():
+            return None
+    except Exception:
+        return None
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=_travel_gaze_loop,
+        args=(sess, stop_event),
+        name="exploration-gaze",
+        daemon=True,
+    )
+    worker.start()
+    return stop_event, worker
+
+
+def _travel_gaze_loop(sess: "_Session", stop_event: threading.Event) -> None:
+    """Look around independently until the current travel leg ends."""
+    views = [
+        str(v).lower()
+        for v in getattr(config, "EXPLORE_GAZE_VIEWS", ("left", "center", "right"))
+        if str(v).lower() in ("left", "right", "up", "down", "center")
+    ]
+    if not views:
+        views = ["left", "right"]
+    # Avoid a predictable synchronized sweep: the base and head should read as two
+    # independently curious systems. Do not repeat one pose back-to-back.
+    last = "center"  # guarantee the first travel gesture is a real side/up/down look
+    hold = float(getattr(config, "EXPLORE_TRAVEL_GAZE_HOLD_SECS", 0.8))
+    while not stop_event.is_set() and not sess.halt_requested():
+        choices = [v for v in views if v != last] or views
+        view = random.choice(choices)
+        _glance(view)
+        last = view
+        if stop_event.wait(max(0.1, hold)):
+            break
+
+
+def _stop_travel_gaze(
+    handle: Optional[tuple[threading.Event, threading.Thread]],
+) -> None:
+    """Stop and briefly join a per-leg gaze worker before stationary capture."""
+    if handle is None:
+        return
+    try:
+        stop_event, worker = handle
+        stop_event.set()
+        # directed_look_pose is bounded but blocking. Joining prevents its current
+        # servo move from racing the stationary survey's first capture pose.
+        worker.join(timeout=8.0)
+    except Exception:
+        pass
 
 
 def _hold_head(sess: "_Session") -> None:
