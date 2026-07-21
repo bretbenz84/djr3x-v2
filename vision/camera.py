@@ -38,6 +38,8 @@ _frame: Optional[np.ndarray] = None
 _last_frame_at: Optional[float] = None
 _frame_seq = 0                          # increments on every captured frame
 _fps_ema: Optional[float] = None        # measured capture rate (EMA of intervals)
+_auto_gain: float = 1.0                 # current EMA-smoothed low-light brightness gain
+_auto_gain_last_log: float = 0.0        # monotonic ts of last auto-gain telemetry log
 _frame_lock = threading.Lock()
 _stop_event = threading.Event()
 _capture_thread: Optional[threading.Thread] = None
@@ -174,7 +176,7 @@ class _FFmpegCapture:
 
 def start() -> None:
     """Open the camera and start the background capture thread."""
-    global _capture_thread, _frame, _last_frame_at, _offline_since, _fps_ema
+    global _capture_thread, _frame, _last_frame_at, _offline_since, _fps_ema, _auto_gain
     if not CAMERA_ENABLED:
         _log.debug("CAMERA_ENABLED=False — camera start is a no-op")
         return
@@ -182,6 +184,7 @@ def start() -> None:
         _frame = None
         _last_frame_at = None
         _fps_ema = None
+        _auto_gain = 1.0
     with _reconnect_lock:
         _offline_since = None
     _stop_event.clear()
@@ -356,6 +359,63 @@ def capture_current_gaze(settle_secs: float = 0.15) -> Optional[np.ndarray]:
 
 # ── Internal ──────────────────────────────────────────────────────────────────
 
+def _apply_auto_gain(frame: np.ndarray) -> np.ndarray:
+    """Adaptively normalize a frame's brightness toward a target mean luma.
+
+    Feedforward auto-gain for a camera with no AGC: measure the RAW frame's mean
+    luminance, compute the multiply that would bring it to the target, clamp it, and
+    fold it into an EMA-smoothed gain so it can't strobe. A dim room gets lifted so
+    the face detector can find people; a too-bright room gets pulled down; a frame
+    already inside the deadband passes through untouched. Returns the original frame
+    when the feature is off, the frame is unusable, or the smoothed gain is unity.
+    """
+    global _auto_gain, _auto_gain_last_log
+
+    if not getattr(config, "CAMERA_AUTO_GAIN_ENABLED", False):
+        return frame
+    if frame is None or frame.ndim != 3:
+        return frame
+
+    import cv2
+
+    # Cheap luma proxy: mean over a strided subsample of the BGR frame. The plain
+    # channel-mean tracks brightness closely enough for exposure, and the stride
+    # keeps this well under a millisecond even at 1080p.
+    luma = float(frame[::8, ::8].mean())
+
+    target = float(config.CAMERA_AUTO_GAIN_TARGET_LUMA)
+    band = float(config.CAMERA_AUTO_GAIN_DEADBAND) * target
+    if luma <= 1.0:
+        # Near-black frame (capped lens, fully dark room): lift by the ceiling
+        # instead of dividing by ~0 into a runaway gain.
+        desired = float(config.CAMERA_AUTO_GAIN_MAX)
+    elif abs(luma - target) <= band:
+        desired = 1.0  # already well exposed — leave it alone
+    else:
+        desired = target / luma
+
+    desired = max(
+        float(config.CAMERA_AUTO_GAIN_MIN),
+        min(float(config.CAMERA_AUTO_GAIN_MAX), desired),
+    )
+
+    ema = float(config.CAMERA_AUTO_GAIN_EMA)
+    _auto_gain = (1.0 - ema) * _auto_gain + ema * desired
+
+    now = time.monotonic()
+    if now - _auto_gain_last_log > 5.0:
+        _auto_gain_last_log = now
+        _log.debug("Auto-gain: luma=%.0f target=%.0f gain=%.2f", luma, target, _auto_gain)
+
+    # Effectively unity — pass the frame through without an allocation/copy.
+    if abs(_auto_gain - 1.0) < 0.02:
+        return frame
+
+    # convertScaleAbs multiplies and hard-clips into [0, 255] in one pass, returning
+    # a fresh writable uint8 array.
+    return cv2.convertScaleAbs(frame, alpha=_auto_gain, beta=0.0)
+
+
 def _open_camera() -> bool:
     """Open the VideoCapture device and apply resolution settings. Returns True on success."""
     global _cap
@@ -477,6 +537,8 @@ def _capture_loop() -> None:
             _mark_camera_offline()
             _close_camera()
             continue
+
+        frame = _apply_auto_gain(frame)
 
         now = time.monotonic()
         with _frame_lock:

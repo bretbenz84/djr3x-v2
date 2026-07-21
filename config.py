@@ -2283,6 +2283,46 @@ CAMERA_WIDTH  = 1920
 CAMERA_HEIGHT = 1080
 CAMERA_FPS    = 30
 
+# ── Adaptive low-light frame gain (vision/camera.py) ─────────────────────────
+# The camera has no auto-gain, so a dimly lit room lands too dark for the face
+# detector and Rex sees no one. This normalizes each frame's brightness in the
+# capture thread BEFORE it reaches face/pose/scene: it measures the frame's mean
+# luma and multiplies toward a target. It's SELECTIVE and two-sided — a dim room
+# gets lifted, a too-bright/blown-out room gets pulled down, and a room already at
+# the target passes through untouched. Feedforward (measures the RAW frame, applies
+# to the RAW frame) and EMA-smoothed, so it can't pump or strobe when someone walks
+# past a lamp. Linear gain, hard-clipped at 255 — it lifts sensor noise along with
+# signal and can't invent detail that isn't there, so the ceiling is kept modest.
+# Set False to pass frames through exactly as captured.
+CAMERA_AUTO_GAIN_ENABLED = _env_bool("CAMERA_AUTO_GAIN_ENABLED", True)
+# Mean luma (0-255) the normalizer aims for. 8-bit midpoint is 128; faces detect
+# well a little below that. Rooms already near this are left ~unchanged.
+CAMERA_AUTO_GAIN_TARGET_LUMA = _env_float(
+    "CAMERA_AUTO_GAIN_TARGET_LUMA", 110.0, min_value=40.0, max_value=200.0
+)
+# Deadband as a fraction of the target: while the frame's luma stays within
+# ±(band·target) of the target, gain snaps to 1.0 and the frame is untouched. This
+# keeps a normally-lit room completely pass-through and stops micro-adjustments.
+CAMERA_AUTO_GAIN_DEADBAND = _env_float(
+    "CAMERA_AUTO_GAIN_DEADBAND", 0.18, min_value=0.0, max_value=0.9
+)
+# Clamp on the per-frame gain. Floor <1 lets a bright room be DIMMED; the ceiling
+# caps how hard a dark room is lifted (higher = brighter but noisier). Starting
+# small — raise CAMERA_AUTO_GAIN_MAX toward 3-4 if a very dim room still reads no
+# faces; drop it if lifted frames look grainy or the detector false-fires.
+CAMERA_AUTO_GAIN_MIN = _env_float(
+    "CAMERA_AUTO_GAIN_MIN", 0.6, min_value=0.1, max_value=1.0
+)
+CAMERA_AUTO_GAIN_MAX = _env_float(
+    "CAMERA_AUTO_GAIN_MAX", 2.5, min_value=1.0, max_value=8.0
+)
+# EMA smoothing on the gain (0-1): fraction of the new target gain folded in each
+# frame. Low = slow, stable adaptation that won't strobe as lighting flickers;
+# high = snappy but jittery. ~0.1 ≈ a 1-2 s settle at 15-30 fps.
+CAMERA_AUTO_GAIN_EMA = _env_float(
+    "CAMERA_AUTO_GAIN_EMA", 0.1, min_value=0.01, max_value=1.0
+)
+
 # macOS AVFoundation defaults to yuv420p, which many FaceTime/Continuity
 # devices reject before ffmpeg falls back noisily. Request a widely-supported
 # input format up front, then convert to bgr24 for OpenCV-style consumers.
