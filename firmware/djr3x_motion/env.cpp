@@ -120,8 +120,6 @@ static bool load_calibration() {
 }
 
 void env_init() {
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);   // harmless if already begun (tof/battery/imu)
-
   // Probe 0x76 (SDO low, breakout default) then 0x77 (SDO high).
   uint8_t id = 0;
   for (uint8_t addr : {(uint8_t)0x76, (uint8_t)0x77}) {

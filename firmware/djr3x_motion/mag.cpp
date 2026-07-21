@@ -79,8 +79,6 @@ static bool init_qmc_p() {
 }
 
 void mag_init() {
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);   // harmless if already begun (trunk peers)
-
   if (init_qmc_l()) {
     emit_log("info", "mag: QMC5883L online at 0x0D (raw axes -> telemetry; host fuses)");
     return;

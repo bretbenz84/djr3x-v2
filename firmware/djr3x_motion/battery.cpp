@@ -70,10 +70,6 @@ static bool ina_read16(uint8_t reg, uint16_t &out) {
 }
 
 void battery_init() {
-  // Wire is normally begun by tof_init(); begin() again is harmless and covers
-  // ToF-less bench boards.
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-
   uint16_t mfr = 0;
   s_present = ina_read16(REG_MFR_ID, mfr) && mfr == 0x5449;
   if (!s_present) {

@@ -15,16 +15,16 @@
 // THREADING: all reads happen on the sensor task (the only I2C task), like ToF
 // and the INA226 — never from control/serial. Publishes under the state lock.
 //
-// No sensor wired? imu_init() probes WHO_AM_I once; absent -> g_ctx.imu.ok stays
-// false and telemetry reports {"ok":false} — the host feature stays dormant.
+// No sensor wired? imu_init() validates WHO_AM_I, attempts one controlled trunk
+// recovery, then leaves g_ctx.imu.ok false and reprobes on a bounded backoff.
 #pragma once
 
-// Call once from setup() AFTER tof/battery init (shares Wire; begin() is harmless).
+// Call once from setup() AFTER tof/battery init (the central trunk is already up).
 void imu_init();
 
 // Call every sensor-task tick (50 Hz). dt = seconds since the previous call.
 // Reads accel+gyro, runs the complementary filter, publishes g_ctx.imu.
 void imu_tick(float dt);
 
-// True when an MPU-6050 answered the probe at boot.
+// True while an MPU-6050 is online (including after a successful runtime reprobe).
 bool imu_present();

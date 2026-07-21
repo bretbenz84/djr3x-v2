@@ -46,6 +46,7 @@ static inline int16_t tof_front_combine(int16_t radial, int16_t matrix) {
 #include "pins.h"
 #include "calib.h"
 #include "proto_io.h"       // emit_log — per-sensor bring-up diagnostics
+#include "i2c_trunk.h"
 #include <Arduino.h>
 #include <Wire.h>
 #include <VL53L0X.h>        // Pololu vl53l0x-arduino (short-range diagonals)
@@ -109,13 +110,8 @@ static void tof_report_tally() {
 }
 
 void hal_tof_init() {
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  // Bound how long ONE wedged I2C transaction can stall the sensor task (default
-  // ~50 ms). A half-connected device on the shared trunk (field case: a loosening
-  // MPU-6050) stretches every ToF/INA transaction toward this ceiling — with 8+
-  // devices polled per second, 50 ms stalls monopolized the core and starved the
-  // Bluetooth loop (gamepad disconnects). 20 ms is far above a healthy transaction.
-  Wire.setTimeOut(20);
+  // Wire lifecycle, 100 kHz clock, and bounded timeout are owned centrally by
+  // i2c_trunk. No client may re-begin or silently retune the shared controller.
 
   // Probe the mux first: if it doesn't ACK, every sensor below will "fail" — say so
   // once, pointing at the real culprit (mux address / SDA-SCL / power) not 8 sensors.

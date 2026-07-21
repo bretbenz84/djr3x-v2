@@ -26,6 +26,7 @@
 #include "imu.h"
 #include "env.h"
 #include "mag.h"
+#include "i2c_trunk.h"
 
 // ---- Globals (declared extern in context.h) ------------------------------
 MotionContext     g_ctx;
@@ -107,6 +108,7 @@ void setup() {
   g_ctx.seen_mac    = false;              // watchdog stays disarmed until first Mac line
 
   hal_init();
+  i2c_trunk_init();                       // single owner of shared GPIO21/22 Wire bus
   hal_tof_init();
   battery_init();                         // INA226 probe (shares the ToF I2C bus)
   imu_init();                             // MPU-6050 probe + gyro bias cal (same bus)
