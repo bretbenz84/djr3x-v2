@@ -71,9 +71,10 @@
 #define ENC_SIGN_L  (-1.0f)   // flipped 2026-07-17: replacement 60RPM left motor is
                               // mirror-wired vs the original (bench `wheel left`:
                               // + counts but physically BACKWARD — flip BOTH signs)
-#define ENC_SIGN_R  (-1.0f)   // flipped: right side is mirror-mounted (bench `wheel right`
-                              // 2026-07-11: forward cmd read +counts but spun BACKWARD —
-                              // motor + encoder BOTH inverted; flip both, in lockstep)
+#define ENC_SIGN_R  (+1.0f)   // 2026-07-20: right motor replaced with the 60RPM SKU. The new
+                              // unit reads/drives inverted vs the old right, so flip to +1
+                              // (opposite the left's -1: identical motor mounted mirror-image).
+                              // Encoder + motor flipped BOTH in lockstep; bench-verify `wheel right`.
 
 // Per-wheel MOTOR direction. +1 means "a positive (forward) duty spins the wheel
 // forward." Flip to -1 (per wheel) — the software equivalent of swapping that motor's
@@ -83,7 +84,9 @@
 // runaway guard. Fixing direction HERE keeps each channel paired with its own encoder,
 // so it does NOT desync odometry the way swapping only the motor leads does.
 #define MOTOR_SIGN_L  (-1)    // flipped in lockstep with ENC_SIGN_L (see above)
-#define MOTOR_SIGN_R  (-1)    // flipped in lockstep with ENC_SIGN_R (see above)
+#define MOTOR_SIGN_R  (+1)    // 2026-07-20: flipped in lockstep with ENC_SIGN_R (60RPM right-motor
+                              // swap). Bench-verify with `spin` / `wheel right` — forward duty must
+                              // spin FORWARD and not trip the runaway guard.
 
 // ---- Motor PWM (LEDC) -----------------------------------------------------
 // 20 kHz is above audible and well within the BTS7960's switching range.
