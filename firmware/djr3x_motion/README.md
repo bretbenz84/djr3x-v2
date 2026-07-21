@@ -143,8 +143,11 @@ the radial array — **reversing is unprotected** with only the matrix wired.
 # with plain esp32:esp32 (core 3.3.10) froze core 1 at boot — its rewritten IDF
 # i2c_master driver hard-hangs on this trunk's transactions (and drops the gamepad).
 # The Bluepad32 core's legacy I2C driver is the one this firmware is stable on.
+# ⚠ Keep -DMOTION_TOF_PRESENT=1 in the list: without it the radial 8-sensor
+# array is silently stubbed (rear/side ToF read "all clear" — reversing loses
+# its protection). The matrix flag only covers the front.
 arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
-  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1 -DMOTION_TOF_MATRIX_PRESENT=1" \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_TOF_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1 -DMOTION_TOF_MATRIX_PRESENT=1" \
   --upload -p "$PORT" firmware/djr3x_motion
 ```
 
