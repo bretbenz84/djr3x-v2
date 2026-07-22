@@ -6914,6 +6914,8 @@ MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated dista
 MOTION_CONTINUATION_TTL_SECS = 45.0   # max silent gap; any intervening non-motion turn clears it
 MOTION_CONTINUATION_SMALL_TURN_DEG = 15.0  # "a little more" after a turn
 MOTION_CONTINUATION_SMALL_MOVE_M = 0.15    # "a little more" after a move
+MOTION_SEQUENCE_MAX_STEPS = 8         # maximum ordered turn/move/arc clauses per utterance
+MOTION_SEQUENCE_SETTLE_TIMEOUT_SECS = 4.0  # wait for ramp-down before issuing next step
 
 # Drive tuning (real-HW per-wheel PID + calibration). Pushed to the ESP32 on connect
 # ONLY when set — None means the firmware's calib.h boot defaults stand, so Rex never
@@ -6929,7 +6931,10 @@ MOTION_WHEEL_BREAKAWAY_DUTY = None     # stall-gated dead-stop punch (duty, 0..1
                                        # full-weight base needs ~358 (35%) to leave a stop;
                                        # firmware boot default is calib.h, push only to tune
 MOTION_COUNTS_PER_METER = None         # encoder counts per metre of wheel travel (distance cal)
-MOTION_TRACK_WIDTH_M = None            # distance between the drive wheels, m (turn cal)
+# Effective turn track (physical spacing + scrub/encoder scale). Field calibration on
+# the current dual-60RPM build, 2026-07-21: cmd 180° -> ~270° at 0.297 m, therefore
+# 0.297 * 270/180 = 0.4455 m. Push on every connect; refine with a taped 360° test.
+MOTION_TRACK_WIDTH_M = 0.446
 
 # Timing (must agree with the firmware; see docs/motion_protocol.md §7).
 MOTION_HEARTBEAT_MS = 150             # Mac ping cadence (<= 1/3 of watchdog)

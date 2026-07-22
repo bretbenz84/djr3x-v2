@@ -28,12 +28,12 @@
 // the quadrature factor or the gearing differs; the empirical value wins regardless.
 #define COUNTS_PER_REV_OUTPUT  7744.0f   // reference only — superseded by empirical cpm
 #define WHEEL_DIAMETER_M       0.100f    // measured rubber drive-wheel diameter
-// EMPIRICAL turn calibration (bench `turn --deg 360` on hardwood, 2026-07-11,
-// CONVERGED): 0.200 → 270° obs; 0.272 → ~330° obs; 0.297 → 360° observed = done.
-// Effective track (includes contact-patch width in a spin) — expect a hair of
-// over-rotation on carpet-grade scrub surfaces until the IMU (roadmap Phase A)
-// makes heading surface-independent.
-#define TRACK_WIDTH_M          0.297f
+// EMPIRICAL turn calibration. Old mixed-motor build (2026-07-11): 0.200 → 270°;
+// 0.272 → ~330°; 0.297 → 360°. Current dual-60RPM build field run (2026-07-21):
+// cmd 180° produced ~270° at 0.297, so standard proportional correction gives
+// 0.297 * 270/180 = 0.4455 m. Effective track includes contact-patch scrub and any
+// residual average encoder-scale error; refine with a taped 360° test on hardwood.
+#define TRACK_WIDTH_M          0.446f
 
 #define WHEEL_CIRCUM_M   ((float)M_PI * WHEEL_DIAMETER_M)
 // EMPIRICAL distance calibration (bench `straight`, 2026-07-11, two passes).

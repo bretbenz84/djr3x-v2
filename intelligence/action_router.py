@@ -1280,7 +1280,19 @@ _MOTION_KEEP_TURNING_RE = re.compile(
     r"^\s*(?:keep|continue)\s+(?:on\s+)?turning\s*[.!]*\s*$", re.I,
 )
 _MOTION_KEEP_MOVING_RE = re.compile(
-    r"^\s*(?:keep|continue)\s+(?:on\s+)?(?:moving|going)\s*[.!]*\s*$", re.I,
+    r"^\s*(?:keep|continue)\s+(?:on\s+)?moving\s*[.!]*\s*$", re.I,
+)
+_MOTION_KEEP_GOING_RE = re.compile(
+    r"^\s*(?:keep|continue)\s+(?:on\s+)?going\s*[.!]*\s*$", re.I,
+)
+_MOTION_SEQUENCE_SEP_RE = re.compile(
+    r"\s*(?:"
+    r"(?:[;,]\s*)?\b(?:and\s+then|then)\b|"
+    r"[;,]|"
+    r"\band\b(?=\s+(?:turn|rotate|spin|pivot|move|go|roll|drive|scoot|"
+    r"head|ease|inch|edge|pull|back\s*up|reverse)\b)"
+    r")\s*",
+    re.I,
 )
 
 
@@ -1312,8 +1324,8 @@ def classify_motion_continuation(
 
     Deliberately requires caller-supplied live context: these phrases are not motion
     commands on their own. "Keep turning" only binds to a turn and "keep moving"
-    only to a move/arc; bare "more" can repeat any of those. "A little more" keeps
-    direction but substitutes a small bounded increment.
+    only to a move/arc; generic "keep going" and bare "more" repeat any of those.
+    "A little more" keeps direction but substitutes a small bounded increment.
     """
     if previous is None or previous.action not in {"motion.turn", "motion.move", "motion.arc"}:
         return None
@@ -1325,6 +1337,8 @@ def classify_motion_continuation(
     elif _MOTION_KEEP_MOVING_RE.match(cleaned):
         if previous.action not in {"motion.move", "motion.arc"}:
             return None
+    elif _MOTION_KEEP_GOING_RE.match(cleaned):
+        pass
     elif not more:
         return None
 
@@ -1342,6 +1356,36 @@ def classify_motion_continuation(
         args=args,
         reason=f"continuation of previous {previous.action} command",
     )
+
+
+def classify_explicit_motion_sequence(
+    text: str,
+    *,
+    max_steps: int = 8,
+) -> list[ActionDecision] | None:
+    """Parse an ordered chain of explicit finite motion clauses.
+
+    Returns ``[]`` when the utterance is not a sequence, ``None`` when it looks like
+    a sequence but any clause is invalid/unsupported, and 2+ decisions on success.
+    The tri-state prevents partial execution: "turn left then sing" must not execute
+    its first clause. Plain ``and`` splits only when another motion verb follows, so
+    "move forward and to your right" remains the existing single arc command.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned or not _MOTION_SEQUENCE_SEP_RE.search(cleaned):
+        return []
+    if _MOTION_EXPLANATION_RE.search(cleaned) or _MOTION_NEGATED_RE.search(cleaned):
+        return None
+    clauses = [c.strip(" .()") for c in _MOTION_SEQUENCE_SEP_RE.split(cleaned)]
+    if len(clauses) < 2 or len(clauses) > max(2, int(max_steps)) or any(not c for c in clauses):
+        return None
+    decisions: list[ActionDecision] = []
+    for clause in clauses:
+        decision = classify_explicit_motion(clause)
+        if decision is None or decision.action not in {"motion.turn", "motion.move", "motion.arc"}:
+            return None
+        decisions.append(decision)
+    return decisions
 
 
 def classify_explicit_motion(text: str) -> ActionDecision | None:

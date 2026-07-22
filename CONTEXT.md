@@ -753,8 +753,13 @@ watchdog — it can stop the base without the Mac) and the **Mac owns the intent
   (`why/how come ... move`) and negated motion phrases are explicitly non-executable.
   A successfully issued turn/move/arc seeds one adjacency-sensitive continuation:
   `more` repeats it, `a little more` preserves direction with a small increment, and
-  `keep turning`/`keep moving`/`keep going` require a matching prior motion kind. Stop, come,
+  `keep turning` requires a prior turn, `keep moving` requires a prior move/arc, and
+  generic `keep going` repeats any of them. Stop, come,
   exploration, an intervening non-motion turn, or the 45-second TTL clears the context.
+  Explicit clauses can be chained with `then`, punctuation, or `and` plus another motion
+  verb (up to eight steps). Each finite step waits for the ESP32 completion event and an
+  idle base before the next; blocked, failed, timed-out, stopped, or superseded routes
+  abort their remaining steps rather than partially continuing.
 - **Social autonomy:** `motion_agency.py` resolves recognized face locks (`db:<id>`) against
   `person_db_id`, so an already-visible speaker can be approached without a blind scan.
   The flinch reflex requires temporal approach evidence even when firmware reports
@@ -774,6 +779,8 @@ watchdog — it can stop the base without the Mac) and the **Mac owns the intent
   `MOTION_TRACK_WIDTH_M` key is set (opt-in, so a connect never clobbers a bench-tuned
   value). Wire contract: `docs/motion_protocol.md` §10. ToF is still a stub (avoidance
   inactive); the right motor is hardware-confirmed, left + calibration are next.
+  Current-build effective turn track is `0.446 m` (2026-07-21 field correction from
+  command 180° → observed ~270° at the former 0.297 m); `config.py` pushes it on connect.
 - **Setup:** `setup_macos.sh` (under "physical droid" → "motion base") **auto-detects the
   ESP32 by protocol probe** — it opens each USB-serial port and looks for the firmware's
   `hello` reply. This is the only reliable discriminator because the board's USB bridge is

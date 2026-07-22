@@ -312,6 +312,8 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual((d.action, d.args["direction"]), ("motion.move", "forward"))
         self.assertEqual(ar.classify_motion_continuation("keep going", forward).action,
                          "motion.move")
+        self.assertEqual(ar.classify_motion_continuation("keep going", left).action,
+                         "motion.turn")
         d = ar.classify_motion_continuation("a bit more", back)
         self.assertEqual((d.args["direction"], d.args["dist_m"]), ("back", 0.15))
 
@@ -319,6 +321,34 @@ class ClassifierTest(unittest.TestCase):
         self.assertIsNone(ar.classify_motion_continuation("keep turning", forward))
         self.assertIsNone(ar.classify_motion_continuation("more", None))
         self.assertIsNone(ar.classify_motion_continuation("more details", forward))
+
+    def test_ordered_motion_sequences(self):
+        seq = ar.classify_explicit_motion_sequence(
+            "Turn to your left (90 degrees) then move forward 5 feet."
+        )
+        self.assertEqual([d.action for d in seq], ["motion.turn", "motion.move"])
+        self.assertEqual(seq[0].args, {"direction": "left", "deg": 90.0})
+        self.assertAlmostEqual(seq[1].args["dist_m"], 1.524, places=3)
+
+        seq = ar.classify_explicit_motion_sequence("Turn around and move back 4 feet")
+        self.assertEqual(seq[0].args, {"direction": "around", "deg": 180.0})
+        self.assertEqual(seq[1].args["direction"], "back")
+        self.assertAlmostEqual(seq[1].args["dist_m"], 1.2192, places=4)
+
+        seq = ar.classify_explicit_motion_sequence(
+            "go forward 2 meters, turn right 45 degrees, then move forward 10 feet"
+        )
+        self.assertEqual(len(seq), 3)
+        self.assertAlmostEqual(seq[0].args["dist_m"], 2.0)
+        self.assertEqual(seq[1].args, {"direction": "right", "deg": 45.0})
+        self.assertAlmostEqual(seq[2].args["dist_m"], 3.048, places=3)
+
+    def test_sequence_parser_preserves_arc_and_rejects_partial_execution(self):
+        self.assertEqual(
+            ar.classify_explicit_motion_sequence("move forward and to your right"), []
+        )
+        self.assertIsNone(ar.classify_explicit_motion_sequence("turn left then sing a song"))
+        self.assertIsNone(ar.classify_explicit_motion_sequence("turn left then stop"))
 
     def test_turn_args(self):
         d = ar.classify_explicit_motion("turn right 45 degrees")

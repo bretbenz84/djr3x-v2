@@ -16653,6 +16653,23 @@ def _resolve_motion_continuation(text: str) -> Optional[action_router.ActionDeci
     )
 
 
+def _cancel_motion_sequence(reason: str, *, stop_base: bool = False) -> None:
+    try:
+        from intelligence import motion_sequence
+        motion_sequence.cancel(reason, stop_base=stop_base)
+    except Exception:
+        pass
+
+
+def _start_motion_sequence(decisions: list[action_router.ActionDecision]) -> bool:
+    try:
+        from intelligence import motion_sequence
+        return motion_sequence.start(decisions, on_issued=_remember_motion_continuation)
+    except Exception as exc:
+        _log.warning("[motion_sequence] failed to start: %s", exc)
+        return False
+
+
 def _handle_router_motion_action(
     decision: Optional[action_router.ActionDecision],
 ) -> Optional[str]:
@@ -16665,6 +16682,13 @@ def _handle_router_motion_action(
         return None
     action = decision.action
     args = decision.args or {}
+
+    # A fresh single command supersedes any queued route. Its own command will
+    # supersede the in-flight firmware finite command; stop/come need an explicit
+    # controlled stop because they may not immediately issue another finite step.
+    _cancel_motion_sequence(
+        f"superseded by {action}", stop_base=(action == "motion.come")
+    )
 
     if action == "motion.stop":
         _clear_motion_continuation()
@@ -16784,6 +16808,36 @@ def _explicit_motion_takeover(
             router_audit, "motion.denied_no_base", reason="drive base not connected"
         )
         return denial
+    sequence = action_router.classify_explicit_motion_sequence(
+        text, max_steps=int(getattr(config, "MOTION_SEQUENCE_MAX_STEPS", 8))
+    )
+    if sequence is None:
+        _clear_motion_continuation()
+        rejected = action_router.ActionDecision(
+            action="motion.sequence", confidence=0.98,
+            args={"accepted": False},
+            reason="motion sequence contained an invalid or unsupported clause",
+        )
+        _router_audit_note_decision(router_audit, rejected)
+        _router_audit_note_fast_local_action(
+            router_audit, "motion.sequence_rejected", reason=rejected.reason
+        )
+        return "I couldn't safely parse that whole route."
+    if sequence:
+        _clear_motion_continuation()
+        decision = action_router.ActionDecision(
+            action="motion.sequence", confidence=0.98,
+            args={"steps": len(sequence)},
+            reason="explicit ordered motion sequence",
+        )
+        _router_audit_note_decision(router_audit, decision)
+        if not _start_motion_sequence(sequence):
+            return None
+        _router_audit_note_fast_local_action(
+            router_audit, "motion.sequence", reason=decision.reason
+        )
+        return "On it — {} moves.".format(len(sequence))
+
     motion_decision = action_router.classify_explicit_motion(text)
     if motion_decision is None:
         motion_decision = _resolve_motion_continuation(text)
