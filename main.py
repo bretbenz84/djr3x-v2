@@ -118,6 +118,7 @@ from audio import (
     transcription,
 )
 from vision import camera, scene as vision_scene, face_expression, animal_detector, pose
+from perception import place_service
 from awareness import chronoception, interoception
 from intelligence import consciousness, emotion_orchestrator, interaction, local_llm, motion_controller
 
@@ -703,6 +704,9 @@ def _shutdown() -> None:
 
     logger.info("Stopping vision.scene...")
     vision_scene.stop()
+
+    logger.info("Stopping perception.place_service...")
+    place_service.stop()
 
     logger.info("Stopping vision.animal_detector...")
     animal_detector.stop()
@@ -1349,6 +1353,12 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     logger.info("Starting vision.scene (periodic scan)...")
     vision_scene.start_periodic_scan(config.ENVIRONMENT_SCAN_INTERVAL_SECS)
+
+    # Visual place recognition (perception/place_recognition.py). Loads MobileCLIP off the
+    # main thread and publishes world_state.current_place; a no-op unless
+    # PLACE_RECOGNITION_ENABLED and the encoder loads. Never blocks startup.
+    logger.info("Starting perception.place_service (visual place recognition)...")
+    place_service.start()
 
     # Claim the listening chime now, BEFORE any startup speech can be enqueued.
     # main plays the single "ready" chime at the very end of startup (once all models

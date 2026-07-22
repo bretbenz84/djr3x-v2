@@ -67,6 +67,9 @@ from config import (
     QWEN_TTS_MODEL_DIR,
     LOCAL_TTS_MODEL_ID,
     LOCAL_TTS_MODEL_VARIANT,
+    PLACE_MODEL_DIR,
+    PLACE_OPEN_CLIP_MODEL,
+    PLACE_OPEN_CLIP_PRETRAINED,
 )
 
 # ── Directories required by the project ──────────────────────────────────────
@@ -77,6 +80,7 @@ REQUIRED_DIRS = [
     "assets/models/pose",
     "assets/models/object_detection",
     "assets/models/rfdetr",
+    "assets/models/mobileclip",
     "assets/models/whisper",
     "assets/models/ecapa",
     "assets/models/resemblyzer",
@@ -687,6 +691,47 @@ def download_rfdetr_model(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 5a3 — MobileCLIP-S2 image encoder (place recognition, perception/place_*)
+# ─────────────────────────────────────────────────────────────────────────────
+def download_mobileclip_model(
+    root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    """Fetch the MobileCLIP-S2 open_clip weights into assets/models/mobileclip. open_clip
+    manages its own HF-hub cache under cache_dir, so we hand it the dir and let it skip
+    when the weights are already there. Idempotent; degrades to a clear message if
+    open_clip_torch isn't installed yet."""
+    dest = root / PLACE_MODEL_DIR
+    label = f"mobileclip/{PLACE_OPEN_CLIP_MODEL}/{PLACE_OPEN_CLIP_PRETRAINED}"
+
+    # Already downloaded? (any sizeable weight blob under the cache dir)
+    if dest.exists() and any(
+        p.is_file() and p.stat().st_size > 50_000_000 for p in dest.rglob("*")
+    ):
+        return [], [label], []
+
+    try:
+        import open_clip
+    except ImportError:
+        return [], [], [
+            f"{label}: open_clip_torch not installed "
+            f"(pip install open_clip_torch, or re-run after the deps sync)"
+        ]
+
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        print(f"    Downloading {label} (~0.4 GB) ...")
+        # Triggers the HF-hub download into cache_dir; we discard the returned model.
+        open_clip.create_model_and_transforms(
+            PLACE_OPEN_CLIP_MODEL,
+            pretrained=PLACE_OPEN_CLIP_PRETRAINED,
+            cache_dir=str(dest),
+        )
+        return [label], [], []
+    except Exception as exc:
+        return [], [], [f"{label}: {exc}"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 5b — ECAPA-TDNN speaker-ID model (SpeechBrain, the primary voice embedder)
 # ─────────────────────────────────────────────────────────────────────────────
 ECAPA_REPO_ID = "speechbrain/spkrec-ecapa-voxceleb"
@@ -1259,67 +1304,72 @@ def main() -> None:
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[1/13] Creating project directories ...")
+    print("[1/14] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
 
-    print("[2/13] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
+    print("[2/14] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
     c, s, f = download_insightface_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/13] dlib face recognition models (legacy fallback backend) ...")
+    print("[3/14] dlib face recognition models (legacy fallback backend) ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/13] MediaPipe Face Landmarker model ...")
+    print("[4/14] MediaPipe Face Landmarker model ...")
     c, s, f = download_mediapipe_face_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/13] MediaPipe Pose Landmarker model ...")
+    print("[5/14] MediaPipe Pose Landmarker model ...")
     c, s, f = download_mediapipe_pose_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[6/13] MediaPipe Object Detector model ...")
+    print("[6/14] MediaPipe Object Detector model ...")
     c, s, f = download_mediapipe_object_detector(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[7/13] RF-DETR object-detector model (primary local detector) ...")
+    print("[7/14] RF-DETR object-detector model (primary local detector) ...")
     c, s2, f = download_rfdetr_model(root)
     all_created += c; all_skipped += s2; all_failed += f
     _report(c, s2, f)
 
-    print("[8/13] mlx-whisper large-v3-turbo model ...")
+    print("[8/14] MobileCLIP-S2 place-recognition image encoder ...")
+    c, s, f = download_mobileclip_model(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[9/14] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[9/13] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
+    print("[10/14] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
     c, s, f = download_ecapa_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[10/13] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
+    print("[11/14] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[11/13] Qwen3-TTS voice-clone model (on-device TTS engine) ...")
+    print("[12/14] Qwen3-TTS voice-clone model (on-device TTS engine) ...")
     c, s, f = download_qwen_tts_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[12/13] Ollama local sidecar model ...")
+    print("[13/14] Ollama local sidecar model ...")
     c, s, f = install_ollama_model()
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[13/13] Database schema and personality defaults ...")
+    print("[14/14] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)

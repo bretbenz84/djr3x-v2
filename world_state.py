@@ -96,6 +96,10 @@ _DEFAULTS = {
         "mood_bias": "unknown",
         "tone_hint": None,
     },
+    # Visual place recognition (perception/place_recognition.py). None until a room
+    # belief is confirmed via hysteresis; otherwise a dict:
+    #   {"name": str, "place_id": int, "score": float, "since_ts": float}.
+    "current_place": None,
     "social": {
         # Set when Rex hears a referential / instructional mention of himself
         # (someone talking ABOUT him, not TO him). Consciousness reads this to

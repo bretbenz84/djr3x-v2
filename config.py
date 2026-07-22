@@ -7339,6 +7339,63 @@ MOTION_ACK_TIMEOUT_SECS = 0.5         # how long send-and-confirm waits for an a
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PLACE RECOGNITION (perception/place_recognition.py)
+# ─────────────────────────────────────────────────────────────────────────────
+# Visual place recognition: "which enrolled room is Rex looking at?" at ~0.5-1 Hz.
+# It embeds the undistorted center-crop frame with the vision stack's image encoder,
+# scores it against a small per-room gallery in places.db, and publishes a debounced
+# belief to world_state.current_place. Enrollment ("this is the office") is a small
+# state machine driven from higher layers after LLM intent parsing. The module is a
+# pure DI leaf — it neither loads a model nor speaks; conversation_agenda owns any
+# "what room is this?" ask off the unknown_place event.
+
+# NOTE: other DBs live under assets/memory/ (people.db, rex.db). This one defaults to
+# data/places.db per the module spec; override here or in user_config.py to relocate.
+PLACE_DB_PATH               = "data/places.db"
+# Only embeddings written under this tag are loaded/scored; others are ignored (never
+# deleted), so swapping the image encoder is non-destructive. Bump on a model change.
+PLACE_MODEL_TAG            = "mobileclip_s2_v1"
+
+PLACE_QUERY_INTERVAL_S     = 1.5     # min seconds between scored frames (self-throttled)
+PLACE_TOPK                 = 3       # score = mean of a place's top-k embedding sims
+PLACE_MATCH_CONFIDENT      = 0.80    # best score >= this -> confident match
+PLACE_MATCH_MIN            = 0.68    # best score in [MIN, CONFIDENT) -> tentative (log only)
+PLACE_HYSTERESIS_FRAMES    = 5       # ring-buffer length; belief flips on a confident majority
+PLACE_UNKNOWN_STREAK       = 8       # consecutive unknowns (after moving) -> unknown_place event
+PLACE_PERSON_OCCLUSION_FRAC = 0.35   # skip frames where a person bbox covers > this fraction
+
+# Enrollment (COLLECTING -> CONFIRMING -> IDLE).
+PLACE_ENROLL_TARGET_FRAMES  = 8      # embeddings to gather per enrollment
+PLACE_ENROLL_MIN_HEADING_SEP = 35.0  # deg; only accept captures this far apart on the compass
+PLACE_ENROLL_MIN_TIME_SEP_S = 3.0    # fallback min seconds between captures when no compass
+PLACE_ENROLL_TIMEOUT_S      = 60.0   # commit >=3 gathered, else abort (enrollment_failed)
+PLACE_DUPLICATE_SIM         = 0.88   # new-room cross-sim above this -> possible_duplicate_place
+
+# Incremental refresh: quietly grow the believed room's gallery from "meh" matches.
+PLACE_REFRESH_MIN           = 0.70
+PLACE_REFRESH_MAX           = 0.78
+PLACE_MAX_EMBEDDINGS        = 15     # per-place cap; oldest-by-captured_at pruned first
+
+# ── Image encoder (perception/place_embedder.py) ──────────────────────────────
+# Master on/off for wiring the whole feature into main.py. When False, or when the
+# encoder fails to load, place recognition is silently skipped and the rest of Rex is
+# unchanged (world_state.current_place stays None).
+PLACE_RECOGNITION_ENABLED   = True
+# The encoder is MobileCLIP-S2 (open_clip, Apple weights, non-commercial license — same
+# posture as the InsightFace/Qwen weights). 512-d image embeddings; PLACE_MODEL_TAG must
+# change whenever the encoder/pretrained changes so old vectors are ignored, not mixed.
+PLACE_OPEN_CLIP_MODEL       = "MobileCLIP-S2"
+PLACE_OPEN_CLIP_PRETRAINED  = "datacompdr"
+PLACE_MODEL_DIR             = "assets/models/mobileclip"   # open_clip cache_dir (gitignored)
+PLACE_EMBED_DEVICE          = None   # None -> auto (mps if available, else cpu); or "cpu"/"mps"
+# Camera frames are OpenCV BGR; MobileCLIP wants RGB. The embedder converts when True.
+PLACE_FRAME_IS_BGR          = True
+# How often main.py feeds a frame to the recognizer (it also self-throttles to
+# PLACE_QUERY_INTERVAL_S). Kept modest so the encoder never competes with face tracking.
+PLACE_OBSERVE_INTERVAL_S    = 1.5
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # USER OVERRIDES
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-deployment overrides live in user_config.py (gitignored; copied from

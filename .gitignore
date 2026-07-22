@@ -259,6 +259,13 @@ assets/audio/clips/
 # folder at runtime, so ignoring the whole thing is safe.
 assets/memory/
 
+# Visual place recognition store (perception/place_recognition.py, PLACE_DB_PATH).
+# The live places.db binary + its -shm/-wal siblings are local runtime data; the
+# schema is (re)created on first run. Never commit the binary.
+data/places.db
+data/places.db-shm
+data/places.db-wal
+
 
 # Startup boot-line rotation state — local runtime bookkeeping
 assets/state/

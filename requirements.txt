@@ -42,8 +42,12 @@ onnxruntime>=1.18.0
 # model downloaded by setup_assets.py). Resemblyzer is the legacy fallback.
 speechbrain>=1.0.0
 resemblyzer>=0.1.1.dev0
-torch>=2.3.0
-torchaudio>=2.3.0
+# torch family is version-locked together AND to torchvision (added below for the
+# place-recognition encoder). The <2.13 / <0.28 caps keep pip on the 2.12 line that
+# RF-DETR + open_clip are validated against, so installing the encoder can't silently
+# upgrade torch out from under the rest of the vision stack.
+torch>=2.3.0,<2.13
+torchaudio>=2.3.0,<2.13
 
 # ── Vision — face detection & recognition ────────────────────────────────────
 # Primary backend: InsightFace (SCRFD detector + ArcFace 512-dim recognizer) on
@@ -63,6 +67,15 @@ mediapipe>=0.10.14
 # Primary backend: RF-DETR nano (Apache 2.0) on torch (OBJECT_DETECTOR_BACKEND).
 # Weights downloaded by setup_assets.py. MediaPipe EfficientDet is the fallback.
 rfdetr>=1.3.0
+
+# ── Vision — place recognition image encoder ─────────────────────────────────
+# MobileCLIP-S2 via open_clip (perception/place_embedder.py). Produces 512-d image
+# embeddings for perception/place_recognition.py. torchvision is pinned <0.28 so it
+# stays paired with torch 2.12 (torchvision 0.28 would drag in torch 2.13). Weights
+# (~0.4 GB) are fetched by setup_assets.py into assets/models/mobileclip (gitignored).
+# Apple's MobileCLIP pretrained weights are non-commercial, consistent with the license.
+open_clip_torch>=2.24.0
+torchvision>=0.18.0,<0.28
 
 # ── Optional macOS GUI dashboard ──────────────────────────────────────────────
 PySide6>=6.7.0
