@@ -55,6 +55,29 @@ static void tx_line(JsonDocument& doc) {
 }
 
 // ===== Emitters ===========================================================
+void emit_tofmx(const uint16_t mm[64], const uint16_t rej[8]) {
+  // 64 zones as fixed-width hex (3 chars each, capped 4095): "g" is 192 chars,
+  // whole line ~250 B — comfortably inside MOTION_TX_BUF_BYTES and ~13% of the
+  // 115200 line at the ~6.7 Hz emit rate (tof_matrix.cpp rate-limits).
+  static const char* hexd = "0123456789abcdef";
+  char g[64 * 3 + 1];
+  for (int i = 0; i < 64; i++) {
+    uint16_t v = mm[i] > 4095 ? 4095 : mm[i];
+    g[3 * i]     = hexd[(v >> 8) & 0xF];
+    g[3 * i + 1] = hexd[(v >> 4) & 0xF];
+    g[3 * i + 2] = hexd[v & 0xF];
+  }
+  g[192] = '\0';
+  JsonDocument doc;
+  doc["v"] = MOTION_PROTO_VERSION;
+  doc["type"] = "tofmx";
+  doc["t"] = millis();
+  doc["g"] = g;                          // ArduinoJson copies the buffer
+  JsonArray r = doc["rej"].to<JsonArray>();
+  for (int i = 0; i < 8; i++) r.add(rej[i] > 4095 ? 4095 : rej[i]);
+  tx_line(doc);
+}
+
 void emit_hello() {
   uint32_t bid;
   LOCK_STATE(); bid = g_ctx.boot_id; UNLOCK_STATE();

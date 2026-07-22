@@ -233,6 +233,24 @@ static void mx_init_task(void*) {
       s_fl = mx_filter(&s_filt_fl, raw_fl);
       s_fr = mx_filter(&s_filt_fr, raw_fr);
       s_pub_ms = millis();
+      // Stream every 2nd raw frame to the host GUI (~6.7 Hz at the 75 ms poll)
+      // in the normalized orientation the aggregator uses (row 0 = top, col 0 =
+      // robot left), plus the per-row floor-rejection thresholds so the GUI can
+      // mark which zones the reflex is discarding as floor.
+      static uint8_t emit_div = 0;
+      if ((++emit_div & 1) == 0) {
+        uint16_t norm[64], rej[8];
+        for (int r = 0; r < 8; r++) {
+          const int rr = TOF_MATRIX_FLIP_V ? (7 - r) : r;
+          for (int c = 0; c < 8; c++) {
+            const int cc = TOF_MATRIX_FLIP_H ? (7 - c) : c;
+            norm[r * 8 + c] = s_grid[rr * 8 + cc];
+          }
+          const float rm = s_row_reject_mm[r];
+          rej[r] = (rm >= 4095.0f) ? 4095 : (uint16_t)rm;
+        }
+        emit_tofmx(norm, rej);
+      }
     } else {
       // Failed/short frame: hold the last-good aggregates through a transient
       // error, then publish an honest -1 (same policy + streak as tof.cpp, same

@@ -21,3 +21,7 @@ void emit_event(const char* event);                                 // no payloa
 void emit_event_kv(const char* event, const char* key, const char* val);
 void emit_event_boot(uint32_t boot_id);
 void emit_log(const char* lvl, const char* msg);
+// Raw 8x8 matrix ToF frame for the GUI (normalized: row 0 = top, col 0 = robot
+// left). mm[64] row-major; rej[8] = per-row floor-rejection threshold (mm,
+// capped 4095). Encoded as hex (3 chars/zone) to keep the line ~250 B.
+void emit_tofmx(const uint16_t mm[64], const uint16_t rej[8]);

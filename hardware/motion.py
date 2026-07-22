@@ -41,6 +41,7 @@ _connected = False
 _last_port: "str | None" = None     # remembered for auto-reconnect after a drop
 _hello: "dict | None" = None
 _latest_telemetry: "dict | None" = None
+_latest_tofmx: "dict | None" = None  # decoded 8x8 matrix frame: {t, grid[64], rej[8]}
 _acks: "dict[int, dict]" = {}
 _dones: "dict[int, dict]" = {}
 _events: "list[dict]" = []
@@ -116,7 +117,7 @@ def connect(
     """Open the link and run the handshake. Returns True only on a clean
     handshake with a protocol-compatible firmware. `attempts`/`delay`/`log_errors`
     let reconnect() retry fast and quietly."""
-    global _ser, _connected, _hello, _last_port
+    global _ser, _connected, _hello, _last_port, _latest_telemetry, _latest_tofmx
 
     if not bool(getattr(config, "MOTION_ENABLED", True)):
         _log.debug("MOTION_ENABLED=False — skipping motion connect")
@@ -137,6 +138,7 @@ def connect(
     with _state_lock:
         _hello = None
         _latest_telemetry = None
+        _latest_tofmx = None
         _acks.clear()
         _dones.clear()
         _events.clear()
@@ -220,11 +222,28 @@ def _remember(store: dict, key: int, value: dict) -> None:
 
 
 def _dispatch(msg: dict) -> None:
-    global _hello, _latest_telemetry, _on_done, _on_event
+    global _hello, _latest_telemetry, _latest_tofmx, _on_done, _on_event
     mtype = msg.get("type")
     if mtype == "telemetry":
         with _state_lock:
             _latest_telemetry = msg
+    elif mtype == "tofmx":
+        # 64 zones hex-packed 3 chars each (mm, row-major, row 0 = top,
+        # col 0 = robot left) + per-row floor-rejection thresholds.
+        g = msg.get("g")
+        if isinstance(g, str) and len(g) == 192:
+            try:
+                grid = [int(g[i : i + 3], 16) for i in range(0, 192, 3)]
+            except ValueError:
+                grid = None
+            if grid is not None:
+                with _state_lock:
+                    _latest_tofmx = {
+                        "t": msg.get("t"),
+                        "grid": grid,
+                        "rej": list(msg.get("rej") or []),
+                        "rx_monotonic": time.monotonic(),
+                    }
     elif mtype == "hello":
         with _state_lock:
             _hello = msg
@@ -340,6 +359,19 @@ def connected() -> bool:
 def telemetry() -> "dict | None":
     with _state_lock:
         return dict(_latest_telemetry) if _latest_telemetry is not None else None
+
+
+def tof_matrix() -> "dict | None":
+    """Latest decoded 8x8 matrix ToF frame ({t, grid[64] mm, rej[8] mm,
+    rx_monotonic}), or None if the firmware hasn't streamed one (matrix absent
+    or old firmware). Frames older than ~1 s are treated as stale -> None."""
+    with _state_lock:
+        fx = _latest_tofmx
+    if fx is None:
+        return None
+    if time.monotonic() - fx.get("rx_monotonic", 0.0) > 1.0:
+        return None
+    return dict(fx)
 
 
 def hello_info() -> "dict | None":

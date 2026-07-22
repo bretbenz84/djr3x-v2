@@ -1398,21 +1398,24 @@ class DistancePhotoreceptorsWidget(QWidget):
         self._tof: dict = {}
         self._zone = None
         self._blocked = None
+        self._mx = None
         self._live = False
         self._stop_m = float(getattr(config, "MOTION_STOP_ZONE_M", 0.25))
         self._slow_m = float(getattr(config, "MOTION_SLOW_ZONE_M", 0.60))
         self._max_m = max(self._slow_m * 1.5, 4.0)        # display reach (m) — VL53L1X room scale
 
-    def set_readings(self, tof_mm, zone=None, blocked=None) -> None:
+    def set_readings(self, tof_mm, zone=None, blocked=None, mx_mm=None) -> None:
         self._tof = dict(tof_mm or {})
         self._zone = (str(zone).lower() if zone else None)
         self._blocked = (str(blocked).lower() if blocked else None)
+        self._mx = mx_mm            # 8x8 matrix nearest front obstacle (mm) or None
         self._live = True
         self.update()
 
     def clear(self) -> None:
         self._tof = {}
         self._zone = self._blocked = None
+        self._mx = None
         self._live = False
         self.update()
 
@@ -1459,6 +1462,27 @@ class DistancePhotoreceptorsWidget(QWidget):
 
         # Cones (filled translucent wedges from the body outward).
         f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+
+        # 8x8 matrix ToF: one wide front-center wedge (45° FOV, bearing 90°=up),
+        # drawn first so the two radial-style FL/FR cones stay legible on top.
+        if self._mx is not None:
+            mm = self._mx if isinstance(self._mx, int) else None
+            r = radius_for(mm)
+            p.setBrush(QBrush(self._beam_color(mm, int(90 * dim))))
+            p.setPen(QPen(self._beam_color(mm, int(200 * dim)), 1, Qt.PenStyle.DashLine))
+            p.drawPie(QRectF(cx - r, cy - r, 2 * r, 2 * r),
+                      int((90.0 - 22.5) * 16), int(45.0 * 16))
+            # Readout goes in a chip under the zone badge (a label on the wedge
+            # itself collides with the FL/FR labels at the top of the dial).
+            txt = "—" if mm is None else ("err" if mm < 0
+                  else (f"{mm} mm" if mm < 1000 else f"{mm / 1000.0:.1f} m"))
+            mcol = self._beam_color(mm)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(mcol.red(), mcol.green(), mcol.blue(), int(55 * dim)))
+            p.drawRoundedRect(QRectF(6, 29, 158, 19), 4, 4)
+            p.setPen(mcol)
+            p.drawText(QRectF(6, 29, 158, 19), Qt.AlignmentFlag.AlignCenter,
+                       f"MX FRONT {txt}")
         for bearing, key, label in self._BEAMS:
             mm = self._mm(key)
             r = radius_for(mm)
@@ -1509,6 +1533,123 @@ class DistancePhotoreceptorsWidget(QWidget):
             p.setPen(QColor(150, 165, 185))
             f.setPointSize(10); f.setBold(True); p.setFont(f)
             p.drawText(QRectF(0, cy - 12, w, 24), Qt.AlignmentFlag.AlignCenter, "no link")
+        p.end()
+
+
+class TofMatrixWidget(QWidget):
+    """Live 8x8 grid of the front matrix ToF (DFRobot SEN0628 / VL53L7CX).
+
+    One cell per zone, color-coded by RAW distance against the motion stop/slow
+    thresholds, in the firmware's normalized orientation: row 0 = physically TOP,
+    col 0 = the ROBOT'S LEFT edge of the FOV. Cells the firmware's floor
+    rejection would discard (reading >= that row's reject threshold, from the
+    `rej` array it streams) are drawn as muted blue "floor" cells — exactly the
+    view needed to judge whether the lower rows are eating the floor. Read-only:
+    call set_frame() from the telemetry tick."""
+
+    _CLEAR_MM = 3500     # sensor's "no return" marker (TOF_MATRIX_CLEAR_MM)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(240, 240)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._grid = None            # list[64] mm or None
+        self._rej = []               # list[8] per-row floor thresholds (mm)
+        self._stop_m = float(getattr(config, "MOTION_STOP_ZONE_M", 0.25))
+        self._slow_m = float(getattr(config, "MOTION_SLOW_ZONE_M", 0.60))
+
+    def set_frame(self, grid, rej=None) -> None:
+        self._grid = list(grid) if grid else None
+        self._rej = list(rej or [])
+        self.update()
+
+    def clear(self) -> None:
+        self._grid = None
+        self._rej = []
+        self.update()
+
+    def nearest_obstacle_mm(self):
+        """Nearest non-floor, in-range reading (mm) — the GUI-side analogue of
+        the firmware aggregate, for the radar's front wedge. None = no frame."""
+        if not self._grid:
+            return None
+        best = None
+        for i, v in enumerate(self._grid):
+            if v <= 25 or v >= self._CLEAR_MM:
+                continue
+            rej = self._rej[i // 8] if i // 8 < len(self._rej) else 4095
+            if v >= rej:
+                continue                       # the floor
+            if best is None or v < best:
+                best = v
+        return best if best is not None else self._CLEAR_MM
+
+    def _cell_color(self, v, row):
+        if v <= 25:
+            return QColor(40, 46, 56), QColor(110, 120, 135), "·"      # no return
+        rej = self._rej[row] if row < len(self._rej) else 4095
+        if v >= self._CLEAR_MM:
+            return QColor(26, 34, 30), QColor(110, 130, 118), "far"    # clear
+        if v >= rej:
+            return QColor(38, 52, 74), QColor(130, 165, 210), None     # floor-rejected
+        d = v / 1000.0
+        if d <= self._stop_m:
+            return QColor(150, 45, 40), QColor(255, 225, 220), None    # STOP
+        if d <= self._slow_m:
+            return QColor(150, 110, 35), QColor(255, 240, 210), None   # SLOW
+        return QColor(35, 95, 62), QColor(215, 245, 228), None         # obstacle, clear zone
+
+    def paintEvent(self, _e) -> None:
+        w, h = float(self.width()), float(self.height())
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        legend_h = 18.0
+        pad, gap = 4.0, 2.0
+        cell = min((w - 2 * pad - 7 * gap) / 8.0,
+                   (h - legend_h - 2 * pad - 7 * gap) / 8.0)
+        if cell < 12:
+            p.end()
+            return
+        gx = (w - (8 * cell + 7 * gap)) / 2.0
+        gy = pad
+
+        f = p.font(); f.setBold(True)
+        f.setPointSize(max(6, min(9, int(cell / 4.2))))
+        p.setFont(f)
+
+        if not self._grid:
+            p.setPen(QColor(150, 165, 185))
+            f.setPointSize(10); p.setFont(f)
+            p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter,
+                       "no matrix frames")
+            p.end()
+            return
+
+        for r in range(8):
+            for c in range(8):
+                v = int(self._grid[r * 8 + c])
+                bg, fg, sym = self._cell_color(v, r)
+                x = gx + c * (cell + gap)
+                y = gy + r * (cell + gap)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(bg)
+                p.drawRoundedRect(QRectF(x, y, cell, cell), 3, 3)
+                p.setPen(fg)
+                txt = sym if sym is not None else (f"{v}" if v < 1000 else f"{v / 1000.0:.1f}")
+                p.drawText(QRectF(x, y, cell, cell), Qt.AlignmentFlag.AlignCenter, txt)
+
+        # Legend: orientation + the floor-cell key (the point of this widget).
+        ly = gy + 8 * cell + 7 * gap + 3
+        f.setPointSize(8); p.setFont(f)
+        p.setPen(QColor(150, 165, 185))
+        p.drawText(QRectF(gx, ly, 8 * cell + 7 * gap, legend_h),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   "top=up · left=robot L")
+        p.setPen(QColor(130, 165, 210))
+        p.drawText(QRectF(gx, ly, 8 * cell + 7 * gap, legend_h),
+                   Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                   "blue = floor-rejected")
         p.end()
 
 
@@ -1750,7 +1891,7 @@ class MotivatorControlDialog(QDialog):
         # A top-level QDialog doesn't inherit the main window's stylesheet, so apply
         # the shared console theme plus the Motivator-specific rules (theme.DIALOG_STYLE).
         self.setStyleSheet(theme.DIALOG_STYLE)
-        self.resize(800, 820)
+        self.resize(1280, 760)
         self._x = 0.0
         self._y = 0.0
         self._engaged = False     # only drive after the operator has touched the stick
@@ -1768,10 +1909,24 @@ class MotivatorControlDialog(QDialog):
         self._conn.setWordWrap(True)
         root.addWidget(self._conn)
 
-        # Two columns: drive controls on the left, sensing + telemetry on the right.
+        # Three columns so everything fits on one screen without scrolling:
+        # drive (joystick + commanded) | sensing (radar + 8x8 matrix) |
+        # telemetry (gamepad + attitude + feedback).
         body = QHBoxLayout()
         body.setSpacing(14)
         root.addLayout(body, 1)
+
+        def _panel(title: str, widget: QWidget) -> QFrame:
+            frame = QFrame()
+            frame.setObjectName("chromePanel")
+            lay = QVBoxLayout(frame)
+            lay.setContentsMargins(12, 10, 12, 10)
+            lay.setSpacing(8)
+            head = QLabel(title)
+            head.setObjectName("panelTitle")
+            lay.addWidget(head)
+            lay.addWidget(widget, 1)
+            return frame
 
         left = QVBoxLayout()
         left.setSpacing(12)
@@ -1786,45 +1941,22 @@ class MotivatorControlDialog(QDialog):
         self._lbl_lin = self._row(cmd, "Linear")
         self._lbl_ang = self._row(cmd, "Angular")
         left.addWidget(cmd["frame"])
-        body.addLayout(left, 1)
+        body.addLayout(left, 4)
+
+        mid = QVBoxLayout()
+        mid.setSpacing(12)
+        self._photoreceptors = DistancePhotoreceptorsWidget()
+        mid.addWidget(_panel("DISTANCE PHOTORECEPTORS", self._photoreceptors), 5)
+        self._matrix = TofMatrixWidget()
+        mid.addWidget(_panel("8×8 MATRIX ToF (front)", self._matrix), 5)
+        body.addLayout(mid, 4)
 
         right = QVBoxLayout()
         right.setSpacing(12)
-        photo = QFrame()
-        photo.setObjectName("chromePanel")
-        photo_lay = QVBoxLayout(photo)
-        photo_lay.setContentsMargins(12, 10, 12, 10)
-        photo_lay.setSpacing(8)
-        photo_title = QLabel("DISTANCE PHOTORECEPTORS")
-        photo_title.setObjectName("panelTitle")
-        photo_lay.addWidget(photo_title)
-        self._photoreceptors = DistancePhotoreceptorsWidget()
-        photo_lay.addWidget(self._photoreceptors, 1)
-        right.addWidget(photo, 1)
-
-        pad_panel = QFrame()
-        pad_panel.setObjectName("chromePanel")
-        pad_lay = QVBoxLayout(pad_panel)
-        pad_lay.setContentsMargins(12, 10, 12, 10)
-        pad_lay.setSpacing(8)
-        pad_title = QLabel("PHYSICAL CONTROLLER")
-        pad_title.setObjectName("panelTitle")
-        pad_lay.addWidget(pad_title)
         self._gamepad = GamepadMirrorWidget()
-        pad_lay.addWidget(self._gamepad, 1)
-        right.addWidget(pad_panel)
-
-        att_panel = QFrame()
-        att_panel.setObjectName("chromePanel")
-        att_lay = QVBoxLayout(att_panel)
-        att_lay.setContentsMargins(12, 10, 12, 10)
-        att_lay.setSpacing(8)
-        att_title = QLabel("ATTITUDE (MPU-6050)")
-        att_title.setObjectName("panelTitle")
-        att_lay.addWidget(att_title)
+        right.addWidget(_panel("PHYSICAL CONTROLLER", self._gamepad), 3)
         self._attitude = AttitudeWidget()
-        att_lay.addWidget(self._attitude, 1)
-        right.addWidget(att_panel)
+        right.addWidget(_panel("ATTITUDE (MPU-6050)", self._attitude), 2)
 
         fb = self._section("ESP32 FEEDBACK")
         self._fb_state = self._row(fb, "State")
@@ -1837,9 +1969,9 @@ class MotivatorControlDialog(QDialog):
         self._fb_batt = self._row(fb, "Battery")
         self._fb_fault = self._row(fb, "Fault / errs")
         right.addWidget(fb["frame"])
-        body.addLayout(right, 1)
+        body.addLayout(right, 4)
 
-        self._stop_btn = QPushButton("■  STOP")
+        self._stop_btn = QPushButton("■  STOP  ■")
         self._stop_btn.setObjectName("motivatorStop")
         self._stop_btn.clicked.connect(self._stop)
         root.addWidget(self._stop_btn)
@@ -1959,6 +2091,7 @@ class MotivatorControlDialog(QDialog):
                         self._fb_pose, self._fb_tof, self._fb_tof2, self._fb_batt, self._fb_fault):
                 lbl.setText("—")
             self._photoreceptors.clear()
+            self._matrix.clear()
             self._gamepad.clear()
             self._attitude.clear()
             return
@@ -1991,7 +2124,18 @@ class MotivatorControlDialog(QDialog):
         soc_s = f"  ·  {soc:.0f}%" if soc >= 0 else ""
         self._fb_batt.setText(volt_s + amp_s + soc_s)
         self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
-        self._photoreceptors.set_readings(tof, tel.get("zone"), tel.get("blocked_dir"))
+        # Raw 8x8 matrix frame (separate lower-rate stream; None if absent/stale).
+        try:
+            mx = motion.tof_matrix()
+        except Exception:
+            mx = None
+        if mx:
+            self._matrix.set_frame(mx.get("grid"), mx.get("rej"))
+        else:
+            self._matrix.clear()
+        mx_mm = self._matrix.nearest_obstacle_mm()
+        self._photoreceptors.set_readings(tof, tel.get("zone"), tel.get("blocked_dir"),
+                                          mx_mm=mx_mm)
 
         gp = tel.get("gp") or {}
         if gp.get("connected"):

@@ -422,10 +422,10 @@ QLabel#motivatorConn {{ color: #8aa0b6; font-size: 12px; font-weight: 700; paddi
 QLabel#motivatorConn[ok="true"] {{ color: {GOOD}; }}
 QLabel#motivatorConn[ok="false"] {{ color: {WARN}; }}
 QPushButton#motivatorStop {{
-    min-height: 38px;
+    min-height: 64px;
     background: #7a1f1f; color: #ffffff;
-    border: 1px solid #a23a3a; border-radius: 2px;
-    font-weight: 900; font-size: 14px; letter-spacing: 2px;
+    border: 2px solid #a23a3a; border-radius: 4px;
+    font-weight: 900; font-size: 26px; letter-spacing: 4px;
 }}
 QPushButton#motivatorStop:hover {{ background: #9a2a2a; border: 1px solid #d05a5a; }}
 """
