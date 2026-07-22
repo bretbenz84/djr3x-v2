@@ -251,6 +251,13 @@ class PlaceRecognizer:
         self._moved_since_confirm = False
         self._unknown_streak = 0
         self._unknown_armed = True
+        # Carried-robot escape hatches (see _update_belief): the wheels never turn when
+        # he's picked up and carried, so the motion gate would otherwise pin a stale
+        # belief forever. Sustained contrary evidence overrides the silent sensor.
+        self._static_flip_max = max(1, int(_cfg("PLACE_STATIC_FLIP_STREAK", 10)))
+        self._lost_streak_max = max(1, int(_cfg("PLACE_LOST_STREAK", 16)))
+        self._static_flip_pid: Optional[int] = None
+        self._static_flip_streak = 0
 
         # ── Durable store ──
         self._db_path = self._resolve_db_path(db_path)
@@ -456,9 +463,14 @@ class PlaceRecognizer:
 
     def _run_query_locked(self, q: np.ndarray, now: float) -> QueryResult:
         # Track motion since the last confirmed place (the freeze/unknown gate).
+        # A source may return None: "no motion signal available" (no drive base
+        # attached, telemetry down). Without a trustworthy signal the freeze gate is
+        # DISABLED — treating silence as "not moving" would pin the belief forever
+        # the first time someone carries the robot to another room.
         try:
             ms = self._get_motion_state()
-            if getattr(ms, "moving", False) or getattr(ms, "wheels_moving", False) \
+            if ms is None or getattr(ms, "moving", False) \
+                    or getattr(ms, "wheels_moving", False) \
                     or getattr(ms, "accel_active", False):
                 self._moved_since_confirm = True
         except Exception as exc:  # a flaky motion source must not kill recognition
@@ -489,6 +501,7 @@ class PlaceRecognizer:
         self._history.append((vote_pid, conf))
 
         votes = [p for (p, c) in self._history if c and p is not None]
+        flip_attempted = False
         if votes:
             cand, n = Counter(votes).most_common(1)[0]
             cur_pid = self._current_place["place_id"] if self._current_place else None
@@ -496,14 +509,48 @@ class PlaceRecognizer:
                 # Motion gate: he cannot change rooms without moving. Acquiring a FIRST
                 # belief (no current place) is always allowed.
                 frozen = self._current_place is not None and not self._moved_since_confirm
+                s = next((p.score for p in scores if p.place_id == cand),
+                         best.score if best else 0.0)
                 if not frozen:
-                    s = next((p.score for p in scores if p.place_id == cand),
-                             best.score if best else 0.0)
                     self._confirm_place_locked(cand, s, now)
+                else:
+                    # Carried-robot escape hatch: the motion source says "still", yet the
+                    # camera keeps insisting on another room. Sustained unanimous evidence
+                    # means the sensor missed the move (picked up and carried) — flip.
+                    flip_attempted = True
+                    if self._static_flip_pid == cand:
+                        self._static_flip_streak += 1
+                    else:
+                        self._static_flip_pid, self._static_flip_streak = cand, 1
+                    if self._static_flip_streak >= self._static_flip_max:
+                        _log.info(
+                            "belief flip despite no motion signal — %d consecutive "
+                            "confident votes for place_id=%s (carried?)",
+                            self._static_flip_streak, cand,
+                        )
+                        self._moved_since_confirm = True
+                        self._confirm_place_locked(cand, s, now)
+        if not flip_attempted:
+            self._static_flip_pid, self._static_flip_streak = None, 0
 
         # Sustained-unknown event (only meaningful once he has actually moved).
         if cls == UNKNOWN:
             self._unknown_streak += 1
+            if (self._current_place is not None
+                    and self._unknown_streak >= self._lost_streak_max):
+                # Sustained unfamiliarity while the belief claims a known room: either
+                # the motion sensor missed a move or the room changed around him. Admit
+                # being lost — drop the belief (publishes None, which re-arms the
+                # ask-what-room-is-this cue) rather than keep asserting a stale room.
+                _log.info(
+                    "belief cleared — %d consecutive unknown frames while believing "
+                    "place_id=%s (lost)",
+                    self._unknown_streak, self._current_place.get("place_id"),
+                )
+                self._current_place = None
+                self._moved_since_confirm = True
+                self._history.clear()
+                self._publish_place(None)
         else:
             self._unknown_streak = 0
             if conf:
@@ -526,6 +573,7 @@ class PlaceRecognizer:
         self._moved_since_confirm = False
         self._unknown_streak = 0
         self._unknown_armed = True
+        self._static_flip_pid, self._static_flip_streak = None, 0
         self._history.clear()               # fresh belief; don't let stale votes re-flip
         self._publish_place(dict(self._current_place))
 
@@ -642,11 +690,14 @@ class PlaceRecognizer:
 
     @staticmethod
     def _passes_diversity(heading, now, headings, last_cap, min_hsep, min_tsep) -> bool:
-        """Heading-diversity gate, with a time-separation fallback when no compass."""
-        if heading is not None:
-            return not any(
-                _circular_sep(heading, ph) < min_hsep for ph in headings if ph is not None
-            )
+        """Capture-diversity gate. A genuinely new heading is accepted immediately; the
+        time-separation gate is the universal fallback — for no heading source at all,
+        but ALSO for a stuck one (head parked on a face for the whole enrollment), which
+        must slow captures down, never starve them to an enrollment_failed."""
+        if heading is not None and not any(
+            _circular_sep(heading, ph) < min_hsep for ph in headings if ph is not None
+        ):
+            return True
         if last_cap is None:
             return True
         return (now - last_cap) >= min_tsep
@@ -855,6 +906,11 @@ class PlaceRecognizer:
     def state(self) -> str:
         return self._state
 
+    def enrolling_name(self) -> Optional[str]:
+        """The room name of the active enrollment session, or None when idle."""
+        with self._lock:
+            return self._enroll.name if self._enroll is not None else None
+
     def current_place(self) -> Optional[dict]:
         with self._lock:
             return dict(self._current_place) if self._current_place else None
@@ -875,6 +931,7 @@ class PlaceRecognizer:
             self._moved_since_confirm = False
             self._unknown_streak = 0
             self._unknown_armed = True
+            self._static_flip_pid, self._static_flip_streak = None, 0
             self._publish_place(None)
 
     def close(self) -> None:

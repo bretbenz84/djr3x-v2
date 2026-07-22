@@ -45,9 +45,34 @@ _last_capture: Optional[dict] = None    # {"name", "place_id"}
 
 # Here-declaration cues ("we are HERE, in this place"). Anchored on the speaker asserting
 # the current location, NOT a passing mention ("I love the kitchen at my mom's").
+# Present tense is spelled out literally: an optional-apostrophe we'?re also matches the
+# PAST-tense "were" ("when we were in the kitchen…" enrolled the current view as the
+# kitchen — caught in review), so the contraction forms require their apostrophe here;
+# the latched answer path below still tolerates Whisper's dropped apostrophes.
 _DECLARE_RE = re.compile(
     r"\b(?:this\s+is|here\s+is|here'?s|this\s+room\s+is|this\s+place\s+is|"
-    r"we(?:'?re|\s+are)\s+in|you(?:'?re|\s+are)\s+in|call\s+this|welcome\s+to)\b",
+    r"we're\s+in|we\s+are\s+in|you're\s+in|you\s+are\s+in|call\s+this|welcome\s+to)\b",
+    re.IGNORECASE,
+)
+
+# Reminiscence / hypothetical guard: talking about a room in the past ("when we were in
+# the kitchen", "the den used to be…") is never a statement about where Rex is NOW.
+_PAST_RE = re.compile(
+    r"\b(?:when|while|remember|yesterday|used\s+to|back\s+(?:in|when|then)|"
+    r"last\s+(?:night|week|month|year|time))\b",
+    re.IGNORECASE,
+)
+
+# Answer-shaped openers for the LATCHED path (Rex just asked "what room is this?").
+# Strips leading fillers plus one declaration prefix, INCLUDING Whisper's apostrophe-less
+# forms ("its the nook", "thats the den") — room_questions hit the same transcription
+# quirk. Without this, "it's the nook" minted a room literally named "it's the nook".
+_ANSWER_PREFIX_RE = re.compile(
+    r"^(?:(?:well|oh|uh|um|hmm|hey|so|yeah|yes|okay|ok|right|i\s+think|i'?d\s+say|"
+    r"probably|maybe|looks\s+like)[,\s]+)*"
+    r"(?:(?:it'?s|its|it\s+is|that'?s|thats|that\s+is|this\s+is|here'?s|heres|"
+    r"we'?re\s+in|were\s+in|we\s+are\s+in|you'?re\s+in|youre\s+in|you\s+are\s+in|"
+    r"call\s+it|call\s+this|i\s+call\s+it)\s+)?",
     re.IGNORECASE,
 )
 
@@ -173,16 +198,6 @@ def _bare_answer(text: str) -> Optional[str]:
     return n
 
 
-def _declared_name(low: str) -> Optional[str]:
-    """The phrase a here-declaration points at ('this is the <phrase>')."""
-    m = _DECLARE_RE.search(low)
-    if not m:
-        return None
-    tail = low[m.end():]
-    tail = re.split(r"[.,;!?]| where | which | that | and | but ", tail, maxsplit=1)[0]
-    return _bare_answer(tail)
-
-
 def _extract_room_name(text: str, *, latched: bool) -> Optional[str]:
     cleaned = " ".join(str(text or "").split())
     if not cleaned or cleaned.endswith("?"):
@@ -190,23 +205,31 @@ def _extract_room_name(text: str, *, latched: bool) -> Optional[str]:
     low = cleaned.lower()
     if any(p in low for p in _NON_ANSWERS):
         return None
+    if _PAST_RE.search(low):
+        return None                      # reminiscence, not a statement about HERE
 
     room_word_match = _room_word_re().search(low)
     room_word = room_word_match.group(1).lower() if room_word_match else None
     declared = _DECLARE_RE.search(low) is not None
 
-    if latched:
-        # Rex asked what room this is — his answer is a room. Accept a named room word,
-        # a here-declaration's phrase, or a short bare reply (custom names welcome).
-        if room_word:
-            return room_word
-        return _declared_name(low) or _bare_answer(low)
-
     # Unlatched (volunteered): require BOTH a here-declaration AND a known room word, so a
     # plain "this is Sarah" / stray chatter can never enroll a room.
+    if not latched:
+        return room_word if (declared and room_word) else None
+
+    # Latched — Rex asked what room this is, so the reply is very likely the answer.
     if declared and room_word:
         return room_word
-    return None
+    stripped = _ANSWER_PREFIX_RE.sub("", low, count=1).strip()
+    if declared or stripped != low:
+        # An answer-shaped opener ("it's …", "thats …", filler) — take the room word or
+        # the short custom phrase that follows it ("the nook" -> "nook").
+        return room_word or _bare_answer(stripped)
+    if room_word and len(low.split()) <= 5:
+        return room_word                 # "the kitchen, obviously" — short and on-topic
+    # A bare short phrase ("garage", "my studio") counts; an incidental room word inside
+    # a longer sentence ("I told you about the kitchen once") does not.
+    return _bare_answer(low)
 
 
 def maybe_capture_answer(text: str) -> Optional[dict]:
@@ -231,13 +254,31 @@ def maybe_capture_answer(text: str) -> Optional[dict]:
                 _latch = None       # nobody named it; stop watching (cooldown re-gates)
         return None
 
+    svc = _service()
+    try:
+        # Re-telling the SAME room mid-capture ("this is the living room" twice) must
+        # not restart the session (dropping collected views) or double-ack; a DIFFERENT
+        # name is a correction and restarts on purpose.
+        if (svc and svc.state() == "collecting"
+                and _normalize(svc.enrolling_name() or "") == name):
+            _latch = None
+            return None
+    except Exception:
+        pass
+    known = False
+    try:
+        known = name in {str(n).strip().lower() for n in (svc.place_names() or [])}
+    except Exception:
+        known = False
+
     _latch = None
     place_id = _enroll(name)
     if place_id is None:
         return None
-    _last_capture = {"name": name, "place_id": place_id}
+    _last_capture = {"name": name, "place_id": place_id, "known": known}
     _last_capture_at = time.monotonic()
-    _log.info("[place_questions] learned room %r (place_id=%s)", name, place_id)
+    _log.info("[place_questions] %s room %r (place_id=%s)",
+              "refreshed known" if known else "learned", name, place_id)
     return dict(_last_capture)
 
 
@@ -253,18 +294,18 @@ def _enroll(name: str) -> Optional[int]:
 
 
 def ack_line(capture: Optional[dict]) -> str:
-    """A verbatim acknowledgement for a fresh capture ('Got it — the living room.')."""
-    name = (capture or {}).get("name") or _display_name((capture or {}).get("name"))
-    name = _display_name(name)
-    templates = getattr(config, "PLACE_ENROLL_ACK_TEMPLATES", None) or [
-        "Got it — the {name}. I'll remember this place."
-    ]
+    """A verbatim acknowledgement for a fresh capture ('Got it — the living room.').
+    A room he already knew gets the recognition variant instead of the learning one."""
+    name = str((capture or {}).get("name") or "this place").strip()
+    if (capture or {}).get("known"):
+        templates = getattr(config, "PLACE_KNOWN_ACK_TEMPLATES", None) or [
+            "The {name} — yeah, I know this one."
+        ]
+    else:
+        templates = getattr(config, "PLACE_ENROLL_ACK_TEMPLATES", None) or [
+            "Got it — the {name}. I'll remember this place."
+        ]
     return random.choice(list(templates)).format(name=name)
-
-
-def _display_name(name) -> str:
-    n = str(name or "this place").strip()
-    return n
 
 
 # ── ACK helpers (parity with room_questions) ────────────────────────────────────

@@ -7376,6 +7376,15 @@ PLACE_REFRESH_MIN           = 0.70
 PLACE_REFRESH_MAX           = 0.78
 PLACE_MAX_EMBEDDINGS        = 15     # per-place cap; oldest-by-captured_at pruned first
 
+# Escape hatches for a WRONG motion signal (the robot was picked up and carried — wheels
+# never turned, so the freeze gate would otherwise pin the old room forever):
+# this many CONSECUTIVE confident majority votes for the same other room flips the belief
+# despite "no motion" (overwhelming visual evidence beats a silent wheel sensor)...
+PLACE_STATIC_FLIP_STREAK    = 10
+# ...and this many consecutive UNKNOWN frames clears the belief to None entirely ("I'm
+# lost"), which re-arms the ask-what-room-this-is cue. ~2x PLACE_UNKNOWN_STREAK.
+PLACE_LOST_STREAK           = 16
+
 # ── Image encoder (perception/place_embedder.py) ──────────────────────────────
 # Master on/off for wiring the whole feature into main.py. When False, or when the
 # encoder fails to load, place recognition is silently skipped and the rest of Rex is
@@ -7433,6 +7442,23 @@ PLACE_ENROLL_ACK_TEMPLATES = [
     "Ah, the {name}. Filing this one away.",
     "The {name} it is. Locking it into memory.",
 ]
+# Variant when the named room is one he ALREADY knows (he still tops up its gallery).
+PLACE_KNOWN_ACK_TEMPLATES = [
+    "The {name} — yeah, I know this one. Taking another look anyway.",
+    "Yep, the {name}. I recognize it. Refreshing my memory.",
+    "The {name}, right. Good — my circuits agree.",
+]
+# Spoken if a promised room capture later fails (he said "Got it" but couldn't get
+# enough clear looks — e.g. someone stood in front of the lens the whole time).
+PLACE_ENROLL_FAIL_TTS_ENABLED = True
+PLACE_ENROLL_FAIL_TTS_LINES = [
+    "Hey — small confession. I tried to memorize this room and couldn't get a good look. Tell me where we are again sometime?",
+    "Update from my optics: this room did not save. Too much going on in front of my lens. We'll try again later.",
+]
+# Head pans change the camera view exactly like chassis heading does, so the neck servo
+# counts toward enrollment view diversity (compass + neck are summed when both exist).
+# This maps the neck servo's full travel to degrees of camera pan.
+PLACE_NECK_SPAN_DEG         = 120.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

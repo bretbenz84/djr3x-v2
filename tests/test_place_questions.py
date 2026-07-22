@@ -17,6 +17,8 @@ class _FakeService:
         self.belief = None      # current_place() return
         self.st = "idle"
         self.has_recognizer = True
+        self.known_names = []   # place_names() return
+        self.active_enroll = None  # enrolling_name() return
         self._next_id = 0
 
     def get_recognizer(self):
@@ -27,6 +29,12 @@ class _FakeService:
 
     def state(self):
         return self.st
+
+    def enrolling_name(self):
+        return self.active_enroll
+
+    def place_names(self):
+        return list(self.known_names)
 
     def enroll(self, name):
         self._next_id += 1
@@ -119,6 +127,54 @@ class PlaceQuestionsTest(unittest.TestCase):
     def test_latched_question_back_is_not_an_answer(self):
         pq.note_asked()
         self.assertIsNone(pq.maybe_capture_answer("why do you want to know?"))
+
+    # ── robot-lens review regressions ──
+    def test_past_tense_never_enrolls(self):
+        # "we'?re" used to match past-tense "were" — reminiscing enrolled the current view.
+        self.assertIsNone(pq.maybe_capture_answer("when we were in the kitchen it smelled great"))
+        self.assertIsNone(pq.maybe_capture_answer("remember when we were in the living room"))
+        pq.note_asked()
+        self.assertIsNone(pq.maybe_capture_answer("the den used to be a garage"))
+        self.assertEqual(self.svc.enrolled, [])
+
+    def test_latched_incidental_room_word_in_long_sentence_rejected(self):
+        pq.note_asked()
+        self.assertIsNone(pq.maybe_capture_answer("I told you about the kitchen twice already"))
+        self.assertEqual(self.svc.enrolled, [])
+
+    def test_latched_answer_prefixes_are_stripped(self):
+        # "it's the nook" used to mint a room literally named "it's the nook".
+        for utterance, want in [
+            ("it's the nook", "nook"),
+            ("its the nook", "nook"),            # Whisper drops apostrophes
+            ("thats the snug", "snug"),
+            ("well, it's the nook", "nook"),
+        ]:
+            pq.reset()
+            pq.note_asked()
+            cap = pq.maybe_capture_answer(utterance)
+            self.assertIsNotNone(cap, utterance)
+            self.assertEqual(cap["name"], want, utterance)
+
+    def test_retelling_same_room_mid_capture_is_suppressed(self):
+        self.svc.st = "collecting"
+        self.svc.active_enroll = "living room"
+        self.assertIsNone(pq.maybe_capture_answer("this is the living room"))
+        self.assertEqual(self.svc.enrolled, [])   # no session restart, no double ack
+
+    def test_correction_to_different_room_restarts(self):
+        self.svc.st = "collecting"
+        self.svc.active_enroll = "living room"
+        cap = pq.maybe_capture_answer("no wait, this is the den")
+        self.assertEqual(cap["name"], "den")      # different name = intentional restart
+
+    def test_known_room_gets_recognition_ack(self):
+        self.svc.known_names = ["living room"]
+        cap = pq.maybe_capture_answer("this is the living room")
+        self.assertTrue(cap["known"])
+        self.assertIn("living room", pq.ack_line(cap))
+        cap2 = pq.maybe_capture_answer("this is the garage")
+        self.assertFalse(cap2["known"])
 
     # ── availability + ack ──
     def test_no_capture_when_service_down(self):

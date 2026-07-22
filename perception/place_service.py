@@ -89,6 +89,35 @@ def _run(world_state, emit_event) -> None:
     if world_state is None:
         from world_state import world_state as _ws_singleton
         world_state = _ws_singleton
+    sink = emit_event or _default_emit
+    holder: dict = {}
+
+    def _emit(name, payload):
+        try:
+            sink(name, payload)
+        except Exception as exc:
+            _log.debug("place event sink failed for %s: %s", name, exc)
+        if name == "possible_duplicate_place":
+            # Voice enrollment always carries an explicit human-given name. If the new
+            # room merely LOOKS like a known one, trust the human: a different name
+            # means a different room — commit it as its own place. (A same-name tell
+            # never reaches here; enroll() attaches to the existing row.) Without this,
+            # CONFIRMING would wait forever for a confirm_duplicate() nobody sends and
+            # the told room would silently never commit. Called synchronously on the
+            # emitting thread — the recognizer lock is re-entrant.
+            rec = holder.get("rec")
+            if rec is not None:
+                _log.info(
+                    "auto-resolving duplicate: %r resembles %r (sim=%.2f) but was "
+                    "told by name — keeping it as its own room",
+                    payload.get("new_place"), payload.get("existing_place"),
+                    float(payload.get("similarity") or 0.0),
+                )
+                try:
+                    rec.confirm_duplicate(False)
+                except Exception as exc:
+                    _log.warning("duplicate auto-resolve failed: %s", exc)
+
     try:
         recognizer = PlaceRecognizer(
             embed_fn=embedder.encode_image,
@@ -96,12 +125,13 @@ def _run(world_state, emit_event) -> None:
             get_motion_state=_get_motion_state,
             get_person_occlusion=_get_person_occlusion,
             world_state=world_state,
-            emit_event=emit_event or _default_emit,
+            emit_event=_emit,
             model_tag=embedder.model_tag,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("place recognition failed to initialize (%s); feature off", exc)
         return
+    holder["rec"] = recognizer
     if _stop.is_set():        # a stop() arrived during the slow load
         recognizer.close()
         return
@@ -126,19 +156,57 @@ def _run(world_state, emit_event) -> None:
 
 # ── Signal adapters (all fail-safe: a dead sensor yields None / neutral) ──────────
 
-def _get_heading():
+def _neck_pan_deg():
+    """Camera pan contributed by the NECK servo, in degrees around neutral. Head pans
+    change the camera view exactly like chassis heading does, so enrollment view
+    diversity credits them. None when no live servo reading exists (positions still at
+    the world_state defaults because no Maestro is attached is indistinguishable from
+    'head at neutral' — that's fine: a constant value just defers to the time gate)."""
     try:
-        from hardware import compass
-        return compass.get_service_yaw()        # float [0,360) or None (service off/no fix)
+        from world_state import world_state
+        pos = ((world_state.get("self_state") or {}).get("servo_positions") or {}).get("neck")
+        if pos is None:
+            return None
+        spec = (getattr(config, "SERVO_CHANNELS", {}) or {}).get("neck") or {}
+        lo, hi = float(spec.get("min", 1984)), float(spec.get("max", 8960))
+        neutral = float(spec.get("neutral", (lo + hi) / 2.0))
+        if hi <= lo:
+            return None
+        span = float(getattr(config, "PLACE_NECK_SPAN_DEG", 120.0))
+        return (float(pos) - neutral) / (hi - lo) * span
     except Exception:
         return None
 
 
+def _get_heading():
+    """Camera direction = chassis heading (compass) + head pan (neck servo). Either
+    alone still provides useful capture diversity; None only when both are missing."""
+    yaw = None
+    try:
+        from hardware import compass
+        yaw = compass.get_service_yaw()         # float [0,360) or None (service off/no fix)
+    except Exception:
+        yaw = None
+    neck = _neck_pan_deg()
+    if yaw is None and neck is None:
+        return None
+    return ((yaw or 0.0) + (neck or 0.0)) % 360.0
+
+
 def _get_motion_state():
+    """MotionState from drive telemetry, or None when NO trustworthy signal exists (no
+    base configured, or its telemetry stream is down). None disables the recognizer's
+    freeze gate — with no sensor, 'not moving' can't be distinguished from 'was just
+    carried to another room', and a pinned stale belief is the worse failure."""
     from perception.place_recognition import MotionState
     try:
+        from utils.config_loader import MOTION_ESP32_PORT
+        if not bool(getattr(config, "MOTION_ENABLED", True)) or not MOTION_ESP32_PORT:
+            return None
         from hardware import motion
-        t = motion.telemetry() or {}
+        t = motion.telemetry()
+        if not t:
+            return None
         wheels = t.get("wheels") or {}
         odom = t.get("odom") or {}
         wheels_moving = (
@@ -153,7 +221,7 @@ def _get_motion_state():
         )
         return MotionState(wheels_moving=bool(wheels_moving), accel_active=bool(accel_active))
     except Exception:
-        return MotionState()
+        return None
 
 
 def _get_person_occlusion() -> float:
@@ -208,3 +276,13 @@ def current_place():
 def state() -> str:
     rec = _recognizer
     return rec.state if rec is not None else "off"
+
+
+def enrolling_name():
+    rec = _recognizer
+    return rec.enrolling_name() if rec is not None else None
+
+
+def place_names() -> list:
+    rec = _recognizer
+    return rec.place_names() if rec is not None else []

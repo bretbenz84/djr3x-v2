@@ -406,6 +406,82 @@ class PlaceRecognitionTest(unittest.TestCase):
         self.assertEqual(pr._enroll.name, "kitchen")
         self.assertEqual(len(pr._enroll.vectors), 0)  # office frame NOT appended to kitchen
 
+    # ── robot-lens review regressions ──
+    def test_motion_signal_unavailable_disables_freeze(self):
+        # No drive base -> get_motion_state returns None -> the freeze gate must be OFF
+        # (a robot with no wheel sensor can still be carried between rooms).
+        pr, clk, ev, box, ws = self._make()
+        box["motion"] = None
+        pr.enroll_from_frames("office", [E[0]] * 5)
+        pr.enroll_from_frames("living", [E[1]] * 5)
+        for _ in range(6):
+            clk.adv(2.0)
+            pr.observe(E[0])
+        self.assertEqual(pr.current_place()["name"], "office")
+        for _ in range(6):
+            clk.adv(2.0)
+            pr.observe(E[1])   # carried to the living room; no motion ever reported
+        self.assertEqual(pr.current_place()["name"], "living")
+
+    def test_static_flip_streak_overrides_freeze(self):
+        # Base attached but silent (carried): sustained confident evidence for another
+        # room must eventually beat the frozen gate (PLACE_STATIC_FLIP_STREAK).
+        pr, clk, ev, box, ws = self._make()
+        pr.enroll_from_frames("office", [E[0]] * 5)
+        pr.enroll_from_frames("living", [E[1]] * 5)
+        box["motion"] = MotionState(wheels_moving=True)
+        for _ in range(10):
+            clk.adv(2.0)
+            pr.observe(E[0])
+            if pr.current_place():
+                break
+        box["motion"] = MotionState()          # wheels still — freeze engaged
+        for _ in range(pr._static_flip_max + pr._hysteresis_frames + 2):
+            clk.adv(2.0)
+            pr.observe(E[1])
+        self.assertEqual(pr.current_place()["name"], "living")
+
+    def test_sustained_unknown_clears_belief_to_lost(self):
+        # Carried to an UNENROLLED room with a silent base: keep claiming "office"
+        # forever was wrong — after PLACE_LOST_STREAK unknowns the belief drops to None
+        # (which re-arms the ask-what-room cue).
+        pr, clk, ev, box, ws = self._make()
+        pr.enroll_from_frames("office", [E[0]] * 5)
+        box["motion"] = MotionState(wheels_moving=True)
+        for _ in range(10):
+            clk.adv(2.0)
+            pr.observe(E[0])
+            if pr.current_place():
+                break
+        box["motion"] = MotionState()
+        for _ in range(pr._lost_streak_max + 1):
+            clk.adv(2.0)
+            pr.observe(E[7])
+        self.assertIsNone(pr.current_place())
+        self.assertIsNone(ws.get("current_place"))
+
+    def test_stuck_heading_falls_back_to_time_gate(self):
+        # A parked head (or stuck compass) yields a CONSTANT heading; enrollment must
+        # degrade to time-separated captures, not starve into enrollment_failed.
+        pr, clk, ev, box, ws = self._make()
+        pr.enroll("den")
+        box["heading"] = 100.0                  # never changes
+        for _ in range(12):
+            clk.adv(5.0)                        # > PLACE_ENROLL_MIN_TIME_SEP_S
+            pr.observe(E[2])
+            if pr.state == P.IDLE:
+                break
+        self.assertEqual(self._n_events(ev, P.EVENT_PLACE_ENROLLED), 1)
+        self.assertIn("den", pr.place_names())
+
+    def test_enrolling_name_accessor(self):
+        pr, clk, ev, box, ws = self._make()
+        self.assertIsNone(pr.enrolling_name())
+        pr.enroll("garage")
+        self.assertEqual(pr.enrolling_name(), "garage")
+        pr.cancel_enrollment()
+        self.assertIsNone(pr.enrolling_name())
+
     # ── persistence / tag isolation ──
     def test_persistence_and_tag_isolation(self):
         import os

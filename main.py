@@ -537,6 +537,42 @@ def _queue_camera_reconnect_line(downtime_secs: float = 0.0) -> Optional[str]:
     return line
 
 
+def _place_event_sink(name: str, payload: dict) -> None:
+    """Voice feedback for place-recognition edge events (perception/place_service).
+
+    Only enrollment_failed speaks: Rex acknowledged a room-name tell with "Got it — I'll
+    remember this place", so a capture that later dies (someone stood in front of the
+    lens for the whole window) must be owned out loud, not buried in a log. Success is
+    silent (the ack already covered it); duplicates are auto-resolved by the service."""
+    if name != "enrollment_failed":
+        return
+    try:
+        if not bool(getattr(config, "PLACE_ENROLL_FAIL_TTS_ENABLED", True)):
+            return
+        if bool(
+            getattr(config, "NO_AUDIO_MODE", False)
+            or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+        ):
+            return
+        if state.get_state() in (State.QUIET, State.SLEEP, State.SHUTDOWN):
+            return
+        lines = [
+            str(line).strip()
+            for line in getattr(config, "PLACE_ENROLL_FAIL_TTS_LINES", [])
+            if str(line).strip()
+        ]
+        if not lines:
+            return
+        line = random.choice(lines)
+        logger.info(
+            "Place enrollment failed (room=%r, collected=%s) — queueing confession: %s",
+            (payload or {}).get("name"), (payload or {}).get("collected"), line,
+        )
+        speech_queue.enqueue(line, "neutral", priority=0, tag="place:enroll_failed")
+    except Exception as exc:
+        logger.debug("place event sink failed: %s", exc)
+
+
 def _episodic_shutdown_summary() -> None:
     """Summarize this session's conversation via the LLM and store it as a
     'conversation_summary' episode in rex.db. Called at shutdown BEFORE interaction.stop()
@@ -1358,7 +1394,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # main thread and publishes world_state.current_place; a no-op unless
     # PLACE_RECOGNITION_ENABLED and the encoder loads. Never blocks startup.
     logger.info("Starting perception.place_service (visual place recognition)...")
-    place_service.start()
+    place_service.start(emit_event=_place_event_sink)
 
     # Claim the listening chime now, BEFORE any startup speech can be enqueued.
     # main plays the single "ready" chime at the very end of startup (once all models
