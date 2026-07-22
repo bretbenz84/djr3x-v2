@@ -6460,7 +6460,7 @@ STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS = 20
 CROWD_CHANGE_SETTLE_SECS = 2.5
 
 STARTUP_AUDIO_FILES = [
-    "assets/audio/startup/light_speed.mp3",
+    "assets/audio/startup/startup_whir.mp3",
     "assets/audio/startup/Roger Control.mp3",
 ]
 # Master toggle for the spoken startup INTRO clip — the randomized line cycled from
@@ -6537,7 +6537,7 @@ STARTUP_SENSOR_WARNING_LINES = {
     ],
 }
 
-SHUTDOWN_AUDIO_FILE = "assets/audio/startup/hyperdrive_down.mp3"
+SHUTDOWN_AUDIO_FILE = "assets/audio/startup/Robot_power_down.mp3"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WORLD AWARENESS — Weather & Location

@@ -43,9 +43,15 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         # The chime is intentionally NOT in the opening burst — main.py plays it at
         # the END of startup (once models are loaded and listening) as the ready cue.
         self.assertNotIn("startup_chime.mp3", files)
+        self.assertIn("startup_whir.mp3", files)
         self.assertIn("Roger Control.mp3", files)
         # The chime file is still configured; it's just played later, at end-of-load.
         self.assertEqual(Path(config.LISTENING_CHIME_FILE).name, "startup_chime.mp3")
+
+    def test_shutdown_uses_robot_power_down_effect(self):
+        import config
+
+        self.assertEqual(Path(config.SHUTDOWN_AUDIO_FILE).name, "Robot_power_down.mp3")
 
     def test_startup_speech_clip_toggle_contract(self):
         """The spoken startup intro has an easy on/off toggle (default OFF). main.py's
