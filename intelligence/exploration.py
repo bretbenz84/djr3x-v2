@@ -33,6 +33,7 @@ top-level import of those would cycle.
 from __future__ import annotations
 
 import logging
+import math
 import random
 import threading
 import time
@@ -853,8 +854,21 @@ def _parse_appraisal(raw: str, views: list) -> Optional[dict]:
         "top": cands[0],
         "candidates": cands,
         "open_direction": open_dir,
-        "floor_hazard": str(data.get("floor_hazards") or "").strip(),
+        "floor_hazard": _normalize_floor_hazard(data.get("floor_hazards")),
     }
+
+
+def _normalize_floor_hazard(value) -> str:
+    """Turn model-written clear/no-hazard prose into the empty safety sentinel."""
+    text = str(value or "").strip()
+    lowered = text.lower().strip(" .!-")
+    if not lowered or lowered in {"none", "no", "n/a", "clear", "no hazards"}:
+        return ""
+    if ("clear" in lowered or "unobstructed" in lowered) and not any(
+        word in lowered for word in ("not clear", "unclear", "cable", "cord", "step", "clutter", "obstacle", "hazard")
+    ):
+        return ""
+    return text
 
 
 # ── Scoring (deterministic, after the vision call) ────────────────────────────
@@ -1026,8 +1040,15 @@ def _travel_one_leg(sess: "_Session") -> None:
             sess.last_floor_hazard = ""
             return
 
-        # MOVE a varied distance. The command remains finite and ESP32 ToF-gated.
+        # Re-read the now-forward ToF pair after the turn. The front matrix is
+        # min-combined into fl/fr by firmware, so this clearance includes both the
+        # radial beams and all floor-rejected 8x8 zones. Travel a fraction of the
+        # measured opening, leaving a fixed body margin; repeated legs naturally
+        # continue through open space until the distances shrink.
         dist = _plan_leg_distance()
+        if dist is None:
+            _log.info("[explore] no safe forward ToF clearance — holding position")
+            return
         speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.16))
         seq = motion_controller.move(dist, speed=speed)
         if seq is None:
@@ -1047,11 +1068,12 @@ def _travel_one_leg(sess: "_Session") -> None:
 
 
 def _plan_leg_heading(sess: "_Session") -> float:
-    """Choose the next heading change (deg, + = left/CCW), bounded and slow.
+    """Choose the most open live ToF direction (+ = left/CCW).
 
-    Priority: steer toward the last open-floor view hint; else a modest turn away
-    from dead headings; else a small pseudo-random wobble. Biased back toward the
-    session-start pose when the tether radius is exceeded.
+    The eight radial sensors form an occupancy ring. Firmware overlays the front
+    matrix onto fl/fr, so front candidates also account for its 64 zones. Dead
+    world headings are rejected and near-ties favor smaller turns, producing a
+    purposeful open-space walk instead of a random tolerance sample.
     """
     max_deg = float(getattr(config, "EXPLORE_TURN_MAX_DEG", 120.0))
     min_deg = min(max_deg, float(getattr(config, "EXPLORE_TURN_MIN_DEG", 35.0)))
@@ -1060,27 +1082,97 @@ def _plan_leg_heading(sess: "_Session") -> float:
         toward = _heading_toward_start(sess)
         if toward is not None:
             return max(-max_deg, min(max_deg, toward))
-    # Open-direction hint from the last appraisal.
+    candidates = _tof_heading_candidates(sess, max_deg)
+    if candidates:
+        # Max clearance first. Within 15 cm, prefer the smaller chassis rotation.
+        best_clear = max(c[1] for c in candidates)
+        near_best = [c for c in candidates if c[1] >= best_clear - 0.15]
+        deg, clearance, sensor = min(near_best, key=lambda c: abs(c[0]))
+        _log.info(
+            "[explore] ToF route: sensor=%s clearance=%.2fm turn=%+.0fdeg",
+            sensor, clearance, deg,
+        )
+        return deg
+
+    # Sensor data unavailable: retain the semantic camera hint for orientation,
+    # but the distance planner below will still refuse to drive blind.
     hint = (sess.last_open_direction or "").lower()
     if hint == "left":
-        return random.uniform(min_deg, max_deg)
+        return min_deg
     if hint == "right":
-        return -random.uniform(min_deg, max_deg)
+        return -min_deg
     if hint == "center":
-        # Keep following the opening, but add a shallow alternating reorientation
-        # so successive legs never become a rigid straight-line march.
-        small = random.uniform(min(15.0, max_deg), min(35.0, max_deg))
-        return small if sess.legs_done % 2 == 0 else -small
-    # No hint: alternate sides, but vary the amount substantially.
-    wobble = random.uniform(min_deg, max_deg)
-    return wobble if (sess.legs_done % 2 == 0) else -wobble
+        return 0.0
+    return min_deg if (sess.legs_done % 2 == 0) else -min_deg
 
 
-def _plan_leg_distance() -> float:
-    """Choose a bounded non-uniform leg distance around the configured nominal."""
-    nominal = float(getattr(config, "EXPLORE_LEG_DIST_M", 0.80))
-    jitter = float(getattr(config, "EXPLORE_LEG_DIST_JITTER_M", 0.25))
-    return max(0.1, min(2.0, random.uniform(nominal - jitter, nominal + jitter)))
+_TOF_RELATIVE_DEG = {
+    "fl": 22.5, "lf": 67.5, "lb": 112.5, "rl": 157.5,
+    "rr": -157.5, "rb": -112.5, "rf": -67.5, "fr": -22.5,
+}
+
+
+def _tof_mm() -> dict:
+    try:
+        from hardware import motion
+        tof = (motion.telemetry() or {}).get("tof_mm") or {}
+        return tof if isinstance(tof, dict) else {}
+    except Exception:
+        return {}
+
+
+def _valid_tof_m(value) -> Optional[float]:
+    try:
+        mm = float(value)
+    except (TypeError, ValueError):
+        return None
+    return mm / 1000.0 if mm >= 0.0 else None
+
+
+def _tof_heading_candidates(sess: "_Session", max_deg: float) -> list[tuple[float, float, str]]:
+    tof = _tof_mm()
+    try:
+        from hardware import motion
+        theta = float(((motion.telemetry() or {}).get("odom") or {}).get("theta") or 0.0)
+    except Exception:
+        theta = 0.0
+    out = []
+    # The two ±22.5° front beams (and the matrix halves overlaid onto them) jointly
+    # describe a straight-ahead corridor. Add that corridor explicitly so an open
+    # room does not cause a needless 22.5° turn on every leg.
+    front_pair = [_valid_tof_m(tof.get(k)) for k in ("fl", "fr")]
+    front_pair = [d for d in front_pair if d is not None]
+    if front_pair:
+        world_bucket = int(round(math.degrees(theta) / 45.0)) % 8
+        if world_bucket not in sess.dead_headings:
+            out.append((0.0, min(front_pair), "front+matrix"))
+    for sensor, deg in _TOF_RELATIVE_DEG.items():
+        if abs(deg) > max_deg:
+            continue
+        clearance = _valid_tof_m(tof.get(sensor))
+        if clearance is None:
+            continue
+        world_bucket = int(round((math.degrees(theta) + deg) / 45.0)) % 8
+        if world_bucket in sess.dead_headings:
+            continue
+        out.append((deg, clearance, sensor))
+    return out
+
+
+def _plan_leg_distance() -> Optional[float]:
+    """Derive forward travel from current fl/fr clearance; never choose randomly."""
+    tof = _tof_mm()
+    front = [_valid_tof_m(tof.get(k)) for k in ("fl", "fr")]
+    front = [d for d in front if d is not None]
+    if not front:
+        return None
+    clearance = min(front)
+    margin = float(getattr(config, "EXPLORE_CLEARANCE_MARGIN_M", 0.45))
+    fraction = float(getattr(config, "EXPLORE_CLEARANCE_FRACTION", 0.65))
+    max_dist = float(getattr(config, "EXPLORE_LEG_MAX_M", 1.50))
+    min_dist = float(getattr(config, "EXPLORE_LEG_MIN_M", 0.20))
+    dist = min(max_dist, max(0.0, clearance - margin) * fraction)
+    return dist if dist >= min_dist else None
 
 
 def _wait_leg_done(sess: "_Session", seq) -> "str | bool":

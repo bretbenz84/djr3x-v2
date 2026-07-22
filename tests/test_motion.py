@@ -238,9 +238,8 @@ class ControllerTest(_MotionTestBase):
 
 
 class ConfigPushTest(_MotionTestBase):
-    """_push_config sends caps/zones on connect, and the drive-tuning keys only when
-    the matching config.py value is set (opt-in, so a connect never clobbers a
-    bench-tuned value with a placeholder)."""
+    """_push_config sends caps/zones/ramps on connect; optional bench-tuning keys
+    remain opt-in so a connect never clobbers their firmware values."""
 
     def setUp(self):
         super().setUp()
@@ -259,6 +258,8 @@ class ConfigPushTest(_MotionTestBase):
         self.assertIsNotNone(cfg)
         self.assertAlmostEqual(cfg["max_lin"], config.MOTION_MAX_LINEAR_MS)
         self.assertIn("stop_zone_m", cfg)
+        self.assertAlmostEqual(cfg["accel_lin"], config.MOTION_ACCEL_LINEAR_MS2)
+        self.assertAlmostEqual(cfg["accel_ang"], config.MOTION_ACCEL_ANGULAR_RAD_S2)
 
     def test_tuning_keys_omitted_when_unset(self):
         config.MOTION_WHEEL_KP = None
@@ -295,11 +296,39 @@ class ClassifierTest(unittest.TestCase):
         for text in ("come here", "come over here", "come to me"):
             self.assertEqual(self._act(text), "motion.come")
 
+    def test_contextual_motion_continuations(self):
+        left = ar.classify_explicit_motion("turn left")
+        forward = ar.classify_explicit_motion("move forward")
+        back = ar.classify_explicit_motion("back up 30 cm")
+
+        d = ar.classify_motion_continuation("more", left)
+        self.assertEqual((d.action, d.args["direction"]), ("motion.turn", "left"))
+        d = ar.classify_motion_continuation("a little more", left)
+        self.assertEqual(d.args["deg"], 15.0)
+        d = ar.classify_motion_continuation("keep turning", left)
+        self.assertEqual(d.action, "motion.turn")
+
+        d = ar.classify_motion_continuation("keep moving", forward)
+        self.assertEqual((d.action, d.args["direction"]), ("motion.move", "forward"))
+        self.assertEqual(ar.classify_motion_continuation("keep going", forward).action,
+                         "motion.move")
+        d = ar.classify_motion_continuation("a bit more", back)
+        self.assertEqual((d.args["direction"], d.args["dist_m"]), ("back", 0.15))
+
+        self.assertIsNone(ar.classify_motion_continuation("keep moving", left))
+        self.assertIsNone(ar.classify_motion_continuation("keep turning", forward))
+        self.assertIsNone(ar.classify_motion_continuation("more", None))
+        self.assertIsNone(ar.classify_motion_continuation("more details", forward))
+
     def test_turn_args(self):
         d = ar.classify_explicit_motion("turn right 45 degrees")
         self.assertEqual(d.args, {"direction": "right", "deg": 45.0})
         d = ar.classify_explicit_motion("spin around")
         self.assertEqual(d.args.get("deg"), 180.0)
+        d = ar.classify_explicit_motion("turn around")
+        self.assertEqual(d.args, {"direction": "around", "deg": 180.0})
+        d = ar.classify_explicit_motion("turn 180")
+        self.assertEqual(d.args, {"direction": "around", "deg": 180.0})
 
     def test_distance_parse(self):
         d = ar.classify_explicit_motion("move forward 2 feet")
@@ -362,6 +391,11 @@ class ClassifierTest(unittest.TestCase):
     def test_no_false_positives(self):
         for t in ["stop", "play some music", "turn it up", "turn off the lights",
                   "how do I get back to the menu", "let's move on",
+                  "How come you didn't move forward?",
+                  "So how come he didn't move forward?",
+                  "Why did you turn left?",
+                  "Don't move forward",
+                  "Never back up into that trash can",
                   # figurative "move forward" / "go ahead" must NOT drive the base
                   "let's move forward with the plan", "I want to move forward in life",
                   "go ahead and tell me", "move the box forward",
@@ -447,6 +481,36 @@ class MotionTakeoverTest(_MotionTestBase):
         self.assertIsNotNone(self._last("turn"))
         self.assertEqual(I._explicit_motion_takeover("move forward"), "Rolling forward.")
         self.assertIsNotNone(self._last("move"))
+
+    def test_more_repeats_last_successful_motion(self):
+        from intelligence import interaction as I
+        self._connect()
+        I._clear_motion_continuation()
+        self.assertEqual(I._explicit_motion_takeover("turn left"), "Turning left.")
+        self.assertEqual(I._explicit_motion_takeover("more"), "Turning left.")
+        turns = [m for m in self.fake.received if m.get("cmd") == "turn"]
+        self.assertEqual(len(turns), 2)
+        self.assertEqual(turns[-1]["deg"], config.MOTION_DEFAULT_TURN_DEG)
+
+    def test_little_more_uses_small_increment_and_stop_clears(self):
+        from intelligence import interaction as I
+        self._connect()
+        I._clear_motion_continuation()
+        self.assertEqual(I._explicit_motion_takeover("move forward"), "Rolling forward.")
+        self.assertEqual(I._explicit_motion_takeover("a little more"), "Rolling forward.")
+        self.assertAlmostEqual(self._last("move")["dist"],
+                               config.MOTION_CONTINUATION_SMALL_MOVE_M)
+        self.assertEqual(I._explicit_motion_takeover("halt"), "Stopping.")
+        self.assertIsNone(I._explicit_motion_takeover("more"))
+
+    def test_keep_phrase_must_match_previous_motion_kind(self):
+        from intelligence import interaction as I
+        self._connect()
+        I._clear_motion_continuation()
+        self.assertEqual(I._explicit_motion_takeover("turn right"), "Turning right.")
+        self.assertIsNone(I._explicit_motion_takeover("keep moving"))
+        # The mismatched intervening phrase also retires the continuation.
+        self.assertIsNone(I._explicit_motion_takeover("keep turning"))
 
     def test_explicit_come_arms_person_search_instead_of_driving_blind(self):
         from intelligence import interaction as I

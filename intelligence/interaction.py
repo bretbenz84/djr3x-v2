@@ -16609,6 +16609,49 @@ _BARE_MOTION_STOP_RE = re.compile(
     r"^\s*(?:stop|halt|freeze|whoa|hold on|hold up|wait|stop it)\s*[.!]*\s*$", re.I
 )
 
+_motion_continuation_lock = threading.Lock()
+_motion_continuation: Optional[dict[str, Any]] = None
+
+
+def _clear_motion_continuation() -> None:
+    global _motion_continuation
+    with _motion_continuation_lock:
+        _motion_continuation = None
+
+
+def _remember_motion_continuation(decision: action_router.ActionDecision) -> None:
+    """Remember only a successfully issued repeatable maneuver."""
+    if decision.action not in {"motion.turn", "motion.move", "motion.arc"}:
+        return
+    global _motion_continuation
+    remembered = action_router.ActionDecision(
+        action=decision.action,
+        confidence=decision.confidence,
+        args=dict(decision.args or {}),
+        reason=decision.reason,
+    )
+    with _motion_continuation_lock:
+        _motion_continuation = {"decision": remembered, "at": time.monotonic()}
+
+
+def _resolve_motion_continuation(text: str) -> Optional[action_router.ActionDecision]:
+    global _motion_continuation
+    ttl = float(getattr(config, "MOTION_CONTINUATION_TTL_SECS", 45.0))
+    with _motion_continuation_lock:
+        context = _motion_continuation
+        if context is None:
+            return None
+        if time.monotonic() - float(context.get("at") or 0.0) > ttl:
+            _motion_continuation = None
+            return None
+        previous = context.get("decision")
+    return action_router.classify_motion_continuation(
+        text,
+        previous,
+        small_turn_deg=float(getattr(config, "MOTION_CONTINUATION_SMALL_TURN_DEG", 15.0)),
+        small_move_m=float(getattr(config, "MOTION_CONTINUATION_SMALL_MOVE_M", 0.15)),
+    )
+
 
 def _handle_router_motion_action(
     decision: Optional[action_router.ActionDecision],
@@ -16624,6 +16667,7 @@ def _handle_router_motion_action(
     args = decision.args or {}
 
     if action == "motion.stop":
+        _clear_motion_continuation()
         try:
             from intelligence import motion_agency
             motion_agency.cancel_requested_come("stopped by user")
@@ -16633,6 +16677,7 @@ def _handle_router_motion_action(
         return "Stopping."
 
     if action == "motion.come":
+        _clear_motion_continuation()
         try:
             from intelligence import motion_agency
             return "On my way." if motion_agency.request_come_here() else None
@@ -16658,7 +16703,10 @@ def _handle_router_motion_action(
         else:
             seq = motion_controller.turn_left(deg)
             line = "Turning left."
-        return line if seq is not None else None
+        if seq is not None:
+            _remember_motion_continuation(decision)
+            return line
+        return None
 
     if action == "motion.move":
         direction = str(args.get("direction") or "forward").lower()
@@ -16669,7 +16717,10 @@ def _handle_router_motion_action(
         else:
             seq = motion_controller.move_forward(dist)
             line = "Rolling forward."
-        return line if seq is not None else None
+        if seq is not None:
+            _remember_motion_continuation(decision)
+            return line
+        return None
 
     if action == "motion.arc":
         # Compound "move forward and to your right" — a brief simultaneous curve that
@@ -16679,7 +16730,10 @@ def _handle_router_motion_action(
         seq = motion_controller.arc_move(forward, left, small=bool(args.get("small")))
         line = "Curving {} and {}.".format(
             "forward" if forward else "back", "left" if left else "right")
-        return line if seq is not None else None
+        if seq is not None:
+            _remember_motion_continuation(decision)
+            return line
+        return None
 
     return None
 
@@ -16731,6 +16785,8 @@ def _explicit_motion_takeover(
         )
         return denial
     motion_decision = action_router.classify_explicit_motion(text)
+    if motion_decision is None:
+        motion_decision = _resolve_motion_continuation(text)
     requested_come_active = False
     if motion_decision is None and _BARE_MOTION_STOP_RE.match(text or ""):
         try:
@@ -16748,6 +16804,9 @@ def _explicit_motion_takeover(
             reason="bare stop while base moving",
         )
     if motion_decision is None:
+        # Continuations are adjacency-sensitive. Any intervening non-motion turn
+        # retires the context, while TTL also handles a long silent gap.
+        _clear_motion_continuation()
         return None
     _router_audit_note_decision(router_audit, motion_decision)
     result = _handle_router_motion_action(motion_decision)
@@ -16797,6 +16856,7 @@ def _handle_explore_invite(
     started = exploration.start(person_id, person_name, source=source)
     if not started:
         return None
+    _clear_motion_continuation()
     _log.info("[explore] invite accepted (person_id=%s source=%s)", person_id, source)
     _router_audit_note_fast_local_action(
         router_audit, "motion.explore", reason="room-exploration invitation"

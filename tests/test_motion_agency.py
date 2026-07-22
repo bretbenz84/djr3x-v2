@@ -36,8 +36,11 @@ class MotionAgencyTest(unittest.TestCase):
             mock.patch.object(MA.motion, "state", return_value="idle"),
             mock.patch.object(MA.motion_controller, "turn", return_value=7),
             mock.patch.object(MA.motion_controller, "come", return_value=8),
+            mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
         ]
-        self.available, self.state, self.turn, self.come = [p.start() for p in self._patches]
+        self.available, self.state, self.turn, self.come, self.battery = [
+            p.start() for p in self._patches
+        ]
         # Tracked person: locked+visible on slot person_1.
         self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
         self._ws = mock.patch(
@@ -172,6 +175,13 @@ class MotionAgencyTest(unittest.TestCase):
             0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
         )
         self.assertFalse(MA.requested_come_active())
+
+    def test_requested_come_matches_recognized_db_lock(self):
+        self._tracking = {"locked": True, "visible": True, "lock_key": "db:1"}
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.come.assert_called_once()
+        self.turn.assert_not_called()
 
     def test_requested_come_aligns_before_approaching(self):
         self._neck = 7594
@@ -369,8 +379,14 @@ class FlinchTest(unittest.TestCase):
 
     # ── firmware BLOCKED (fast / very close) ─────────────────────────────────────
 
-    def test_blocked_on_front_backs_off_immediately(self):
-        self._tick(front_mm=80, state="blocked")   # 0.08 m front, rear open
+    def test_blocked_close_read_without_approach_baseline_holds(self):
+        self._tick(front_mm=80, state="blocked")
+        self.move.assert_not_called()
+
+    def test_blocked_after_observed_approach_backs_off(self):
+        self._tick(front_mm=1500, state="idle")
+        self._tick(front_mm=80, state="blocked")
+        self._tick(front_mm=80, state="blocked")
         self.move.assert_called_once()
         self.assertLess(self.move.call_args[0][0], 0)
 
@@ -448,19 +464,13 @@ class FlinchTest(unittest.TestCase):
             self._tick(front_mm=mm)
         self.move.assert_not_called()
 
-    def test_blocked_subfloor_front_still_backs_off(self):
-        # Crowder jammed ~3 cm off the front (below the idle noise floor): the firmware
-        # already vouched for it via BLOCKED, so the reflex must still back off.
+    def test_blocked_subfloor_front_holds_without_valid_approach_evidence(self):
         self._tick(fl_mm=30, fr_mm=25, rl_mm=4000, rr_mm=4000, state="blocked")
-        self.move.assert_called_once()
-        self.assertLess(self.move.call_args[0][0], 0)
+        self.move.assert_not_called()
 
-    def test_blocked_unreadable_front_backs_off_when_rear_clear(self):
-        # Front too close to read (-1) under a latched block with the rear open ⇒ it is
-        # a front block ⇒ back off.
+    def test_blocked_unreadable_front_holds_when_rear_clear(self):
         self._tick(fl_mm=-1, fr_mm=-1, rl_mm=4000, rr_mm=4000, state="blocked")
-        self.move.assert_called_once()
-        self.assertLess(self.move.call_args[0][0], 0)
+        self.move.assert_not_called()
 
     def test_master_kill_resets_baseline(self):
         # Someone walks up while autonomy is OFF -> must NOT read as an approach when

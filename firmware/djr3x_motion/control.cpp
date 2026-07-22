@@ -21,10 +21,9 @@ static inline float wrap_pi(float a) {
 static inline float signf(float v) { return v >= 0.0f ? 1.0f : -1.0f; }
 
 #if MOTION_HW_PRESENT
-// Teleop setpoint slew state (m/s, rad/s). The commanded velocity ramps toward the
-// stick target at params.accel_* — symmetric, so release coasts to a stop instead of
-// hard dynamic-braking. Owned solely by control_tick (single control task), reset on
-// any halt. Only CMD_DRIVE (gamepad/teleop) is slewed; finite move/turn/come stay crisp.
+// Setpoint slew state (m/s, rad/s). Every normal drive mode ramps toward its target
+// at params.accel_*; finite voice/autonomy commands used to bypass this path and hit
+// full target velocity in one control tick. Owned solely by control_tick.
 static float s_ramp_lin = 0.0f, s_ramp_ang = 0.0f;
 #endif
 
@@ -312,8 +311,8 @@ void control_tick(float dt) {
     // teleop ramp pinned to zero so a later takeover starts from rest, not mid-jog.
     s_ramp_lin = 0.0f; s_ramp_ang = 0.0f;
     hal_drive_wheel_raw(c.finite.wheel_side, c.finite.wheel_frac);
-  } else if (c.cmd_mode == CMD_DRIVE) {
-    // Hard halt on a reflex block: CUT the teleop ramp toward the obstacle instead of
+  } else {
+    // Hard halt on a reflex block: CUT the ramp toward the obstacle instead of
     // letting it decay at accel_lin — with the target zeroed the wheels sit enabled at
     // zero duty (BTS7960 both-low = dynamic brake), so the base stops NOW rather than
     // coasting the last stretch into the wall (field fix 2026-07-11).
@@ -324,10 +323,9 @@ void control_tick(float dt) {
       if (br2 && s_ramp_lin < 0) s_ramp_lin = 0;
     }
     if (c.charging) { s_ramp_lin = 0; s_ramp_ang = 0; }   // charging: hard zero, no coast
-    // Teleop: slew the commanded velocity toward the target (accel-limited, symmetric)
-    // so a stick push ramps up briskly and a release coasts to a stop rather than
-    // stepping to zero and dynamic-braking. Feedforward (in wheel_pid) keeps the ramp
-    // responsive; the slew just removes the jerk at both ends.
+    // Slew every ordinary command (manual drive and finite move/turn/come). This
+    // removes the autonomous one-tick launch while preserving the hard safety cut
+    // above. Feedforward keeps the low end responsive despite the gentler envelope.
     const float al = c.params.accel_lin * dt;
     const float aa = c.params.accel_ang * dt;
     s_ramp_lin += clampf(lin_t - s_ramp_lin, -al, al);
@@ -337,14 +335,9 @@ void control_tick(float dt) {
     // the inside wheel; as forward is added the reverse allowance eases out until a
     // turn only slows the inside wheel. The Mac's autonomous `drive` (owner==AUTO)
     // keeps plain differential mixing (blend forced to 1, pivot_steer false).
+    const bool manual = (c.owner == OWNER_MANUAL && c.cmd_mode == CMD_DRIVE);
     hal_drive_velocity(s_ramp_lin, s_ramp_ang, dt,
-                       c.owner == OWNER_MANUAL, c.setpoint.pivot_blend);
-  } else {
-    // Autonomous finite move/turn/come (or idle): drive the target directly and keep
-    // the ramp synced to it, so a later teleop takeover starts from the real velocity.
-    // pivot_steer=false — a finite TURN must spin in place (one wheel reverses).
-    s_ramp_lin = lin_t; s_ramp_ang = ang_t;
-    hal_drive_velocity(lin_t, ang_t, dt, false, 1.0f);
+                       manual, manual ? c.setpoint.pivot_blend : 1.0f);
   }
 #else
   // Push velocity to the motor HAL (stub: no-op until wheels are wired).

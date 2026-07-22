@@ -1255,10 +1255,32 @@ _MOTION_STOP_RE = re.compile(
     re.I,
 )
 _MOTION_DEG_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:deg|degree|degrees|°)", re.I)
+_MOTION_BARE_TURN_DEG_RE = re.compile(
+    r"\b(?:turn|rotate|spin|pivot)\s+(?P<deg>\d+(?:\.\d+)?)\s*(?:°)?\s*$",
+    re.I,
+)
 _MOTION_DIST_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(cm|centimet(?:er|re)s?|mm|millimet(?:er|re)s?|"
     r"m|met(?:er|re)s?|ft|foot|feet|in|inch|inches)\b",
     re.I,
+)
+_MOTION_EXPLANATION_RE = re.compile(
+    r"^\s*(?:so\s+)?(?:why\b|how\s+come\b|what\s+made\s+(?:you|him|her|it|them)\b)",
+    re.I,
+)
+_MOTION_NEGATED_RE = re.compile(
+    r"\b(?:don'?t|do\s+not|never|shouldn'?t|mustn'?t|can'?t|cannot)\b"
+    r".{0,24}\b(?:move|go|roll|drive|turn|rotate|spin|pivot|back\s*up|come)\b",
+    re.I,
+)
+_MOTION_MORE_RE = re.compile(
+    r"^\s*(?P<small>(?:a\s+)?(?:little|bit)\s+)?more\s*[.!]*\s*$", re.I,
+)
+_MOTION_KEEP_TURNING_RE = re.compile(
+    r"^\s*(?:keep|continue)\s+(?:on\s+)?turning\s*[.!]*\s*$", re.I,
+)
+_MOTION_KEEP_MOVING_RE = re.compile(
+    r"^\s*(?:keep|continue)\s+(?:on\s+)?(?:moving|going)\s*[.!]*\s*$", re.I,
 )
 
 
@@ -1279,6 +1301,49 @@ def _motion_dist_to_m(text: str) -> "float | None":
     return val  # metres
 
 
+def classify_motion_continuation(
+    text: str,
+    previous: ActionDecision | None,
+    *,
+    small_turn_deg: float = 15.0,
+    small_move_m: float = 0.15,
+) -> ActionDecision | None:
+    """Bind a short follow-up to the most recent successful finite motion.
+
+    Deliberately requires caller-supplied live context: these phrases are not motion
+    commands on their own. "Keep turning" only binds to a turn and "keep moving"
+    only to a move/arc; bare "more" can repeat any of those. "A little more" keeps
+    direction but substitutes a small bounded increment.
+    """
+    if previous is None or previous.action not in {"motion.turn", "motion.move", "motion.arc"}:
+        return None
+    cleaned = " ".join((text or "").strip().split())
+    more = _MOTION_MORE_RE.match(cleaned)
+    if _MOTION_KEEP_TURNING_RE.match(cleaned):
+        if previous.action != "motion.turn":
+            return None
+    elif _MOTION_KEEP_MOVING_RE.match(cleaned):
+        if previous.action not in {"motion.move", "motion.arc"}:
+            return None
+    elif not more:
+        return None
+
+    args = dict(previous.args or {})
+    if more and more.group("small"):
+        if previous.action == "motion.turn":
+            args["deg"] = abs(float(small_turn_deg))
+        elif previous.action == "motion.move":
+            args["dist_m"] = abs(float(small_move_m))
+        else:
+            args["small"] = True
+    return ActionDecision(
+        action=previous.action,
+        confidence=0.97,
+        args=args,
+        reason=f"continuation of previous {previous.action} command",
+    )
+
+
 def classify_explicit_motion(text: str) -> ActionDecision | None:
     """Classify explicit drive-base motion commands without an LLM call.
 
@@ -1288,6 +1353,12 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
     otherwise)."""
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
+        return None
+    # Questions about prior behavior and explicit negations are conversation, not
+    # commands. This guard must precede every motion family because takeover runs
+    # before the general dialogue router (field log: "How come you didn't move
+    # forward?" otherwise drove the robot while the user was diagnosing it).
+    if _MOTION_EXPLANATION_RE.search(cleaned) or _MOTION_NEGATED_RE.search(cleaned):
         return None
 
     if _MOTION_COME_RE.search(cleaned):
@@ -1349,6 +1420,18 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
                 "small": True,   # lateral repositioning: always a brief, gentle curve
             },
             reason="explicit lateral move request",
+        )
+
+    # Natural spoken shorthand commonly omits the unit: "turn 180". Keep this
+    # narrow (turn verb + one trailing number) so unrelated numeric phrases never
+    # acquire control of the drive base.
+    bare_turn = _MOTION_BARE_TURN_DEG_RE.search(cleaned)
+    if bare_turn:
+        degrees = float(bare_turn.group("deg"))
+        return ActionDecision(
+            action="motion.turn", confidence=0.95,
+            args={"direction": "around" if degrees == 180.0 else "left", "deg": degrees},
+            reason="explicit numeric turn request",
         )
 
     turn = _MOTION_TURN_RE.search(cleaned)

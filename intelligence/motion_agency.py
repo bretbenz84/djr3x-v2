@@ -232,9 +232,17 @@ def _tracked_person(snapshot: dict) -> Optional[dict]:
         if not (tracking.get("locked") and tracking.get("visible")):
             return None
         lock_key = str(tracking.get("lock_key") or "")
-        slot = lock_key.split(":", 1)[1] if ":" in lock_key else lock_key
+        kind, _, value = lock_key.partition(":")
+        value = value if _ else kind
         for person in snapshot.get("people") or []:
-            if isinstance(person, dict) and person.get("id") == slot:
+            if not isinstance(person, dict):
+                continue
+            # Face tracking uses db:<person_db_id> for recognized people and a
+            # camera slot key for unknowns. Comparing db:1 only with person["id"]
+            # made a recognized, visibly tracked speaker impossible to acquire.
+            if kind == "db" and str(person.get("person_db_id")) == value:
+                return person
+            if kind != "db" and str(person.get("id")) == value:
                 return person
         return None
     except Exception:
@@ -377,14 +385,10 @@ def _maybe_flinch(profile, now: float, state: str) -> bool:
     consecutive-tick confirm counter, so a real approach (from either side, fast or
     slow) fires while static clutter and single-frame noise do not.
 
-    BLOCKED — the firmware has already latched on a too-close obstacle; if it is in
-    FRONT (front read inside the trigger, OR too close to read at all — the firmware
-    only blocks front/rear, so a latched block with the rear clear is a front one) that
-    IS the intrusion, so back off immediately (no confirm needed, and the idle noise
-    floor does not apply — the firmware already vouched for a real obstacle). A reverse
-    away from a front block runs even while blocked; the firmware zeroes it if the rear
-    is also blocked, and _flinch_retreat holds first if the rear is tight — so he never
-    reverses into a wall.
+    BLOCKED — the firmware vouches only that an obstacle is close, not that a PERSON
+    approached. Require the same temporal closure evidence as idle, using the baseline
+    sampled before the block. This deliberately fails closed when there is no baseline:
+    a stuck-close matrix return or robot body part must never make Rex reverse blindly.
 
     Never raises."""
     tele = motion.telemetry()
@@ -394,20 +398,19 @@ def _maybe_flinch(profile, now: float, state: str) -> bool:
     if not isinstance(tof, dict):
         return False
     rear = _min_valid_m(tof.get("rl"), tof.get("rr"))
-    trigger = _num("MOTION_FLINCH_TRIGGER_M", 0.45)
-
     if state == "blocked":
-        # Use the RAW front (no idle noise floor): a crowder pressed sub-floor close is
-        # exactly the case this path exists for. front >= trigger means the block is
-        # rear/side, not a crowder — leave it alone. front None (both dead/too-close)
-        # under a latched block ⇒ front block ⇒ pin it at contact and let the rear cap
-        # (cornered/blind → hold) decide safely.
-        front = _min_valid_m(tof.get("fl"), tof.get("fr"))
-        if front is not None and front >= trigger:
+        fl = _flinch_side_m(tof.get("fl"))
+        fr = _flinch_side_m(tof.get("fr"))
+        intruding = _side_intrudes("fl", fl) or _side_intrudes("fr", fr)
+        if not intruding:
+            _flinch_state["hits"] = 0
+            return False
+        _flinch_state["hits"] += 1
+        if _flinch_state["hits"] < max(1, int(_num("MOTION_FLINCH_CONFIRM_TICKS", 2))):
             return False
         if _flinch_gated(profile, now):
             return False
-        return _flinch_retreat(0.0 if front is None else front, rear, now, "front-block")
+        return _flinch_retreat(_nearest(fl, fr), rear, now, "blocked-approach")
 
     fl = _flinch_side_m(tof.get("fl"))
     fr = _flinch_side_m(tof.get("fr"))

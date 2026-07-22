@@ -219,11 +219,10 @@
 #define WHEEL_TARGET_MAX_MS      0.90f
 
 // ---- Drive setpoint slew (teleop feel) ------------------------------------
-// Acceleration limit applied to the TELEOP (gamepad drive) setpoint so the base
+// Acceleration limit applied to every normal drive setpoint so the base
 // ramps smoothly toward the stick command in BOTH directions — symmetric, so a
 // released stick coasts to a stop over ~(speed/accel) seconds instead of slamming
-// to zero and dynamic-braking (the abrupt-stop complaint). Autonomous finite
-// move/turn/come commands are NOT slewed here (they stay crisp + distance-accurate).
+// to zero and dynamic-braking. Autonomous finite move/turn/come share the ramp.
 // Softened repeatedly after field tests ("takes off too fast" x3), then RESCALED
 // 2026-07-11 when units became real. The old odometry units DEFLATED motion (lin
 // ÷4.09, ang ÷2.75), so the field-approved feel in PHYSICAL units was: lin 0.2×4.09

@@ -741,13 +741,28 @@ watchdog — it can stop the base without the Mac) and the **Mac owns the intent
   voice verbs, speed-cap clamping, the heartbeat thread, and the **autonomous gate**:
   suppressed while `config.INTERACTION_PAUSED` or while a gamepad owns the base
   (`owner == "manual"` in telemetry); `stop`/`estop` always pass. Sends a `config` command
-  with the Mac's caps/zones at connect. **`available()` is False when no base is
+  with the Mac's caps/zones and linear/angular acceleration limits at connect. Firmware
+  slews manual and finite autonomous commands through the same ramp. **`available()` is False when no base is
   connected, so the conversation pipeline is unchanged unless `MOTION_ESP32_PORT` is set.**
 - **Routing:** `action_router` has `motion.turn/move/come/stop` action specs and
   `classify_explicit_motion` (deterministic, high-precision — no LLM). `interaction.py`
   dispatches them via `_handle_router_motion_action` and runs the classifier in the fast
   local takeover (gated on `motion_controller.available()`). Bare "stop" routes to the
   base **only while it is moving**, so it never steals stop-music/stop-game/stop-talking.
+  Unitless numeric turns such as `turn 180` are local commands; diagnostic questions
+  (`why/how come ... move`) and negated motion phrases are explicitly non-executable.
+  A successfully issued turn/move/arc seeds one adjacency-sensitive continuation:
+  `more` repeats it, `a little more` preserves direction with a small increment, and
+  `keep turning`/`keep moving`/`keep going` require a matching prior motion kind. Stop, come,
+  exploration, an intervening non-motion turn, or the 45-second TTL clears the context.
+- **Social autonomy:** `motion_agency.py` resolves recognized face locks (`db:<id>`) against
+  `person_db_id`, so an already-visible speaker can be approached without a blind scan.
+  The flinch reflex requires temporal approach evidence even when firmware reports
+  `blocked`; a persistent close ToF return is never, by itself, permission to reverse.
+- **Invited exploration:** `exploration.py` scores the eight radial ToF headings (with
+  the floor-rejected front 8x8 matrix overlaid in `fl/fr`), turns toward live open space,
+  then derives each forward leg from post-turn clearance minus a body margin. Repeated
+  legs continue through the opening until clearance shrinks; distance is not randomized.
 - **Config:** `MOTION_*` tunables in `config.py`; `MOTION_ESP32_PORT` in `.env` (loaded as
   `MOTION_PORT_SET`). `main.py` Step-4 connects it and logs `Motion base: enabled/disabled`
   like the other hardware; shutdown stops the heartbeat and leaves the base stopped.

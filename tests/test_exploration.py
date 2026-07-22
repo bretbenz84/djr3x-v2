@@ -357,6 +357,7 @@ class LocomotionTests(unittest.TestCase):
         with mock.patch.object(ex, "base_available", return_value=True), \
                 mock.patch("intelligence.motion_controller.turn", return_value=11) as turn, \
                 mock.patch("intelligence.motion_controller.move", return_value=12) as move, \
+                mock.patch.object(ex, "_tof_mm", return_value={"fl": 2000, "fr": 1900, "lf": 2500}), \
                 mock.patch("hardware.motion.wait_done", return_value={"result": "completed", "odom": {"x": 0, "y": 0, "theta": 0}}):
             ex._travel_one_leg(sess)
         turn.assert_called_once()
@@ -370,6 +371,7 @@ class LocomotionTests(unittest.TestCase):
         with mock.patch.object(ex, "base_available", return_value=True), \
                 mock.patch("intelligence.motion_controller.turn", return_value=11), \
                 mock.patch("intelligence.motion_controller.move", return_value=12), \
+                mock.patch.object(ex, "_tof_mm", return_value={"fl": 1800, "fr": 1700}), \
                 mock.patch("hardware.motion.wait_done", return_value={"result": "blocked", "odom": {"x": 0, "y": 0, "theta": 0}}):
             ex._travel_one_leg(sess)
         self.assertEqual(sess.blocked_legs, 1)
@@ -424,6 +426,7 @@ class LocomotionTests(unittest.TestCase):
         with mock.patch.object(ex, "base_available", return_value=True), \
                 mock.patch("intelligence.motion_controller.turn", side_effect=_turn_then_pause), \
                 mock.patch("intelligence.motion_controller.move") as move, \
+                mock.patch.object(ex, "_tof_mm", return_value={"fl": 900, "fr": 850, "lf": 2000}), \
                 mock.patch("hardware.motion.wait_done", return_value={"result": "completed", "odom": {}}):
             ex._travel_one_leg(sess)
         move.assert_not_called()  # forward leg cancelled by the pause
@@ -447,16 +450,34 @@ class LocomotionTests(unittest.TestCase):
         sess.best = _cand("neon sign", 0.95)
         self.assertTrue(ex._should_fixate(sess))
 
-    def test_heading_and_distance_are_varied_from_configured_ranges(self):
+    def test_heading_and_distance_come_from_tof_clearance(self):
         sess = _new_session()
-        sess.last_open_direction = "left"
-        with mock.patch("intelligence.exploration.random.uniform", return_value=88.0):
-            self.assertEqual(ex._plan_leg_heading(sess), 88.0)
-        with mock.patch.object(config, "EXPLORE_LEG_DIST_M", 0.8), \
-                mock.patch.object(config, "EXPLORE_LEG_DIST_JITTER_M", 0.25), \
-                mock.patch("intelligence.exploration.random.uniform", return_value=0.93) as uniform:
-            self.assertEqual(ex._plan_leg_distance(), 0.93)
-        uniform.assert_called_once_with(0.55, 1.05)
+        tof = {"fl": 900, "fr": 850, "lf": 2200, "lb": 800,
+               "rl": 700, "rr": 700, "rb": 800, "rf": 600}
+        with mock.patch.object(ex, "_tof_mm", return_value=tof), \
+                mock.patch("hardware.motion.telemetry", return_value={"odom": {"theta": 0.0}}):
+            self.assertEqual(ex._plan_leg_heading(sess), 67.5)
+            # min(front)=0.85; (0.85 - 0.45) * 0.65 = 0.26 m
+            self.assertAlmostEqual(ex._plan_leg_distance(), 0.26, places=2)
+
+    def test_distance_refuses_close_or_missing_front_tof(self):
+        with mock.patch.object(ex, "_tof_mm", return_value={"fl": 500, "fr": 480}):
+            self.assertIsNone(ex._plan_leg_distance())
+        with mock.patch.object(ex, "_tof_mm", return_value={}):
+            self.assertIsNone(ex._plan_leg_distance())
+
+    def test_open_front_prefers_straight_corridor(self):
+        sess = _new_session()
+        tof = {"fl": 2500, "fr": 2400, "lf": 1200, "rf": 1200}
+        with mock.patch.object(ex, "_tof_mm", return_value=tof), \
+                mock.patch("hardware.motion.telemetry", return_value={"odom": {"theta": 0.0}}):
+            self.assertEqual(ex._plan_leg_heading(sess), 0.0)
+
+    def test_clear_floor_language_is_not_a_hazard(self):
+        for text in ("None", "Looks clear ahead", "The floor ahead looks clear.", ""):
+            self.assertEqual(ex._normalize_floor_hazard(text), "")
+        self.assertEqual(ex._normalize_floor_hazard("cables across the floor"),
+                         "cables across the floor")
 
     def test_travel_gaze_spans_the_turn_and_move(self):
         sess = _new_session()
@@ -483,6 +504,7 @@ class LocomotionTests(unittest.TestCase):
                 ) as stop_gaze, \
                 mock.patch("intelligence.motion_controller.turn", side_effect=_turn), \
                 mock.patch("intelligence.motion_controller.move", side_effect=_move), \
+                mock.patch.object(ex, "_tof_mm", return_value={"fl": 2000, "fr": 1900, "lf": 2500}), \
                 mock.patch("hardware.motion.wait_done", return_value={"result": "completed", "odom": {}}):
             ex._travel_one_leg(sess)
 

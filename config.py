@@ -6890,6 +6890,8 @@ MOTION_PROTO_VERSION = 1
 # _ANG_RADS), so pushing these no longer slows manual driving.
 MOTION_MAX_LINEAR_MS = 0.25           # m/s
 MOTION_MAX_ANGULAR_DEG_S = 60.0       # deg/s (converted to rad/s on the wire)
+MOTION_ACCEL_LINEAR_MS2 = 0.35        # all drive modes: gentle velocity ramp, m/s^2
+MOTION_ACCEL_ANGULAR_RAD_S2 = 2.0     # all drive modes: angular ramp, rad/s^2
 # FULL-SPEED collision envelope: the firmware scales the effective zones with
 # measured speed — these values apply at full teleop speed, shrinking linearly to
 # hard floors at rest (0.10 m stop / 0.18 m slow, calib.h) so slow positioning can
@@ -6909,6 +6911,9 @@ MOTION_COME_SEARCH_TIMEOUT_SECS = 45.0
 MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
 MOTION_DEFAULT_TURN_RATE = 40.0       # deg/s
 MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated distance
+MOTION_CONTINUATION_TTL_SECS = 45.0   # max silent gap; any intervening non-motion turn clears it
+MOTION_CONTINUATION_SMALL_TURN_DEG = 15.0  # "a little more" after a turn
+MOTION_CONTINUATION_SMALL_MOVE_M = 0.15    # "a little more" after a move
 
 # Drive tuning (real-HW per-wheel PID + calibration). Pushed to the ESP32 on connect
 # ONLY when set — None means the firmware's calib.h boot defaults stand, so Rex never
@@ -6982,8 +6987,8 @@ MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (
 # flinch fires when a side is inside
 # _TRIGGER_M AND has closed by _APPROACH_DROP_M off that baseline for _CONFIRM_TICKS
 # consecutive ticks (a real intrusion — fast or slow, either side — not static clutter
-# or a single noisy frame). A firmware BLOCKED-on-the-front state (a crowder too close
-# or too fast for the ~1 Hz sampler) triggers the same back-off immediately. He backs
+# or a single noisy frame). A firmware BLOCKED state still requires that temporal
+# approach evidence; a static close return is an obstacle, not proof of a person. He backs
 # up ONLY to a point: capped by the rear ToF (rl/rr) to leave _REAR_MARGIN_M of
 # clearance and stop short of the wall; cornered — or BLIND behind (rear sensors dead,
 # where the firmware stop also fails open) — he holds. The firmware's always-on
@@ -7042,6 +7047,17 @@ EXPLORE_LEG_DIST_M = _env_float("EXPLORE_LEG_DIST_M", 0.80, min_value=0.1, max_v
 EXPLORE_LEG_DIST_JITTER_M = _env_float(
     "EXPLORE_LEG_DIST_JITTER_M", 0.25, min_value=0.0, max_value=1.0,
 )  # each leg varies around EXPLORE_LEG_DIST_M instead of marching a fixed distance
+# Sensor-driven navigation: radial ToF chooses heading; the post-turn front pair
+# (including the firmware's 8x8 matrix overlay) chooses distance. The older nominal
+# and jitter knobs remain for config compatibility but are no longer navigation inputs.
+EXPLORE_LEG_MIN_M = _env_float("EXPLORE_LEG_MIN_M", 0.20, min_value=0.05, max_value=1.0)
+EXPLORE_LEG_MAX_M = _env_float("EXPLORE_LEG_MAX_M", 1.50, min_value=0.2, max_value=3.0)
+EXPLORE_CLEARANCE_MARGIN_M = _env_float(
+    "EXPLORE_CLEARANCE_MARGIN_M", 0.45, min_value=0.15, max_value=1.5,
+)
+EXPLORE_CLEARANCE_FRACTION = _env_float(
+    "EXPLORE_CLEARANCE_FRACTION", 0.65, min_value=0.2, max_value=1.0,
+)
 EXPLORE_LEG_SPEED_MS = _env_float(
     "EXPLORE_LEG_SPEED_MS", 0.16, min_value=0.03, max_value=0.25,  # lively but below the base cap
 )
