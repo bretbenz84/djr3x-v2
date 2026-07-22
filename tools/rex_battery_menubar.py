@@ -12,15 +12,20 @@ How it gets the data with no protocol handshake:
   boots — unconditionally, before any handshake (telemetryTask in
   firmware/djr3x_motion/djr3x_motion.ino). Every frame carries batt_mv /
   batt_ma / batt_soc. So this app just opens MOTION_ESP32_PORT and parses
-  NDJSON. It is PASSIVE with exactly one exception: the "Set Battery to 100%"
+  NDJSON. It is PASSIVE with two exceptions: the "Set Battery to 100%"
   menu item sends a single `batt_full` command (docs/motion_protocol.md §5.11)
   to sync the coulomb gauge when the operator watches the charger's taper
   current hit cutoff — evidence of "full" the firmware can't see on its own
   (mid-absorption the pack is never at rest, so the boot rest-voltage anchor
-  can't fire until a power-cycle). It never sends motion commands. Side effect
-  of any write: the firmware's comms watchdog arms (seen_mac) and re-latches
-  comms_lost once we go quiet — harmless while the base is idle, and the
-  dropdown already presents that state as benign standby.
+  can't fire until a power-cycle) — and the JOYSTICK embedded in the dropdown
+  (owner request 2026-07-21), which drives the base directly while dragged:
+  `drive` setpoints refreshed each worker loop (~10 Hz while telemetry flows,
+  bounded by readline's timeout) and one `stop` on release. The firmware's
+  300 ms drive deadman is the backstop — if this app stalls, loses the port,
+  or the menu closes mid-drag, the base ramps to a stop on its own. Side
+  effect of any write: the firmware's comms watchdog arms (seen_mac) and
+  re-latches comms_lost once we go quiet — harmless while the base is idle,
+  and the dropdown already presents that state as benign standby.
 
 How it shares the serial port with main.py (ports are exclusive-open):
   Same dormant pattern the supervisor uses for the microphone. main.py holds
@@ -180,6 +185,15 @@ def _queue_batt_full() -> None:
         _tx_queue.append(payload.encode("utf-8"))
 
 
+def _queue_stop() -> None:
+    """Immediate controlled stop (the STOP menu item; also usable any time)."""
+    global _tx_seq
+    with _tx_lock:
+        _tx_seq += 1
+        payload = json.dumps({"v": 1, "cmd": "stop", "seq": _tx_seq}) + "\n"
+        _tx_queue.append(payload.encode("utf-8"))
+
+
 def _drain_tx(ser) -> None:
     """Send any queued commands. Serial write errors are left to the read path
     to detect (it owns reopen); a failed command is dropped, not retried —
@@ -198,6 +212,61 @@ def _drain_tx(ser) -> None:
 def _clear_tx() -> None:
     with _tx_lock:
         _tx_queue.clear()
+
+
+# ── Joystick (dropdown view → serial worker) ──────────────────────────────────
+# The AppKit view (run_app) writes the stick position here; the serial worker
+# turns it into `drive` lines each loop pass. Conservative caps, mirroring the
+# GUI Motivator console's arcade mixing: stick-up = forward, stick-right =
+# clockwise. The firmware still clamps to its own params and runs the full
+# zone reflex (slow/stop) on top of whatever we send.
+_JOY_MAX_LIN_MS = 0.25          # m/s at full stick (== config MOTION_MAX_LINEAR_MS default)
+_JOY_MAX_ANG_DEG_S = 60.0       # deg/s at full stick
+_JOY_DEADZONE = 0.06            # ignore resting jitter near center
+
+_joy_lock = threading.Lock()
+_joy = {"x": 0.0, "y": 0.0, "engaged": False}   # x right+, y up+ (normalized -1..1)
+_joy_was_driving = False        # worker-thread only: displaced -> centered sends one stop
+
+
+def _joy_set(x: float, y: float, engaged: bool) -> None:
+    """UI thread: publish the stick position (unit-circle clamped by the view)."""
+    with _joy_lock:
+        _joy["x"] = float(x)
+        _joy["y"] = float(y)
+        _joy["engaged"] = bool(engaged)
+
+
+def _joy_release() -> None:
+    _joy_set(0.0, 0.0, False)
+
+
+def _service_joystick(ser) -> None:
+    """Worker thread, once per loop pass: refresh the drive setpoint from the
+    stick (the ~10 Hz telemetry cadence feeds the firmware's 300 ms deadman),
+    or send one `stop` when the stick was just released. Write errors are left
+    to the read path, which owns reopen."""
+    global _tx_seq, _joy_was_driving
+    with _joy_lock:
+        x, y, engaged = _joy["x"], _joy["y"], _joy["engaged"]
+    driving = engaged and math.hypot(x, y) > _JOY_DEADZONE
+    if not driving and not _joy_was_driving:
+        return
+    with _tx_lock:
+        _tx_seq += 1
+        seq = _tx_seq
+    if driving:
+        lin = y * _JOY_MAX_LIN_MS
+        ang = -x * math.radians(_JOY_MAX_ANG_DEG_S)   # stick-right -> clockwise (REP-103)
+        payload = json.dumps({"v": 1, "cmd": "drive", "seq": seq,
+                              "lin": round(lin, 3), "ang": round(ang, 3)}) + "\n"
+    else:
+        payload = json.dumps({"v": 1, "cmd": "stop", "seq": seq}) + "\n"
+    try:
+        ser.write(payload.encode("utf-8"))
+        _joy_was_driving = driving
+    except Exception as exc:
+        log.warning("Joystick write failed (%s) — read path will reopen.", exc)
 
 
 # "Restart ESP32" menu click → the worker (which owns the open handle) pulses the
@@ -387,12 +456,22 @@ def _worker() -> None:
 
     def _close():
         nonlocal ser
+        global _joy_was_driving
         if ser is not None:
+            try:
+                if _joy_was_driving:
+                    # Best-effort stop before the handle goes away; the firmware
+                    # deadman (300 ms) covers this even if the write fails.
+                    ser.write(b'{"v":1,"cmd":"stop","seq":0}\n')
+            except Exception:
+                pass
             try:
                 ser.close()
             except Exception:
                 pass
             ser = None
+        _joy_was_driving = False
+        _joy_release()
         # A queued click must not fire surprisingly late on a future reconnect.
         _clear_tx()
         if _reset_flag.is_set():
@@ -455,6 +534,7 @@ def _worker() -> None:
 
         _drain_tx(ser)
         _service_reset(ser)
+        _service_joystick(ser)
 
         try:
             line = ser.readline()   # 1 s timeout → empty bytes
@@ -731,6 +811,131 @@ def _fmt_age(age: float) -> str:
 
 # ── Menu bar app ───────────────────────────────────────────────────────────────
 
+def _make_joystick_view():
+    """Build the AppKit joystick view embedded in the dropdown (NSMenuItem
+    custom view, the same mechanism as the volume slider in the sound menu).
+    macOS delivers mouse-drag events to menu-item views during menu tracking,
+    so dragging the knob works with the menu open; the worker thread turns the
+    published position into `drive` lines. Returns an NSView."""
+    import objc
+    from AppKit import (NSBezierPath, NSColor, NSFont, NSFontAttributeName,
+                        NSForegroundColorAttributeName, NSView)
+    from Foundation import NSMakeRect, NSString
+
+    class RexJoystickView(NSView):
+        def initWithFrame_(self, frame):
+            self = objc.super(RexJoystickView, self).initWithFrame_(frame)
+            if self is None:
+                return None
+            self.live = False       # set by the refresh timer; gates mouse input
+            self.kx = 0.0           # knob position, unit circle, y up+
+            self.ky = 0.0
+            return self
+
+        def acceptsFirstMouse_(self, _event):
+            return True
+
+        def _geom(self):
+            b = self.bounds()
+            w, h = b.size.width, b.size.height
+            cx, cy = w / 2.0, h / 2.0
+            r = min(w, h) / 2.0 - 10.0
+            return cx, cy, r
+
+        @objc.python_method
+        def _track(self, event, engaged):
+            if not self.live:
+                return
+            p = self.convertPoint_fromView_(event.locationInWindow(), None)
+            cx, cy, r = self._geom()
+            travel = max(1.0, r - r * 0.30)
+            nx = (p.x - cx) / travel
+            ny = (p.y - cy) / travel          # NSView y is up — matches ly up+
+            n = math.hypot(nx, ny)
+            if n > 1.0:
+                nx, ny = nx / n, ny / n
+            if not engaged:
+                nx = ny = 0.0
+            self.kx, self.ky = nx, ny
+            _joy_set(nx, ny, engaged)
+            self.setNeedsDisplay_(True)
+
+        def mouseDown_(self, event):
+            self._track(event, True)
+
+        def mouseDragged_(self, event):
+            self._track(event, True)
+
+        def mouseUp_(self, event):
+            self._track(event, False)
+
+        def recenter(self):
+            self.kx = self.ky = 0.0
+            self.setNeedsDisplay_(True)
+
+        def setLive_(self, live):
+            live = bool(live)
+            if live != self.live:
+                self.live = live
+                if not live:
+                    self.kx = self.ky = 0.0
+                self.setNeedsDisplay_(True)
+
+        def drawRect_(self, _rect):
+            cx, cy, r = self._geom()
+            a = 1.0 if self.live else 0.35
+
+            def col(rr, gg, bb, al=1.0):
+                return NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    rr / 255.0, gg / 255.0, bb / 255.0, al * a)
+
+            col(28, 33, 41).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(cx - r, cy - r, 2 * r, 2 * r)).fill()
+            ring = NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(cx - r, cy - r, 2 * r, 2 * r))
+            col(70, 80, 95).setStroke()
+            ring.setLineWidth_(2.0)
+            ring.stroke()
+            well = r * 0.82
+            col(18, 22, 28).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(cx - well, cy - well, 2 * well, 2 * well)).fill()
+            cross = NSBezierPath.bezierPath()
+            cross.moveToPoint_((cx - well, cy))
+            cross.lineToPoint_((cx + well, cy))
+            cross.moveToPoint_((cx, cy - well))
+            cross.lineToPoint_((cx, cy + well))
+            col(90, 150, 200, 0.5).setStroke()
+            cross.setLineWidth_(1.0)
+            cross.stroke()
+            rk = r * 0.30
+            travel = r - rk
+            kx = cx + self.kx * travel
+            ky = cy + self.ky * travel
+            col(64, 140, 200).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(kx - rk, ky - rk, 2 * rk, 2 * rk)).fill()
+            knob_ring = NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(kx - rk, ky - rk, 2 * rk, 2 * rk))
+            col(190, 235, 255).setStroke()
+            knob_ring.setLineWidth_(2.0)
+            knob_ring.stroke()
+            if not self.live:
+                s = NSString.stringWithString_("needs live link (Rex off)")
+                attrs = {
+                    NSFontAttributeName: NSFont.boldSystemFontOfSize_(10),
+                    NSForegroundColorAttributeName:
+                        NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                            0.72, 0.78, 0.85, 0.95),
+                }
+                sz = s.sizeWithAttributes_(attrs)
+                s.drawAtPoint_withAttributes_(
+                    (cx - sz.width / 2.0, cy - sz.height / 2.0), attrs)
+
+    return RexJoystickView.alloc().initWithFrame_(NSMakeRect(0, 0, 230, 230))
+
+
 def run_app() -> int:
     try:
         import rumps
@@ -758,9 +963,46 @@ def run_app() -> int:
             # crawling to the USB plug. Live-mode only, like Set-Battery-100%.
             self._restart_esp = rumps.MenuItem("Restart ESP32",
                                                callback=self._on_restart_esp)
+            # Joystick (owner request 2026-07-21): an AppKit view embedded in
+            # the dropdown drives the base while dragged. Live-mode only, like
+            # the other write actions; the firmware's 300 ms drive deadman and
+            # zone reflex remain the real safety layer.
+            self._joy_view = None
+            self._joy_item = rumps.MenuItem("Joystick")
+            try:
+                self._joy_view = _make_joystick_view()
+                self._joy_item._menuitem.setView_(self._joy_view)
+            except Exception as exc:
+                log.warning("Joystick view unavailable: %s", exc)
+                self._joy_item.hidden = True
+            self._stop_motors = rumps.MenuItem("■ STOP Motors",
+                                               callback=self._on_stop_motors)
             self._hv_notified_at = 0.0   # last supply-too-high notification
             self._mono_warned = False    # warn once if attributed titles fail
-            self.menu = list(self._rows) + [None, self._mark_full, self._restart_esp]
+            self.menu = (list(self._rows)
+                         + [None, self._joy_item, self._stop_motors]
+                         + [None, self._mark_full, self._restart_esp])
+            # A menu that closes mid-drag can eat the mouseUp — force-release
+            # the stick whenever ANY menu ends tracking (no-op when centered);
+            # the worker then sends the one clean stop.
+            try:
+                from Foundation import NSNotificationCenter
+
+                def _menu_closed(_note):
+                    _joy_release()
+                    try:
+                        if self._joy_view is not None:
+                            self._joy_view.recenter()
+                    except Exception:
+                        pass
+
+                self._menu_close_obs = (
+                    NSNotificationCenter.defaultCenter()
+                    .addObserverForName_object_queue_usingBlock_(
+                        "NSMenuDidEndTrackingNotification", None, None,
+                        _menu_closed))
+            except Exception as exc:
+                log.warning("Menu-close stop hook unavailable: %s", exc)
             self._timer = rumps.Timer(self._refresh, 1.0)
             self._timer.start()
             # rumps schedules its NSTimer in the DEFAULT run-loop mode only,
@@ -790,6 +1032,18 @@ def run_app() -> int:
             log.info("User clicked Restart ESP32 — queueing reset pulse.")
             _queue_esp32_reset()
 
+        def _on_stop_motors(self, _item):
+            _joy_release()
+            if self._joy_view is not None:
+                try:
+                    self._joy_view.recenter()
+                except Exception:
+                    pass
+            if _snapshot()["mode"] != "live":
+                return
+            log.info("User clicked STOP Motors — queueing stop.")
+            _queue_stop()
+
         def _set_title_stable(self, text: str) -> None:
             """Set the status item title in the system font's MONOSPACED-DIGIT
             variant, so a 0 becoming a 1 doesn't reflow the whole readout
@@ -815,6 +1069,12 @@ def run_app() -> int:
             self._set_title_stable(_fmt_title(s))
             self._mark_full.hidden = (s["mode"] != "live")
             self._restart_esp.hidden = (s["mode"] != "live")
+            self._stop_motors.hidden = (s["mode"] != "live")
+            if self._joy_view is not None:
+                try:
+                    self._joy_view.setLive_(s["mode"] == "live")
+                except Exception:
+                    pass
             if _supply_too_high(s):
                 now = time.time()
                 if now - self._hv_notified_at >= _SUPPLY_HIGH_RENOTIFY_SECS:
