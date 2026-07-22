@@ -7394,6 +7394,46 @@ PLACE_FRAME_IS_BGR          = True
 # PLACE_QUERY_INTERVAL_S). Kept modest so the encoder never competes with face tracking.
 PLACE_OBSERVE_INTERVAL_S    = 1.5
 
+# ── Learn-by-being-told (intelligence/place_questions.py) ─────────────────────
+# The conversational layer for place recognition, mirroring room_questions.py:
+#   NAME  — "this is the living room" / "we're in the kitchen" enrolls + names the
+#           room (the running observe loop then captures views automatically).
+#   ASK   — when Rex genuinely doesn't recognize where he is, during a lull he asks
+#           what room it is; your answer names it. Paced by PLACE_QUESTION_COOLDOWN_SECS
+#           and the shared question budget so he never nags.
+PLACE_QUESTIONS_ENABLED     = True
+PLACE_QUESTION_COOLDOWN_SECS = 600.0    # min seconds between "what room is this?" asks
+PLACE_QUESTION_ANSWER_TURNS  = 3        # human turns the answer-capture latch stays armed
+PLACE_QUESTION_ANSWER_TTL_SECS = 120.0  # and its wall-clock expiry
+# Known room words. A declarative that names one of these ("this is the <word>") enrolls
+# even without Rex having asked; other custom names ("the lab") are accepted only as the
+# answer to his own question, so a stray "this is Sarah" can never mint a room. Extend
+# freely in user_config.py.
+PLACE_ROOM_WORDS = [
+    "living room", "family room", "great room", "dining room", "rec room", "sitting room",
+    "master bedroom", "guest bedroom", "guest room", "bedroom", "nursery", "playroom",
+    "bathroom", "powder room", "kitchen", "kitchenette", "pantry", "office", "study",
+    "den", "library", "garage", "hallway", "hall", "entryway", "foyer", "mudroom",
+    "laundry room", "basement", "cellar", "attic", "loft", "closet", "workshop",
+    "workshop", "shop", "lab", "studio", "gym", "home gym", "sunroom", "porch",
+    "patio", "deck", "conservatory", "utility room", "game room", "media room",
+    "theater", "bar", "cave",
+]
+# Spoken when Rex proactively asks what room he's in (LLM instruction, not verbatim).
+PLACE_QUESTION_TEMPLATES = [
+    "Ask, in character and briefly, what room you're in — you don't recognize this "
+    "place and you'd like to know it so you can remember it next time.",
+    "You don't recognize where you are right now. Ask them, curiously and in one short "
+    "line, what room this is.",
+]
+# Spoken acknowledgements the instant a room is named (verbatim; {name} filled in).
+PLACE_ENROLL_ACK_TEMPLATES = [
+    "Got it — the {name}. I'll remember this place.",
+    "The {name}. Noted. I'll know it next time.",
+    "Ah, the {name}. Filing this one away.",
+    "The {name} it is. Locking it into memory.",
+]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # USER OVERRIDES

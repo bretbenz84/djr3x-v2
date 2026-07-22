@@ -783,6 +783,17 @@ _ROOM_QUESTION_INSTRUCTION = (
 )
 
 
+_PLACE_QUESTION_INSTRUCTION = (
+    "[You genuinely don't recognize what room you're in, and the conversation just "
+    "reached a lull — a natural moment to just ask.]\n"
+    "{situation}"
+    "Ask ONE short, in-character question about what room or place this is — you'd like "
+    "to know it so you can recognize it next time. Light, curious, a little sheepish "
+    "about not knowing is fine; not an interrogation. You MUST ask the one question; do "
+    "not reply PASS."
+)
+
+
 _NEWS_INSTRUCTION = (
     "[You read some news earlier and the conversation just hit a lull — a natural "
     "moment to bring it up, the way anyone mentions something they read.]\n"
@@ -1082,6 +1093,7 @@ def consider_initiating(
     celebration: Optional[dict] = None,
     memory_musing: Optional[dict] = None,
     open_thread: Optional[dict] = None,
+    place_question: Optional[dict] = None,
     room_question: Optional[dict] = None,
     weekend_plans: Optional[dict] = None,
     news_story: Optional[dict] = None,
@@ -1135,6 +1147,8 @@ def consider_initiating(
                 situation=situation,
                 premise=str(callback_premise.get("premise") or "their harmless running bit"),
             )
+        elif place_question:
+            instruction = _PLACE_QUESTION_INSTRUCTION.format(situation=situation)
         elif room_question:
             instruction = _ROOM_QUESTION_INSTRUCTION.format(
                 situation=situation,

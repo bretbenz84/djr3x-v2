@@ -4660,6 +4660,18 @@ def _lean_open_thread_cue(person_id: Optional[int]) -> Optional[dict]:
         return None
 
 
+def _lean_place_question_cue() -> Optional[dict]:
+    """Offer the 'what room is this?' question to Lean's lull speaker when Rex doesn't
+    recognize where he is. place_questions owns the gating/cooldown; asking arms its
+    answer-capture latch in the on-spoke bookkeeping below."""
+    try:
+        from intelligence import place_questions
+        return place_questions.next_place_question()
+    except Exception as exc:
+        _log.debug("[lean] place-question cue lookup failed: %s", exc)
+        return None
+
+
 def _lean_room_question_cue() -> Optional[dict]:
     """Offer ONE pending learn-by-asking room question to Lean's lull speaker.
     room_questions owns the queue/cooldown; asking arms its answer-capture latch
@@ -5097,6 +5109,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     callback_premise = None
     memory_musing = None
     open_thread = None
+    place_question = None
     room_question = None
     weekend_plans = None
     news_story = None
@@ -5145,11 +5158,15 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         )
     _no_higher = not (celebration or holiday_plan or event_followup or open_thread
                       or callback_premise)
+    # Not recognizing the ROOM outranks object curiosity — knowing where he is comes
+    # first. place_questions gates itself (only when the belief is unknown + paced).
+    if _no_higher and not low_energy and not no_questions:
+        place_question = _lean_place_question_cue()
     # Room curiosity beats a generic visual riff (it LEARNS something), but only
     # when the person has energy for a question.
-    if _no_higher and not low_energy and not no_questions:
+    if _no_higher and not place_question and not low_energy and not no_questions:
         room_question = _lean_room_question_cue()
-    if _no_higher and not room_question:
+    if _no_higher and not place_question and not room_question:
         try:
             visual_riff = _lean_visual_riff_cue(person_id, world)
         except Exception as exc:
@@ -5158,16 +5175,16 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # richer fires. Data-driven (the model can't invent a memory it wasn't given), once/session.
     # Weekend-plans discovery beats news (it's personal and time-bound), but
     # never fires at a tired user or with the question budget spent.
-    if _no_higher and not room_question and not visual_riff and not low_energy and not no_questions:
+    if _no_higher and not place_question and not room_question and not visual_riff and not low_energy and not no_questions:
         try:
             weekend_plans = _lean_weekend_plans_cue(person_id)
         except Exception as exc:
             _log.debug("weekend-plans Lean cue lookup failed: %s", exc)
     # News beats the diary musing (fresher material) but loses to everything
     # personal. Its own session cap + spend-once live in the cue/bookkeeping.
-    if _no_higher and not room_question and not visual_riff and not weekend_plans:
+    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans:
         news_story = _lean_news_cue()
-    if _no_higher and not room_question and not visual_riff and not weekend_plans and not news_story:
+    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans and not news_story:
         try:
             memory_musing = _lean_memory_musing_cue(person_id)
         except Exception as exc:
@@ -5188,6 +5205,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             celebration=celebration,
             memory_musing=memory_musing,
             open_thread=open_thread,
+            place_question=place_question,
             room_question=room_question,
             weekend_plans=weekend_plans,
             news_story=news_story,
@@ -5330,6 +5348,16 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 open_threads.mark_asked(open_thread["episode_id"], open_thread["thread"])
             except Exception as exc:
                 _log.debug("[lean] open-thread spend failed: %s", exc)
+        if place_question:
+            # Mark asked + arm the answer-capture latch so the person's next reply
+            # ("the living room") names + enrolls the room. The lean_impulse frame
+            # already expects a reply (line has "?"), which shields that answer from
+            # the person-introduction path.
+            try:
+                from intelligence import place_questions
+                place_questions.note_asked()
+            except Exception as exc:
+                _log.debug("[lean] place-question latch failed: %s", exc)
         if room_question:
             # Mark asked + arm the answer-capture latch (the person's next reply
             # can teach the room model what the object actually is).
@@ -20701,6 +20729,30 @@ def _handle_speech_segment(
                 conv_log.log_rex(ack_text)
                 _session_exchange_count += 1
                 _register_rex_utterance(ack_text)
+                return
+
+        # Learn-by-being-told: "this is the living room" (volunteered) or a bare answer
+        # to Rex's own "what room is this?" NAMES + enrolls the room. Handled here — before
+        # the routers and the introduction flow — so a room declaration is acknowledged
+        # directly and never misrouted as a person introduction. Conservative: an
+        # unprompted line only enrolls when it names a known room word (place_questions).
+        if not game_conversation_lock:
+            try:
+                from intelligence import place_questions
+                _place_capture = place_questions.maybe_capture_answer(text)
+            except Exception as exc:
+                _log.debug("[interaction] place-name capture failed: %s", exc)
+                _place_capture = None
+            if _place_capture:
+                _record_heard_turn_once()
+                place_ack = place_questions.ack_line(_place_capture)
+                _log.info("[interaction] room named by voice: %r", _place_capture.get("name"))
+                _speak_blocking(place_ack, emotion="happy", pre_beat_ms=100,
+                                post_beat_ms_override=200)
+                conv_memory.add_to_transcript("Rex", place_ack)
+                conv_log.log_rex(place_ack)
+                _session_exchange_count += 1
+                _register_rex_utterance(place_ack, source="place_enrollment")
                 return
 
         # Room-exploration session: while Rex is wandering / surveying / narrating,
