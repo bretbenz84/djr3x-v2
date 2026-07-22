@@ -173,11 +173,11 @@ struct GamepadLive {
                              // interprets; 255 = "not available" default per uni_controller.h)
 };
 
-// ===== IMU attitude (MPU-6050, telemetry + future fusion) ==================
+// ===== IMU attitude (LSM6DS3, telemetry + future fusion) ===================
 // Complementary-filtered attitude from imu.cpp (50 Hz on the sensor task).
 // pitch/roll are gravity-referenced (deg); yaw is bias-corrected gyro
 // integration RELATIVE TO BOOT HEADING (deg, drifts slowly — no indoor
-// magnetometer by design). ok=false when no MPU-6050 answered the boot probe.
+// magnetometer by design). ok=false when no LSM6DS3 answered the boot probe.
 // ===== Environment (BMP280/BME280 — env.cpp) ===============================
 struct EnvState {
   bool  ok = false;       // sensor answered the boot probe and is still healthy
@@ -241,7 +241,7 @@ struct MotionContext {
   float     spin_run_duty       = WHEEL_SPIN_RUN_DUTY;
   GamepadLive gp_live;                 // live pad mirror for the GUI (telemetry only)
   WheelDiag   wheels;                  // per-wheel measured speed + duty (telemetry diag)
-  ImuState    imu;                     // MPU-6050 attitude (telemetry + future fusion)
+  ImuState    imu;                     // LSM6DS3 attitude (telemetry + future fusion)
   EnvState    env;                     // BMP280/BME280 room climate (telemetry)
   MagState    mag;                     // QMC5883L raw axes (host-side compass)
   bool        charging = false;        // on the charger (battery.cpp) — drive locked out

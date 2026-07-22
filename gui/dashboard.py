@@ -1763,7 +1763,7 @@ class GamepadMirrorWidget(QWidget):
 
 
 class AttitudeWidget(QWidget):
-    """3D attitude indicator for the MPU-6050 on the drive base.
+    """3D attitude indicator for the IMU (LSM6DS3) on the drive base.
 
     Renders a wireframe of the base (drive deck + droid body + heading arrow) rotated
     by the IMU's pitch/roll/yaw over a fixed ground ring, so tilt reads at a glance
@@ -1956,7 +1956,7 @@ class MotivatorControlDialog(QDialog):
         self._gamepad = GamepadMirrorWidget()
         right.addWidget(_panel("PHYSICAL CONTROLLER", self._gamepad), 3)
         self._attitude = AttitudeWidget()
-        right.addWidget(_panel("ATTITUDE (MPU-6050)", self._attitude), 2)
+        right.addWidget(_panel("ATTITUDE (LSM6DS3)", self._attitude), 2)
 
         fb = self._section("ESP32 FEEDBACK")
         self._fb_state = self._row(fb, "State")

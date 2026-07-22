@@ -140,7 +140,7 @@ void emit_telemetry() {
   doc["batt_soc"] = bsoc;                // coulomb-counted %, -1 = unknown
   doc["charging"] = chg;                 // on the charger — drive locked out (calib.h)
   doc["errs"] = errs;
-  // IMU attitude (MPU-6050). Always present (stable schema): {ok:false} when no
+  // IMU attitude (LSM6DS3). Always present (stable schema): {ok:false} when no
   // sensor answered the boot probe. Angles in degrees; yaw relative to boot heading.
   JsonObject im2 = doc["imu"].to<JsonObject>();
   im2["ok"] = im.ok;

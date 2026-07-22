@@ -1,4 +1,5 @@
-// imu.h — MPU-6050 (GY-521) 6-axis IMU on the shared I2C trunk (addr 0x68).
+// imu.h — LSM6DS3 6-axis IMU breakout on the shared I2C trunk (addr 0x6A/0x6B
+// by SA0 strap; the probe tries both).
 //
 // Roadmap Phase A (docs/motion_sensing_roadmap.md §4): the gyro is heading truth
 // independent of wheel slip; the accel gives tilt / bump / pickup sensing. This
@@ -9,8 +10,8 @@
 // nothing in the control loop consumes this yet.
 //
 // WIRING: VCC->3V3, GND->GND, SDA->GPIO21, SCL->GPIO22 (piggybacks the ToF/INA
-// trunk; 0x68 collides with nothing — mux 0x70, sensors behind mux at 0x29,
-// INA226 0x40). Mount near the axle midpoint, away from motor cables.
+// trunk; 0x6A/0x6B collides with nothing — mux 0x70, sensors behind mux at
+// 0x29, INA226 0x40, QMC5883P 0x2C). Mount near the axle midpoint, away from motor cables.
 //
 // THREADING: all reads happen on the sensor task (the only I2C task), like ToF
 // and the INA226 — never from control/serial. Publishes under the state lock.
@@ -26,5 +27,5 @@ void imu_init();
 // Reads accel+gyro, runs the complementary filter, publishes g_ctx.imu.
 void imu_tick(float dt);
 
-// True while an MPU-6050 is online (including after a successful runtime reprobe).
+// True while an LSM6DS3 is online (including after a successful runtime reprobe).
 bool imu_present();

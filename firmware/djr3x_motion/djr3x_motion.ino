@@ -62,7 +62,7 @@ static void sensorTask(void*) {
     TofMm t;
     hal_read_tof(t);                      // stub: all clear
     LOCK_STATE(); g_ctx.tof = t; UNLOCK_STATE();
-    imu_tick(0.02f);                      // MPU-6050 attitude @ 50 Hz (no-op if absent)
+    imu_tick(0.02f);                      // LSM6DS3 attitude @ 50 Hz (no-op if absent)
     if (++batt_div >= 50) {               // 1 Hz is plenty for a 20Ah pack
       batt_div = 0;
       battery_tick();
@@ -111,7 +111,7 @@ void setup() {
   i2c_trunk_init();                       // single owner of shared GPIO21/22 Wire bus
   hal_tof_init();
   battery_init();                         // INA226 probe (shares the ToF I2C bus)
-  imu_init();                             // MPU-6050 probe + gyro bias cal (same bus)
+  imu_init();                             // LSM6DS3 probe + gyro bias cal (same bus)
   env_init();                             // BMP280/BME280 probe (same bus)
   mag_init();                             // QMC5883L probe (same bus)
   proto_init();
@@ -136,7 +136,7 @@ void setup() {
   // The Arduino loopTask (which services Bluetooth via BP32.update in loop()) is
   // created at priority 1 — BELOW the sensor task's 2 on the same core. Field
   // regression after the core-1 consolidation: whenever I2C stalled (a flaky
-  // MPU-6050 disturbing the shared trunk stretched every ToF/INA transaction
+  // IMU disturbing the shared trunk stretched every ToF/INA transaction
   // toward its timeout), the sensor task monopolized the core, BP32.update()
   // starved, and the GAMEPAD DISCONNECTED right as the current monitor failed.
   // Raise ourselves (setup runs ON loopTask) above the sensor/telemetry tier so

@@ -1,7 +1,7 @@
 // mag.h — QMC5883L magnetometer (GY-271 board) raw-axis publisher.
 //
 // The compass joins the main I2C trunk (GPIO21/22) at fixed 7-bit address 0x0D
-// — clear of the TCA9548A mux (0x70), INA226 (0x40), MPU-6050 (0x68), and the
+// — clear of the TCA9548A mux (0x70), INA226 (0x40), LSM6DS3 (0x6A/0x6B), and the
 // BMP/BME280 (0x76). NOTE this is the QMC variant, NOT the HMC5883L: different
 // register map entirely (continuous-mode config at 0x09, data at 0x00..0x05
 // little-endian, chip-id 0xFF at register 0x0D).
