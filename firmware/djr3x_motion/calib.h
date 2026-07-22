@@ -269,6 +269,16 @@
 // open again in ~1 s.
 #define TOF_RELEASE_STEP_MM       300
 
+// Glitch confirmation (tof_filter.h, field data 2026-07-21): a reading that
+// drops the published distance by more than ATTACK_DROP in one frame is only
+// believed when the NEXT frame agrees within ATTACK_CONFIRM — kills the
+// single-frame phantom near returns (VL53L1X wrap-around, VL53L7CX speckle)
+// that sawtoothed fl/fr/rr between 1 m and 4 m in an empty room. Costs one
+// sensor revisit (~75-80 ms) of detection latency on a genuinely sudden
+// obstacle; smooth approaches (< DROP_MM per frame) still attack instantly.
+#define TOF_ATTACK_DROP_MM        400
+#define TOF_ATTACK_CONFIRM_MM     300
+
 // VL53L0X (short range, ~1.2 m reliable):
 #define TOF_L0X_TIMING_BUDGET_US  33000 // 33 ms measurement budget (speed vs accuracy)
 #define TOF_L0X_OUT_OF_RANGE_MM   2000  // clamp "nothing in range" to a far/clear value

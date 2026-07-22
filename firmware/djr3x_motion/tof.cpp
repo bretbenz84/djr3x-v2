@@ -45,6 +45,7 @@ static inline int16_t tof_front_combine(int16_t radial, int16_t matrix) {
 #if MOTION_TOF_PRESENT
 #include "pins.h"
 #include "calib.h"
+#include "tof_filter.h"
 #include "proto_io.h"       // emit_log — per-sensor bring-up diagnostics
 #include "i2c_trunk.h"
 #include <Arduino.h>
@@ -84,10 +85,9 @@ static int16_t s_dist[TOF_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 static uint8_t s_err_streak[TOF_COUNT] = {0};   // consecutive failed reads per sensor
 static int     s_next = 0;                  // round-robin cursor
 
-// Fast-attack / slow-release filter state per sensor (see TOF_RELEASE_STEP_MM in
-// calib.h): published distance drops to a nearer reading instantly, rises toward a
-// farther one at a bounded rate. -1 = uninitialized (first valid reading seeds it).
-static float s_filt[TOF_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+// Per-sensor filter (tof_filter.h): fast-attack / slow-release + big-drop
+// confirmation, so a single-frame phantom near return can't flap the reflex.
+static TofFilt s_filt[TOF_COUNT];
 
 static inline uint8_t mux_ch(int i) { return (uint8_t)i; }   // sensor index -> mux channel
 
@@ -177,13 +177,16 @@ static int read_mm(int i) {
   VL53L1X& s = s_long[i - TOF_SHORT_COUNT];        // VL53L1X
   const int mm = (int)s.read();                    // blocking read of the continuous result
   if (s.timeoutOccurred()) return -1;
-  // The whole "RangeValid family" carries a usable distance (Pololu enum): plain valid,
-  // min-range-clipped, and no-wrap-check-fail (the latter is common on the first sample).
-  // Only a hard-fail status (sigma/signal/out-of-bounds/hardware) means no real return.
+  // Accept only plain valid + min-range-clipped. RangeValidNoWrapCheckFail is
+  // REJECTED (treated as out-of-range): field data 2026-07-21 showed it is the
+  // wrap-around phantom status — sensors staring into open space aliased far/no
+  // returns into random near distances (fl/fr/rr sawtoothed 4 m -> 1 m in an
+  // empty room, while rl with a real 1.9 m wall sat rock steady on RangeValid).
+  // A real target passes the wrap check on the very next frame, so the cost is
+  // one round-robin revisit (~80 ms) of detection latency.
   const VL53L1X::RangeStatus rs = s.ranging_data.range_status;
   const bool valid = (rs == VL53L1X::RangeValid ||
-                      rs == VL53L1X::RangeValidMinRangeClipped ||
-                      rs == VL53L1X::RangeValidNoWrapCheckFail);
+                      rs == VL53L1X::RangeValidMinRangeClipped);
   if (!valid || mm >= TOF_L1X_OUT_OF_RANGE_MM) return TOF_L1X_OUT_OF_RANGE_MM;
   return mm;
 }
@@ -196,17 +199,10 @@ static void poll_one(int i) {
   const int mm = read_mm(i);
   if (mm >= 0) {
     s_err_streak[i] = 0;
-    // Fast-attack / slow-release: take a NEARER reading immediately (never filter
-    // danger), believe a FARTHER one gradually (max TOF_RELEASE_STEP_MM per revisit).
-    // Kills the 0.5 m <-> 4 m strobing when a narrow obstacle sits at a beam's edge —
-    // the close return holds steady for the GUI/assist/reflex instead of blinking.
-    if (s_filt[i] < 0.0f || (float)mm <= s_filt[i]) {
-      s_filt[i] = (float)mm;
-    } else {
-      const float rise = (float)mm - s_filt[i];
-      s_filt[i] += (rise < (float)TOF_RELEASE_STEP_MM) ? rise : (float)TOF_RELEASE_STEP_MM;
-    }
-    s_dist[i] = (int16_t)(s_filt[i] + 0.5f);
+    // tof_filter.h: nearer readings attack fast (a big one-frame drop needs a
+    // confirming 2nd frame — anti-phantom), farther ones release at a bounded
+    // rate. Kills both edge-of-beam strobing and single-frame speckle dips.
+    s_dist[i] = tof_filter_step(s_filt[i], (int16_t)mm);
     return;
   }
   // Failed read: hold the last-good value through a TRANSIENT error, but not forever —

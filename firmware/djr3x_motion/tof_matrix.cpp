@@ -31,6 +31,7 @@
 #if MOTION_TOF_MATRIX_PRESENT
 #include "pins.h"
 #include "calib.h"
+#include "tof_filter.h"
 #include "proto_io.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -52,7 +53,7 @@ static volatile bool s_ready = false;           // init task -> sensor task hand
 static uint16_t s_grid[64];                     // latest raw frame, row-major mm
 static volatile int16_t  s_fl = -1, s_fr = -1;  // published aggregates (mm; -1 = no data)
 static volatile uint32_t s_pub_ms = 0;          // when s_fl/s_fr were last refreshed
-static float    s_filt_fl = -1.0f, s_filt_fr = -1.0f;  // fast-attack/slow-release state
+static TofFilt  s_filt_fl, s_filt_fr;           // shared filter (tof_filter.h)
 static uint8_t  s_err_streak = 0;               // consecutive failed frame reads
 
 // Per-row floor-rejection tables, precomputed on first use (row 0 = physically TOP
@@ -94,7 +95,6 @@ static void mx_compute_geometry() {
 }
 
 static void mx_aggregate(int16_t* out_fl, int16_t* out_fr);
-static int16_t mx_filter(float* state, int16_t mm);
 
 // ---- Bounded I2C primitives (hardware I2C1 via Wire1) -------------------------
 // The matrix lives ALONE on the second I2C controller (GPIO4/5, pins.h) — never
@@ -230,8 +230,8 @@ static void mx_init_task(void*) {
       }
       int16_t raw_fl, raw_fr;
       mx_aggregate(&raw_fl, &raw_fr);
-      s_fl = mx_filter(&s_filt_fl, raw_fl);
-      s_fr = mx_filter(&s_filt_fr, raw_fr);
+      s_fl = tof_filter_step(s_filt_fl, raw_fl);
+      s_fr = tof_filter_step(s_filt_fr, raw_fr);
       s_pub_ms = millis();
       // Stream every 2nd raw frame to the host GUI (~6.7 Hz at the 75 ms poll)
       // in the normalized orientation the aggregator uses (row 0 = top, col 0 =
@@ -258,7 +258,7 @@ static void mx_init_task(void*) {
       if (s_err_streak < 255) s_err_streak++;
       if (s_err_streak == TOF_ERR_STREAK_STALE && (s_fl != -1 || s_fr != -1)) {
         s_fl = s_fr = -1;
-        s_filt_fl = s_filt_fr = -1.0f;
+        tof_filter_reset(s_filt_fl); tof_filter_reset(s_filt_fr);
         emit_log("warn", "tof_matrix: consecutive read errors - reporting -1");
       } else if (s_err_streak > TOF_ERR_STREAK_STALE) {
         s_fl = s_fr = -1;
@@ -292,20 +292,6 @@ static void mx_aggregate(int16_t* out_fl, int16_t* out_fr) {
   }
   *out_fl = (best_left  < 1.0e9f) ? (int16_t)(best_left  + 0.5f) : (int16_t)TOF_MATRIX_CLEAR_MM;
   *out_fr = (best_right < 1.0e9f) ? (int16_t)(best_right + 0.5f) : (int16_t)TOF_MATRIX_CLEAR_MM;
-}
-
-// Fast-attack / slow-release (same shape as tof.cpp's per-sensor filter): believe
-// a NEARER reading instantly — never filter danger — release toward a farther one
-// at TOF_RELEASE_STEP_MM per frame, so an edge-of-beam chair leg holds steady
-// instead of strobing the zone.
-static int16_t mx_filter(float* state, int16_t mm) {
-  if (*state < 0.0f || (float)mm <= *state) {
-    *state = (float)mm;
-  } else {
-    const float rise = (float)mm - *state;
-    *state += (rise < (float)TOF_RELEASE_STEP_MM) ? rise : (float)TOF_RELEASE_STEP_MM;
-  }
-  return (int16_t)(*state + 0.5f);
 }
 
 // ---- Public API ---------------------------------------------------------------
