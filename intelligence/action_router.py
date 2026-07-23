@@ -1296,12 +1296,28 @@ _MOTION_SEQUENCE_SEP_RE = re.compile(
 )
 
 
-def _motion_dist_to_m(text: str) -> "float | None":
-    m = _MOTION_DIST_RE.search(text)
-    if not m:
-        return None
-    val = float(m.group(1))
-    unit = m.group(2).lower()
+_WORD_NUMBERS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20, "a": 1, "an": 1, "half a": 0.5, "half an": 0.5,
+}
+_MOTION_UNIT_PAT = (
+    r"(cm|centimet(?:er|re)s?|mm|millimet(?:er|re)s?|"
+    r"m|met(?:er|re)s?|ft|foot|feet|in|inch|inches)"
+)
+# Whisper transcribes small counts as WORDS ("four feet", "half a meter"), and voice
+# is the only way distances arrive — the digit-only regex meant spoken distances were
+# silently dropped and every move fell back to the default nudge (field 2026-07-21).
+_MOTION_WORD_DIST_RE = re.compile(
+    r"\b(" + "|".join(sorted(_WORD_NUMBERS, key=len, reverse=True)) + r")\s+"
+    + _MOTION_UNIT_PAT + r"\b",
+    re.I,
+)
+
+
+def _unit_to_m(val: float, unit: str) -> float:
+    unit = unit.lower()
     if unit.startswith("mm") or unit.startswith("millim"):
         return val / 1000.0
     if unit.startswith("cm") or unit.startswith("centim"):
@@ -1311,6 +1327,16 @@ def _motion_dist_to_m(text: str) -> "float | None":
     if unit in ("in", "inch", "inches"):
         return val * 0.0254
     return val  # metres
+
+
+def _motion_dist_to_m(text: str) -> "float | None":
+    m = _MOTION_DIST_RE.search(text)
+    if m:
+        return _unit_to_m(float(m.group(1)), m.group(2))
+    m = _MOTION_WORD_DIST_RE.search(text)
+    if m:
+        return _unit_to_m(float(_WORD_NUMBERS[m.group(1).lower()]), m.group(2))
+    return None
 
 
 def classify_motion_continuation(
@@ -1377,14 +1403,33 @@ def classify_explicit_motion_sequence(
     if _MOTION_EXPLANATION_RE.search(cleaned) or _MOTION_NEGATED_RE.search(cleaned):
         return None
     clauses = [c.strip(" .()") for c in _MOTION_SEQUENCE_SEP_RE.split(cleaned)]
-    if len(clauses) < 2 or len(clauses) > max(2, int(max_steps)) or any(not c for c in clauses):
+    # A LEADING/TRAILING connective leaves empty fragments ("and move backwards" ->
+    # ["", "move backwards"]). Drop them; if a single real clause remains this is NOT
+    # a sequence — return [] so the caller falls through to the plain single-command
+    # path instead of rejecting the whole utterance (field 2026-07-21: "and move
+    # backwards" got "I couldn't safely parse that whole route" and nothing moved).
+    clauses = [c for c in clauses if c]
+    if len(clauses) == 1:
+        return []
+    if len(clauses) < 2 or len(clauses) > max(2, int(max_steps)):
         return None
     decisions: list[ActionDecision] = []
+    misses = 0
     for clause in clauses:
         decision = classify_explicit_motion(clause)
         if decision is None or decision.action not in {"motion.turn", "motion.move", "motion.arc"}:
-            return None
+            misses += 1
+            continue
         decisions.append(decision)
+    if not decisions:
+        # ZERO motion clauses: plain conversation that happens to contain a comma/'then'
+        # ("yeah that sounds great, thanks") — not a sequence at all. Returning None here
+        # made Rex say "I couldn't safely parse that whole route" at casual chatter.
+        return []
+    if misses:
+        # MIXED motion + non-motion ("turn left then sing"): refuse the whole thing so
+        # no partial execution — the original purpose of the tri-state.
+        return None
     return decisions
 
 

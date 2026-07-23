@@ -211,6 +211,17 @@ def _summarize_world_state(ws: dict) -> str:
             f"Lighting: {env.get('lighting', 'unknown')}."
         )
 
+    # Which ROOM he's in — grounded in the place recognizer, never the transcript
+    # (field bug 2026-07-21: ungrounded, he answered "what room are you in?" by
+    # parroting whichever room was last mentioned in conversation).
+    try:
+        from intelligence import place_questions
+        room_clause = place_questions.belief_clause()
+        if room_clause:
+            parts.append(room_clause)
+    except Exception as exc:
+        _log.debug("room belief clause skipped: %s", exc)
+
     crowd = ws.get("crowd", {})
     crowd_line = f"Crowd: {crowd.get('count_label', 'unknown')} ({crowd.get('count', 0)} people)."
     if crowd.get("interaction_mode"):

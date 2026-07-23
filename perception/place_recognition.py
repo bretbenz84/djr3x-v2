@@ -212,6 +212,7 @@ class PlaceRecognizer:
         self._topk = max(1, int(_cfg("PLACE_TOPK", 3)))
         self._match_confident = float(_cfg("PLACE_MATCH_CONFIDENT", 0.80))
         self._match_min = float(_cfg("PLACE_MATCH_MIN", 0.68))
+        self._match_margin = float(_cfg("PLACE_MATCH_MARGIN", 0.04))
         self._hysteresis_frames = max(1, int(_cfg("PLACE_HYSTERESIS_FRAMES", 5)))
         self._majority = (self._hysteresis_frames // 2) + 1
         self._unknown_streak_max = max(1, int(_cfg("PLACE_UNKNOWN_STREAK", 8)))
@@ -241,6 +242,7 @@ class PlaceRecognizer:
         self._pending_dup: Optional[dict] = None
 
         self._last_query_at = 0.0
+        self._last_query: Optional[dict] = None   # {"at","classification","top":[(name,score)..]}
         self._history = deque(maxlen=self._hysteresis_frames)  # (place_id|None, is_confident)
         self._current_place: Optional[dict] = None
         # Has any motion been seen since the last confirmed place? Gates BOTH the freeze
@@ -408,16 +410,23 @@ class PlaceRecognizer:
             scores.append(PlaceScore(pid, name, float(topk.mean()), k))
         scores.sort(key=lambda p: p.score, reverse=True)
         best = scores[0] if scores else None
-        return scores, best, self._classify(best)
+        return scores, best, self._classify(scores)
 
-    def _classify(self, best: Optional[PlaceScore]) -> str:
-        if best is None:
+    def _classify(self, scores) -> str:
+        """Classify from the FULL score list, not the best alone: a confident match must
+        clear the absolute threshold AND beat the runner-up room by PLACE_MATCH_MARGIN.
+        Look-alike rooms both score high on every frame with hundredths between them
+        (field data 2026-07-21); inside the margin the honest answer is "tentative"."""
+        if not scores:
             return UNKNOWN
-        if best.score >= self._match_confident:
-            return CONFIDENT
-        if best.score >= self._match_min:
-            return TENTATIVE
-        return UNKNOWN
+        best = scores[0]
+        if best.score < self._match_min:
+            return UNKNOWN
+        runner_up = scores[1].score if len(scores) > 1 else None
+        confident = best.score >= self._match_confident and (
+            runner_up is None or (best.score - runner_up) >= self._match_margin
+        )
+        return CONFIDENT if confident else TENTATIVE
 
     def score_frame(self, frame) -> QueryResult:
         """Pure scoring path used by the offline harness: embed a single frame and score
@@ -479,16 +488,24 @@ class PlaceRecognizer:
         scores, best, cls = self._score_vector(q)
         result = QueryResult(best=best, classification=cls, scores=tuple(scores))
         self._log_observation(best, cls, now)
+        # Snapshot for belief_context(): honest "what does this frame look like" data the
+        # conversation layer reads to hedge ("looks like the den, or maybe the office").
+        self._last_query = {
+            "at": now,
+            "classification": cls,
+            "top": [(p.name, p.score) for p in scores[:2]],
+        }
 
-        # Incremental refresh: quietly grow the gallery of the believed room when a
-        # query lands in the "recognizable but not great" band FOR THAT ROOM — keyed on
-        # the believed place's own score, not the top match, so an ambiguous frame where
-        # another room edges it out still counts (the believed place is what we refresh).
-        if self._current_place:
-            believed_pid = self._current_place["place_id"]
-            believed = next((p for p in scores if p.place_id == believed_pid), None)
-            if believed and self._refresh_min <= believed.score <= self._refresh_max:
-                self._append_embedding(believed_pid, q, now)
+        # Incremental refresh: quietly grow the gallery of the believed room — but ONLY
+        # when the believed room is also the TOP match by the confidence margin. The
+        # 2026-07-21 field session proved the permissive version cross-pollinates: with
+        # the belief lagging reality, in-band frames of the OLD room were appended to the
+        # believed room's gallery, making two look-alike galleries converge further.
+        if (self._current_place and best
+                and best.place_id == self._current_place["place_id"]
+                and self._refresh_min <= best.score <= self._refresh_max
+                and (len(scores) < 2 or (best.score - scores[1].score) >= self._match_margin)):
+            self._append_embedding(best.place_id, q, now)
 
         self._update_belief(best, cls, scores, now)
         return result
@@ -914,6 +931,28 @@ class PlaceRecognizer:
     def current_place(self) -> Optional[dict]:
         with self._lock:
             return dict(self._current_place) if self._current_place else None
+
+    def belief_context(self) -> dict:
+        """Everything the conversation layer needs to answer "what room are you in?"
+        HONESTLY: the debounced belief, the latest frame's top-two scores, whether the
+        view is currently ambiguous (top two within the confidence margin), and how many
+        rooms he knows at all. All fields safe defaults when nothing has been seen."""
+        with self._lock:
+            lq = self._last_query or {}
+            top = list(lq.get("top") or [])
+            ambiguous = (
+                len(top) >= 2 and (top[0][1] - top[1][1]) < self._match_margin
+                and top[0][1] >= self._match_min
+            )
+            return {
+                "belief": dict(self._current_place) if self._current_place else None,
+                "top": top,
+                "classification": lq.get("classification"),
+                "ambiguous": ambiguous,
+                "known_rooms": len(self._places),
+                "enrolling": self._enroll.name if self._enroll is not None else None,
+                "age_s": (self._clock() - float(lq["at"])) if lq.get("at") else None,
+            }
 
     def place_names(self) -> list:
         with self._lock:

@@ -6906,8 +6906,13 @@ MOTION_COME_STOP_AT_M = 0.60
 # MOTION_COME_STOP_AT_M, which remains the spontaneous social-approach distance.
 MOTION_COME_REQUEST_STOP_AT_M = 1.00
 MOTION_COME_SEARCH_TURN_DEG = 45.0
-MOTION_COME_SEARCH_MAX_TURNS = 8       # one full 360-degree scan
+MOTION_COME_SEARCH_MAX_TURNS = 8       # sweep budget (net reach grows ±45,±90,... per turn)
 MOTION_COME_SEARCH_TIMEOUT_SECS = 45.0
+# After ANY chassis turn the come-search issues (align or scan), face tracking needs a
+# beat to re-find the person the camera just swung away from. Within this grace the
+# search WAITS instead of declaring them lost (field 2026-07-21: without it, a +30°
+# align cascaded into a 180° scan spiral that ended in a bookshelf).
+MOTION_COME_REACQUIRE_GRACE_SECS = 3.0
 MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
 MOTION_DEFAULT_TURN_RATE = 40.0       # deg/s
 MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated distance
@@ -7360,6 +7365,11 @@ PLACE_QUERY_INTERVAL_S     = 1.5     # min seconds between scored frames (self-t
 PLACE_TOPK                 = 3       # score = mean of a place's top-k embedding sims
 PLACE_MATCH_CONFIDENT      = 0.80    # best score >= this -> confident match
 PLACE_MATCH_MIN            = 0.68    # best score in [MIN, CONFIDENT) -> tentative (log only)
+# A confident match must ALSO beat the runner-up room by this margin. Field data
+# (2026-07-21 demo): two look-alike rooms both scored 0.75-0.89 on every frame with
+# 0.01-0.05 between them, flip-flopping frame to frame — absolute score alone can't
+# separate look-alikes. Within the margin the frame is only ever "tentative".
+PLACE_MATCH_MARGIN         = 0.04
 PLACE_HYSTERESIS_FRAMES    = 5       # ring-buffer length; belief flips on a confident majority
 PLACE_UNKNOWN_STREAK       = 8       # consecutive unknowns (after moving) -> unknown_place event
 PLACE_PERSON_OCCLUSION_FRAC = 0.35   # skip frames where a person bbox covers > this fraction
@@ -7454,6 +7464,15 @@ PLACE_ENROLL_FAIL_TTS_ENABLED = True
 PLACE_ENROLL_FAIL_TTS_LINES = [
     "Hey — small confession. I tried to memorize this room and couldn't get a good look. Tell me where we are again sometime?",
     "Update from my optics: this room did not save. Too much going on in front of my lens. We'll try again later.",
+]
+# Spoken when a freshly-taught room's views are near-identical to an existing room's
+# (cross-sim >= the threshold): the gallery is broken from birth (field 2026-07-21: two
+# rooms enrolled at sim 0.97 because his head was face-tracking the teller both times),
+# so he owns it and asks to be shown around. {new} / {existing} are filled in.
+PLACE_TWIN_WARN_TTS_SIM     = 0.95
+PLACE_TWIN_WARN_TTS_LINES = [
+    "Heads up — the {new} looks nearly identical to the {existing} from where I'm sitting. Point me at something distinctive or I'll mix them up.",
+    "Honest sensor report: my snapshots of the {new} and the {existing} basically match. Want to show me around so I can tell them apart?",
 ]
 # Head pans change the camera view exactly like chassis heading does, so the neck servo
 # counts toward enrollment view diversity (compass + neck are summed when both exist).

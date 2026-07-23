@@ -312,13 +312,14 @@ class PlaceRecognitionTest(unittest.TestCase):
         pr.observe(E[0])  # confident, out of band -> no append
         self.assertEqual(int((pr._emb_pids == pid).sum()), n0 + 1)
 
-    def test_refresh_keys_on_believed_place_not_top_match(self):
-        # Regression (review): refresh must fire on the BELIEVED place's own in-band
-        # score even when a different room edges it out as the top match this frame.
+    def test_refresh_never_fires_on_ambiguous_frames(self):
+        # Field regression (2026-07-21): refresh on frames where ANOTHER room out-scores
+        # (or nearly ties) the believed room cross-pollinates the galleries — the
+        # believed room absorbs views of the room he's actually looking at, and two
+        # look-alike galleries converge further. Refresh requires believed == top match
+        # BY the confidence margin.
         pr, clk, ev, box, ws = self._make()
         pr.enroll_from_frames("office", [E[0]] * 5)
-        # hall's gallery lies in the office/e2 plane so a single query can score in
-        # office's refresh band (0.75) while hall out-scores it (top match).
         qvec = (0.75 * E[0] + math.sqrt(1 - 0.75 ** 2) * E[2]).astype("float32")
         pr.enroll_from_frames("hall", [qvec] * 5)
         box["motion"] = MotionState(wheels_moving=True)
@@ -330,15 +331,46 @@ class PlaceRecognitionTest(unittest.TestCase):
         self.assertEqual(pr.current_place()["name"], "office")
         pid = pr._name_to_id["office"]
         n0 = int((pr._emb_pids == pid).sum())
+        # A frame where hall wins while office sits in its refresh band: NO refresh —
+        # this is exactly the contamination vector (it would append a hall-looking
+        # frame to office's gallery).
         r = pr.score_frame(qvec)
-        self.assertEqual(r.best.name, "hall")                       # hall wins the frame
-        self.assertAlmostEqual(
-            next(p.score for p in r.scores if p.name == "office"), 0.75, places=3)
-        box["motion"] = MotionState()                              # frozen: belief stays office
+        self.assertEqual(r.best.name, "hall")
         clk.adv(2.0)
         pr.observe(qvec)
-        self.assertEqual(pr.current_place()["name"], "office")
-        self.assertEqual(int((pr._emb_pids == pid).sum()), n0 + 1)  # office refreshed anyway
+        self.assertEqual(int((pr._emb_pids == pid).sum()), n0)
+
+    def test_confident_requires_margin_over_runner_up(self):
+        # Two look-alike galleries: a high absolute score with a whisker-thin lead is
+        # TENTATIVE, not confident (the 2026-07-21 flip-flop).
+        pr, clk, ev, box, ws = self._make()
+        base = E[0]
+        near = (0.995 * E[0] + math.sqrt(1 - 0.995 ** 2) * E[3]).astype("float32")
+        near /= np.linalg.norm(near)
+        pr.enroll_from_frames("living", [base] * 5)
+        pr.enroll_from_frames("dining", [near] * 5)   # twin gallery
+        r = pr.score_frame(base)
+        self.assertEqual(r.best.name, "living")
+        self.assertGreater(r.best.score, 0.95)                     # high absolute score
+        self.assertEqual(r.classification, P.TENTATIVE)            # but no margin -> tentative
+        # A frame matching a UNIQUE room is still confident.
+        pr.enroll_from_frames("garage", [E[5]] * 5)
+        self.assertEqual(pr.score_frame(E[5]).classification, P.CONFIDENT)
+
+    def test_belief_context_reports_ambiguity(self):
+        pr, clk, ev, box, ws = self._make()
+        pr.enroll_from_frames("living", [E[0]] * 5)
+        near = (0.995 * E[0] + math.sqrt(1 - 0.995 ** 2) * E[3]).astype("float32")
+        near /= np.linalg.norm(near)
+        pr.enroll_from_frames("dining", [near] * 5)
+        box["motion"] = MotionState(wheels_moving=True)
+        clk.adv(2.0)
+        pr.observe(E[0])                       # one query -> last_query snapshot
+        ctx = pr.belief_context()
+        self.assertTrue(ctx["ambiguous"])      # twins within the margin
+        self.assertEqual(ctx["known_rooms"], 2)
+        self.assertEqual(len(ctx["top"]), 2)
+        self.assertIsNone(ctx["belief"])       # nothing confirmed yet
 
     def test_no_unknown_place_on_stationary_cold_boot(self):
         # Regression (review): a stationary boot in an unenrolled room must NOT emit

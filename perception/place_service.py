@@ -283,6 +283,11 @@ def enrolling_name():
     return rec.enrolling_name() if rec is not None else None
 
 
+def belief_context():
+    rec = _recognizer
+    return rec.belief_context() if rec is not None else None
+
+
 def place_names() -> list:
     rec = _recognizer
     return rec.place_names() if rec is not None else []

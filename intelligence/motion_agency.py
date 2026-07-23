@@ -78,6 +78,8 @@ _requested_come = {
     "active": False,
     "started_at": 0.0,
     "search_turns": 0,
+    "last_turn_at": 0.0,    # when the LAST chassis turn (align or scan) was issued
+    "scan_sign": 1.0,       # which side the person was last known on (sweep starts there)
 }
 
 # Flinch detector state, sampled every idle tick and reset whenever the base is
@@ -126,6 +128,8 @@ def request_come_here() -> bool:
         active=True,
         started_at=time.monotonic(),
         search_turns=0,
+        last_turn_at=0.0,
+        scan_sign=1.0,
     )
     _reset("neck_hits", "far_hits")
     _log.info("[motion_agency] requested come: searching for a visible person")
@@ -135,7 +139,8 @@ def request_come_here() -> bool:
 def cancel_requested_come(reason: str = "cancelled") -> None:
     if _requested_come["active"]:
         _log.info("[motion_agency] requested come: %s", reason)
-    _requested_come.update(active=False, started_at=0.0, search_turns=0)
+    _requested_come.update(active=False, started_at=0.0, search_turns=0,
+                           last_turn_at=0.0, scan_sign=1.0)
 
 
 def _step_requested_come(snapshot: dict, now: float) -> bool:
@@ -151,13 +156,29 @@ def _step_requested_come(snapshot: dict, now: float) -> bool:
 
     person = _tracked_person(snapshot)
     if person is None:
+        # Re-acquire grace: a chassis turn WE issued swings the camera, so face
+        # tracking loses the person for a beat even when they never moved (field
+        # 2026-07-21: align +30° -> "person gone" -> scan spiral -> bookshelf).
+        # After any issued turn, wait out the grace before concluding they're lost.
+        grace = _num("MOTION_COME_REACQUIRE_GRACE_SECS", 3.0)
+        last_turn = float(_requested_come["last_turn_at"])
+        if last_turn > 0.0 and (now - last_turn) < grace:
+            return True
+        # Sweep AROUND the last-known side instead of spiraling one direction: net
+        # offsets +45, -45, +90, -90, ... (x scan_sign), so the search stays centered
+        # on where the person actually was. Relative command i (1-based):
+        #   sign = scan_sign * (-1)^(i+1),  magnitude = deg * i.
         deg = abs(_num("MOTION_COME_SEARCH_TURN_DEG", 45.0))
-        seq = motion_controller.turn(deg)
+        i = int(_requested_come["search_turns"]) + 1
+        sign = float(_requested_come["scan_sign"]) * (1.0 if i % 2 == 1 else -1.0)
+        rel = sign * deg * i
+        seq = motion_controller.turn(rel)
         if seq is not None:
-            _requested_come["search_turns"] += 1
+            _requested_come["search_turns"] = i
+            _requested_come["last_turn_at"] = now
             _log.info(
-                "[motion_agency] requested come: scan turn %d/%d (%+.0f deg)",
-                _requested_come["search_turns"], max_turns, deg,
+                "[motion_agency] requested come: scan turn %d/%d (%+.0f deg, sweep)",
+                i, max_turns, rel,
             )
         return True
 
@@ -166,6 +187,11 @@ def _step_requested_come(snapshot: dict, now: float) -> bool:
     if frac is not None and abs(frac) >= centered:
         deg = _turn_degrees_for(frac)
         if motion_controller.turn(deg) is not None:
+            _requested_come["last_turn_at"] = now
+            # Remember which side they were on: if the align turn loses them, the
+            # sweep starts back toward that side, not away from it.
+            _requested_come["scan_sign"] = 1.0 if deg >= 0 else -1.0
+            _requested_come["search_turns"] = 0     # fresh sweep budget after a sighting
             _log.info(
                 "[motion_agency] requested come: acquired person %s, aligning %+.0f deg",
                 person.get("person_db_id") or person.get("id"), deg,

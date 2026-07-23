@@ -540,15 +540,43 @@ def _queue_camera_reconnect_line(downtime_secs: float = 0.0) -> Optional[str]:
 def _place_event_sink(name: str, payload: dict) -> None:
     """Voice feedback for place-recognition edge events (perception/place_service).
 
-    Only enrollment_failed speaks: Rex acknowledged a room-name tell with "Got it — I'll
-    remember this place", so a capture that later dies (someone stood in front of the
-    lens for the whole window) must be owned out loud, not buried in a log. Success is
-    silent (the ack already covered it); duplicates are auto-resolved by the service."""
-    if name != "enrollment_failed":
-        return
+    Two events speak; the rest stay in the log:
+      - enrollment_failed: Rex acknowledged a room-name tell with "Got it — I'll
+        remember this place", so a capture that later dies (someone stood in front of
+        the lens for the whole window) must be owned out loud.
+      - possible_duplicate_place at TWIN similarity (>= PLACE_TWIN_WARN_TTS_SIM): the
+        service auto-commits the room (the human's explicit name wins), but a gallery
+        born near-identical to another room's WILL be confused with it — say so and
+        invite a walkaround instead of failing silently later.
+    Success is silent (the ack already covered it)."""
     try:
-        if not bool(getattr(config, "PLACE_ENROLL_FAIL_TTS_ENABLED", True)):
+        if name == "enrollment_failed":
+            if not bool(getattr(config, "PLACE_ENROLL_FAIL_TTS_ENABLED", True)):
+                return
+            lines = getattr(config, "PLACE_ENROLL_FAIL_TTS_LINES", [])
+            tag = "place:enroll_failed"
+            fmt = {}
+            log_line = (
+                f"Place enrollment failed (room={(payload or {}).get('name')!r}, "
+                f"collected={(payload or {}).get('collected')})"
+            )
+        elif name == "possible_duplicate_place":
+            sim = float((payload or {}).get("similarity") or 0.0)
+            threshold = float(getattr(config, "PLACE_TWIN_WARN_TTS_SIM", 0.95))
+            if sim < threshold:
+                return
+            lines = getattr(config, "PLACE_TWIN_WARN_TTS_LINES", [])
+            tag = "place:twin_warning"
+            fmt = {
+                "new": str((payload or {}).get("new_place") or "this room"),
+                "existing": str((payload or {}).get("existing_place") or "another room"),
+            }
+            log_line = (
+                f"Place twins (sim={sim:.2f}): {fmt['new']!r} vs {fmt['existing']!r}"
+            )
+        else:
             return
+
         if bool(
             getattr(config, "NO_AUDIO_MODE", False)
             or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
@@ -556,19 +584,14 @@ def _place_event_sink(name: str, payload: dict) -> None:
             return
         if state.get_state() in (State.QUIET, State.SLEEP, State.SHUTDOWN):
             return
-        lines = [
-            str(line).strip()
-            for line in getattr(config, "PLACE_ENROLL_FAIL_TTS_LINES", [])
-            if str(line).strip()
-        ]
+        lines = [str(line).strip() for line in lines if str(line).strip()]
         if not lines:
             return
         line = random.choice(lines)
-        logger.info(
-            "Place enrollment failed (room=%r, collected=%s) — queueing confession: %s",
-            (payload or {}).get("name"), (payload or {}).get("collected"), line,
-        )
-        speech_queue.enqueue(line, "neutral", priority=0, tag="place:enroll_failed")
+        if fmt:
+            line = line.format(**fmt)
+        logger.info("%s — queueing line: %s", log_line, line)
+        speech_queue.enqueue(line, "neutral", priority=0, tag=tag)
     except Exception as exc:
         logger.debug("place event sink failed: %s", exc)
 

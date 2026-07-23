@@ -198,11 +198,51 @@ class MotionAgencyTest(unittest.TestCase):
 
     def test_requested_come_stops_after_full_search(self):
         self._tracking = {"locked": False, "visible": False}
-        with mock.patch.object(config, "MOTION_COME_SEARCH_MAX_TURNS", 2, create=True):
+        with mock.patch.object(config, "MOTION_COME_SEARCH_MAX_TURNS", 2, create=True), \
+             mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(3)
         self.assertEqual(self.turn.call_count, 2)
         self.assertFalse(MA.requested_come_active())
+
+    def test_requested_come_scan_waits_out_reacquire_grace(self):
+        # A chassis turn swings the camera; the person "vanishes" for a beat. Within
+        # the grace window the search WAITS instead of stacking more turns (the
+        # 2026-07-21 bookshelf spiral).
+        self._tracking = {"locked": False, "visible": False}
+        self.assertTrue(MA.request_come_here())
+        self._tick(1)                              # scan turn 1 (no prior turn -> no grace)
+        self.assertEqual(self.turn.call_count, 1)
+        self._tick(4)                              # still inside the 3 s grace -> all waits
+        self.assertEqual(self.turn.call_count, 1)
+        self.assertTrue(MA.requested_come_active())
+
+    def test_requested_come_scan_sweeps_alternating_sides(self):
+        # Sweep pattern (sign alternates, magnitude grows): +45, -90, +135 — net
+        # offsets +45, -45, +90 around the last-known side, not a one-way spiral.
+        self._tracking = {"locked": False, "visible": False}
+        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(3)
+        rels = [c.args[0] for c in self.turn.call_args_list]
+        self.assertEqual(rels, [45.0, -90.0, 135.0])
+
+    def test_requested_come_align_seeds_sweep_side_and_grace(self):
+        # Person on the left (+ align turn), then lost: the sweep must start back
+        # toward that side, and only after the re-acquire grace.
+        self._neck = 4400                          # far left -> positive align turn
+        self.assertTrue(MA.request_come_here())
+        self._tick(1)                              # align turn issued
+        self.assertEqual(self.turn.call_count, 1)
+        align_deg = self.turn.call_args[0][0]
+        self.assertGreater(align_deg, 0)
+        self._tracking = {"locked": False, "visible": False}
+        self._tick(2)                              # inside grace -> no scan yet
+        self.assertEqual(self.turn.call_count, 1)
+        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
+            self._tick(1)                          # grace over -> first sweep turn
+        self.assertEqual(self.turn.call_count, 2)
+        self.assertGreater(self.turn.call_args[0][0], 0)   # starts toward the last-known side
 
 
 class TurnMathTest(unittest.TestCase):

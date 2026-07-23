@@ -253,6 +253,10 @@ def _dispatch(msg: dict) -> None:
             with _state_lock:
                 _remember(_acks, seq, msg)
     elif mtype == "done":
+        # Command outcomes at INFO: without this, a command the firmware accepted but
+        # ended early (done:blocked — boxed in at a bookshelf) was invisible in the
+        # logs and read as "Rex ignored me" (field 2026-07-21).
+        _log.info("[motion] done seq=%s result=%s", msg.get("seq"), msg.get("result"))
         seq = msg.get("seq")
         if isinstance(seq, int):
             with _state_lock:
@@ -263,6 +267,8 @@ def _dispatch(msg: dict) -> None:
             except Exception:
                 _log.debug("motion on_done callback failed", exc_info=True)
     elif mtype == "event":
+        _log.info("[motion] event %s %s", msg.get("event"),
+                  {k: v for k, v in msg.items() if k not in ("type", "v", "t")})
         with _state_lock:
             _events.append(msg)
             if len(_events) > _MAX_REMEMBERED:
@@ -327,6 +333,12 @@ def send(obj: dict) -> "int | None":
     if msg.get("cmd") is not None:
         seq = _next_seq()
         msg["seq"] = seq
+        # Command sends at INFO — the missing half of "did my voice command reach the
+        # base?" (field 2026-07-21). The 10 Hz teleop/deadman refreshes stay at DEBUG.
+        cmd = msg.get("cmd")
+        if cmd not in ("drive", "ping"):
+            _log.info("[motion] send seq=%s cmd=%s %s", seq, cmd,
+                      {k: v for k, v in msg.items() if k not in ("v", "seq", "cmd")})
     line = (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
     with _write_lock:
         if _ser is None:

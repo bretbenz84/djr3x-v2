@@ -308,6 +308,45 @@ def ack_line(capture: Optional[dict]) -> str:
     return random.choice(list(templates)).format(name=name)
 
 
+# ── Grounding: the room-belief clause for reply prompts ─────────────────────────
+
+def belief_clause() -> str:
+    """One honest sentence about which room Rex is in, for the reply-LLM context.
+
+    Grounded in the recognizer's belief + latest frame — NOT the conversation
+    transcript (field bug 2026-07-21: with no grounding, "what room are you in?" was
+    answered by parroting whichever room was last MENTIONED). Hedges when the view is
+    ambiguous, admits not knowing, and says nothing at all ("") when the feature is
+    off/not running — silence must not read as "he claims ignorance".
+    """
+    if not _enabled():
+        return ""
+    svc = _service()
+    try:
+        ctx = svc.belief_context() if svc else None
+    except Exception:
+        ctx = None
+    if not ctx:
+        return ""
+    enrolling = ctx.get("enrolling")
+    if enrolling:
+        return f"Room: you're currently memorizing what the {enrolling} looks like."
+    belief = ctx.get("belief") or {}
+    name = belief.get("name")
+    top = ctx.get("top") or []
+    if name:
+        if ctx.get("ambiguous") and len(top) >= 2:
+            other = top[1][0] if top[0][0] == name else top[0][0]
+            if other and other != name:
+                return (f"Room: you believe you're in the {name}, though right now it "
+                        f"looks a lot like the {other} too — hedge if asked.")
+        return f"Room: you're in the {name} (you recognize it)."
+    if int(ctx.get("known_rooms") or 0) == 0:
+        return ("Room: you don't know any rooms yet — nobody has taught you one "
+                "(you learn a room when someone tells you its name).")
+    return "Room: you don't recognize which room you're in right now — say so if asked."
+
+
 # ── ACK helpers (parity with room_questions) ────────────────────────────────────
 
 def recently_captured(within_secs: float = 5.0) -> bool:

@@ -350,6 +350,43 @@ class ClassifierTest(unittest.TestCase):
         self.assertIsNone(ar.classify_explicit_motion_sequence("turn left then sing a song"))
         self.assertIsNone(ar.classify_explicit_motion_sequence("turn left then stop"))
 
+    def test_leading_connective_single_clause_is_not_a_sequence(self):
+        # Field 2026-07-21: "and move backwards" was split into ["", "move backwards"],
+        # rejected as an invalid sequence, and nothing moved. A lone clause behind a
+        # connective must fall through ([]) to the plain single-command path — which
+        # must then classify it.
+        self.assertEqual(ar.classify_explicit_motion_sequence("and move backwards"), [])
+        self.assertEqual(ar.classify_explicit_motion_sequence("then turn right"), [])
+        # Chatty comma with ZERO motion clauses is conversation, not a rejected route
+        # (pre-existing: this drew "I couldn't safely parse that whole route").
+        self.assertEqual(
+            ar.classify_explicit_motion_sequence("yeah that sounds great, thanks"), []
+        )
+        d = ar.classify_explicit_motion("and move backwards")
+        self.assertEqual(d.action, "motion.move")
+        self.assertEqual(d.args["direction"], "back")
+
+    def test_spoken_word_distances_parse(self):
+        # Whisper writes small counts as words; digits-only parsing silently dropped
+        # every spoken distance (field 2026-07-21: "go backwards four feet" moved the
+        # default nudge instead).
+        d = ar.classify_explicit_motion("go backwards four feet")
+        self.assertEqual(d.args["direction"], "back")
+        self.assertAlmostEqual(d.args["dist_m"], 4 * 0.3048, places=4)
+        d = ar.classify_explicit_motion("move forward two meters")
+        self.assertAlmostEqual(d.args["dist_m"], 2.0)
+        d = ar.classify_explicit_motion("go forward half a meter")
+        self.assertAlmostEqual(d.args["dist_m"], 0.5)
+        d = ar.classify_explicit_motion("move back a foot")
+        self.assertAlmostEqual(d.args["dist_m"], 0.3048, places=4)
+        # And inside a sequence:
+        seq = ar.classify_explicit_motion_sequence(
+            "go backwards four feet, turn right, then go forward ten feet"
+        )
+        self.assertEqual(len(seq), 3)
+        self.assertAlmostEqual(seq[0].args["dist_m"], 4 * 0.3048, places=4)
+        self.assertAlmostEqual(seq[2].args["dist_m"], 10 * 0.3048, places=4)
+
     def test_turn_args(self):
         d = ar.classify_explicit_motion("turn right 45 degrees")
         self.assertEqual(d.args, {"direction": "right", "deg": 45.0})

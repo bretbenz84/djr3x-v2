@@ -1041,6 +1041,13 @@ def _situation_block(person_id: Optional[int], world: Optional[dict],
     scene = _scene_summary(world)
     if scene:
         lines.append("What you see/hear right now — " + scene)
+    try:
+        from intelligence import place_questions
+        room_clause = place_questions.belief_clause()
+        if room_clause:
+            lines.append(room_clause)
+    except Exception:
+        pass
     topics = _recent_topics(person_id)
     if topics:
         lines.append(

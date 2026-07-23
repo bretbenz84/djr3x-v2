@@ -41,6 +41,17 @@ class _FakeService:
         self.enrolled.append(name)
         return self._next_id
 
+    def belief_context(self):
+        return {
+            "belief": self.belief,
+            "top": getattr(self, "top", []),
+            "classification": None,
+            "ambiguous": getattr(self, "ambiguous", False),
+            "known_rooms": len(self.known_names),
+            "enrolling": self.active_enroll,
+            "age_s": 1.0,
+        }
+
 
 class PlaceQuestionsTest(unittest.TestCase):
     def setUp(self):
@@ -175,6 +186,42 @@ class PlaceQuestionsTest(unittest.TestCase):
         self.assertIn("living room", pq.ack_line(cap))
         cap2 = pq.maybe_capture_answer("this is the garage")
         self.assertFalse(cap2["known"])
+
+    # ── grounding clause ──
+    def test_belief_clause_confident(self):
+        self.svc.belief = {"name": "living room", "place_id": 1}
+        self.svc.known_names = ["living room"]
+        clause = pq.belief_clause()
+        self.assertIn("living room", clause)
+        self.assertIn("recognize", clause)
+
+    def test_belief_clause_hedges_when_ambiguous(self):
+        self.svc.belief = {"name": "living room", "place_id": 1}
+        self.svc.known_names = ["living room", "dining room"]
+        self.svc.ambiguous = True
+        self.svc.top = [("living room", 0.85), ("dining room", 0.84)]
+        clause = pq.belief_clause()
+        self.assertIn("living room", clause)
+        self.assertIn("dining room", clause)
+        self.assertIn("hedge", clause.lower())
+
+    def test_belief_clause_admits_not_knowing(self):
+        self.svc.known_names = ["living room"]
+        self.assertIn("don't recognize", pq.belief_clause())
+
+    def test_belief_clause_no_rooms_taught(self):
+        clause = pq.belief_clause()
+        self.assertIn("don't know any rooms", clause)
+
+    def test_belief_clause_silent_when_service_off(self):
+        self.svc.has_recognizer = False
+        # service returns None context when recognizer is missing
+        self.svc.belief_context = lambda: None
+        self.assertEqual(pq.belief_clause(), "")
+
+    def test_belief_clause_mentions_enrollment(self):
+        self.svc.active_enroll = "den"
+        self.assertIn("memorizing", pq.belief_clause())
 
     # ── availability + ack ──
     def test_no_capture_when_service_down(self):
