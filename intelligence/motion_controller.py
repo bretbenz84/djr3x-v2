@@ -485,6 +485,40 @@ def move(dist: float, speed: "float | None" = None) -> "int | None":
     return seq
 
 
+def compass_turn_delta(target_deg: float) -> "float | None":
+    """Signed RELATIVE turn (+ = left/CCW, the turn() convention) that would face the
+    chassis at true compass heading ``target_deg``. None when no trustworthy heading
+    exists (compass disabled / uncalibrated / telemetry down). Compass headings grow
+    CLOCKWISE (N=0, E=90) while turn() is CCW-positive, hence the sign flip."""
+    try:
+        from hardware import compass
+        yaw = compass.get_service_yaw(require_calibrated=True)
+    except Exception:
+        yaw = None
+    if yaw is None:
+        return None
+    cw = ((float(target_deg) - float(yaw) + 180.0) % 360.0) - 180.0   # clockwise amount
+    return -cw
+
+
+def turn_to_compass(target_deg: float) -> "int | None":
+    """Rotate to face true compass heading ``target_deg`` ("turn north").
+
+    Returns the command seq, 0 when already facing it within
+    COMPASS_TURN_DEADBAND_DEG (nothing sent — treat as success), or None when the
+    heading is unavailable or the turn was suppressed/refused."""
+    rel = compass_turn_delta(target_deg)
+    if rel is None:
+        _log.info("motion compass turn unavailable (no calibrated heading)")
+        return None
+    deadband = _get_float("COMPASS_TURN_DEADBAND_DEG", 6.0)
+    if abs(rel) <= deadband:
+        _log.info("motion compass turn: already facing %.0f° (off by %.1f°)", target_deg, rel)
+        return 0
+    _log.info("motion compass turn: target=%.0f° -> relative %+.1f°", target_deg, rel)
+    return turn(rel)
+
+
 def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
     """Turn toward `heading` (deg, + = left), then advance to `stop_at` m from the
     nearest forward obstacle."""

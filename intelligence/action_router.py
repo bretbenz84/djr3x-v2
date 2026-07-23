@@ -1199,6 +1199,18 @@ _MOTION_COME_RE = re.compile(
     r"roll\s+over\s+here|get\s+over\s+here|come\s+to\s+(?:me|daddy))\b",
     re.I,
 )
+# Cardinal directions (true compass headings; executed against the calibrated
+# QMC5883's fused yaw at run time). Diagonals accept solid/spaced/hyphenated forms.
+_CARDINAL_DEG = {
+    "north": 0.0, "northeast": 45.0, "east": 90.0, "southeast": 135.0,
+    "south": 180.0, "southwest": 225.0, "west": 270.0, "northwest": 315.0,
+}
+_CARDINAL_PAT = (
+    r"(?P<card>north\s*-?\s*east|north\s*-?\s*west|south\s*-?\s*east|"
+    r"south\s*-?\s*west|north|south|east|west)"
+)
+def _normalize_cardinal(raw: str) -> str:
+    return re.sub(r"[\s\-]+", "", str(raw or "").strip().lower())
 # An optional "small amount / manner" phrase between the move verb and the direction,
 # so "move a little forward" / "ease slightly back" classify. Kept a strict whitelist
 # (not ".*") so "move the box forward" still does NOT false-positive as a drive command.
@@ -1220,6 +1232,19 @@ _MOTION_BACK_RE = re.compile(
     r"\b(?:back\s*up|backup|reverse|"
     r"(?:move|go|roll|drive|scoot|head|ease|inch|edge|pull)"
     rf"(?:\s+{_MOTION_AMOUNT})?\s+back(?:ward|wards)?)\b",
+    re.I,
+)
+# "turn/face/... north" — rotate in place to the true heading. "due north" tolerated.
+_MOTION_COMPASS_TURN_RE = re.compile(
+    r"\b(?:turn|face|point|look|rotate|spin)\s+"
+    r"(?:to\s+|toward[s]?\s+|to\s+the\s+|to\s+face\s+|yourself\s+)?"
+    rf"(?:due\s+)?{_CARDINAL_PAT}\b",
+    re.I,
+)
+# "go/move/... north [two feet]" — face the heading, then advance.
+_MOTION_COMPASS_GO_RE = re.compile(
+    r"\b(?:move|go|roll|drive|scoot|head|creep|ease|inch|edge)\s+"
+    rf"(?:{_MOTION_AMOUNT}\s+)?(?:to\s+the\s+|toward[s]?\s+(?:the\s+)?|due\s+)?{_CARDINAL_PAT}\b",
     re.I,
 )
 # "a little / a bit / nudge / inch …" with no explicit distance => a SMALL move.
@@ -1452,6 +1477,39 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
     # forward?" otherwise drove the robot while the user was diagnosing it).
     if _MOTION_EXPLANATION_RE.search(cleaned) or _MOTION_NEGATED_RE.search(cleaned):
         return None
+
+    # Cardinal-direction commands (needs the calibrated compass at execution time).
+    # "turn/face/point/look/rotate north" -> rotate to the true heading;
+    # "go/move/drive/roll/head north [two feet]" -> face it, then advance.
+    m = _MOTION_COMPASS_TURN_RE.search(cleaned)
+    if m:
+        card = _normalize_cardinal(m.group("card"))
+        return ActionDecision(
+            action="motion.turn", confidence=0.95,
+            args={"compass": card, "compass_deg": _CARDINAL_DEG[card]},
+            reason="explicit compass turn",
+        )
+    m = _MOTION_COMPASS_GO_RE.search(cleaned)
+    if m:
+        # Figurative guard: "this could go south", "it all went south" are conversation.
+        # An imperative drive command isn't preceded by an auxiliary/subject word.
+        prefix_words = cleaned[: m.start()].lower().split()
+        if prefix_words and prefix_words[-1] in (
+            "could", "would", "might", "may", "will", "can", "to", "gonna",
+            "things", "it", "this", "that", "everything", "all",
+        ):
+            pass
+        else:
+            card = _normalize_cardinal(m.group("card"))
+            args: dict[str, Any] = {"compass": card, "compass_deg": _CARDINAL_DEG[card],
+                                    "direction": "forward"}
+            dist = _motion_dist_to_m(cleaned)
+            if dist is not None:
+                args["dist_m"] = dist
+            return ActionDecision(
+                action="motion.move", confidence=0.95, args=args,
+                reason="explicit compass move",
+            )
 
     if _MOTION_COME_RE.search(cleaned):
         return ActionDecision(

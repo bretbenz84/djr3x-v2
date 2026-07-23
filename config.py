@@ -7201,7 +7201,12 @@ BATTERY_ANNOUNCE_MIN_GAP_SECS = 300.0
 # get_heading() returns TRUE heading; set 0.0 to work in magnetic heading.
 # Master switch for the background fusion service (main.py). OFF until the
 # QMC5883L is physically wired and calibrated (tools/compass_calibrate.py).
-COMPASS_ENABLED = _env_bool("COMPASS_ENABLED", False)
+# Enabled 2026-07-23: the QMC5883 is calibrated on the base and verified accurate, so
+# the fused true heading feeds normal operation (and cardinal-direction commands —
+# "turn north", "go east two feet").
+COMPASS_ENABLED = _env_bool("COMPASS_ENABLED", True)
+# Facing within this of the requested cardinal counts as "already facing it".
+COMPASS_TURN_DEADBAND_DEG = _env_float("COMPASS_TURN_DEADBAND_DEG", 6.0, min_value=0.0, max_value=45.0)
 COMPASS_DECLINATION_DEG = _env_float("COMPASS_DECLINATION_DEG", 13.0, min_value=-180.0, max_value=180.0)
 
 # Hard/soft-iron calibration file (JSON: per-axis offsets/scales + ambient |B|).

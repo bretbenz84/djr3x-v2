@@ -108,6 +108,10 @@ def _run(
                 if event.wait(arc_duration):
                     result = "cancelled"
                     break
+            elif seq == 0:
+                # No-op step (compass turn already facing the heading) — nothing was
+                # sent, so there is no done frame to wait for. Advance immediately.
+                pass
             else:
                 done = motion.wait_done(int(seq), timeout=_step_timeout(decision))
                 if event.is_set():
@@ -140,6 +144,14 @@ def _run(
 def _issue(decision: ActionDecision) -> tuple[Optional[int], float]:
     args = decision.args or {}
     if decision.action == "motion.turn":
+        if args.get("compass"):
+            # Compass-relative step ("turn north then move forward"): the relative
+            # angle is computed from the live heading AT ISSUE TIME. seq 0 = already
+            # facing it — report a tiny settle so the runner advances to the next step.
+            seq = motion_controller.turn_to_compass(float(args.get("compass_deg") or 0.0))
+            if seq == 0:
+                return 0, 0.1
+            return seq, 0.0
         direction = str(args.get("direction") or "left").lower()
         deg = float(args.get("deg") or getattr(config, "MOTION_DEFAULT_TURN_DEG", 90.0))
         if direction == "around":

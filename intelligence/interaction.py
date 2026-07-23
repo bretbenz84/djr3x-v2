@@ -16754,6 +16754,17 @@ def _handle_router_motion_action(
             return None
 
     if action == "motion.turn":
+        if args.get("compass"):
+            # "Turn north" — rotate to the true compass heading (calibrated QMC5883).
+            card = str(args["compass"])
+            seq = motion_controller.turn_to_compass(float(args.get("compass_deg") or 0.0))
+            if seq is None:
+                return ("My compass isn't giving me a heading right now, so I "
+                        "couldn't tell you which way {} is.".format(card))
+            if seq == 0:
+                return f"Already facing {card}."
+            _remember_motion_continuation(decision)
+            return f"Turning {card}."
         direction = str(args.get("direction") or "left").lower()
         deg = _f("deg")
         if direction == "around":
@@ -16771,6 +16782,29 @@ def _handle_router_motion_action(
         return None
 
     if action == "motion.move":
+        if args.get("compass"):
+            # "Go north two feet" — face the true heading, then advance. Runs through
+            # motion_sequence so the move waits for the turn to complete.
+            card = str(args["compass"])
+            if motion_controller.compass_turn_delta(float(args.get("compass_deg") or 0.0)) is None:
+                return ("My compass isn't giving me a heading right now, so I "
+                        "can't find {} for you.".format(card))
+            from intelligence import motion_sequence
+            steps = [
+                action_router.ActionDecision(
+                    action="motion.turn", confidence=0.95,
+                    args={"compass": card, "compass_deg": args.get("compass_deg")},
+                    reason="compass move: face the heading",
+                ),
+                action_router.ActionDecision(
+                    action="motion.move", confidence=0.95,
+                    args={"direction": "forward", "dist_m": _f("dist_m")},
+                    reason="compass move: advance",
+                ),
+            ]
+            if motion_sequence.start(steps):
+                return f"Heading {card}."
+            return None
         direction = str(args.get("direction") or "forward").lower()
         dist = _f("dist_m")
         if direction == "back":
