@@ -83,8 +83,60 @@ class SoundEffectsTest(unittest.TestCase):
         path = sfx._resolve_stem("motion_whir")
         with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)):
             with output_gate.hold("test-tts"):
-                sfx._play_path(path, "motion_move")     # direct: gate is busy
+                sfx._play_path(path, "motion_move")     # gated: gate is busy
         self.assertEqual(self.sd.play_calls, [])        # never played, never waited
+
+    # ── concurrent (speech) discipline ──
+    def test_play_for_speech_is_concurrent(self):
+        # A concurrent effect must NOT hold the gate, so TTS can acquire it instantly
+        # while the chirp is "playing" (no blocking, no preemption of the chirp).
+        from audio import echo_cancel
+        path = sfx._resolve_stem("Droid_Happy_bouncy")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(48000, np.float32), 48000)), \
+                mock.patch.object(echo_cancel, "set_playing"):
+            done = threading.Event()
+            t = threading.Thread(
+                target=lambda: (sfx._play_path(path, "happy", concurrent=True), done.set()),
+                daemon=True)
+            t.start()
+            time.sleep(0.1)
+            self.assertEqual(len(self.sd.play_calls), 1)          # chirp is playing
+            # TTS wants the gate — a concurrent chirp NEVER holds it, so this is instant
+            # (a blocking hold that actually waited would be the bug).
+            with output_gate.hold("tts", blocking=True, timeout=0.05) as acquired:
+                self.assertTrue(acquired)
+            self.assertEqual(self.sd.stop_calls, 0)               # chirp not preempted
+            self.assertTrue(done.wait(2.0))
+
+    def test_concurrent_drops_when_speaker_busy(self):
+        path = sfx._resolve_stem("Droid_Happy_bouncy")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)):
+            with output_gate.hold("test-tts"):
+                sfx._play_path(path, "happy", concurrent=True)    # speaker busy -> drop
+        self.assertEqual(self.sd.play_calls, [])
+
+    def test_concurrent_leaves_suppression_to_tts(self):
+        # TTS takes the speaker DURING the chirp -> the chirp must not turn mic
+        # suppression off at its end (TTS owns _playing now).
+        from audio import echo_cancel
+        path = sfx._resolve_stem("Droid_Happy_bouncy")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)), \
+                mock.patch.object(echo_cancel, "set_playing") as set_playing:
+            t = threading.Thread(
+                target=lambda: sfx._play_path(path, "happy", concurrent=True), daemon=True)
+            t.start()
+            time.sleep(0.02)                                      # chirp started (idle)
+            with output_gate.hold("tts"):                         # TTS takes over mid-chirp
+                t.join(1.0)
+            self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True])
+
+    def test_concurrent_releases_suppression_when_no_tts_follows(self):
+        from audio import echo_cancel
+        path = sfx._resolve_stem("Droid_Happy_bouncy")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(480, np.float32), 48000)), \
+                mock.patch.object(echo_cancel, "set_playing") as set_playing:
+            sfx._play_path(path, "happy", concurrent=True)        # idle speaker throughout
+            self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
 
     # ── preemption ──
     def test_yield_stops_playback_within_a_slice(self):

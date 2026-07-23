@@ -5,21 +5,24 @@ Clips live in ``assets/audio/sound_effects/`` (user-generated MP3s, committed). 
 accompany three families of behavior, each with its own enable + cooldown:
 
   SPEECH  an emotion-matched chirp fired the instant a reaction's TTS starts
-          GENERATING — the clip fills the natural 1-2 s synthesis gap and colors the
-          emotional state before the voice lands. Hooked in speech_queue._worker.
+          GENERATING. This family plays CONCURRENTLY (see below): the chirp fills the
+          ~1 s synthesis gap and the reply's TTS plays normally on top of it — the
+          chirp's audible content is over in the first second, so the overlap lands in
+          its trailing silence (owner spec). Hooked in speech_queue._worker.
   MOTION  drive-base whirs on real motor commands (turn/move/come/arc), hooked in
           motion_controller so both voice commands and autonomy get them.
   SERVO   servo-whir accents on distinct body gestures (body beats, the wave-back),
           hooked in sequences/animations. Never on face-tracking micro-moves.
 
-THE ONE HARD RULE — effects never gate speech. Playback:
-  * acquires the shared output gate NON-blocking: if anything is already playing
-    (TTS, the soundboard, a chime) the effect is dropped, never queued;
-  * is PREEMPTIBLE: every blocking gate acquirer fires output_gate's yield hooks
-    right before it waits, and this module stops its clip within ~50 ms and releases.
-    Worst case, speech starts one wait-slice late instead of a clip-length late.
-  * wraps itself in echo_cancel.set_playing so Rex never transcribes his own chirps;
-    the boolean is safe because the gate serializes all playback.
+THE ONE HARD RULE — effects never gate speech. Two playback disciplines:
+  * GATED (motion/servo/head-lift): acquires the shared output gate NON-blocking
+    (dropped if busy) and is PREEMPTIBLE — every blocking gate acquirer fires
+    output_gate's yield hooks before it waits, and the clip stops within ~50 ms.
+  * CONCURRENT (speech emotions, play_for_speech): does NOT hold the gate, so TTS
+    never waits on it; it plays its full length and TTS overlaps the trailing silence.
+    Fires only when the speaker is currently idle, so it can't truncate an in-progress
+    reply, and hands mic-suppression to TTS when TTS takes the speaker.
+  Both wrap echo_cancel.set_playing so Rex never transcribes his own chirps.
 
 Variants: registry keys map to LISTS of clip stems; multi-entry keys pick uniformly
 at random per play (the "_1"/"_2" files). Decoded audio is cached after first use.
@@ -233,10 +236,13 @@ except Exception:  # circular-import safety in odd tool contexts; wiring is best
 
 # ── Public API ────────────────────────────────────────────────────────────────────
 
-def play(key: str, *, force: bool = False) -> bool:
+def play(key: str, *, force: bool = False, concurrent: bool = False) -> bool:
     """Fire effect ``key`` asynchronously. Returns True when a playback thread was
     started (cooldowns/enables/no-audio may drop it silently). Never raises, never
-    blocks the caller, and never delays other audio (see module docstring)."""
+    blocks the caller, and never delays other audio (see module docstring).
+
+    ``concurrent=True`` (used by play_for_speech) plays the clip WITHOUT holding the
+    output gate so it can overlap the reply's TTS instead of being preempted by it."""
     try:
         if not _enabled():
             return False
@@ -264,7 +270,8 @@ def play(key: str, *, force: bool = False) -> bool:
                          key, stem, _effects_dir())
             return False
         threading.Thread(
-            target=_play_path, args=(path, key), daemon=True, name="sound-effects"
+            target=_play_path, args=(path, key, concurrent), daemon=True,
+            name="sound-effects",
         ).start()
         return True
     except Exception as exc:
@@ -274,17 +281,20 @@ def play(key: str, *, force: bool = False) -> bool:
 
 def play_for_speech(emotion: str, tag: Optional[str] = None) -> bool:
     """The speech-queue hook: fire the emotion's chirp as a reaction's TTS starts
-    generating. Neutral gets nothing (most replies are neutral — the chirps must stay
-    an accent, not a tic). ``tag`` is accepted for future accent mapping."""
+    generating. CONCURRENT — the chirp plays through the ~1 s synthesis gap and TTS
+    plays normally on top; the chirp's audible content is over in the first second, so
+    the overlap lands in its trailing silence (owner spec). It never holds the output
+    gate, so TTS is never delayed; it just won't fire if the speaker is already busy
+    (so it can't cut off an in-progress reply). Neutral gets nothing."""
     emotion = str(emotion or "").strip().lower()
     if not emotion or emotion == "neutral":
         return False
     if emotion not in _registry():
         return False
-    return play(emotion)
+    return play(emotion, concurrent=True)
 
 
-def _play_path(path: Path, key: str) -> None:
+def _play_path(path: Path, key: str, concurrent: bool = False) -> None:
     try:
         import sounddevice as sd
     except ImportError:
@@ -300,6 +310,15 @@ def _play_path(path: Path, key: str) -> None:
         vol = 0.8
     audio = audio * max(0.0, min(1.0, vol))
 
+    if concurrent:
+        _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key)
+    else:
+        _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key)
+
+
+def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key) -> None:
+    """Serialized, preemptible playback for motion/servo/head-lift accents: acquires the
+    output gate (dropped if busy) and yields to any blocking source (TTS) within ~50 ms."""
     # Clear BEFORE acquiring: a hook fired after this point (someone about to block on
     # the gate we may win) must be seen by the wait loop below, not erased.
     _yield_event.clear()
@@ -324,6 +343,36 @@ def _play_path(path: Path, key: str) -> None:
                 echo_cancel.set_playing(False, tail_secs=0.25)
             except Exception:
                 pass
+
+
+def _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key) -> None:
+    """Emotion chirp that coexists with the reply's TTS. It does NOT hold the output
+    gate (so TTS never waits on it) and is NOT preempted — it plays its full length,
+    with the trailing silence absorbing any overlap once TTS audio lands. Fires only
+    when the speaker is currently idle, so it can never truncate an in-progress reply."""
+    if output_gate.is_busy():
+        _log.debug("[sfx] speaker busy — dropping concurrent %s", path.stem)
+        return
+    duration = audio.shape[0] / float(samplerate)
+    try:
+        echo_cancel.set_playing(True)          # suppress the mic for the chirp
+        _log.info("[sfx] ▶ %s (%s, concurrent)", path.stem, key)
+        sd.play(audio, samplerate, blocksize=2048)
+        # Hold suppression for the clip's length even if TTS's own playback steals the
+        # device stream partway through — TTS is speaking, so the mic must stay muted.
+        time.sleep(duration)
+    except Exception as exc:
+        _log.debug("[sfx] concurrent playback error for %s: %s", path.name, exc)
+    finally:
+        try:
+            # Hand mic suppression to TTS if it took the speaker (it now owns the
+            # _playing flag and will release it when the reply ends). Otherwise release
+            # with a tail that bridges the chirp->TTS handoff, or restores the mic if
+            # this reply turned out to have no spoken audio at all.
+            if output_gate.active_source() != "tts":
+                echo_cancel.set_playing(False, tail_secs=0.4)
+        except Exception:
+            pass
 
 
 def list_effects() -> dict:

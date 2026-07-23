@@ -487,9 +487,10 @@ class _SpeechQueue:
                     pass
 
                 # Emotion sound-effect accent: fires NOW, while the TTS below is still
-                # generating (~1-2 s), so the chirp colors the reaction without ever
-                # delaying it — the effect is preemptible and hands the speaker to TTS
-                # the moment the synthesized audio is ready (output_gate yield hooks).
+                # generating (~1 s). It plays CONCURRENTLY — it never holds the output
+                # gate, so the TTS below is never delayed; the chirp's audible content
+                # is over in the first second and the reply's audio overlaps only its
+                # trailing silence (see audio.sound_effects._play_concurrent).
                 if item.text and not item.audio_path:
                     try:
                         from audio import sound_effects
