@@ -680,6 +680,15 @@ def _episodic_shutdown_summary() -> None:
 def _shutdown() -> None:
     logger.info("=== Shutdown sequence begin ===")
 
+    # GUI/button shutdown can arrive while a multi-sentence reply is streaming.
+    # Flush both the active sentence and queued continuations before the power-down
+    # clip claims the speaker; otherwise TTS can continue over the shutdown sound
+    # and servo droop.
+    try:
+        speech_queue.cancel_all()
+    except Exception as exc:
+        logger.debug("speech cancellation at shutdown failed: %s", exc)
+
     # ── Power-down theatrics FIRST, so they fire the INSTANT shutdown begins ─────
     # The LED fade, shutdown sound, and servo droop all kick off right after Rex's
     # sign-off. The session save + the rest of the service teardown then run WHILE
@@ -936,6 +945,15 @@ def _start_startup_boot_tts_thread(
                 return
             logger.info("Playing startup boot TTS after %.1fs delay: %s", delay_secs, line)
             tts.speak(line, emotion)
+            if not _is_shutdown_state():
+                # Fill the remaining model-warmup gap before the ready line. This
+                # effect is preemptible, so ready speech takes the speaker as soon
+                # as startup is genuinely complete.
+                try:
+                    from audio import sound_effects
+                    sound_effects.play("thinking", force=True)
+                except Exception as exc:
+                    logger.debug("startup thinking effect skipped: %s", exc)
         except Exception as exc:
             logger.warning("Could not play startup boot TTS: %s", exc)
 
@@ -1374,16 +1392,22 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Local animal detector preload disabled by config.")
 
-    # Preloads done — restore the interpreter's normal GIL switch interval.
-    if _audio_qos:
-        sys.setswitchinterval(_prior_switch_interval)
-
     # Preloads are done. Let the boot line finish (it played CONCURRENTLY with the loads
     # above, covering the wait) before the ready line / sensors take over, so nothing
     # talks over it. Then stop the look-around scan and recenter before sensors /
     # consciousness take the head, so face tracking inherits a known, centered pose.
     if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
         startup_boot_tts_thread.join()
+    # RF-DETR preload includes a costly first inference on its background thread.
+    # Do not announce readiness while that work is still competing with PortAudio;
+    # the 2026-07-22 live run stuttered throughout the ready line during this overlap.
+    # The thinking effect started above fills this final wait.
+    if bool(getattr(config, "LOCAL_ANIMAL_DETECTION_PRELOAD_ON_STARTUP", True)):
+        if not animal_detector.wait_for_preload():
+            logger.warning("Object detector preload did not finish cleanly before ready line.")
+    # All CPU-heavy preload work is now complete; restore the normal GIL interval.
+    if _audio_qos:
+        sys.setswitchinterval(_prior_switch_interval)
     if startup_scan_thread is not None:
         startup_scan_stop.set()
         startup_scan_thread.join(timeout=3.0)

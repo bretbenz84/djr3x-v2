@@ -291,6 +291,23 @@ class _SpeechQueue:
                 self._heap = keep
                 heapq.heapify(self._heap)
 
+    def cancel_all(self) -> None:
+        """Drop every queued item and interrupt current playback for shutdown."""
+        with self._not_empty:
+            pending = list(self._heap)
+            self._heap.clear()
+            for item in pending:
+                item.done.set()
+            speaking = self._speaking
+        if speaking:
+            try:
+                import sounddevice as sd
+                from audio import echo_cancel
+                echo_cancel.request_cancel()
+                sd.stop()
+            except Exception:
+                pass
+
     def is_speaking(self) -> bool:
         """True while the worker is actively playing audio."""
         with self._lock:
@@ -457,6 +474,12 @@ class _SpeechQueue:
                         pass
 
             try:
+                # An item may have been popped just before shutdown cleared the heap.
+                # Re-check at playback time so that race cannot start a continuation
+                # after the power-down sequence has begun.
+                if _state_suppresses_output():
+                    logger.info("speech_queue: popped item suppressed by shutdown state")
+                    continue
                 try:
                     from awareness.situation import assessor as _sit
                     _sit.set_rex_speaking(True)
@@ -697,6 +720,11 @@ def mark_startup_chime_played() -> None:
 def clear_below_priority(n: int) -> None:
     """Drop all waiting queue items with priority < n."""
     _queue.clear_below_priority(n)
+
+
+def cancel_all() -> None:
+    """Drop all waiting speech and stop active playback immediately."""
+    _queue.cancel_all()
 
 
 def drop_by_tag(tag: str) -> int:

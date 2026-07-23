@@ -50,6 +50,8 @@ _model_lock = threading.Lock()
 _rf_model = None
 _rf_classes: dict = {}
 _active_backend: Optional[str] = None
+_preload_done = threading.Event()
+_preload_thread: Optional[threading.Thread] = None
 
 _SOURCE = "mediapipe_object_detector"
 _RF_SOURCE = "rfdetr_object_detector"
@@ -229,20 +231,42 @@ def preload() -> bool:
     simply report unavailable and the scene scan skips a beat; the warmup
     dummy predict absorbs the torch graph cost so the FIRST real frame is fast.
     """
-    def _warm() -> None:
-        if not _load_model():
-            _log.warning("local object detector preload failed; detection will stay off")
-            return
-        if _active_backend == "rfdetr":
-            try:
-                dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-                _rf_detect(dummy)
-                _log.info("RF-DETR warmed (first-inference torch warmup absorbed at boot)")
-            except Exception as exc:
-                _log.debug("RF-DETR warmup failed: %s", exc)
+    global _preload_thread
+    if _preload_thread is not None and _preload_thread.is_alive():
+        return True
 
-    threading.Thread(target=_warm, daemon=True, name="object-detector-preload").start()
+    _preload_done.clear()
+
+    def _warm() -> None:
+        try:
+            if not _load_model():
+                _log.warning("local object detector preload failed; detection will stay off")
+                return
+            if _active_backend == "rfdetr":
+                try:
+                    dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+                    _rf_detect(dummy)
+                    _log.info("RF-DETR warmed (first-inference torch warmup absorbed at boot)")
+                except Exception as exc:
+                    _log.debug("RF-DETR warmup failed: %s", exc)
+        finally:
+            _preload_done.set()
+
+    _preload_thread = threading.Thread(
+        target=_warm, daemon=True, name="object-detector-preload"
+    )
+    _preload_thread.start()
     return True
+
+
+def wait_for_preload(timeout: Optional[float] = None) -> bool:
+    """Wait until the background model build/first inference is finished."""
+    thread = _preload_thread
+    if thread is None:
+        return True
+    if not _preload_done.wait(timeout):
+        return False
+    return bool(_load_ok)
 
 
 def close() -> None:
@@ -257,6 +281,7 @@ def close() -> None:
         _active_backend = None
         _load_attempted = False
         _load_ok = False
+        _preload_done.clear()
 
     if detector is None:
         return

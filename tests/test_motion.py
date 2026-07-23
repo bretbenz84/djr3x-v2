@@ -21,7 +21,10 @@ class FakeESP32Serial:
     """Minimal stand-in for the firmware: replies to hello, acks commands, and
     streams telemetry reflecting a simple moving/idle + owner state."""
 
-    def __init__(self, *args, reply_hello=True, owner="auto", charging=False, **kwargs):
+    def __init__(
+        self, *args, reply_hello=True, owner="auto", charging=False,
+        batt_mv=12000, batt_ma=1000, batt_soc=50, **kwargs
+    ):
         self.is_open = True
         self._out = bytearray()
         self._lock = threading.Lock()
@@ -29,6 +32,9 @@ class FakeESP32Serial:
         self.reply_hello = reply_hello
         self.owner = owner
         self.charging = charging
+        self.batt_mv = batt_mv
+        self.batt_ma = batt_ma
+        self.batt_soc = batt_soc
         self._state = "idle"
 
     def _emit(self, obj):
@@ -69,7 +75,8 @@ class FakeESP32Serial:
                 "cmd_seq": 0, "odom": {"x": 0, "y": 0, "theta": 0, "lin": 0, "ang": 0},
                 "tof_mm": {"fl": 4000, "fr": 4000, "rl": 4000, "rr": 4000,
                            "lf": 1500, "lb": 1500, "rf": 1500, "rb": 1500},
-                "batt_mv": 12000, "charging": self.charging, "errs": 0}
+                "batt_mv": self.batt_mv, "batt_ma": self.batt_ma,
+                "batt_soc": self.batt_soc, "charging": self.charging, "errs": 0}
 
     def read(self, n=1):
         with self._lock:
@@ -228,6 +235,17 @@ class ControllerTest(_MotionTestBase):
         self.assertIsNone(self._last("turn"))
         self.assertIsNone(self._last("drive"))
         self.assertIsNotNone(mc.stop())
+
+    def test_charger_voltage_blocks_even_when_old_firmware_flag_is_false(self):
+        self._connect(charging=False, batt_mv=14200, batt_ma=0, batt_soc=100)
+        self.assertTrue(mc.charging())
+        self.assertIsNone(mc.turn_left())
+        self.assertIsNone(self._last("turn"))
+
+    def test_full_unplugged_voltage_does_not_block(self):
+        self._connect(charging=False, batt_mv=13400, batt_ma=1200, batt_soc=100)
+        self.assertFalse(mc.charging())
+        self.assertIsNotNone(mc.turn_left())
 
     def test_arc_sets_state_then_cancels(self):
         self._connect()

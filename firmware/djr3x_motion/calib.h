@@ -416,8 +416,11 @@
 // and the R3 sensor-bypass — so the base can never roll away on the cord.
 // Debounced on the 1 Hz battery tick; both edges emit a "charging" event.
 #define BATT_CHARGE_DETECT_MA    250   // sustained charge current at/above this = on charger
+#define BATT_CHARGE_DETECT_MV  14000   // charger holds ~14.2V; unplugged full pack ~13.4V
 #define BATT_CHARGE_ENTER_TICKS    3   // ~3 s of charge current before locking out
-#define BATT_CHARGE_EXIT_TICKS     5   // ~5 s without it before releasing (cable wiggle proof)
+#define BATT_CHARGE_EXIT_DISCHARGE_MA 250 // only real pack discharge proves unplugged;
+                                          // charger taper/cutoff near 0 mA stays locked
+#define BATT_CHARGE_EXIT_TICKS     5   // ~5 s of pack discharge before releasing
 
 // ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
 // The front/rear pairs are angled ±22.5° off the travel axis, so at RANGE they see

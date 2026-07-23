@@ -786,6 +786,20 @@ watchdog — it can stop the base without the Mac) and the **Mac owns the intent
   `hello` reply. This is the only reliable discriminator because the board's USB bridge is
   a CH340, the same chip as the chest Arduino (chip-ID can't tell them apart). It can also
   install the ESP32 core + ArduinoJson and flash the firmware.
+- **Full live ESP32 flash runbook (important):** the battery menu bar LaunchAgent owns
+  `/dev/cu.usbserial-110` while `main.py` is down, so FIRST run
+  `launchctl bootout gui/$(id -u)/com.djr3x.battery`; otherwise `esptool` can fail
+  mid-write with `Invalid head of packet` / `chip stopped responding`. Then run
+  `arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200
+  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1
+  -DMOTION_GAMEPAD_PRESENT=1 -DMOTION_TOF_PRESENT=1
+  -DMOTION_TOF_MATRIX_PRESENT=1" --upload -p /dev/cu.usbserial-110
+  firmware/djr3x_motion`. LSM6DS3 IMU and QMC5883L/P compass need NO flags; they
+  always compile/probe. Verify `charging:true` (~14.2 V), `imu.ok:true`,
+  `mag.ok:true`, and live `tof_mm`, then restore the meter with
+  `launchctl bootstrap gui/$(id -u)
+  "$HOME/Library/LaunchAgents/com.djr3x.battery.plist"`. Full procedure and failure
+  recovery: `firmware/djr3x_motion/README.md` § “Safe full-robot flash runbook”.
 - **Tests:** `tests/test_motion.py` (fake-ESP32 serial; transport, controller gates,
   clamping, classifier).
 

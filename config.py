@@ -7020,6 +7020,11 @@ MOTION_FLINCH_SPEED_MS = 0.20          # m/s of the retreat (firmware still slow
 MOTION_FLINCH_COOLDOWN_SECS = 6.0      # settle time between flinches
 MOTION_FLINCH_ALLOW_MID_SENTENCE = True  # a reflex fires even while they're talking; False defers it
 
+# Host-side charging safety fallback. The as-built charger holds the pack near
+# 14.2 V while an unplugged full LiFePO4 pack settles around 13.4 V. This voltage
+# gate backs up the firmware charging latch, including at 100% when current tapers.
+MOTION_CHARGER_VOLTAGE_LOCKOUT_MV = 14000
+
 # ── Room exploration mode (intelligence/exploration.py) ───────────────────────
 # An INVITED, self-directed wander: someone says "feel free to explore" / "look
 # around a little" / "make yourself at home" and Rex takes the floor, drives a few

@@ -151,6 +151,43 @@ arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
   --upload -p "$PORT" firmware/djr3x_motion
 ```
 
+#### Safe full-robot flash runbook
+
+The battery menu bar LaunchAgent normally owns the same ESP32 serial port while
+`main.py` is stopped. **Boot it out before every flash.** If it is left running,
+both processes read/write the port and `esptool` fails partway through with errors
+such as `Invalid head of packet` or `The chip stopped responding`. A partial flash
+must be retried before the ESP32 can boot normally.
+
+The LSM6DS3 accelerometer/gyro and QMC5883L/P compass need **no compile flags**:
+their drivers are always built, probed at boot, and reported as `imu` and `mag` in
+telemetry. The four flags below enable the motors, Bluepad32 gamepad, eight radial
+ToF sensors, and front matrix ToF respectively.
+
+```bash
+export PORT=/dev/cu.usbserial-110
+
+# 1. Release the ESP32 serial port.
+launchctl bootout gui/$(id -u)/com.djr3x.battery
+
+# 2. Compile AND upload the exact full hardware variant. Keep UploadSpeed=115200.
+arduino-cli compile \
+  --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1 -DMOTION_TOF_PRESENT=1 -DMOTION_TOF_MATRIX_PRESENT=1" \
+  --upload -p "$PORT" firmware/djr3x_motion
+
+# 3. Restore the battery menu bar meter after verification.
+launchctl bootstrap gui/$(id -u) \
+  "$HOME/Library/LaunchAgents/com.djr3x.battery.plist"
+```
+
+After flashing, briefly inspect telemetry before restoring the meter (or start
+`main.py` and inspect its motion telemetry). A healthy full build should show
+`charging:true` near the charger's ~14.2 V, `imu.ok:true`, `mag.ok:true`, and live
+`tof_mm` readings. The unplugged full pack is about 13.4 V; firmware and host both
+use 14.0 V as the charger-present safety threshold. If the battery agent was already
+unloaded, `bootout` may report “Could not find specified service”; that is harmless.
+
 **Wiring** (its OWN I²C bus — never the 21/22 trunk, pins.h): sensor `D/T` →
 **GPIO4** (SDA), `C/R` → **GPIO5** (SCL), VCC → 3V3, GND → GND. The module's RP2040
 clock-stretches (frame packaging; ~5 s mode reconfigure), and a stretch that outlasts

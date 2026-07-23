@@ -493,8 +493,21 @@ def status() -> "dict | None":
 
 
 def charging() -> bool:
-    """True only when current firmware telemetry confirms the charger is attached."""
-    return bool((motion.telemetry() or {}).get("charging"))
+    """Whether drive must remain locked because the charger is attached.
+
+    Prefer the firmware's latch. As a second safety layer, charger voltage itself
+    locks the base: this build reads about 14.2 V plugged in versus roughly 13.4 V
+    at a full unplugged pack. This also covers old firmware that dropped
+    ``charging`` when charge current tapered near zero.
+    """
+    snapshot = motion.telemetry() or {}
+    if bool(snapshot.get("charging")):
+        return True
+    try:
+        mv = float(snapshot.get("batt_mv"))
+    except (TypeError, ValueError):
+        return False
+    return mv >= _get_float("MOTION_CHARGER_VOLTAGE_LOCKOUT_MV", 14000.0)
 
 
 def is_moving() -> bool:

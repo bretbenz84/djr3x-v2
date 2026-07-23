@@ -238,7 +238,14 @@ void battery_tick() {
 
 #if BATT_SHUNT_MICROOHM > 0
   // ---- Charging detection (debounced both ways; see calib.h) ----
-  const bool chg_now = (s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA);
+  // Enter on definite current flowing into the pack. Once latched, do NOT release
+  // merely because a full charger's taper/cutoff falls near 0 mA — that was letting
+  // the wheels wake up while the cable was still attached. Only sustained current
+  // flowing OUT of the pack proves the charger is no longer carrying the load.
+  const bool charger_voltage = have_mv && s_mv_ema >= (float)BATT_CHARGE_DETECT_MV;
+  const bool chg_now = s_charging
+      ? (charger_voltage || s_ma_ema < (float)BATT_CHARGE_EXIT_DISCHARGE_MA)
+      : (charger_voltage || s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA);
   if (chg_now != s_charging) {
     s_chg_ticks++;
     const int need = s_charging ? BATT_CHARGE_EXIT_TICKS : BATT_CHARGE_ENTER_TICKS;
