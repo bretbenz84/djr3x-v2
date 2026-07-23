@@ -7008,9 +7008,13 @@ MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (
 # autonomous behavior; needs no tracked person; may fire mid-sentence (it's a reflex).
 # Voice/gamepad/paused still gate the actual move.
 MOTION_FLINCH_ENABLED = True
-MOTION_FLINCH_TRIGGER_M = 0.26         # must crowd inside ~10 inches before the reflex can arm
-MOTION_FLINCH_APPROACH_DROP_M = 0.20   # require a real closing trend, not ordinary ToF jitter
-MOTION_FLINCH_CONFIRM_TICKS = 5        # sustained intrusion; isolated noisy frames cannot fire it
+# Made harder to trigger 2026-07-23 (was 0.18/0.20/5): the reflex was firing on marginal
+# front reads (parked near a wall / the charge cable) and, when a charger flap unlocked
+# the wheels, inching him backward. Now he must be genuinely crowded — closer, a bigger
+# closing trend, more confirmations, and a longer settle between flinches.
+MOTION_FLINCH_TRIGGER_M = 0.18         # must crowd inside ~7 inches before the reflex can arm
+MOTION_FLINCH_APPROACH_DROP_M = 0.26   # require a clear closing trend, not ordinary ToF jitter
+MOTION_FLINCH_CONFIRM_TICKS = 8        # sustained intrusion; isolated noisy frames cannot fire it
 MOTION_FLINCH_MIN_VALID_M = 0.05       # front reads below this are treated as sensor noise (idle only)
 MOTION_FLINCH_BASELINE_ADAPT_M = 0.12  # max per-tick drift of the open-distance baseline
 MOTION_FLINCH_CLEAR_CONFIRM_TICKS = 3  # consecutive clear ticks before the baseline may RISE (so a
@@ -7019,13 +7023,23 @@ MOTION_FLINCH_BACKUP_M = 0.30          # nominal retreat distance
 MOTION_FLINCH_REAR_MARGIN_M = 0.30     # clearance to keep behind him (stop short of the wall)
 MOTION_FLINCH_MIN_BACKUP_M = 0.10      # below this the retreat isn't worth it -> hold (cornered)
 MOTION_FLINCH_SPEED_MS = 0.20          # m/s of the retreat (firmware still slows near the wall)
-MOTION_FLINCH_COOLDOWN_SECS = 6.0      # settle time between flinches
+MOTION_FLINCH_COOLDOWN_SECS = 12.0     # settle time between flinches (raised so he can't
+                                       # inch backward in a rapid blocked->back-off loop)
 MOTION_FLINCH_ALLOW_MID_SENTENCE = True  # a reflex fires even while they're talking; False defers it
 
 # Host-side charging safety fallback. The as-built charger holds the pack near
 # 14.2 V while an unplugged full LiFePO4 pack settles around 13.4 V. This voltage
 # gate backs up the firmware charging latch, including at 100% when current tapers.
 MOTION_CHARGER_VOLTAGE_LOCKOUT_MV = 14000
+# Once charging is seen, keep the drive locked for this long after the LAST positive
+# charging reading. A servo current spike sags the pack voltage (~160 mΩ junction) and
+# briefly flaps the charging signal to "unplugged"; this grace keeps a flap from waking
+# the wheels while the cable is attached. A genuine unplug is sustained and releases
+# after the grace, so this is also how long after unplugging you wait before driving.
+MOTION_CHARGING_RELEASE_GRACE_SECS = 20.0
+# Debounce for the spoken/chirped charger plug/unplug notice — a transition must persist
+# this long before Rex announces it, so a voltage-sag flap never spams the audio.
+MOTION_CHARGER_NOTICE_DEBOUNCE_SECS = 12.0
 
 # ── Room exploration mode (intelligence/exploration.py) ───────────────────────
 # An INVITED, self-directed wander: someone says "feel free to explore" / "look

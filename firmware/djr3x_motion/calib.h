@@ -427,11 +427,20 @@
 // and the R3 sensor-bypass — so the base can never roll away on the cord.
 // Debounced on the 1 Hz battery tick; both edges emit a "charging" event.
 #define BATT_CHARGE_DETECT_MA    250   // sustained charge current at/above this = on charger
-#define BATT_CHARGE_DETECT_MV  14000   // charger holds ~14.2V; unplugged full pack ~13.4V
+#define BATT_CHARGE_DETECT_MV  14000   // ENTER: charger holds ~14.2V (clearly above rest)
+// EXIT uses a LOWER voltage floor than ENTER — a Schmitt hysteresis band. A servo
+// current spike sags the terminal under the ~160 mΩ junction (~0.4-0.5V under load),
+// which was dropping it below the single 14.0V threshold and FALSELY releasing the
+// drive lockout mid-charge (field 2026-07-23). Charger-under-load holds ~13.7-13.8V,
+// an unplugged full pack settles ~13.4V, so 13.6V cleanly separates them. TUNE: watch
+// batt_mv (firmware/tools/sensor_monitor.py) while moving servos plugged in — set this
+// ~0.15V below the LOWEST voltage seen under load, but above the unplugged rest.
+#define BATT_CHARGE_EXIT_MV    13600   // stay locked while voltage holds at/above this
 #define BATT_CHARGE_ENTER_TICKS    3   // ~3 s of charge current before locking out
 #define BATT_CHARGE_EXIT_DISCHARGE_MA 250 // only real pack discharge proves unplugged;
                                           // charger taper/cutoff near 0 mA stays locked
-#define BATT_CHARGE_EXIT_TICKS     5   // ~5 s of pack discharge before releasing
+#define BATT_CHARGE_EXIT_TICKS     8   // ~8 s below the floor before releasing (was 5) —
+                                       // rides out a multi-second servo sag transient
 
 // ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
 // The front/rear pairs are angled ±22.5° off the travel axis, so at RANGE they see

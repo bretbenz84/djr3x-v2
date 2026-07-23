@@ -43,6 +43,8 @@ _last_read_mv: int = -1
 _last_spoke_at: float = 0.0
 _last_charging: Optional[bool] = None   # telemetry charging flag, edge-detected
 _pending_charging_line: bool = False
+_chg_candidate: Optional[bool] = None   # pending debounce candidate for a charging flip
+_chg_candidate_since: float = 0.0
 
 
 def _lines_for(tier: str) -> list[str]:
@@ -112,8 +114,23 @@ def _step_charging(snapshot: dict, profile) -> None:
     if _last_charging is None:
         _last_charging = chg          # session baseline: no remark if born charging
         return
+    # Debounce the transition: a servo voltage sag flaps the charging signal for a few
+    # seconds; only announce a change that PERSISTS, so the plug/unplug audio + line
+    # can't spam on a flap (field 2026-07-23).
+    global _chg_candidate, _chg_candidate_since
+    debounce = float(getattr(config, "MOTION_CHARGER_NOTICE_DEBOUNCE_SECS", 12.0))
+    import time as _t
+    now = _t.monotonic()
+    if chg == _last_charging:
+        _chg_candidate = None         # signal matches committed state — flap resolved
     if chg != _last_charging:
+        if chg != _chg_candidate:
+            _chg_candidate = chg
+            _chg_candidate_since = now
+        if (now - _chg_candidate_since) < debounce:
+            return                    # not stable yet — wait it out
         _last_charging = chg
+        _chg_candidate = None
         if chg:
             _pending_charging_line = True
             _log.info("[battery] charger plugged in — wheels locked by firmware")

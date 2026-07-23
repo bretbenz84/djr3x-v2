@@ -242,10 +242,14 @@ void battery_tick() {
   // merely because a full charger's taper/cutoff falls near 0 mA — that was letting
   // the wheels wake up while the cable was still attached. Only sustained current
   // flowing OUT of the pack proves the charger is no longer carrying the load.
-  const bool charger_voltage = have_mv && s_mv_ema >= (float)BATT_CHARGE_DETECT_MV;
+  // Hysteresis: ENTER on the high threshold (clearly the charger), but once latched
+  // HOLD down to the lower EXIT floor, so a servo-load voltage sag can't false-release
+  // the drive lockout (field 2026-07-23). See calib.h BATT_CHARGE_EXIT_MV.
+  const bool charger_voltage_enter = have_mv && s_mv_ema >= (float)BATT_CHARGE_DETECT_MV;
+  const bool charger_voltage_hold  = have_mv && s_mv_ema >= (float)BATT_CHARGE_EXIT_MV;
   const bool chg_now = s_charging
-      ? (charger_voltage || s_ma_ema < (float)BATT_CHARGE_EXIT_DISCHARGE_MA)
-      : (charger_voltage || s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA);
+      ? (charger_voltage_hold || s_ma_ema < (float)BATT_CHARGE_EXIT_DISCHARGE_MA)
+      : (charger_voltage_enter || s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA);
   if (chg_now != s_charging) {
     s_chg_ticks++;
     const int need = s_charging ? BATT_CHARGE_EXIT_TICKS : BATT_CHARGE_ENTER_TICKS;

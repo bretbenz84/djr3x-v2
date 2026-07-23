@@ -262,6 +262,28 @@ class ControllerTest(_MotionTestBase):
         self.assertFalse(mc.charging())
         self.assertIsNotNone(mc.turn_left())
 
+    def test_charging_release_is_sticky_across_a_flap(self):
+        # A servo sag briefly flaps charging False; within the grace, charging() stays
+        # True (wheels stay locked) so a flinch can't wake the base mid-charge.
+        with mock.patch.object(config, "MOTION_CHARGING_RELEASE_GRACE_SECS", 20.0, create=True):
+            self._connect(charging=True, batt_mv=14200)
+            self.assertTrue(mc.charging())                 # arms the sticky latch
+            self.fake.charging = False                     # firmware flag flaps off...
+            self.fake.batt_mv = 13750                       # ...and voltage sags under load
+            time.sleep(0.15)                               # let a fresh telemetry frame land
+            self.assertTrue(mc.charging())                 # still locked (within grace)
+            self.assertIsNone(mc.turn_left())              # drive stays blocked
+
+    def test_charging_releases_after_grace_on_real_unplug(self):
+        with mock.patch.object(config, "MOTION_CHARGING_RELEASE_GRACE_SECS", 0.0, create=True):
+            self._connect(charging=True, batt_mv=14200)
+            self.assertTrue(mc.charging())
+            self.fake.charging = False
+            self.fake.batt_mv = 13400                       # settled unplugged rest
+            time.sleep(0.15)
+            self.assertFalse(mc.charging())                # grace 0 -> releases immediately
+            self.assertIsNotNone(mc.turn_left())
+
     def test_arc_sets_state_then_cancels(self):
         self._connect()
         self.assertIsNotNone(mc.arc_move(forward=True, left=False, small=True))

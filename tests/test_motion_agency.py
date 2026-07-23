@@ -305,9 +305,16 @@ class FlinchTest(unittest.TestCase):
             mock.patch.object(MA.motion_controller, "turn", return_value=7),
             mock.patch.object(MA.motion_controller, "come", return_value=8),
             mock.patch("world_state.world_state.get", return_value={}),
+            # Pin the flinch thresholds the fixtures are calibrated to (250 mm intrusion,
+            # 1.5 m baseline) so these logic tests don't move when the SHIPPING defaults
+            # are re-tuned (raised 2026-07-23 to make the reflex harder to trigger).
+            mock.patch.object(config, "MOTION_FLINCH_TRIGGER_M", 0.26, create=True),
+            mock.patch.object(config, "MOTION_FLINCH_APPROACH_DROP_M", 0.20, create=True),
+            mock.patch.object(config, "MOTION_FLINCH_CONFIRM_TICKS", 5, create=True),
+            mock.patch.object(config, "MOTION_FLINCH_COOLDOWN_SECS", 6.0, create=True),
         ]
-        (self.available, self.state, self.telemetry, self.move,
-         self.turn, self.come, self.ws) = [p.start() for p in self._patches]
+        (self.available, self.state, self.telemetry, self.move, self.turn,
+         self.come, self.ws, *_cfg) = [p.start() for p in self._patches]
 
     def tearDown(self):
         for p in self._patches:

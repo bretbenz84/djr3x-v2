@@ -85,6 +85,8 @@ def connect(port: "str | None" = None) -> bool:
     Returns True only on a clean handshake."""
     if not motion.connect(port):
         return False
+    global _charging_last_true_at
+    _charging_last_true_at = 0.0        # fresh base — no stale sticky-charging memory
     try:
         _push_config()
     except Exception:
@@ -668,6 +670,9 @@ def status() -> "dict | None":
     return motion.telemetry()
 
 
+_charging_last_true_at = 0.0   # monotonic ts of the last positive charging reading
+
+
 def charging() -> bool:
     """Whether drive must remain locked because the charger is attached.
 
@@ -675,15 +680,29 @@ def charging() -> bool:
     locks the base: this build reads about 14.2 V plugged in versus roughly 13.4 V
     at a full unplugged pack. This also covers old firmware that dropped
     ``charging`` when charge current tapered near zero.
+
+    STICKY RELEASE (field 2026-07-23): a servo current spike sags the pack voltage
+    under the ~160 mΩ junction, briefly flapping BOTH the firmware flag and the
+    voltage test to "unplugged" — which was letting the wheels wake up (and back-off
+    reflex fire) while the cable was still attached. So once charging is seen, stay
+    locked for MOTION_CHARGING_RELEASE_GRACE_SECS after the LAST positive reading; a
+    genuine unplug is sustained and releases after the grace, a flap is not.
     """
+    global _charging_last_true_at
     snapshot = motion.telemetry() or {}
-    if bool(snapshot.get("charging")):
+    raw = bool(snapshot.get("charging"))
+    if not raw:
+        try:
+            raw = float(snapshot.get("batt_mv")) >= _get_float(
+                "MOTION_CHARGER_VOLTAGE_LOCKOUT_MV", 14000.0)
+        except (TypeError, ValueError):
+            raw = False
+    now = time.monotonic()
+    if raw:
+        _charging_last_true_at = now
         return True
-    try:
-        mv = float(snapshot.get("batt_mv"))
-    except (TypeError, ValueError):
-        return False
-    return mv >= _get_float("MOTION_CHARGER_VOLTAGE_LOCKOUT_MV", 14000.0)
+    grace = _get_float("MOTION_CHARGING_RELEASE_GRACE_SECS", 20.0)
+    return _charging_last_true_at > 0.0 and (now - _charging_last_true_at) < grace
 
 
 def is_moving() -> bool:

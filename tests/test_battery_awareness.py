@@ -106,6 +106,7 @@ class StepBehaviorTest(unittest.TestCase):
             mock.patch("hardware.motion.telemetry", side_effect=lambda: dict(telemetry)),
             mock.patch("audio.sound_effects.play") as play,
             mock.patch("intelligence.speech_engine.speak_async", return_value=True),
+            mock.patch.object(config, "MOTION_CHARGER_NOTICE_DEBOUNCE_SECS", 0.0, create=True),
         ):
             BA._step_charging({}, _profile())  # startup baseline is silent
             play.assert_not_called()
@@ -130,10 +131,30 @@ class StepBehaviorTest(unittest.TestCase):
             mock.patch("hardware.motion.telemetry", side_effect=readings),
             mock.patch("audio.sound_effects.play") as play,
             mock.patch("intelligence.speech_engine.speak_async", return_value=True),
+            mock.patch.object(config, "MOTION_CHARGER_NOTICE_DEBOUNCE_SECS", 0.0, create=True),
         ):
             BA._step_charging({}, _profile())
             BA._step_charging({}, _profile())
         play.assert_called_once_with("charger_connected", force=True)
+
+    def test_charger_notice_debounced_against_a_flap(self):
+        # A brief voltage-sag flap (unplug then re-plug within the debounce) must NOT
+        # announce anything — the transition never persisted.
+        telemetry = {"charging": True, "batt_mv": 14200}
+        BA._last_charging = None
+        BA._chg_candidate = None
+        with (
+            mock.patch("hardware.motion.telemetry", side_effect=lambda: dict(telemetry)),
+            mock.patch("audio.sound_effects.play") as play,
+            mock.patch("intelligence.speech_engine.speak_async", return_value=True),
+            mock.patch.object(config, "MOTION_CHARGER_NOTICE_DEBOUNCE_SECS", 12.0, create=True),
+        ):
+            BA._step_charging({}, _profile())          # baseline: charging
+            telemetry.update(charging=False, batt_mv=13750)   # sag flaps it "off"
+            BA._step_charging({}, _profile())          # candidate armed, not stable
+            telemetry.update(charging=True, batt_mv=14200)    # recovers within debounce
+            BA._step_charging({}, _profile())
+            play.assert_not_called()                   # never announced the flap
 
 
 class MotionGateTest(unittest.TestCase):
