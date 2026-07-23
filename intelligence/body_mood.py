@@ -171,16 +171,41 @@ def set_mood(mood: str, *, intensity: float = 1.0, ttl: Optional[float] = None, 
     if ttl is None:
         ttl = float(getattr(config, "BODY_MOOD_DEFAULT_TTL_SECS", 45.0))
     ttl = max(1.0, float(ttl))
+    fresh_transition = False
     with _lock:
         current_int = _decayed_intensity_locked(_now())
         # Don't let a markedly weaker mood overwrite a still-strong active one.
         if _state["mood"] != "neutral" and _state["mood"] != canonical:
             if intensity < current_int - 0.25:
                 return False
+        fresh_transition = _state["mood"] != canonical
         _state.update(
             {"mood": canonical, "intensity": intensity, "set_at": _now(), "ttl": ttl, "source": str(source or "")}
         )
+    if fresh_transition:
+        _mood_chirp(canonical)
     return True
+
+
+# A curated map of body-mood -> sound-effect key, for moods whose chirp is otherwise
+# unreachable (the TTS emotion vocabulary never emits "proud"/"amused", so these
+# expressive clips would sit unused). Fires ONCE on a fresh transition into the mood;
+# the effect layer owns the cooldown so a flurry of compliments won't stack chirps.
+# Overridable via config.SOUND_EFFECTS_MOOD_CHIRPS.
+_MOOD_CHIRPS = {"proud": "proud", "amused": "laughing"}
+
+
+def _mood_chirp(mood: str) -> None:
+    try:
+        overrides = getattr(config, "SOUND_EFFECTS_MOOD_CHIRPS", None)
+        mapping = overrides if isinstance(overrides, dict) else _MOOD_CHIRPS
+        key = mapping.get(mood)
+        if not key:
+            return
+        from audio import sound_effects
+        sound_effects.play(key)
+    except Exception:
+        pass
 
 
 def _decayed_intensity_locked(now: float) -> float:

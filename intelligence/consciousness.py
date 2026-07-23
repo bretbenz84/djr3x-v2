@@ -1097,6 +1097,16 @@ def note_person_greeted_this_session(person_id: Optional[int]) -> None:
     _last_presence_reaction_at[pid] = time.monotonic()
 
 
+def _face_recognized_chirp() -> None:
+    """Warm 'oh it's you' recognition ding, fired the first time Rex greets a known
+    person this session. Best-effort; the effect layer owns the cooldown/no-audio gate."""
+    try:
+        from audio import sound_effects
+        sound_effects.play("face_recognized")
+    except Exception:
+        pass
+
+
 def begin_response_wait(window_secs: Optional[float] = None) -> None:
     """
     Extend the "waiting for user response" window.
@@ -4498,6 +4508,7 @@ def _step_startup_group_greeting(snapshot: dict, profile: SituationProfile) -> N
         purpose="presence_reaction",
     )
     if queued:
+        _face_recognized_chirp()
         _startup_group_greeted_signatures.add(signature)
         for person in scene.known:
             _greeted_this_session.add(person.person_id)
@@ -8795,6 +8806,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             )
                     _greeted_this_session.add(key)
                     _first_sight_seen_at.pop(key, None)
+                    _face_recognized_chirp()
                     # "I saw <name>" → rex.db (once per known person per run).
                     episodic_hooks.person_seen(person_db_id, person_name)
                     # Memorable greeting tiers (birthday/celebration/milestone/reunion/

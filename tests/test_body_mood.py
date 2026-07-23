@@ -49,6 +49,25 @@ class BodyMoodStateTest(unittest.TestCase):
         self.assertEqual(mood, "proud")
         self.assertAlmostEqual(intensity, 1.0, places=3)
 
+    def test_mood_chirp_fires_on_fresh_transition_only(self):
+        with mock.patch("audio.sound_effects.play") as play:
+            self.assertTrue(body_mood.set_mood("complimented"))   # -> proud
+            play.assert_called_once_with("proud")
+            play.reset_mock()
+            # re-setting the SAME mood must not re-chirp (no fresh transition)
+            body_mood.set_mood("praised")                          # also -> proud
+            play.assert_not_called()
+
+    def test_amused_mood_chirps_laughing(self):
+        with mock.patch("audio.sound_effects.play") as play:
+            body_mood.set_mood("funny")                            # -> amused
+            play.assert_called_once_with("laughing")
+
+    def test_uncurated_mood_is_silent(self):
+        with mock.patch("audio.sound_effects.play") as play:
+            body_mood.set_mood("sad")                              # no curated chirp
+            play.assert_not_called()
+
     def test_unknown_mood_rejected(self):
         self.assertFalse(body_mood.set_mood("banana"))
         self.assertFalse(body_mood.set_mood("neutral"))

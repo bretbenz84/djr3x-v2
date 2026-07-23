@@ -1640,7 +1640,9 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
         return False
     try:
         from audio import sound_effects
-        sound_effects.play("servo")     # whir accent under the arm raise (cooldown inside)
+        # The wave-back IS a greeting — the R2-style greeting whistle fits it better than
+        # a generic servo whir (cooldown owned by the effect layer).
+        sound_effects.play("greeting")
     except Exception:
         pass
 

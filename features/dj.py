@@ -256,6 +256,11 @@ def play(track_info: TrackInfo) -> None:
         )
         _thread.start()
     _body_beat("proud_dj_pose")
+    try:
+        from audio import sound_effects
+        sound_effects.play("song_recognized")   # sparkly arpeggio flourish as the track drops
+    except Exception:
+        pass
     logger.info("[dj] Playing: %s (%s)", track_info.name, track_info.source)
 
 
