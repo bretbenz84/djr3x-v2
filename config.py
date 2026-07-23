@@ -7006,9 +7006,9 @@ MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (
 # autonomous behavior; needs no tracked person; may fire mid-sentence (it's a reflex).
 # Voice/gamepad/paused still gate the actual move.
 MOTION_FLINCH_ENABLED = True
-MOTION_FLINCH_TRIGGER_M = 0.30         # front intrusion closer than this arms a flinch
-MOTION_FLINCH_APPROACH_DROP_M = 0.20   # ...only if the gap also closed at least this much
-MOTION_FLINCH_CONFIRM_TICKS = 2        # consecutive intruding ticks before firing (de-glitch)
+MOTION_FLINCH_TRIGGER_M = 0.26         # must crowd inside ~10 inches before the reflex can arm
+MOTION_FLINCH_APPROACH_DROP_M = 0.20   # require a real closing trend, not ordinary ToF jitter
+MOTION_FLINCH_CONFIRM_TICKS = 5        # sustained intrusion; isolated noisy frames cannot fire it
 MOTION_FLINCH_MIN_VALID_M = 0.05       # front reads below this are treated as sensor noise (idle only)
 MOTION_FLINCH_BASELINE_ADAPT_M = 0.12  # max per-tick drift of the open-distance baseline
 MOTION_FLINCH_CLEAR_CONFIRM_TICKS = 3  # consecutive clear ticks before the baseline may RISE (so a

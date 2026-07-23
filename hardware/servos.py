@@ -1229,7 +1229,7 @@ def idle_animation() -> None:
 
 def move_to(
     targets: "dict[int, int]",
-    step_us: int = 40,
+    step_us: "int | dict[int, int]" = 40,
     step_delay: float = 0.02,
     start: "dict[int, int] | None" = None,
 ) -> None:
@@ -1240,7 +1240,9 @@ def move_to(
     with a known pose for specific channels — use it when the caller already knows the
     current position and the proprioception read is unreliable (e.g. the first move
     right after a fresh serial connect, where a failed/garbage read would otherwise
-    collapse the sweep into a jump).
+    collapse the sweep into a jump). ``step_us`` may be a single step for every
+    channel or a per-channel mapping, which lets mechanically different linkages
+    move together without forcing the stickier one to creep.
     """
     if _program_servo_updates_blocked():
         return
@@ -1271,7 +1273,9 @@ def move_to(
             if diff == 0:
                 continue
             done = False
-            step = min(step_us, abs(diff)) * (1 if diff > 0 else -1)
+            channel_step = step_us.get(ch, 40) if isinstance(step_us, dict) else step_us
+            channel_step = max(1, int(channel_step))
+            step = min(channel_step, abs(diff)) * (1 if diff > 0 else -1)
             new_pos = cur + step
             current[ch] = new_pos
             moves[ch] = new_pos

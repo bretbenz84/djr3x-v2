@@ -16711,6 +16711,9 @@ def _handle_router_motion_action(
     action = decision.action
     args = decision.args or {}
 
+    if action != "motion.stop" and motion_controller.charging():
+        return "I'm plugged in and charging. Wheels stay locked."
+
     # A fresh single command supersedes any queued route. Its own command will
     # supersede the in-flight firmware finite command; stop/come need an explicit
     # controlled stop because they may not immediately issue another finite step.
@@ -16850,7 +16853,9 @@ def _explicit_motion_takeover(
         _router_audit_note_fast_local_action(
             router_audit, "motion.sequence_rejected", reason=rejected.reason
         )
-        return "I couldn't safely parse that whole route."
+        line = "I couldn't safely parse that whole route."
+        _speak_blocking(line, emotion="neutral", log_text=False)
+        return line
     if sequence:
         _clear_motion_continuation()
         decision = action_router.ActionDecision(
@@ -16859,12 +16864,18 @@ def _explicit_motion_takeover(
             reason="explicit ordered motion sequence",
         )
         _router_audit_note_decision(router_audit, decision)
+        if motion_controller.charging():
+            line = "I'm plugged in and charging. Wheels stay locked."
+            _speak_blocking(line, emotion="neutral", log_text=False)
+            return line
         if not _start_motion_sequence(sequence):
             return None
         _router_audit_note_fast_local_action(
             router_audit, "motion.sequence", reason=decision.reason
         )
-        return "On it — {} moves.".format(len(sequence))
+        line = "On it — {} moves.".format(len(sequence))
+        _speak_blocking(line, emotion="neutral", log_text=False)
+        return line
 
     motion_decision = action_router.classify_explicit_motion(text)
     if motion_decision is None:
@@ -16896,6 +16907,7 @@ def _explicit_motion_takeover(
         _router_audit_note_fast_local_action(
             router_audit, motion_decision.action, reason=motion_decision.reason
         )
+        _speak_blocking(result, emotion="neutral", log_text=False)
     return result
 
 

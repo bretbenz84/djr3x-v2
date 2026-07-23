@@ -37,6 +37,14 @@ class IdleArmWanderTests(unittest.TestCase):
         self.assertEqual(targets[7], animations.HEROARM_NEUTRAL - 1600)
         self.assertEqual(targets[6], animations.POKERARM_NEUTRAL + 900)
 
+    def test_idle_poker_arm_uses_faster_step_than_hero_arm(self):
+        from sequences import animations
+
+        self.assertGreater(
+            animations._IDLE_POKERARM_STEP_QUS,
+            animations._IDLE_ARM_STEP_QUS,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

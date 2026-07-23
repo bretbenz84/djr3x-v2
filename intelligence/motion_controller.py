@@ -302,6 +302,8 @@ def _autonomous_allowed() -> "str | None":
     """Return None if autonomous motion may run, else a reason string."""
     if not motion.connected():
         return "not_connected"
+    if charging():
+        return "charging"
     if bool(getattr(config, "INTERACTION_PAUSED", False)):
         return "interaction_paused"
     if motion.owner() == "manual":
@@ -417,6 +419,9 @@ def drive_manual(lin: float, ang: float) -> "int | None":
     while a gamepad owns the base."""
     if not motion.connected():
         return None
+    if charging():
+        _log.debug("manual drive suppressed: charging")
+        return None
     _cancel_arc()
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
     max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
@@ -485,6 +490,11 @@ def come_here() -> "int | None":
 
 def status() -> "dict | None":
     return motion.telemetry()
+
+
+def charging() -> bool:
+    """True only when current firmware telemetry confirms the charger is attached."""
+    return bool((motion.telemetry() or {}).get("charging"))
 
 
 def is_moving() -> bool:

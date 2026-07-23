@@ -316,8 +316,10 @@ class FlinchTest(unittest.TestCase):
             self._state_val = state
         MA.step({"people": []}, profile or _profile())
 
-    def _approach(self, close_mm=250, rear_mm=None, far_mm=1500, confirm=2, profile=None):
+    def _approach(self, close_mm=250, rear_mm=None, far_mm=1500, confirm=None, profile=None):
         """One far tick to seat the baseline, then `confirm` close ticks."""
+        if confirm is None:
+            confirm = config.MOTION_FLINCH_CONFIRM_TICKS
         self._tick(front_mm=far_mm, rear_mm=rear_mm, profile=profile)
         for _ in range(confirm):
             self._tick(front_mm=close_mm, rear_mm=rear_mm, profile=profile)
@@ -326,9 +328,10 @@ class FlinchTest(unittest.TestCase):
 
     def test_front_approach_backs_up(self):
         self._tick(front_mm=1500)      # far — seats the "came from" baseline
-        self._tick(front_mm=250)       # intruding tick 1 -> confirm not yet met
-        self.move.assert_not_called()
-        self._tick(front_mm=250)       # intruding tick 2 -> flinch
+        for _ in range(config.MOTION_FLINCH_CONFIRM_TICKS - 1):
+            self._tick(front_mm=250)
+            self.move.assert_not_called()
+        self._tick(front_mm=250)       # sustained intrusion -> flinch
         self.move.assert_called_once()
         dist, speed = self.move.call_args[0]
         self.assertLess(dist, 0)                              # reverse
@@ -341,19 +344,19 @@ class FlinchTest(unittest.TestCase):
         self._tick(front_mm=350)
         self.move.assert_not_called()
 
-    def test_slow_creep_still_flinches(self):
-        # ~5 cm/tick creep to contact — the case the old fixed-window version missed.
+    def test_slow_creep_does_not_trigger_hardened_reflex(self):
+        # A gradual range drift is deliberately insufficient now; the hardened reflex
+        # requires a sustained close intrusion off a meaningfully open baseline.
         for mm in (600, 550, 500, 450, 400, 350, 300, 250, 200, 150, 100, 90, 80):
             self._tick(front_mm=mm)
-        self.assertTrue(self.move.called)
-        self.assertLess(self.move.call_args[0][0], 0)
+        self.move.assert_not_called()
 
     def test_static_clutter_one_side_does_not_mask_other_side_approach(self):
         # fr pinned by a static object at 0.30 m; fl sees a real walk-up.
         self._tick(fl_mm=1500, fr_mm=300)
         self._tick(fl_mm=1500, fr_mm=300)   # baselines settle: fl~1.5, fr frozen 0.30
-        self._tick(fl_mm=250, fr_mm=200)    # fl intrudes (1/2)
-        self._tick(fl_mm=250, fr_mm=200)    # fl intrudes (2/2) -> flinch
+        for _ in range(config.MOTION_FLINCH_CONFIRM_TICKS):
+            self._tick(fl_mm=250, fr_mm=200)
         self.move.assert_called_once()
 
     # ── false-positive rejection ────────────────────────────────────────────────
@@ -399,8 +402,8 @@ class FlinchTest(unittest.TestCase):
     def test_backup_uses_nearer_rear_of_pair(self):
         # rl open, rr close: the nearer rear (rr) must cap the retreat.
         self._tick(front_mm=1500, rl_mm=4000, rr_mm=500)
-        self._tick(front_mm=250, rl_mm=4000, rr_mm=500)
-        self._tick(front_mm=250, rl_mm=4000, rr_mm=500)
+        for _ in range(config.MOTION_FLINCH_CONFIRM_TICKS):
+            self._tick(front_mm=250, rl_mm=4000, rr_mm=500)
         self.move.assert_called_once()
         self.assertAlmostEqual(abs(self.move.call_args[0][0]), 0.20, places=2)
 
@@ -425,8 +428,8 @@ class FlinchTest(unittest.TestCase):
 
     def test_blocked_after_observed_approach_backs_off(self):
         self._tick(front_mm=1500, state="idle")
-        self._tick(front_mm=80, state="blocked")
-        self._tick(front_mm=80, state="blocked")
+        for _ in range(config.MOTION_FLINCH_CONFIRM_TICKS):
+            self._tick(front_mm=80, state="blocked")
         self.move.assert_called_once()
         self.assertLess(self.move.call_args[0][0], 0)
 

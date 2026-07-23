@@ -125,6 +125,7 @@ SHUTDOWN_REST_POSE = {
 # hero arm gets the broadest swing; pokerarm stays a quieter secondary accent.
 _IDLE_ARM_WAIT_RANGE_SECS = (4.0, 9.0)
 _IDLE_ARM_STEP_QUS = 70
+_IDLE_POKERARM_STEP_QUS = 210
 _IDLE_ARM_STEP_DELAY_SECS = 0.045
 _IDLE_HEROARM_SWING_RANGE_QUS = (1300, 2000)
 _IDLE_HEROARM_MIN_TRAVEL_QUS = 900
@@ -1168,7 +1169,10 @@ def arm_wander_thread() -> None:
             if not _speaking.is_set() and not servos.arm_idle_paused():
                 servos.move_to(
                     _idle_arm_wander_targets(),
-                    step_us=_IDLE_ARM_STEP_QUS,
+                    step_us={
+                        7: _IDLE_ARM_STEP_QUS,
+                        6: _IDLE_POKERARM_STEP_QUS,
+                    },
                     step_delay=_IDLE_ARM_STEP_DELAY_SECS,
                 )
         finally:

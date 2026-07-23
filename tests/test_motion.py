@@ -21,13 +21,14 @@ class FakeESP32Serial:
     """Minimal stand-in for the firmware: replies to hello, acks commands, and
     streams telemetry reflecting a simple moving/idle + owner state."""
 
-    def __init__(self, *args, reply_hello=True, owner="auto", **kwargs):
+    def __init__(self, *args, reply_hello=True, owner="auto", charging=False, **kwargs):
         self.is_open = True
         self._out = bytearray()
         self._lock = threading.Lock()
         self.received: list[dict] = []     # non-ping commands the host sent
         self.reply_hello = reply_hello
         self.owner = owner
+        self.charging = charging
         self._state = "idle"
 
     def _emit(self, obj):
@@ -68,7 +69,7 @@ class FakeESP32Serial:
                 "cmd_seq": 0, "odom": {"x": 0, "y": 0, "theta": 0, "lin": 0, "ang": 0},
                 "tof_mm": {"fl": 4000, "fr": 4000, "rl": 4000, "rr": 4000,
                            "lf": 1500, "lb": 1500, "rf": 1500, "rb": 1500},
-                "batt_mv": 12000, "errs": 0}
+                "batt_mv": 12000, "charging": self.charging, "errs": 0}
 
     def read(self, n=1):
         with self._lock:
@@ -217,6 +218,16 @@ class ControllerTest(_MotionTestBase):
         config.INTERACTION_PAUSED = True
         self.assertIsNone(mc.move_forward())
         self.assertIsNone(self._last("move"))
+
+    def test_charging_blocks_autonomous_and_manual_drive(self):
+        self._connect(charging=True)
+        self.assertIsNone(mc.move_forward())
+        self.assertIsNone(mc.turn_left())
+        self.assertIsNone(mc.drive_manual(0.1, 0.0))
+        self.assertIsNone(self._last("move"))
+        self.assertIsNone(self._last("turn"))
+        self.assertIsNone(self._last("drive"))
+        self.assertIsNotNone(mc.stop())
 
     def test_arc_sets_state_then_cancels(self):
         self._connect()
@@ -542,12 +553,18 @@ class MotionTakeoverTest(_MotionTestBase):
             config.MOTION_NO_BASE_DENIAL_ENABLED = orig
 
     def test_explicit_motion_executes(self):
+        from unittest import mock
         from intelligence import interaction as I
         self._connect()
-        self.assertEqual(I._explicit_motion_takeover("turn left"), "Turning left.")
-        self.assertIsNotNone(self._last("turn"))
-        self.assertEqual(I._explicit_motion_takeover("move forward"), "Rolling forward.")
-        self.assertIsNotNone(self._last("move"))
+        with mock.patch.object(I, "_speak_blocking", return_value=True) as spoke:
+            self.assertEqual(I._explicit_motion_takeover("turn left"), "Turning left.")
+            self.assertIsNotNone(self._last("turn"))
+            self.assertEqual(I._explicit_motion_takeover("move forward"), "Rolling forward.")
+            self.assertIsNotNone(self._last("move"))
+        self.assertEqual(
+            [call.args[0] for call in spoke.call_args_list],
+            ["Turning left.", "Rolling forward."],
+        )
 
     def test_more_repeats_last_successful_motion(self):
         from intelligence import interaction as I
