@@ -101,9 +101,19 @@ forward axis: 4 short-range **VL53L0X** on mux ch 0-3 as the LEFT/RIGHT pairs
 **VL53L1X** on mux ch 4-7 as the FRONT/REAR pairs (`fl,fr,rl,rr`, ±22.5° off each axis —
 stop reflex + room sense). All stay at 0x29; the TCA9548A mux selects one channel at a
 time (zero XSHUT GPIOs). There is **no down/cliff sensor** in this layout, so cliff/
-drop-off detection is unavailable. While driving FORWARD on the gamepad, the firmware
-auto-steers away from walls / centers in a hallway (`assist_*` config params, docs §6.4);
-the operator's stick adds on top and B/e-stop + the stop reflex always win.
+drop-off detection is unavailable. While driving FORWARD, the firmware auto-steers away
+from walls / centers in a hallway (`assist_*` config params, docs §6.4). This applies to
+gamepad drive, Python `move`, and the forward phase of Python `come`; reverse movement,
+pure turns, and deliberate arcs are not auto-centered. The operator's stick adds on top
+in manual mode, and B/e-stop + the stop reflex always win.
+
+Finite turns use the LSM6DS3 gyro yaw as the physical completion signal when the IMU is
+healthy, so spinning encoders cannot falsely claim a completed turn when the wheels slip.
+Encoder odometry remains the fallback if the IMU was unavailable when the turn began.
+An IMU-verified turn that fails to make enough physical yaw before its bounded timeout is
+aborted rather than grinding indefinitely. After motor current settles, the Mac can also
+check the completed turn against its fused compass heading and issue one small correction;
+that second check requires `COMPASS_ENABLED=1` and a valid in-situ calibration file.
 
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32 \

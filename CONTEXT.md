@@ -1475,6 +1475,25 @@ third-person null reports ("The person did not share...") at a hardcoded salienc
   gate in `episodic_hooks.scene_changed` (near-rewordings of the same room must
   not create new rows).
 
+### Motion sensor verification + autonomous hallway steering (2026-07-22)
+
+- Firmware hallway assist is active during normal forward gamepad `drive`, finite
+  Python `move`, and the forward phase of `come`. The paired side ToF sensors center
+  between walls; split front ToF adds look-ahead when approaching a wall obliquely.
+  Correction is bounded and additive. Reverse, pure turns, and intentional arcs are
+  not auto-centered; the ordinary stop/slow reflex still has final authority.
+- Finite `turn`, gamepad D-pad turn, and the turn phase of `come` use signed LSM6DS3
+  gyro yaw as their completion signal whenever the IMU is healthy at command start.
+  Encoder angle is retained as the no-IMU fallback. Wrong-direction motion cannot
+  complete the command, and failure to achieve physical yaw eventually emits
+  `done:aborted` rather than allowing encoder slip or a stalled pivot to grind forever.
+- `intelligence/motion_controller.py` optionally performs a second, absolute-heading
+  check after current settles and may issue one bounded corrective turn. It is
+  deliberately inert until the QMC5883L is calibrated in place with
+  `venv/bin/python tools/compass_calibrate.py` and `COMPASS_ENABLED=1`; raw or
+  uncalibrated magnetic readings must never steer the base. A newer motion command,
+  stop, e-stop, or disconnect invalidates any delayed correction.
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

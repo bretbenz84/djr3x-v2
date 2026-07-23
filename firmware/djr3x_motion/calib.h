@@ -362,6 +362,17 @@
 #define ASSIST_REPEL_MM       130.0f    // ~5 in: a side wall inside this repels hard
 #define ASSIST_REPEL_GAIN     12.0f     // rad/s per METER of penetration inside REPEL
 
+// ---- Physical turn verification (LSM6DS3 gyro + encoder fallback) ----------
+// Encoder odometry alone cannot distinguish chassis rotation from tyres scrubbing
+// in place. When the IMU is healthy, finite turns close on integrated gyro yaw
+// instead. Encoder angle remains the fallback when the IMU is absent. A verified
+// turn that cannot make physical yaw progress is aborted after a generous,
+// command-size-aware timeout instead of grinding indefinitely.
+#define TURN_IMU_VERIFY_ENABLED       1
+#define TURN_VERIFY_TIMEOUT_MIN_MS 8000
+#define TURN_VERIFY_TIMEOUT_MULT    3.0f
+#define TURN_VERIFY_TOLERANCE_DEG   1.5f
+
 // (The stalled-pivot "wiggle" assist that lived here — auto-converting a stalled
 // pivot into alternating rolling arcs — was removed 2026-07-13 at the owner's
 // request: turns should just be turns. If a pivot stalls under full weight,

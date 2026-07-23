@@ -164,6 +164,11 @@ def sleep() -> None:
     send_command("SLEEP")
 
 
+def charge_status(soc: int, charging: bool) -> None:
+    """Show the off-state three-column battery gauge."""
+    send_command(f"CHARGE:{max(0, min(100, int(soc)))}:{1 if charging else 0}")
+
+
 def off() -> None:
     """Turn all chest LEDs off immediately."""
     send_command("OFF")

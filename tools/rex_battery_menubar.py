@@ -155,6 +155,7 @@ _snap: dict = {
     "detail": "starting…",
 }
 _stop = threading.Event()
+_last_effective_charging: "bool | None" = None
 
 
 def _update(**kw) -> None:
@@ -342,10 +343,11 @@ def _handle_line(raw: bytes) -> None:
         return
     if msg.get("type") != "telemetry":
         return
+    effective_charging = _effective_charging(msg)
     _advance_current_ema(msg.get("batt_ma"))
     _update(
         env=msg.get("env"),
-        charging=bool(msg.get("charging", False)),
+        charging=effective_charging,
         batt_mv=msg.get("batt_mv"),
         batt_ma=msg.get("batt_ma"),
         batt_soc=msg.get("batt_soc"),
@@ -354,6 +356,41 @@ def _handle_line(raw: bytes) -> None:
         frame_at=time.time(),
         mode="live",
     )
+    _handle_charger_transition(effective_charging)
+
+
+def _effective_charging(msg: dict) -> bool:
+    """Mirror the controller's charger latch + 14.0 V full-pack fallback."""
+    if bool(msg.get("charging")):
+        return True
+    try:
+        return float(msg.get("batt_mv")) >= 14000.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _handle_charger_transition(charging: bool) -> None:
+    """Silent initial baseline; one cue for each later plug/unplug edge."""
+    global _last_effective_charging
+    charging = bool(charging)
+    if _last_effective_charging is None:
+        _last_effective_charging = charging
+        return
+    if charging == _last_effective_charging:
+        return
+    _last_effective_charging = charging
+    log.info("Charger %s while Rex is off — playing power cue.",
+             "connected" if charging else "disconnected")
+    try:
+        import rex_supervisor
+        rex_supervisor._play_charger_effect(charging)
+    except Exception as exc:
+        log.debug("charger cue failed: %s", exc)
+
+
+def _reset_charger_transition_baseline() -> None:
+    global _last_effective_charging
+    _last_effective_charging = None
 
 
 def _advance_current_ema(ma) -> None:
@@ -418,28 +455,128 @@ def _send_mouth_command(cmd: str) -> bool:
             pass
 
 
-_mouth_sleeping: "bool | None" = None   # None = unknown (fresh handoff / dormant)
+_mouth_charge_state: "tuple[bool, int | None] | None" = None
 _mouth_retry_at = 0.0
 
 
-def _sync_mouth_sleep(mode: str, charging: bool) -> None:
-    """Keep the mouth PCB's sleep animation in step with the charger while the
-    robot is off. State-based (not edge-based) so 'Rex exits while already on
-    the charger' also starts the animation."""
-    global _mouth_sleeping, _mouth_retry_at
+def _mouth_soc_band(soc) -> "int | None":
+    try:
+        value = max(0, min(100, int(soc)))
+    except (TypeError, ValueError):
+        return None
+    if value <= 25:
+        return 0
+    if value <= 50:
+        return 1
+    if value <= 75:
+        return 2
+    if value <= 90:
+        return 3
+    return 4
+
+
+def _sync_mouth_charge(mode: str, soc, charging: bool) -> None:
+    """Show SOC-coloured breathing only while Rex is off and charging."""
+    global _mouth_charge_state, _mouth_retry_at
     if mode != "live":
-        _mouth_sleeping = None      # Rex (or nobody) owns the LEDs — resync later
+        _mouth_charge_state = None  # Rex owns the LEDs — resync after shutdown
         return
-    want = bool(charging)
-    if _mouth_sleeping == want:
+    band = _mouth_soc_band(soc) if charging else None
+    target = (bool(charging), band)
+    if _mouth_charge_state == target:
         return
     now = time.time()
     if now < _mouth_retry_at:
         return
-    if _send_mouth_command("SLEEP" if want else "OFF"):
-        _mouth_sleeping = want
+    if charging and band is not None:
+        value = max(0, min(100, int(soc)))
+        cmd = f"CHARGE:{value}"
+    elif charging:
+        cmd = "SLEEP"  # unknown SOC: retain safe legacy charging indicator
+    else:
+        cmd = "OFF"
+    if _send_mouth_command(cmd):
+        _mouth_charge_state = target
     else:
         _mouth_retry_at = now + 30.0    # don't hammer a missing/busy port
+
+
+# ── Chest charge gauge sync ──────────────────────────────────────────────────
+# Same ownership model as the mouth above: while Rex is off this battery worker
+# has the live SOC/charger state and briefly opens the chest Nano only when the
+# visible 8-segment level or attached state changes. The Nano keeps animating
+# after the serial handle closes; main.py owns it again when Rex wakes.
+
+def _chest_port() -> str:
+    env = _read_env_file()
+    return (os.environ.get("ARDUINO_CHEST_PORT") or env.get("ARDUINO_CHEST_PORT") or "").strip()
+
+
+def _send_chest_command(cmd: str) -> bool:
+    port = _chest_port()
+    if not port:
+        return False
+    try:
+        import serial
+        ser = serial.Serial(port, 115200, timeout=1.0, write_timeout=1.0, exclusive=True)
+    except Exception as exc:
+        log.debug("chest Arduino open failed (%s) — will retry.", exc)
+        return False
+    try:
+        time.sleep(2.0)  # Nano/CH340 resets on open; wait out its bootloader
+        ser.write((cmd + "\n").encode("ascii"))
+        ser.flush()
+        log.info("Chest Arduino: sent %s.", cmd)
+        return True
+    except Exception as exc:
+        log.warning("Chest Arduino write failed (%s).", exc)
+        return False
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+
+
+_chest_charge_state: "tuple[int, bool] | None" = None
+_chest_retry_at = 0.0
+
+
+def _reset_chest_charge_baseline() -> None:
+    global _chest_charge_state
+    _chest_charge_state = None
+
+
+def _charge_level(soc) -> "int | None":
+    """Visible 0..8 bar level, matching the Nano's rounded-up mapping."""
+    try:
+        value = max(0, min(100, int(soc)))
+    except (TypeError, ValueError):
+        return None
+    return 0 if value == 0 else min(8, (value + 11) // 12)
+
+
+def _sync_chest_charge(mode: str, soc, charging: bool) -> None:
+    global _chest_charge_state, _chest_retry_at
+    if mode != "live":
+        _chest_charge_state = None
+        return
+    level = _charge_level(soc)
+    if level is None:
+        return
+    target = (level, bool(charging))
+    if _chest_charge_state == target:
+        return
+    now = time.time()
+    if now < _chest_retry_at:
+        return
+    # Send the actual percentage for future display refinements; level-based
+    # dedup avoids resetting the Nano for every 1% coulomb-counter change.
+    value = max(0, min(100, int(soc)))
+    if _send_chest_command(f"CHARGE:{value}:{1 if charging else 0}"):
+        _chest_charge_state = target
+    else:
+        _chest_retry_at = now + 30.0
 
 
 def _worker() -> None:
@@ -471,6 +608,8 @@ def _worker() -> None:
                 pass
             ser = None
         _joy_was_driving = False
+        _reset_charger_transition_baseline()
+        _reset_chest_charge_baseline()
         _joy_release()
         # A queued click must not fire surprisingly late on a future reconnect.
         _clear_tx()
@@ -567,7 +706,10 @@ def _worker() -> None:
             _stop.wait(2.0)
 
         s = _snapshot()
-        _sync_mouth_sleep(s["mode"], bool(s.get("charging")))
+        _sync_mouth_charge(
+            s["mode"], s.get("batt_soc"), bool(s.get("charging"))
+        )
+        _sync_chest_charge(s["mode"], s.get("batt_soc"), bool(s.get("charging")))
 
         # Re-check the flock between reads. readline()'s 1 s timeout bounds
         # how long a quiet line can delay the dormant handoff.

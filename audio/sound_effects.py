@@ -89,6 +89,8 @@ _REGISTRY: dict = {
     "attention":    ["Attention-getting_polite"],
     "scanning":     ["Scanning_sweep,_slow"],
     "thinking":     ["robot_Processing_thinking_1", "robot_Processing_thinking_2"],
+    "charger_connected": ["droid_gaining_electric"],
+    "charger_disconnected": ["droid_losing_electric"],
     "idle_breath":  ["Soft_idle_robot_breathing"],
 }
 

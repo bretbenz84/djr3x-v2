@@ -60,6 +60,12 @@ _CONTROLLER_CONSOLE_LOG = _PROJECT_ROOT / "logs" / "controller.console.log"
 # Short chime played the instant a wake word is accepted, so there's immediate
 # feedback before the (slower) full controller finishes booting.
 _CHIME_FILE = _PROJECT_ROOT / "assets" / "audio" / "startup" / "startup_chime.mp3"
+_CHARGER_CONNECTED_FILE = (
+    _PROJECT_ROOT / "assets" / "audio" / "sound_effects" / "droid_gaining_electric.mp3"
+)
+_CHARGER_DISCONNECTED_FILE = (
+    _PROJECT_ROOT / "assets" / "audio" / "sound_effects" / "droid_losing_electric.mp3"
+)
 
 # 80 ms at 16 kHz — openWakeWord's preferred sequential frame size.
 _SAMPLE_RATE = 16000
@@ -359,6 +365,58 @@ def _play_chime() -> None:
 
     threading.Thread(
         target=_play_blocking, args=(None,), daemon=True, name="rex-chime"
+    ).start()
+
+
+def _play_charger_effect(charging: bool) -> None:
+    """Play the charger edge cue while the full controller is not running.
+
+    The battery-menu companion owns the ESP32 serial port in this state and calls
+    this helper after its debounced edge detection. Keeping playback here gives
+    the always-on supervisor path the same output-device routing as its wake chime
+    without making the supervisor contend for the motion serial port.
+    """
+    path = _CHARGER_CONNECTED_FILE if charging else _CHARGER_DISCONNECTED_FILE
+    if not path.exists():
+        log.warning("Charger sound missing: %s", path)
+        return
+    out_device = _resolve_output_device(_read_env_file())
+
+    def _play_blocking(device):
+        try:
+            import soundfile as sf
+            import sounddevice as sd
+            audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
+            if getattr(audio, "ndim", 1) > 1:
+                audio = audio.mean(axis=1)
+            sd.play(audio, sr, device=device)
+            sd.wait()
+        except Exception as exc:
+            log.debug("charger sound on device %s failed: %s", device, exc)
+
+    if out_device is not None:
+        threading.Thread(
+            target=_play_blocking,
+            args=(out_device,),
+            daemon=True,
+            name="rex-charger-sound",
+        ).start()
+        return
+
+    import shutil
+    afplay = shutil.which("afplay")
+    if afplay:
+        try:
+            subprocess.Popen(
+                [afplay, str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except Exception as exc:
+            log.debug("afplay charger sound failed (%s) — trying soundfile.", exc)
+    threading.Thread(
+        target=_play_blocking, args=(None,), daemon=True, name="rex-charger-sound"
     ).start()
 
 

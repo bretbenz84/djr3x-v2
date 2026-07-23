@@ -10,6 +10,7 @@ import json
 import threading
 import time
 import unittest
+from unittest import mock
 
 import config
 from hardware import motion
@@ -266,6 +267,68 @@ class ControllerTest(_MotionTestBase):
         self.assertIsNone(mc.turn_left())
 
 
+class CompassTurnVerificationTest(_MotionTestBase):
+    """Absolute-heading correction is calibrated-only and cannot supersede a
+    newer command."""
+
+    def setUp(self):
+        super().setUp()
+        self._orig_verify = config.MOTION_COMPASS_TURN_VERIFY_ENABLED
+        config.MOTION_COMPASS_TURN_VERIFY_ENABLED = True
+
+    def tearDown(self):
+        config.MOTION_COMPASS_TURN_VERIFY_ENABLED = self._orig_verify
+        super().tearDown()
+
+    def _record(self, *, desired=90.0, start=10.0, attempt=0):
+        epoch = mc._invalidate_turn_verification()
+        return {
+            "desired_deg": desired,
+            "rate": 40.0,
+            "start_yaw": start,
+            "epoch": epoch,
+            "attempt": attempt,
+        }
+
+    def test_completed_turn_is_corrected_once_when_compass_disagrees(self):
+        self._connect()
+        record = self._record()
+        with mock.patch.object(mc._stop, "wait", return_value=False), \
+             mock.patch.object(mc, "_calibrated_compass_yaw", return_value=90.0), \
+             mock.patch.object(mc, "turn") as correction:
+            mc._verify_completed_turn(record)
+        correction.assert_called_once_with(10.0, rate=25.0, _verify_attempt=1)
+
+    def test_turn_within_compass_tolerance_needs_no_correction(self):
+        self._connect()
+        record = self._record()
+        with mock.patch.object(mc._stop, "wait", return_value=False), \
+             mock.patch.object(mc, "_calibrated_compass_yaw", return_value=99.0), \
+             mock.patch.object(mc, "turn") as correction:
+            mc._verify_completed_turn(record)
+        correction.assert_not_called()
+
+    def test_newer_command_invalidates_delayed_compass_correction(self):
+        self._connect()
+        record = self._record()
+        mc._invalidate_turn_verification()
+        with mock.patch.object(mc._stop, "wait", return_value=False), \
+             mock.patch.object(mc, "_calibrated_compass_yaw", return_value=80.0), \
+             mock.patch.object(mc, "turn") as correction:
+            mc._verify_completed_turn(record)
+        correction.assert_not_called()
+
+    def test_uncalibrated_compass_does_not_arm_verification(self):
+        mc._invalidate_turn_verification()
+        with mc._turn_verify_lock:
+            epoch = mc._turn_verify_epoch
+        mc._remember_turn_verification(
+            17, desired_deg=90.0, rate=40.0, start_yaw=None, epoch=epoch, attempt=0,
+        )
+        with mc._turn_verify_lock:
+            self.assertNotIn(17, mc._pending_turn_verify)
+
+
 class ConfigPushTest(_MotionTestBase):
     """_push_config sends caps/zones/ramps on connect; optional bench-tuning keys
     remain opt-in so a connect never clobbers their firmware values."""
@@ -425,6 +488,18 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(d.args, {"direction": "around", "deg": 180.0})
         d = ar.classify_explicit_motion("turn 180")
         self.assertEqual(d.args, {"direction": "around", "deg": 180.0})
+
+    def test_direct_small_turn_is_45_degrees(self):
+        for text, direction in (
+            ("turn right a little", "right"),
+            ("turn left a bit", "left"),
+            ("turn slightly right", "right"),
+            ("rotate a little to your left", "left"),
+        ):
+            d = ar.classify_explicit_motion(text)
+            self.assertIsNotNone(d, text)
+            self.assertEqual(d.action, "motion.turn", text)
+            self.assertEqual(d.args, {"direction": direction, "deg": 45.0}, text)
 
     def test_distance_parse(self):
         d = ar.classify_explicit_motion("move forward 2 feet")

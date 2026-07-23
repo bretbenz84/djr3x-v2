@@ -1,0 +1,130 @@
+"""Charger edge cues while main.py is down and the battery companion owns serial."""
+
+import importlib.util
+import json
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+_REPO = Path(__file__).resolve().parent.parent
+
+
+def _load_meter():
+    spec = importlib.util.spec_from_file_location(
+        "rex_battery_menubar_test", _REPO / "tools" / "rex_battery_menubar.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ChargerSoundTest(unittest.TestCase):
+    def setUp(self):
+        self.meter = _load_meter()
+        self.meter._reset_charger_transition_baseline()
+
+    def _frame(self, charging, mv):
+        return json.dumps({
+            "type": "telemetry",
+            "charging": charging,
+            "batt_mv": mv,
+            "batt_ma": 0,
+            "batt_soc": 100,
+            "state": "idle",
+        }).encode()
+
+    def test_initial_state_is_silent_then_edges_play_once(self):
+        with mock.patch("rex_supervisor._play_charger_effect") as play:
+            self.meter._handle_line(self._frame(False, 13400))
+            play.assert_not_called()
+            self.meter._handle_line(self._frame(True, 14200))
+            self.meter._handle_line(self._frame(True, 14200))
+            self.meter._handle_line(self._frame(False, 13400))
+        self.assertEqual(play.call_args_list, [mock.call(True), mock.call(False)])
+
+    def test_voltage_fallback_detects_full_pack_on_charger(self):
+        with mock.patch("rex_supervisor._play_charger_effect") as play:
+            self.meter._handle_line(self._frame(False, 13400))
+            self.meter._handle_line(self._frame(False, 14200))
+        play.assert_called_once_with(True)
+
+
+class ChestChargeGaugeTest(unittest.TestCase):
+    def setUp(self):
+        self.meter = _load_meter()
+        self.meter._chest_charge_state = None
+        self.meter._chest_retry_at = 0.0
+
+    def test_soc_maps_to_eight_visible_levels(self):
+        self.assertEqual(self.meter._charge_level(0), 0)
+        self.assertEqual(self.meter._charge_level(1), 1)
+        self.assertEqual(self.meter._charge_level(50), 5)
+        self.assertEqual(self.meter._charge_level(100), 8)
+        self.assertIsNone(self.meter._charge_level(None))
+
+    def test_sync_sends_only_on_level_or_charger_change(self):
+        with mock.patch.object(self.meter, "_send_chest_command", return_value=True) as send:
+            self.meter._sync_chest_charge("live", 50, False)
+            self.meter._sync_chest_charge("live", 51, False)  # same visible level
+            self.meter._sync_chest_charge("live", 51, True)   # animation changes
+            self.meter._sync_chest_charge("live", 61, True)   # next visible level
+        self.assertEqual(
+            send.call_args_list,
+            [
+                mock.call("CHARGE:50:0"),
+                mock.call("CHARGE:51:1"),
+                mock.call("CHARGE:61:1"),
+            ],
+        )
+
+    def test_dormant_state_resets_baseline_without_writing(self):
+        self.meter._chest_charge_state = (4, True)
+        with mock.patch.object(self.meter, "_send_chest_command") as send:
+            self.meter._sync_chest_charge("dormant", 50, True)
+        send.assert_not_called()
+        self.assertIsNone(self.meter._chest_charge_state)
+
+
+class MouthChargeColorTest(unittest.TestCase):
+    def setUp(self):
+        self.meter = _load_meter()
+        self.meter._mouth_charge_state = None
+        self.meter._mouth_retry_at = 0.0
+
+    def test_requested_soc_color_bands(self):
+        expected = {
+            0: 0, 25: 0,
+            26: 1, 50: 1,
+            51: 2, 75: 2,
+            76: 3, 90: 3,
+            91: 4, 100: 4,
+        }
+        for soc, band in expected.items():
+            self.assertEqual(self.meter._mouth_soc_band(soc), band, soc)
+
+    def test_charging_sends_color_command_only_when_band_changes(self):
+        with mock.patch.object(self.meter, "_send_mouth_command", return_value=True) as send:
+            self.meter._sync_mouth_charge("live", 24, True)
+            self.meter._sync_mouth_charge("live", 25, True)
+            self.meter._sync_mouth_charge("live", 26, True)
+            self.meter._sync_mouth_charge("live", 91, True)
+            self.meter._sync_mouth_charge("live", 91, False)
+        self.assertEqual(
+            send.call_args_list,
+            [
+                mock.call("CHARGE:24"),
+                mock.call("CHARGE:26"),
+                mock.call("CHARGE:91"),
+                mock.call("OFF"),
+            ],
+        )
+
+    def test_running_controller_never_gets_charge_command(self):
+        with mock.patch.object(self.meter, "_send_mouth_command") as send:
+            self.meter._sync_mouth_charge("dormant", 100, True)
+        send.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

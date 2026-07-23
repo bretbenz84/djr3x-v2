@@ -161,9 +161,12 @@ feeds the ESP32 *locally*, not via this command (§12).
 | `deg` | float | degrees, +left | yes | — |
 | `rate` | float | deg/s, magnitude | no | `MOTION_DEFAULT_TURN_RATE` |
 
-Spins in place by `deg` using encoder odometry, then stops. **Finite** → emits a `done`
-(§6.3) when complete/aborted. Aborts if the swing-side ToF enters STOP (`done
-result:"blocked"`).
+Spins in place by `deg`, then stops. When the IMU is healthy at command start, completion
+is closed on signed integrated gyro yaw (physical chassis rotation); encoder odometry is
+the fallback when the IMU is unavailable. An IMU-verified turn that does not reach its
+target before the bounded verification timeout aborts instead of accepting wheel slip as
+rotation. **Finite** → emits a `done` (§6.3) when complete/aborted. Aborts if the
+swing-side ToF enters STOP (`done result:"blocked"`).
 
 ### 5.4 `move` — closed-loop straight distance
 ```json
@@ -174,8 +177,9 @@ result:"blocked"`).
 | `dist` | float | m, +fwd / −back | yes | — |
 | `speed` | float | m/s, magnitude | no | derived from caps |
 
-Drives straight `dist` metres (sign = direction), ToF-gated in the travel direction, then
-stops. **Finite** → `done`.
+Drives `dist` metres (sign = direction), ToF-gated in the travel direction, then stops.
+During forward travel, the side pairs and split front view add a bounded hallway-centering
+correction; reverse travel is not auto-centered. **Finite** → `done`.
 
 ### 5.5 `come` — advance toward a heading, stop at social distance
 ```json
@@ -583,7 +587,8 @@ flag them as decisions still owed:
    every 45° starting 22.5° off the forward axis: 2 long-range VL53L1X FRONT pair
    (`fl,fr`) + 2 REAR pair (`rl,rr`) at ±22.5° off each axis, and 2 short-range VL53L0X
    LEFT pair (`lf,lb`) + 2 RIGHT pair (`rf,rb`), all on a TCA9548A mux (ch 0-3 short,
-   4-7 long). The side pairs feed the manual hallway steering assist.
+   4-7 long). The side pairs feed forward hallway steering for manual gamepad drive,
+   finite `move`, and the forward phase of `come`.
    This dropped the down-facing cliff sensor — **cliff/drop-off detection is no longer
    available** (the `cliff` zone/event remain in the enum but are never produced).
 

@@ -7230,6 +7230,24 @@ COMPASS_CURRENT_HIGH_MA = _env_int("COMPASS_CURRENT_HIGH_MA", 2600, min_value=0,
 # LED-run surge). Rejections are counted in the status/telemetry method.
 COMPASS_FIELD_TOLERANCE = _env_float("COMPASS_FIELD_TOLERANCE", 0.25, min_value=0.01, max_value=2.0)
 
+# Secondary turn verification. Firmware closes relative turns on physical IMU yaw;
+# after the motors settle, the Mac may compare that result with the calibrated,
+# current-gated gyro+magnetic heading and issue one small correction. It no-ops
+# unless COMPASS_ENABLED and an in-situ compass calibration are both present.
+MOTION_COMPASS_TURN_VERIFY_ENABLED = _env_bool("MOTION_COMPASS_TURN_VERIFY_ENABLED", True)
+MOTION_COMPASS_TURN_SETTLE_SECS = _env_float(
+    "MOTION_COMPASS_TURN_SETTLE_SECS", 0.8, min_value=0.1, max_value=5.0,
+)
+MOTION_COMPASS_TURN_TOLERANCE_DEG = _env_float(
+    "MOTION_COMPASS_TURN_TOLERANCE_DEG", 4.0, min_value=1.0, max_value=20.0,
+)
+MOTION_COMPASS_TURN_MAX_CORRECTIONS = _env_int(
+    "MOTION_COMPASS_TURN_MAX_CORRECTIONS", 1, min_value=0, max_value=3,
+)
+MOTION_COMPASS_TURN_MAX_CORRECTION_DEG = _env_float(
+    "MOTION_COMPASS_TURN_MAX_CORRECTION_DEG", 30.0, min_value=5.0, max_value=90.0,
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CURRENT EVENTS (awareness/current_events.py)
 # One web-search LLM call per DAY (date-gated) fetches ~5 notable/viral stories

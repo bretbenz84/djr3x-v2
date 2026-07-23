@@ -111,6 +111,12 @@ struct FiniteCmd {
   float    rate          = 0;   // rad/s magnitude
   float    progress_dist = 0;   // m, |displacement| accumulated
   float    progress_dtheta = 0; // rad, |rotation| accumulated
+  // Physical turn verification. Encoder progress remains above as a fallback and
+  // diagnostic; when imu_verify is true, completion uses signed integrated gyro yaw.
+  bool     imu_verify = false;
+  float    imu_yaw_last_deg = 0;
+  float    imu_progress_rad = 0;  // signed, +CCW/left
+  uint32_t turn_started_ms = 0;
   // come bookkeeping
   bool     come_turning  = false;  // phase 1: rotating to heading
   float    come_stop_at  = 0;      // m

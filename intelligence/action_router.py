@@ -1225,6 +1225,9 @@ _MOTION_BACK_RE = re.compile(
 # "a little / a bit / nudge / inch …" with no explicit distance => a SMALL move.
 _MOTION_SMALL_RE = re.compile(rf"\b(?:{_MOTION_AMOUNT}|nudge|inch)\b", re.I)
 _MOTION_SMALL_MOVE_M = 0.15
+# A direct "turn left/right a little" is still a useful deliberate reorientation,
+# not the tiny 15° conversational continuation used by "a little more".
+_MOTION_SMALL_TURN_DEG = 45.0
 # Compound arc: a forward/back move + a left/right component joined by "and" in ONE
 # utterance ("move a little forward and to your right") => a simultaneous curve. The
 # left/right must follow the "and" (within a short window) so it's the arc's turn part.
@@ -1537,6 +1540,8 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
         deg = _MOTION_DEG_RE.search(cleaned)
         if deg is not None:
             args["deg"] = float(deg.group(1))
+        elif _MOTION_SMALL_RE.search(cleaned):
+            args["deg"] = _MOTION_SMALL_TURN_DEG
         return ActionDecision(
             action="motion.turn", confidence=0.95, args=args,
             reason="explicit turn request",

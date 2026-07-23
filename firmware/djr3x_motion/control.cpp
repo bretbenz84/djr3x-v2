@@ -41,8 +41,9 @@ static int16_t nearest_capped(int16_t a, int16_t b, int16_t cap) {
   return m;
 }
 
-// Hallway steering assist (docs §6.3): while the GAMEPAD drives FORWARD, steer away
-// from nearby walls / center between them. Side short pairs give lateral clearance;
+// Hallway steering assist (docs §6.3): while any normal forward drive is active,
+// steer away from nearby walls / center between them. This covers gamepad teleop
+// plus finite Python MOVE and the forward phase of COME. Side short pairs give lateral clearance;
 // the front long pair adds an anticipatory term (approaching a wall at an angle
 // steers toward the open side, so a hallway curve is followed instead of face-planted).
 // The correction ADDS to the operator's stick (capped at ASSIST_MAX_ANG_FRAC of
@@ -51,7 +52,11 @@ static int16_t nearest_capped(int16_t a, int16_t b, int16_t cap) {
 // the rad/s correction (+ = steer left, REP-103). Caller holds the state lock.
 static float hall_assist_correction(const MotionContext& c, float lin_t) {
   if (!c.params.assist_enabled) return 0.0f;
-  if (c.owner != OWNER_MANUAL || c.cmd_mode != CMD_DRIVE) return 0.0f;
+  const bool supported_mode =
+      (c.owner == OWNER_MANUAL && c.cmd_mode == CMD_DRIVE) ||
+      c.cmd_mode == CMD_MOVE ||
+      (c.cmd_mode == CMD_COME && !c.finite.come_turning);
+  if (!supported_mode) return 0.0f;
   if (lin_t <= ASSIST_MIN_LIN_MS) return 0.0f;      // forward drive only
   if (c.full_override) return 0.0f;                 // operator explicitly bypassing ToF
   const int16_t eng = (int16_t)c.params.assist_engage_mm;
@@ -93,6 +98,32 @@ static MotionDir finite_travel_dir(const FiniteCmd& f) {
   }
 }
 
+static float wrap_deg(float d) {
+  while (d > 180.0f) d -= 360.0f;
+  while (d <= -180.0f) d += 360.0f;
+  return d;
+}
+
+static void arm_turn_verification(FiniteCmd& f) {
+  f.turn_started_ms = millis();
+#if TURN_IMU_VERIFY_ENABLED
+  if (g_ctx.imu.ok) {
+    f.imu_verify = true;
+    f.imu_yaw_last_deg = g_ctx.imu.yaw;
+    f.imu_progress_rad = 0.0f;
+  }
+#endif
+}
+
+static bool turn_verify_timed_out(const FiniteCmd& f, uint32_t now) {
+  if (!f.imu_verify || f.rate <= 1e-4f) return false;
+  const float expected_ms = fabsf(f.target_dtheta) / f.rate * 1000.0f;
+  const uint32_t limit = (uint32_t)fmaxf(
+      (float)TURN_VERIFY_TIMEOUT_MIN_MS,
+      expected_ms * TURN_VERIFY_TIMEOUT_MULT);
+  return (uint32_t)(now - f.turn_started_ms) > limit;
+}
+
 // ---- control tick: runs entirely under the state lock (race-free), then
 // emits any `done` AFTER releasing the lock. -------------------------------
 void control_tick(float dt) {
@@ -102,6 +133,7 @@ void control_tick(float dt) {
   DoneResult dres     = DONE_COMPLETED;
   uint32_t   dseq     = 0;
   Odom       dodom;
+  bool       turnVerifyTimeout = false;
 
   LOCK_STATE();
   MotionContext& c = g_ctx;
@@ -164,10 +196,9 @@ void control_tick(float dt) {
     }
   }
 
-  // Hallway steering assist: nudge the manual forward drive away from nearby walls
-  // (centering in a hallway) BEFORE the reflex gate — the assist steers, the reflex
-  // still stops. No-op unless MANUAL + CMD_DRIVE + moving forward + a wall inside
-  // the engage distance (open rooms and the stub build are exactly zero correction).
+  // Hallway steering assist: center manual and autonomous forward travel BEFORE
+  // the reflex gate — the assist steers, the reflex still stops. Open rooms and
+  // the stub build produce exactly zero correction.
   if (!halted) ang_t += hall_assist_correction(c, lin_t);
 
   // Charging lockout: while on the charger NOTHING moves — not manual teleop,
@@ -253,9 +284,25 @@ void control_tick(float dt) {
     switch (c.finite.kind) {
       case CMD_TURN:
         c.finite.progress_dtheta += fabsf(c.odom.ang) * dt;
-        if (c.finite.progress_dtheta >= fabsf(c.finite.target_dtheta)) {
-          emitDone = true; dres = DONE_COMPLETED; dseq = c.finite.seq; dodom = c.odom;
+        if (c.finite.imu_verify && c.imu.ok) {
+          const float dyaw = wrap_deg(c.imu.yaw - c.finite.imu_yaw_last_deg);
+          c.finite.imu_yaw_last_deg = c.imu.yaw;
+          c.finite.imu_progress_rad += DEG2RAD(dyaw);
+        }
+        if (turn_verify_timed_out(c.finite, now)) {
+          emitDone = true; dres = DONE_ABORTED; dseq = c.finite.seq; dodom = c.odom;
+          turnVerifyTimeout = true;
           c.finite = FiniteCmd(); c.cmd_mode = CMD_NONE;
+        } else {
+          const float progress = c.finite.imu_verify
+              ? signf(c.finite.target_dtheta) * c.finite.imu_progress_rad
+              : c.finite.progress_dtheta;
+          const float threshold = fmaxf(
+              0.0f, fabsf(c.finite.target_dtheta) - DEG2RAD(TURN_VERIFY_TOLERANCE_DEG));
+          if (progress >= threshold) {
+            emitDone = true; dres = DONE_COMPLETED; dseq = c.finite.seq; dodom = c.odom;
+            c.finite = FiniteCmd(); c.cmd_mode = CMD_NONE;
+          }
         }
         break;
       case CMD_MOVE:
@@ -268,8 +315,24 @@ void control_tick(float dt) {
       case CMD_COME:
         if (c.finite.come_turning) {
           c.finite.progress_dtheta += fabsf(c.odom.ang) * dt;
-          if (c.finite.progress_dtheta >= fabsf(c.finite.target_dtheta))
-            c.finite.come_turning = false;          // heading reached -> advance
+          if (c.finite.imu_verify && c.imu.ok) {
+            const float dyaw = wrap_deg(c.imu.yaw - c.finite.imu_yaw_last_deg);
+            c.finite.imu_yaw_last_deg = c.imu.yaw;
+            c.finite.imu_progress_rad += DEG2RAD(dyaw);
+          }
+          if (turn_verify_timed_out(c.finite, now)) {
+            emitDone = true; dres = DONE_ABORTED; dseq = c.finite.seq; dodom = c.odom;
+            turnVerifyTimeout = true;
+            c.finite = FiniteCmd(); c.cmd_mode = CMD_NONE;
+          } else {
+            const float progress = c.finite.imu_verify
+                ? signf(c.finite.target_dtheta) * c.finite.imu_progress_rad
+                : c.finite.progress_dtheta;
+            const float threshold = fmaxf(
+                0.0f, fabsf(c.finite.target_dtheta) - DEG2RAD(TURN_VERIFY_TOLERANCE_DEG));
+            if (progress >= threshold)
+              c.finite.come_turning = false;        // physical heading reached -> advance
+          }
         } else {
           c.finite.progress_dist += fabsf(c.odom.lin) * dt;
           float front = c.finite.come_sim_wall - c.finite.progress_dist;  // stub wall
@@ -346,6 +409,8 @@ void control_tick(float dt) {
 
   UNLOCK_STATE();
 
+  if (turnVerifyTimeout)
+    emit_log("warn", "turn: IMU yaw did not reach target before timeout - possible wheel slip/stall");
   if (emitDone) emit_done(dseq, dres, dodom);
 }
 
@@ -384,6 +449,7 @@ void ctl_turn(float deg, float rate_dps, uint32_t seq) {
   f.kind = CMD_TURN; f.seq = seq;
   f.target_dtheta = DEG2RAD(deg);
   f.rate = DEG2RAD(rate_dps);
+  arm_turn_verification(f);
   g_ctx.finite = f;
   g_ctx.cmd_mode = CMD_TURN;
   g_ctx.cmd_seq = seq;
@@ -420,6 +486,7 @@ void ctl_come(float heading_deg, float stop_at, uint32_t seq) {
   f.come_stop_at = stop_at;
   f.come_sim_wall = stop_at + 0.6f;       // stub: advance ~0.6 m then stop
   f.come_turning = (fabsf(heading_deg) > 1.0f);
+  if (f.come_turning) arm_turn_verification(f);
   g_ctx.finite = f;
   g_ctx.cmd_mode = CMD_COME;
   g_ctx.cmd_seq = seq;
@@ -554,6 +621,7 @@ void ctl_manual_turn(float deg, float rate_dps) {
   f.kind = CMD_TURN; f.seq = 0;
   f.target_dtheta = DEG2RAD(deg);
   f.rate = DEG2RAD(rate_dps);
+  arm_turn_verification(f);
   g_ctx.owner = OWNER_MANUAL;
   g_ctx.finite = f;
   g_ctx.cmd_mode = CMD_TURN;

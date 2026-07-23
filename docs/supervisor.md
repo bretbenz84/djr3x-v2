@@ -135,6 +135,30 @@ lock about once a second:
 `hardware/motion.py` opens with retries — so the ≤1 s release lag is absorbed.
 The flock frees itself if `main.py` crashes, so the meter recovers on its own.
 
+Charger transitions have matching audio in both ownership modes. While `main.py`
+is running, its battery-awareness loop plays `droid_gaining_electric.mp3` on
+plug-in and `droid_losing_electric.mp3` on unplug. While Rex is off, the battery
+companion already owns the only serial connection, so it edge-detects the same
+debounced charging state and calls the supervisor's output-routed audio helper.
+The first reading after either process starts or reacquires the port is only a
+silent baseline; stable telemetry never repeats a cue. A 14.0 V fallback covers
+a full attached pack after charging current has tapered to zero.
+
+The same off-state worker drives the chest Nano's `CHARGE:<soc>:<attached>` mode
+only while `main.py` is not running. The first eight LEDs of each of panels A/B/C
+form three synchronized vertical gauges: dim red/amber/green segments show SOC;
+when attached, a cyan-white packet climbs upward from the current fill boundary.
+At 100% the top row breathes instead. The display is steady when unplugged. When
+R3X starts, the battery companion releases ownership and normal startup/active
+chest animations replace the gauge; it is never shown while `main.py` is alive,
+including the controller's sleep state.
+
+While off and attached to the charger, the mouth PCB also receives
+`CHARGE:<soc>` and keeps its eyes dark while the mouth breathes slowly in an SOC
+color: red at 0–25%, orange at 26–50%, yellow at 51–75%, green at 76–90%, and
+blue at 91–100%. Unplugging sends `OFF`. As with the chest gauge, this never runs
+while `main.py` is alive.
+
 Bring-up check without the GUI (prints raw battery frames):
 
 ```bash

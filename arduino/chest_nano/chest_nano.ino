@@ -100,11 +100,14 @@ enum ChestMode : uint8_t {
     CM_COMPLIMENT,    // reacting to a compliment: blue glow + gold/white sparkles (self-ends ~2.5s)
     CM_FADEOFF,       // shutdown: smoothly fade the current frame to black, then OFF
     CM_SLEEP,         // sleep: very dim slow red breath
+    CM_CHARGE,        // Rex off: 3x8 SOC gauge; upward pulse while charging
     CM_OFF,           // all off
     CM_MANUAL,        // NEXT command: cycle gPatterns[] manually
 };
 ChestMode chestMode = CM_OFF;
 uint32_t complimentStartMs = 0;   // millis() when CM_COMPLIMENT began (self-timeout)
+uint8_t chargeSoc = 0;             // 0..100, supplied by off-state battery monitor
+bool chargeConnected = false;
 
 // FADEOFF: freeze the last rendered frame and ramp master brightness to 0 over
 // CHEST_FADEOFF_MS, then go fully OFF — a lifelike "powering down" fade.
@@ -250,6 +253,10 @@ void runCurrentMode() {
 			sleepBreath();
 			break;
 
+		case CM_CHARGE:
+			chargeGauge();
+			break;
+
 		case CM_OFF:
 			LEDsOff();
 			break;
@@ -342,6 +349,7 @@ void nextPattern()
 //                        happy    → bouncing gold heads + cheery pops + confetti
 //   SPEAK_STOP       — return to IDLE (end of speech)
 //   SLEEP            — very dim slow red breathing pulse
+//   CHARGE:{soc}:{0|1} — 3x8 SOC gauge; final field says charger attached
 //   OFF              — all LEDs off
 //   NEXT             — cycle to next pattern in gPatterns[]
 
@@ -386,6 +394,16 @@ void handleCommand(char *cmd) {
 		FastLED.setBrightness(BRIGHTNESS);
 		chestMode = CM_SLEEP;
 
+	} else if (strncmp(cmd, "CHARGE:", 7) == 0) {
+		int soc = 0;
+		int connected = 0;
+		if (sscanf(cmd + 7, "%d:%d", &soc, &connected) == 2) {
+			chargeSoc = (uint8_t)constrain(soc, 0, 100);
+			chargeConnected = connected != 0;
+			FastLED.setBrightness(55);  // visible while off, never room-filling
+			chestMode = CM_CHARGE;
+		}
+
 	} else if (strcmp(cmd, "OFF") == 0) {
 		FastLED.setBrightness(BRIGHTNESS);
 		chestMode = CM_OFF;
@@ -411,6 +429,39 @@ void handleCommand(char *cmd) {
 		}
 	}
 	// Unknown commands are silently ignored.
+}
+
+// Off-state charge display. The three first 8-pixel bars (A/B/C) are parallel
+// vertical gauges. Filled pixels show SOC; while attached, a bright energy packet
+// repeatedly climbs from the current fill boundary toward the top.
+void chargeGauge() {
+	const uint8_t columns[3] = { PanelAStart, PanelBStart, PanelCStart };
+	const uint8_t filled = chargeSoc == 0 ? 0 : min((uint8_t)8, (uint8_t)((chargeSoc + 11) / 12));
+	const CRGB base = chargeSoc <= 20 ? CRGB(100, 0, 0)
+	                  : chargeSoc <= 50 ? CRGB(95, 35, 0)
+	                  : CRGB(0, 80, 28);
+
+	FastLED.clear();
+	for (uint8_t col = 0; col < 3; col++) {
+		for (uint8_t level = 0; level < filled; level++)
+			DJLEDs[columns[col] + level] = base;
+	}
+
+	if (!chargeConnected) return;
+	if (filled < 8) {
+		const uint8_t travel = 8 - filled;
+		const uint8_t phase = (millis() / 170UL) % (travel + 2); // two-beat gap
+		if (phase < travel) {
+			const uint8_t level = filled + phase;
+			for (uint8_t col = 0; col < 3; col++)
+				DJLEDs[columns[col] + level] = CRGB(80, 190, 255);
+		}
+	} else {
+		// At full there is nowhere left to climb; breathe the top row instead.
+		const uint8_t glow = beatsin8(18, 70, 255);
+		for (uint8_t col = 0; col < 3; col++)
+			DJLEDs[columns[col] + 7] = CRGB(40, glow, glow);
+	}
 }
 
 void readSerial() {

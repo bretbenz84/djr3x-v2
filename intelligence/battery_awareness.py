@@ -89,19 +89,26 @@ def battery_critical() -> bool:
 
 
 def _step_charging(snapshot: dict, profile) -> None:
-    """Edge-detect the firmware's charging flag (current-based, debounced on the
-    base) and comment once per plug-in. The firmware also locks out the wheels
-    for the whole charge — Rex just narrates it."""
+    """Edge-detect effective charger state and react once per real transition.
+
+    The firmware flag is debounced and latched; voltage is the host fallback for
+    a full pack whose charge current has tapered near zero.
+    """
     global _last_charging, _pending_charging_line
     try:
         from hardware import motion
         snap = motion.telemetry() or {}
     except Exception:
         return
-    chg = snap.get("charging")
-    if chg is None:
+    raw_chg = snap.get("charging")
+    try:
+        mv = float(snap.get("batt_mv"))
+    except (TypeError, ValueError):
+        mv = -1.0
+    if raw_chg is None and mv <= 0:
         return
-    chg = bool(chg)
+    threshold = float(getattr(config, "MOTION_CHARGER_VOLTAGE_LOCKOUT_MV", 14000))
+    chg = bool(raw_chg) or mv >= threshold
     if _last_charging is None:
         _last_charging = chg          # session baseline: no remark if born charging
         return
@@ -113,6 +120,14 @@ def _step_charging(snapshot: dict, profile) -> None:
         else:
             _pending_charging_line = False   # unplugged before it was said: drop it
             _log.info("[battery] charger disconnected — drive released")
+        try:
+            from audio import sound_effects
+            sound_effects.play(
+                "charger_connected" if chg else "charger_disconnected",
+                force=True,
+            )
+        except Exception:
+            pass
     if not _pending_charging_line:
         return
     if getattr(profile, "user_mid_sentence", False) or getattr(

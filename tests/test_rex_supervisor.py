@@ -248,6 +248,20 @@ class SupervisorChimeTest(unittest.TestCase):
             self.sup._play_chime()  # must not raise
         popen.assert_not_called()
 
+    def test_charger_effect_selects_connected_and_disconnected_files(self):
+        import shutil
+        with (
+            mock.patch.object(self.sup, "_resolve_output_device", return_value=None),
+            mock.patch.object(shutil, "which", return_value="/usr/bin/afplay"),
+            mock.patch.object(self.sup.subprocess, "Popen") as popen,
+        ):
+            self.sup._play_charger_effect(True)
+            self.sup._play_charger_effect(False)
+        self.assertEqual(
+            [Path(c.args[0][1]).name for c in popen.call_args_list],
+            ["droid_gaining_electric.mp3", "droid_losing_electric.mp3"],
+        )
+
 
 class SupervisorLaunchTest(unittest.TestCase):
     """The supervisor must redirect the controller's stdout/stderr to its OWN file (not

@@ -27,6 +27,8 @@ def _reset():
     BA._pending_announce = None
     BA._last_read_mv = -1
     BA._last_spoke_at = 0.0
+    BA._last_charging = None
+    BA._pending_charging_line = False
 
 
 class TierMappingTest(unittest.TestCase):
@@ -97,6 +99,41 @@ class StepBehaviorTest(unittest.TestCase):
             self.assertFalse(BA.battery_critical())
         with mock.patch.object(BA, "current_mv", return_value=-1):
             self.assertFalse(BA.battery_critical())   # unknown = no opinion
+
+    def test_charger_edges_play_matching_effects_once(self):
+        telemetry = {"charging": False, "batt_mv": 13400}
+        with (
+            mock.patch("hardware.motion.telemetry", side_effect=lambda: dict(telemetry)),
+            mock.patch("audio.sound_effects.play") as play,
+            mock.patch("intelligence.speech_engine.speak_async", return_value=True),
+        ):
+            BA._step_charging({}, _profile())  # startup baseline is silent
+            play.assert_not_called()
+            telemetry.update(charging=True, batt_mv=14200)
+            BA._step_charging({}, _profile())
+            play.assert_called_once_with("charger_connected", force=True)
+            BA._step_charging({}, _profile())  # stable state does not repeat
+            self.assertEqual(play.call_count, 1)
+            telemetry.update(charging=False, batt_mv=13400)
+            BA._step_charging({}, _profile())
+        self.assertEqual(
+            play.call_args_list[-1],
+            mock.call("charger_disconnected", force=True),
+        )
+
+    def test_charger_voltage_fallback_plays_connected_effect(self):
+        readings = [
+            {"charging": False, "batt_mv": 13400},
+            {"charging": False, "batt_mv": 14200},
+        ]
+        with (
+            mock.patch("hardware.motion.telemetry", side_effect=readings),
+            mock.patch("audio.sound_effects.play") as play,
+            mock.patch("intelligence.speech_engine.speak_async", return_value=True),
+        ):
+            BA._step_charging({}, _profile())
+            BA._step_charging({}, _profile())
+        play.assert_called_once_with("charger_connected", force=True)
 
 
 class MotionGateTest(unittest.TestCase):

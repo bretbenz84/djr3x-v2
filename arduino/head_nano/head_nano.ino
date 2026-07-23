@@ -46,6 +46,8 @@
  *                         re-lit by the host's eye keep-alive heartbeat), this
  *                         also re-enters ACTIVE so the mouth glow resumes.
  *   OFF                   All 82 pixels off immediately; blinking suspended.
+ *   CHARGE:{0-100}        Eyes off; mouth breathes in an SOC colour while Rex
+ *                         is off and attached to the charger.
  *
  * Mouth idle glow
  * ---------------
@@ -137,6 +139,7 @@ enum AnimMode : uint8_t {
     ANIM_IDLE,
     ANIM_ACTIVE,
     ANIM_SLEEP,
+    ANIM_CHARGE,
 };
 
 AnimMode animMode = ANIM_OFF;
@@ -146,6 +149,7 @@ AnimMode animMode = ANIM_OFF;
 // Default matches EMOTION_COLORS[EMO_NEUTRAL] (wire-order, R↔G pre-swapped for
 // the GRB mouth strip — see the EMOTION_COLORS note).
 EmotionColor mouthColor  = { 140, 255, 0 };   // neutral amber (wire order)
+EmotionColor chargeColor = { 0, 255, 0 };     // deep-discharge red (wire order)
 uint8_t      speakLevel  = 0;                 // 0–255 audio intensity
 
 // Speaking equalizer state — one bar per mouth column (see tickSpeak).
@@ -538,6 +542,28 @@ void handleCommand(char *cmd) {
         return;
     }
 
+    // CHARGE:{soc} — off-state charge breath. The battery companion sends this
+    // only while main.py is down and the charger is attached.
+    if (strncmp(cmd, "CHARGE:", 7) == 0) {
+        uint8_t soc = clampByte(atoi(cmd + 7));
+        // Physical RGB -> stored R/G swapped for the GRB mouth strip.
+        if (soc <= 25)      chargeColor = {   0, 255,   0 }; // red
+        else if (soc <= 50) chargeColor = {  96, 255,   0 }; // orange
+        else if (soc <= 75) chargeColor = { 220, 255,   0 }; // yellow
+        else if (soc <= 90) chargeColor = { 255,   0,   0 }; // green
+        else                chargeColor = {   0,   0, 255 }; // blue
+        animMode      = ANIM_CHARGE;
+        eyeColor      = CRGB::Black;
+        eyesActive    = false;
+        blinkState    = BLINK_OPEN;
+        isSecondBlink = false;
+        leds[0]       = CRGB::Black;
+        leds[1]       = CRGB::Black;
+        mouthOff();
+        FastLED.show();
+        return;
+    }
+
     // Unknown — ignore silently
 }
 
@@ -791,6 +817,23 @@ void tickSleep() {
     FastLED.show();
 }
 
+// Same low, slow breathing envelope as SLEEP, but coloured by state of charge.
+void tickCharge() {
+    uint32_t now = millis();
+    float phase = (float)(now % 8000UL) / 8000.0f;
+    float tri = (phase < 0.5f) ? phase * 2.0f : 2.0f - phase * 2.0f;
+    uint8_t scale = (uint8_t)(tri * 76.0f); // 30% peak
+    static uint8_t lastScale = 255;
+    if (scale == lastScale) return;
+    lastScale = scale;
+    CRGB color = CRGB(
+        scale8(chargeColor.r, scale),
+        scale8(chargeColor.g, scale),
+        scale8(chargeColor.b, scale));
+    for (uint8_t i = MOUTH_START; i < NUM_LEDS; i++) leds[i] = color;
+    FastLED.show();
+}
+
 // ---------------------------------------------------------------------------
 // Main animation tick — call every loop()
 // ---------------------------------------------------------------------------
@@ -819,6 +862,7 @@ void tickAnimation() {
         return;
     }
     if (animMode == ANIM_SLEEP) { tickSleep(); return; }
+    if (animMode == ANIM_CHARGE) { tickCharge(); return; }
 
     // ANIM_ACTIVE / ANIM_IDLE — mouth idle glow, plus eye breathing in IDLE.
     // Both ticks only mark the buffer; a single show() pushes the combined frame.

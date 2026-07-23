@@ -33,6 +33,13 @@ _arc_lin = 0.0
 _arc_ang = 0.0
 _arc_until = 0.0
 
+# Calibrated-compass post-turn verifier. Firmware already closes turns on IMU yaw;
+# this is a slower absolute-heading check after motor current settles. Epochs prevent
+# a delayed correction from superseding a newer human/autonomy command.
+_turn_verify_lock = threading.Lock()
+_turn_verify_epoch = 0
+_pending_turn_verify: dict[int, dict] = {}
+
 
 def _get_float(name: str, default: float) -> float:
     return float(getattr(config, name, default))
@@ -115,8 +122,116 @@ def _on_motion_done(msg: dict) -> None:
         elif result == "completed" and _last_come_seq is not None \
                 and msg.get("seq") == _last_come_seq:
             _fx("arrived")
+        _handle_turn_verification_done(msg or {})
     except Exception:
         pass
+
+
+def _invalidate_turn_verification() -> int:
+    global _turn_verify_epoch
+    with _turn_verify_lock:
+        _turn_verify_epoch += 1
+        _pending_turn_verify.clear()
+        return _turn_verify_epoch
+
+
+def _calibrated_compass_yaw() -> "float | None":
+    if not bool(getattr(config, "MOTION_COMPASS_TURN_VERIFY_ENABLED", True)):
+        return None
+    try:
+        from hardware import compass
+        return compass.get_service_yaw(require_calibrated=True)
+    except Exception:
+        return None
+
+
+def _remember_turn_verification(
+    seq: int,
+    *,
+    desired_deg: float,
+    rate: float,
+    start_yaw: "float | None",
+    epoch: int,
+    attempt: int,
+) -> None:
+    if start_yaw is None or abs(desired_deg) > 170.0:
+        return  # shortest-angle comparison is ambiguous at/above a half turn
+    with _turn_verify_lock:
+        _pending_turn_verify[int(seq)] = {
+            "desired_deg": float(desired_deg),
+            "rate": float(rate),
+            "start_yaw": float(start_yaw),
+            "epoch": int(epoch),
+            "attempt": int(attempt),
+        }
+
+
+def _handle_turn_verification_done(msg: dict) -> None:
+    try:
+        seq = int(msg.get("seq"))
+    except (TypeError, ValueError):
+        return
+    with _turn_verify_lock:
+        record = _pending_turn_verify.pop(seq, None)
+    if record is None or str(msg.get("result") or "") != "completed":
+        return
+    threading.Thread(
+        target=_verify_completed_turn,
+        args=(record,),
+        daemon=True,
+        name="compass-turn-verify",
+    ).start()
+
+
+def _verify_completed_turn(record: dict) -> None:
+    """After current settles, compare physical turn with calibrated fused heading."""
+    settle = _get_float("MOTION_COMPASS_TURN_SETTLE_SECS", 0.8)
+    if _stop.wait(max(0.0, settle)):
+        return
+    with _turn_verify_lock:
+        if int(record["epoch"]) != _turn_verify_epoch:
+            return
+    if not motion.connected() or motion.owner() == "manual" or charging():
+        return
+    end_yaw = _calibrated_compass_yaw()
+    if end_yaw is None:
+        return
+    try:
+        from hardware.compass import ang_diff
+        actual = ang_diff(float(end_yaw), float(record["start_yaw"]))
+    except Exception:
+        return
+    desired = float(record["desired_deg"])
+    error = desired - actual
+    while error > 180.0:
+        error -= 360.0
+    while error <= -180.0:
+        error += 360.0
+    tolerance = _get_float("MOTION_COMPASS_TURN_TOLERANCE_DEG", 4.0)
+    if abs(error) <= tolerance:
+        _log.info(
+            "[motion] compass verified turn: requested=%+.1f actual=%+.1f error=%+.1f deg",
+            desired, actual, error,
+        )
+        return
+    attempt = int(record.get("attempt", 0))
+    max_attempts = _get_int("MOTION_COMPASS_TURN_MAX_CORRECTIONS", 1)
+    max_correction = _get_float("MOTION_COMPASS_TURN_MAX_CORRECTION_DEG", 30.0)
+    if attempt >= max_attempts or abs(error) > max_correction:
+        _log.warning(
+            "[motion] compass turn mismatch not auto-corrected: requested=%+.1f "
+            "actual=%+.1f error=%+.1f deg attempt=%d",
+            desired, actual, error, attempt,
+        )
+        return
+    with _turn_verify_lock:
+        if int(record["epoch"]) != _turn_verify_epoch:
+            return
+    _log.warning(
+        "[motion] compass correcting turn: requested=%+.1f actual=%+.1f error=%+.1f deg",
+        desired, actual, error,
+    )
+    turn(error, rate=min(abs(float(record["rate"])), 25.0), _verify_attempt=attempt + 1)
 
 
 # ── Gamepad action buttons → sound clips / servo animations ──────────────────────
@@ -175,6 +290,7 @@ def _dispatch_button_action(btn: str, action: dict) -> None:
 
 
 def disconnect() -> None:
+    _invalidate_turn_verification()
     _cancel_arc()          # kill any in-flight arc before the heartbeat thread stops
     _stop.set()
     thread = _heartbeat_thread
@@ -315,7 +431,12 @@ def _autonomous_allowed() -> "str | None":
 # turn/move/come/drive are autonomous (gated). stop/estop/clear always pass while
 # connected — you must always be able to halt the base.
 
-def turn(deg: float, rate: "float | None" = None) -> "int | None":
+def turn(
+    deg: float,
+    rate: "float | None" = None,
+    *,
+    _verify_attempt: int = 0,
+) -> "int | None":
     """Spin in place by `deg` (+ = left/CCW). Closed loop on the ESP32."""
     reason = _autonomous_allowed()
     if reason:
@@ -325,9 +446,19 @@ def turn(deg: float, rate: "float | None" = None) -> "int | None":
     rate = _get_float("MOTION_DEFAULT_TURN_RATE", 40.0) if rate is None else rate
     rate = _clampf(abs(rate), 1.0, max_rate)
     deg = _clampf(deg, -360.0, 360.0)
+    start_yaw = _calibrated_compass_yaw()
+    epoch = _invalidate_turn_verification()
     _cancel_arc()
     seq = motion.send({"cmd": "turn", "deg": deg, "rate": rate})
     if seq is not None:
+        _remember_turn_verification(
+            seq,
+            desired_deg=deg,
+            rate=rate,
+            start_yaw=start_yaw,
+            epoch=epoch,
+            attempt=_verify_attempt,
+        )
         _fx("motion_turn")
     return seq
 
@@ -342,6 +473,7 @@ def move(dist: float, speed: "float | None" = None) -> "int | None":
     speed = max_lin if speed is None else speed
     speed = _clampf(abs(speed), 0.0, max_lin)
     dist = _clampf(dist, -10.0, 10.0)
+    _invalidate_turn_verification()
     _cancel_arc()
     seq = motion.send({"cmd": "move", "dist": dist, "speed": speed})
     if seq is not None:
@@ -360,6 +492,7 @@ def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
         _log.debug("motion come unsupported by firmware")
         return None
     stop_at = _get_float("MOTION_COME_STOP_AT_M", 0.60) if stop_at is None else stop_at
+    _invalidate_turn_verification()
     _cancel_arc()
     seq = motion.send({
         "cmd": "come",
@@ -385,6 +518,7 @@ def arc(lin: float, ang: float, duration_s: "float | None" = None) -> "int | Non
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
     max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
     dur = _get_float("MOTION_ARC_DURATION_SECS", 1.6) if duration_s is None else float(duration_s)
+    _invalidate_turn_verification()
     global _arc_active, _arc_lin, _arc_ang, _arc_until
     with _arc_lock:
         _arc_lin = _clampf(lin, -max_lin, max_lin)
@@ -402,6 +536,7 @@ def drive(lin: float, ang: float) -> "int | None":
     if reason:
         _log.debug("motion drive suppressed: %s", reason)
         return None
+    _invalidate_turn_verification()
     _cancel_arc()
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
     max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
@@ -422,6 +557,7 @@ def drive_manual(lin: float, ang: float) -> "int | None":
     if charging():
         _log.debug("manual drive suppressed: charging")
         return None
+    _invalidate_turn_verification()
     _cancel_arc()
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
     max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
@@ -434,6 +570,7 @@ def drive_manual(lin: float, ang: float) -> "int | None":
 
 def stop() -> "int | None":
     """Controlled stop. Always honored while connected (bypasses the gate)."""
+    _invalidate_turn_verification()
     if not motion.connected():
         return None
     _cancel_arc()
@@ -442,6 +579,7 @@ def stop() -> "int | None":
 
 def estop() -> "int | None":
     """Hard disable until clear(). Always honored while connected."""
+    _invalidate_turn_verification()
     if not motion.connected():
         return None
     _cancel_arc()

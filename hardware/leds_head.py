@@ -498,6 +498,11 @@ def sleep() -> None:
     send_command("SLEEP")
 
 
+def charge_status(soc: int) -> None:
+    """Off-state mouth breathing color selected from battery SOC."""
+    send_command(f"CHARGE:{max(0, min(100, int(soc)))}")
+
+
 # ── Eye keep-alive heartbeat ─────────────────────────────────────────────────
 #
 # The head Arduino's serial link drops bytes during speech (FastLED.show()

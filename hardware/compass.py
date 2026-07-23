@@ -359,10 +359,23 @@ def start_service(hz: float = 10.0) -> bool:
     return True
 
 
-def get_service_yaw() -> "float | None":
-    """Fused true-heading from the running service, or None (service off /
-    sensor absent / no fix yet)."""
-    return _service.get_fused_yaw() if _service is not None else None
+def get_service_yaw(*, require_calibrated: bool = False) -> "float | None":
+    """Fused true heading, or None when unavailable.
+
+    Motion verification must pass ``require_calibrated=True``: an uncalibrated
+    magnetometer can look numerically valid while being badly distorted by the
+    chassis, so it is suitable for diagnostics but never closed-loop correction.
+    """
+    if _service is None:
+        return None
+    if require_calibrated and not _service.cal.loaded:
+        return None
+    return _service.get_fused_yaw()
+
+
+def service_calibrated() -> bool:
+    """Whether the running service has a real hard/soft-iron calibration."""
+    return bool(_service is not None and _service.cal.loaded)
 
 
 # ── Bench demo loop ────────────────────────────────────────────────────────────

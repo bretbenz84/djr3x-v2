@@ -22,6 +22,8 @@ Available commands (from chest_nano.ino):
     SPEAK:happy      confetti
     SPEAK:neutral    RandomBlocks2
     SLEEP            dim red slow breathe
+    CHARGE:65:1      3x8 charge gauge at 65%, animated upward while attached
+    CHARGE:65:0      steady 3x8 charge gauge at 65%
     OFF              all LEDs off
     NEXT             cycle to next pattern
     scan             re-scan and list serial ports
@@ -108,7 +110,8 @@ def main() -> None:
 
     print("Type a command and press Enter.  The LED response confirms communication.")
     print("Commands: STARTUP IDLE ACTIVE SPEAK:excited SPEAK:sad SPEAK:angry")
-    print("          SPEAK:happy SPEAK:neutral SLEEP OFF NEXT  |  'scan' 'quit'\n")
+    print("          SPEAK:happy SPEAK:neutral SLEEP CHARGE:65:1 OFF NEXT")
+    print("          'scan' 'quit'\n")
 
     try:
         while True:
