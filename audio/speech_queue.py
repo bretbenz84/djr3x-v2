@@ -463,6 +463,17 @@ class _SpeechQueue:
                 except Exception:
                     pass
 
+                # Emotion sound-effect accent: fires NOW, while the TTS below is still
+                # generating (~1-2 s), so the chirp colors the reaction without ever
+                # delaying it — the effect is preemptible and hands the speaker to TTS
+                # the moment the synthesized audio is ready (output_gate yield hooks).
+                if item.text and not item.audio_path:
+                    try:
+                        from audio import sound_effects
+                        sound_effects.play_for_speech(item.emotion, tag=item.tag)
+                    except Exception:
+                        pass
+
                 if item.pre_beat_ms > 0:
                     import time as _t
                     _t.sleep(item.pre_beat_ms / 1000.0)

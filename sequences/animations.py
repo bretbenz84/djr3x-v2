@@ -797,6 +797,14 @@ def _run_body_beat(name: str) -> bool:
     if not _body_beat_lock.acquire(blocking=False):
         return False
 
+    # Servo-whir accent under the physical beat (audio/sound_effects owns the
+    # cooldown, so back-to-back beats don't chirp every time). Best-effort.
+    try:
+        from audio import sound_effects
+        sound_effects.play("servo")
+    except Exception:
+        pass
+
     uses_arm = name in _BODY_BEAT_ARM_NAMES
     arm_acquired = False
     try:
@@ -1626,6 +1634,11 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
     if not _arm_motion_lock.acquire(timeout=1.5):
         _log.info("[animations] wave-back skipped — arm busy (couldn't get arm lock in 1.5s)")
         return False
+    try:
+        from audio import sound_effects
+        sound_effects.play("servo")     # whir accent under the arm raise (cooldown inside)
+    except Exception:
+        pass
 
     # Sweep to the wrist servo's configured travel limits ("both direction maximums").
     # These are the safe limits from config/.env, so full travel is intentional and safe.

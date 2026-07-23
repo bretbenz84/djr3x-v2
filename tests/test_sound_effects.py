@@ -1,0 +1,182 @@
+"""
+Tests for audio/sound_effects.py — the droid chirp/whir layer.
+
+No real audio: sounddevice is stubbed (sys.modules patch) and decode is mocked where
+playback mechanics are under test. One tolerant test decodes a real committed MP3 to
+prove the soundfile path works on this machine (skipped if libsndfile lacks mp3).
+
+The invariants under test are the ones that keep the feature safe on the robot:
+effects never play when the gate is busy, they yield to a blocking source within a
+wait-slice, cooldowns stop chirp spam, variants randomize, registry stems resolve to
+the actual committed files, and the unit-test suite itself never touches speakers.
+"""
+
+import threading
+import time
+import types
+import unittest
+from unittest import mock
+
+import numpy as np
+
+import config
+from audio import output_gate, sound_effects as sfx
+
+
+class _StubSD(types.ModuleType):
+    def __init__(self):
+        super().__init__("sounddevice")
+        self.play_calls = []
+        self.stop_calls = 0
+
+    def play(self, audio, samplerate, blocksize=None):
+        self.play_calls.append((len(audio), samplerate))
+
+    def stop(self):
+        self.stop_calls += 1
+
+
+class SoundEffectsTest(unittest.TestCase):
+    def setUp(self):
+        sfx.reset()
+        self.sd = _StubSD()
+        self._patches = [
+            mock.patch.dict("sys.modules", {"sounddevice": self.sd}),
+            mock.patch.object(sfx, "_test_allow_audio", True),
+            mock.patch.object(config, "SOUND_EFFECTS_ENABLED", True, create=True),
+            mock.patch.object(config, "NO_AUDIO_MODE", False, create=True),
+            mock.patch.object(config, "AUDIO_OUTPUT_SUPPRESSED", False, create=True),
+        ]
+        for p in self._patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self._patches])
+        self.addCleanup(sfx.reset)
+
+    # ── registry integrity ──
+    def test_every_registry_stem_resolves_to_a_committed_file(self):
+        missing = {
+            key: files
+            for key, files in sfx.list_effects().items()
+            if any(f.startswith("MISSING:") for f in files)
+        }
+        self.assertEqual(missing, {}, f"registry stems with no file on disk: {missing}")
+
+    def test_real_mp3_decodes(self):
+        path = sfx._resolve_stem("motion_whir")
+        self.assertIsNotNone(path)
+        audio, sr = sfx._decode(path)
+        if audio is None:
+            self.skipTest("libsndfile without mp3 support on this machine")
+        self.assertGreater(audio.size, 1000)
+        self.assertGreater(sr, 8000)
+
+    # ── suppression / gating ──
+    def test_suite_never_plays_audio_by_default(self):
+        with mock.patch.object(sfx, "_test_allow_audio", False):
+            self.assertFalse(sfx.play("happy"))
+
+    def test_no_audio_mode_drops(self):
+        with mock.patch.object(config, "NO_AUDIO_MODE", True, create=True):
+            self.assertFalse(sfx.play("happy"))
+
+    def test_busy_gate_drops_instead_of_queueing(self):
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)):
+            with output_gate.hold("test-tts"):
+                sfx._play_path(path, "motion_move")     # direct: gate is busy
+        self.assertEqual(self.sd.play_calls, [])        # never played, never waited
+
+    # ── preemption ──
+    def test_yield_stops_playback_within_a_slice(self):
+        path = sfx._resolve_stem("motion_whir")
+        fake = (np.zeros(48000 * 3, np.float32), 48000)   # a "3 second" clip
+        done = threading.Event()
+
+        def run():
+            with mock.patch.object(sfx, "_decode", return_value=fake):
+                sfx._play_path(path, "motion_move")
+            done.set()
+
+        t = threading.Thread(target=run, daemon=True)
+        start = time.monotonic()
+        t.start()
+        time.sleep(0.15)                     # let it start playing
+        sfx.yield_output()                   # a blocking source wants the speaker
+        self.assertTrue(done.wait(1.0), "playback did not yield")
+        self.assertLess(time.monotonic() - start, 1.0)   # nowhere near the 3s clip
+        self.assertEqual(self.sd.stop_calls, 1)
+        self.assertFalse(output_gate.is_busy())          # gate released for the speaker
+
+    def test_blocking_hold_fires_yield_hooks(self):
+        fired = []
+        output_gate.register_yield_hook(lambda: fired.append(1))
+        with output_gate.hold("test-tts"):
+            pass
+        self.assertEqual(fired, [1])
+        with output_gate.hold("test-sfx", blocking=False):
+            pass
+        self.assertEqual(fired, [1])         # non-blocking acquirers do NOT fire hooks
+
+    # ── cooldowns / selection ──
+    def _spawned_keys(self, calls):
+        return [c.args[1] for c in calls]
+
+    def test_family_cooldown_blocks_rapid_chirps(self):
+        with mock.patch.object(sfx.threading, "Thread") as thread:
+            self.assertTrue(sfx.play("happy"))
+            self.assertFalse(sfx.play("curious"))        # same family, inside cooldown
+        self.assertEqual(thread.call_count, 1)
+
+    def test_families_have_independent_cooldowns(self):
+        with mock.patch.object(sfx.threading, "Thread") as thread:
+            self.assertTrue(sfx.play("happy"))           # speech family
+            self.assertTrue(sfx.play("motion_turn"))     # motion family
+            self.assertTrue(sfx.play("servo"))           # servo family
+        self.assertEqual(thread.call_count, 3)
+
+    def test_same_key_dedup_outlasts_family_cooldown(self):
+        with mock.patch.object(config, "SOUND_EFFECTS_MOTION_COOLDOWN_SECS", 0.05, create=True), \
+                mock.patch.object(sfx.threading, "Thread"):
+            self.assertTrue(sfx.play("motion_turn"))
+            time.sleep(0.07)                             # family cooldown lapsed…
+            self.assertFalse(sfx.play("motion_turn"))    # …but same-key dedup (2x) holds
+            self.assertTrue(sfx.play("motion_move"))     # different key OK
+
+    def test_variants_randomize(self):
+        chosen = set()
+        with mock.patch.object(sfx.threading, "Thread") as thread, \
+                mock.patch.object(config, "SOUND_EFFECTS_SPEECH_COOLDOWN_SECS", 0.0, create=True):
+            for _ in range(30):
+                sfx.reset()
+                sfx.play("laughing")
+        for c in thread.call_args_list:
+            chosen.add(c.kwargs["args"][0].name if "args" in c.kwargs else c.kwargs.get("args", c.args)[0])
+        names = {getattr(p, "name", str(p)) for p in
+                 [c.kwargs["args"][0] for c in thread.call_args_list]}
+        self.assertEqual(len(names), 2, f"expected both laughing variants, got {names}")
+
+    # ── speech hook semantics ──
+    def test_neutral_emotion_silent(self):
+        self.assertFalse(sfx.play_for_speech("neutral"))
+        self.assertFalse(sfx.play_for_speech(""))
+        self.assertFalse(sfx.play_for_speech(None))
+
+    def test_known_emotions_fire(self):
+        with mock.patch.object(sfx.threading, "Thread") as thread:
+            self.assertTrue(sfx.play_for_speech("happy"))
+        self.assertEqual(thread.call_count, 1)
+
+    def test_unknown_emotion_silent(self):
+        self.assertFalse(sfx.play_for_speech("melancholic-jazz"))
+
+    def test_registry_override_wins(self):
+        with mock.patch.object(config, "SOUND_EFFECTS_EMOTION_MAP_OVERRIDES",
+                               {"happy": ["motion_whir"]}, create=True), \
+                mock.patch.object(sfx.threading, "Thread") as thread:
+            self.assertTrue(sfx.play("happy"))
+        path = thread.call_args.kwargs["args"][0]
+        self.assertEqual(path.stem, "motion_whir")
+
+
+if __name__ == "__main__":
+    unittest.main()

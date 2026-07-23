@@ -7344,6 +7344,30 @@ MOTION_ACK_TIMEOUT_SECS = 0.5         # how long send-and-confirm waits for an a
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SOUND EFFECTS (audio/sound_effects.py)
+# ─────────────────────────────────────────────────────────────────────────────
+# Short droid chirps/whirs from assets/audio/sound_effects/ that accompany emotions,
+# drive-base motion, and servo gestures. They fire right as a reaction's TTS starts
+# GENERATING (the natural 1-2 s gap) and are preemptible: the moment TTS (or any
+# blocking audio) wants the speaker, the effect stops within ~50 ms — an effect can
+# never delay speech. Keys with multiple files are picked at random per play.
+SOUND_EFFECTS_ENABLED        = True
+SOUND_EFFECTS_DIR            = "assets/audio/sound_effects"
+SOUND_EFFECTS_VOLUME         = 0.8    # 0..1 gain applied to every clip
+SOUND_EFFECTS_SPEECH_ENABLED = True   # emotion chirp as a reaction's TTS spins up
+SOUND_EFFECTS_MOTION_ENABLED = True   # whir/turn clips on drive-base commands
+SOUND_EFFECTS_SERVO_ENABLED  = True   # servo-whir accents on body gestures
+# Cooldowns keep him from chirping constantly (per family; per-key dedup inside).
+SOUND_EFFECTS_SPEECH_COOLDOWN_SECS = 6.0
+SOUND_EFFECTS_MOTION_COOLDOWN_SECS = 2.5
+SOUND_EFFECTS_SERVO_COOLDOWN_SECS  = 8.0
+# Optional overrides: map an emotion/key to different clip stem lists without code
+# changes, e.g. {"happy": ["Droid_Excited"]}. Merged over the built-in registry.
+SOUND_EFFECTS_EMOTION_MAP_OVERRIDES: dict = {}
+SOUND_EFFECTS_REGISTRY_OVERRIDES: dict = {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PLACE RECOGNITION (perception/place_recognition.py)
 # ─────────────────────────────────────────────────────────────────────────────
 # Visual place recognition: "which enrolled room is Rex looking at?" at ~0.5-1 Hz.

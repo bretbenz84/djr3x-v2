@@ -16,6 +16,18 @@ _state_lock = threading.Lock()
 _active_source: Optional[str] = None
 _last_released_at: float = 0.0
 
+# Yield hooks: fired by any BLOCKING acquirer right before it waits on the gate, so a
+# preemptible holder (sound_effects) can stop early and hand the speaker over instead
+# of making speech wait out a decorative chirp. Non-blocking acquirers (the effects
+# themselves) do NOT fire hooks. Hooks must be fast and never raise.
+_yield_hooks: "list" = []
+
+
+def register_yield_hook(fn) -> None:
+    """Register a callable invoked whenever a blocking caller wants the gate."""
+    if fn not in _yield_hooks:
+        _yield_hooks.append(fn)
+
 
 def is_busy() -> bool:
     """Return True while any caller currently holds the playback gate."""
@@ -53,6 +65,12 @@ def hold(
       True  -> lock acquired, caller may play audio
       False -> lock not acquired (only possible when blocking=False or timeout hit)
     """
+    if blocking:
+        for _hook in list(_yield_hooks):
+            try:
+                _hook()
+            except Exception:
+                pass
     if timeout is None:
         acquired = _playback_lock.acquire(blocking=blocking)
     else:

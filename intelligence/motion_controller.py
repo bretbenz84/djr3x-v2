@@ -83,11 +83,40 @@ def connect(port: "str | None" = None) -> bool:
     # Forward gamepad action-button events (the 8BitDo Pro 2 buttons motion doesn't
     # use) to the soundboard / animation dispatch — Rex reacts to a button press.
     try:
-        motion.set_callbacks(on_event=_on_motion_event)
+        motion.set_callbacks(on_event=_on_motion_event, on_done=_on_motion_done)
     except Exception:
         _log.debug("motion event callback wiring failed", exc_info=True)
     _start_heartbeat()
     return True
+
+
+# ── Sound-effect accents for real drive motion ────────────────────────────────────
+
+_last_come_seq: "int | None" = None
+
+
+def _fx(key: str) -> None:
+    """Fire a drive sound effect (audio/sound_effects). Best-effort, never raises,
+    never blocks — the effect layer owns cooldowns/enable flags/preemption."""
+    try:
+        from audio import sound_effects
+        sound_effects.play(key)
+    except Exception:
+        pass
+
+
+def _on_motion_done(msg: dict) -> None:
+    """Reader-thread callback for command completions: the come-here arrival chirp
+    and the "whoa, blocked" accent when the base stops a command on an obstacle."""
+    try:
+        result = str((msg or {}).get("result") or "")
+        if result == "blocked":
+            _fx("slow_down")
+        elif result == "completed" and _last_come_seq is not None \
+                and msg.get("seq") == _last_come_seq:
+            _fx("arrived")
+    except Exception:
+        pass
 
 
 # ── Gamepad action buttons → sound clips / servo animations ──────────────────────
@@ -295,7 +324,10 @@ def turn(deg: float, rate: "float | None" = None) -> "int | None":
     rate = _clampf(abs(rate), 1.0, max_rate)
     deg = _clampf(deg, -360.0, 360.0)
     _cancel_arc()
-    return motion.send({"cmd": "turn", "deg": deg, "rate": rate})
+    seq = motion.send({"cmd": "turn", "deg": deg, "rate": rate})
+    if seq is not None:
+        _fx("motion_turn")
+    return seq
 
 
 def move(dist: float, speed: "float | None" = None) -> "int | None":
@@ -309,7 +341,10 @@ def move(dist: float, speed: "float | None" = None) -> "int | None":
     speed = _clampf(abs(speed), 0.0, max_lin)
     dist = _clampf(dist, -10.0, 10.0)
     _cancel_arc()
-    return motion.send({"cmd": "move", "dist": dist, "speed": speed})
+    seq = motion.send({"cmd": "move", "dist": dist, "speed": speed})
+    if seq is not None:
+        _fx("motion_move")
+    return seq
 
 
 def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
@@ -324,11 +359,16 @@ def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
         return None
     stop_at = _get_float("MOTION_COME_STOP_AT_M", 0.60) if stop_at is None else stop_at
     _cancel_arc()
-    return motion.send({
+    seq = motion.send({
         "cmd": "come",
         "heading": _clampf(heading, -180.0, 180.0),
         "stop_at": _clampf(stop_at, 0.05, 5.0),
     })
+    if seq is not None:
+        global _last_come_seq
+        _last_come_seq = seq
+        _fx("motion_move")
+    return seq
 
 
 def arc(lin: float, ang: float, duration_s: "float | None" = None) -> "int | None":
@@ -349,6 +389,7 @@ def arc(lin: float, ang: float, duration_s: "float | None" = None) -> "int | Non
         _arc_ang = _clampf(ang, -max_ang, max_ang)
         _arc_until = time.monotonic() + max(0.2, dur)
         _arc_active = True
+    _fx("motion_move")
     return 1   # "issued" — the heartbeat drives + auto-stops it; no per-tick seq
 
 
