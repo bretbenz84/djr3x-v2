@@ -459,8 +459,8 @@ each; `config` can tighten but never exceed it.** The ack echoes effective value
 
 | `config` field | `config.py` key | Units | Default | Hard cap (fw) |
 | --- | --- | --- | --- | --- |
-| `max_lin` | `MOTION_MAX_LINEAR_MS` | m/s | 0.25 | board limit |
-| `max_ang` | `MOTION_MAX_ANGULAR_DEG_S` → rad/s | (key is deg/s) | 60 | board limit |
+| `max_lin` | `MOTION_MAX_LINEAR_MS` | m/s | 0.40 | board limit |
+| `max_ang` | `MOTION_MAX_ANGULAR_DEG_S` → rad/s | (key is deg/s) | 85 | board limit |
 
 `max_lin`/`max_ang` cap **autonomous** motion only (Mac drive/turn/move/come). MANUAL
 gamepad teleop clamps to the firmware's own ceilings (`calib.h GAMEPAD_MAX_LIN_MS` /

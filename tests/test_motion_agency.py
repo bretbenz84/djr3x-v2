@@ -153,6 +153,21 @@ class MotionAgencyTest(unittest.TestCase):
         self.turn.assert_not_called()
         self.come.assert_not_called()
 
+    def test_sleep_resets_detectors_and_blocks_all_autonomy(self):
+        from state import State
+        MA._state["neck_hits"] = 2
+        MA._state["far_hits"] = 3
+        MA._flinch_state["hits"] = 5
+        with mock.patch.object(
+            MA.state_module, "get_state", return_value=State.SLEEP
+        ):
+            self._tick(1, zone="public")
+        self.turn.assert_not_called()
+        self.come.assert_not_called()
+        self.assertEqual(MA._state["neck_hits"], 0)
+        self.assertEqual(MA._state["far_hits"], 0)
+        self.assertEqual(MA._flinch_state["hits"], 0)
+
     def test_disconnected_base_is_silent(self):
         self.available.return_value = False
         self._tick(4, zone="public")

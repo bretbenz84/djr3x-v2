@@ -60,8 +60,10 @@ import time
 from typing import Optional
 
 import config
+import state as state_module
 from hardware import motion
 from intelligence import motion_controller
+from state import State
 
 _log = logging.getLogger(__name__)
 
@@ -463,6 +465,11 @@ def step(snapshot: dict, profile) -> None:
 
 
 def _step_inner(snapshot: dict, profile) -> None:
+    if state_module.get_state() in (State.SLEEP, State.SHUTDOWN):
+        _reset("neck_hits", "far_hits")
+        _reset_flinch()
+        cancel_requested_come("robot asleep")
+        return
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True):
         # Drop the flinch baselines like every other non-live path, so a person who
         # walked up while autonomy was OFF isn't read as an "approach" on re-enable.

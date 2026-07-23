@@ -6888,8 +6888,10 @@ MOTION_PROTO_VERSION = 1
 # These caps govern AUTONOMOUS motion only (voice moves, `come`, Mac drive): the
 # gamepad has its own teleop ceilings in firmware (calib.h GAMEPAD_MAX_LIN_MS/
 # _ANG_RADS), so pushing these no longer slows manual driving.
-MOTION_MAX_LINEAR_MS = 0.25           # m/s
-MOTION_MAX_ANGULAR_DEG_S = 60.0       # deg/s (converted to rad/s on the wire)
+# The 54 lb base needs enough sustained command to overcome drivetrain static
+# friction. The gamepad ceilings remain separate in firmware.
+MOTION_MAX_LINEAR_MS = 0.40           # m/s
+MOTION_MAX_ANGULAR_DEG_S = 85.0       # deg/s (converted to rad/s on the wire)
 MOTION_ACCEL_LINEAR_MS2 = 0.35        # all drive modes: gentle velocity ramp, m/s^2
 MOTION_ACCEL_ANGULAR_RAD_S2 = 2.0     # all drive modes: angular ramp, rad/s^2
 # FULL-SPEED collision envelope: the firmware scales the effective zones with
@@ -6914,7 +6916,7 @@ MOTION_COME_SEARCH_TIMEOUT_SECS = 45.0
 # align cascaded into a 180° scan spiral that ended in a bookshelf).
 MOTION_COME_REACQUIRE_GRACE_SECS = 3.0
 MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
-MOTION_DEFAULT_TURN_RATE = 40.0       # deg/s
+MOTION_DEFAULT_TURN_RATE = 75.0       # deg/s
 MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated distance
 MOTION_CONTINUATION_TTL_SECS = 45.0   # max silent gap; any intervening non-motion turn clears it
 MOTION_CONTINUATION_SMALL_TURN_DEG = 15.0  # "a little more" after a turn
@@ -7074,7 +7076,8 @@ EXPLORE_CLEARANCE_FRACTION = _env_float(
     "EXPLORE_CLEARANCE_FRACTION", 0.65, min_value=0.2, max_value=1.0,
 )
 EXPLORE_LEG_SPEED_MS = _env_float(
-    "EXPLORE_LEG_SPEED_MS", 0.16, min_value=0.03, max_value=0.25,  # lively but below the base cap
+    "EXPLORE_LEG_SPEED_MS", 0.32, min_value=0.03, max_value=0.40,
+    # Sustained authority for the 54 lb base; still below the autonomous cap.
 )
 EXPLORE_TURN_MIN_DEG = _env_float(
     "EXPLORE_TURN_MIN_DEG", 35.0, min_value=5.0, max_value=120.0,
@@ -7083,7 +7086,7 @@ EXPLORE_TURN_MAX_DEG = _env_float(
     "EXPLORE_TURN_MAX_DEG", 120.0, min_value=10.0, max_value=180.0,  # max heading change per leg
 )
 EXPLORE_TURN_RATE_DEG_S = _env_float(
-    "EXPLORE_TURN_RATE_DEG_S", 40.0, min_value=5.0, max_value=60.0,
+    "EXPLORE_TURN_RATE_DEG_S", 70.0, min_value=5.0, max_value=85.0,
 )
 EXPLORE_TETHER_RADIUS_M = _env_float(
     "EXPLORE_TETHER_RADIUS_M", 3.0, min_value=0.5, max_value=10.0,  # odometry leash from start pose

@@ -1020,7 +1020,7 @@ def _travel_one_leg(sess: "_Session") -> None:
 
     try:
         # Turn (bounded, closed-loop) while the head independently looks around.
-        rate = float(getattr(config, "EXPLORE_TURN_RATE_DEG_S", 40.0))
+        rate = float(getattr(config, "EXPLORE_TURN_RATE_DEG_S", 70.0))
         if abs(deg) >= 1.0:
             seq = motion_controller.turn(deg, rate=rate)
             if seq is None:
@@ -1049,7 +1049,7 @@ def _travel_one_leg(sess: "_Session") -> None:
         if dist is None:
             _log.info("[explore] no safe forward ToF clearance — holding position")
             return
-        speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.16))
+        speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.32))
         seq = motion_controller.move(dist, speed=speed)
         if seq is None:
             _log.info("[explore] move suppressed (gated)")

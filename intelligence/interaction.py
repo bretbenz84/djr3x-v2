@@ -3014,6 +3014,13 @@ def _enter_sleep_mode(*, transition_line: Optional[str] = None) -> str:
     _speak_blocking(resp, emotion="sleepy")
     _clear_listening_state_for_sleep()
     state_module.set_state(State.SLEEP)
+    # Sleep is a hard autonomy boundary. Stop any finite command that was already
+    # in flight, then the central motion gate rejects every new autonomous command
+    # until the dedicated wake transition restores ACTIVE.
+    try:
+        motion_controller.stop()
+    except Exception:
+        _log.debug("[sleep_mode] motion stop failed", exc_info=True)
     _run_sleep_animation()
     return resp
 

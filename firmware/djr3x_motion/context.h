@@ -35,7 +35,7 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 
 // ===== Runtime-tunable parameters (the `config` command, docs §10) ==========
 struct MotionParams {
-  float    max_lin       = 0.25f;  // m/s  ⚠ TEMP 2026-07-17: 60RPM left motor ceiling (was 0.35)
+  float    max_lin       = 0.40f;  // m/s autonomous default; host config normally overrides
   float    max_ang       = 1.50f;  // rad/s (~86 deg/s) — turns felt slow at 1.05; tune with `set --max-ang`
   // FULL-SPEED collision envelope: the effective zones scale with measured speed,
   // from the STOP/SLOW_ZONE_MIN_M floors at rest (calib.h) up to these configured
@@ -50,7 +50,7 @@ struct MotionParams {
 
   float    come_stop_at_m= 0.60f;
   float    default_turn_deg  = 90.0f;
-  float    default_turn_rate = 40.0f;   // deg/s
+  float    default_turn_rate = 75.0f;   // deg/s
   uint32_t watchdog_ms       = 500;
   uint32_t drive_expiry_ms   = 300;
   uint32_t manual_idle_return_secs = 4;

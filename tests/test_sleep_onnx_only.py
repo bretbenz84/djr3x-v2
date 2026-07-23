@@ -36,11 +36,13 @@ class SleepOnnxOnlyTest(unittest.TestCase):
             mock.patch.object(interaction, "_speak_blocking") as speak,
             mock.patch.object(interaction, "_clear_listening_state_for_sleep"),
             mock.patch.object(interaction.state_module, "set_state"),
+            mock.patch.object(interaction.motion_controller, "stop") as stop_motion,
             mock.patch.object(interaction, "_run_sleep_animation"),
         ):
             line = interaction._enter_sleep_mode(transition_line="The room wins. Going to sleep.")
         self.assertEqual(line, "The room wins. Going to sleep.")
         speak.assert_called_once_with("The room wins. Going to sleep.", emotion="sleepy")
+        stop_motion.assert_called_once()
 
 
 if __name__ == "__main__":

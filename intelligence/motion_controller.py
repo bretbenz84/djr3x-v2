@@ -17,7 +17,9 @@ import threading
 import time
 
 import config
+import state as state_module
 from hardware import motion
+from state import State
 
 _log = logging.getLogger(__name__)
 
@@ -393,13 +395,13 @@ def _push_config() -> None:
     bench-tuned value with a placeholder. See docs/motion_protocol.md §10."""
     cfg = {
         "cmd": "config",
-        "max_lin": _get_float("MOTION_MAX_LINEAR_MS", 0.25),
-        "max_ang": math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0)),
+        "max_lin": _get_float("MOTION_MAX_LINEAR_MS", 0.40),
+        "max_ang": math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0)),
         "slow_zone_m": _get_float("MOTION_SLOW_ZONE_M", 0.60),
         "stop_zone_m": _get_float("MOTION_STOP_ZONE_M", 0.30),
         "come_stop_at_m": _get_float("MOTION_COME_STOP_AT_M", 0.60),
         "default_turn_deg": _get_float("MOTION_DEFAULT_TURN_DEG", 90.0),
-        "default_turn_rate": _get_float("MOTION_DEFAULT_TURN_RATE", 40.0),
+        "default_turn_rate": _get_float("MOTION_DEFAULT_TURN_RATE", 75.0),
         "watchdog_ms": _get_int("MOTION_WATCHDOG_MS", 500),
         "drive_expiry_ms": _get_int("MOTION_DRIVE_EXPIRY_MS", 300),
         "manual_idle_return_secs": _get_int("MOTION_MANUAL_IDLE_RETURN_SECS", 4),
@@ -418,6 +420,8 @@ def _autonomous_allowed() -> "str | None":
     """Return None if autonomous motion may run, else a reason string."""
     if not motion.connected():
         return "not_connected"
+    if state_module.get_state() in (State.SLEEP, State.SHUTDOWN):
+        return "robot_asleep"
     if charging():
         return "charging"
     if bool(getattr(config, "INTERACTION_PAUSED", False)):
@@ -442,8 +446,8 @@ def turn(
     if reason:
         _log.debug("motion turn suppressed: %s", reason)
         return None
-    max_rate = _get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0)
-    rate = _get_float("MOTION_DEFAULT_TURN_RATE", 40.0) if rate is None else rate
+    max_rate = _get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0)
+    rate = _get_float("MOTION_DEFAULT_TURN_RATE", 75.0) if rate is None else rate
     rate = _clampf(abs(rate), 1.0, max_rate)
     deg = _clampf(deg, -360.0, 360.0)
     start_yaw = _calibrated_compass_yaw()
@@ -469,7 +473,7 @@ def move(dist: float, speed: "float | None" = None) -> "int | None":
     if reason:
         _log.debug("motion move suppressed: %s", reason)
         return None
-    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
+    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.40)
     speed = max_lin if speed is None else speed
     speed = _clampf(abs(speed), 0.0, max_lin)
     dist = _clampf(dist, -10.0, 10.0)
@@ -515,8 +519,8 @@ def arc(lin: float, ang: float, duration_s: "float | None" = None) -> "int | Non
     if reason:
         _log.debug("motion arc suppressed: %s", reason)
         return None
-    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
-    max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
+    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.40)
+    max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0))
     dur = _get_float("MOTION_ARC_DURATION_SECS", 1.6) if duration_s is None else float(duration_s)
     _invalidate_turn_verification()
     global _arc_active, _arc_lin, _arc_ang, _arc_until
@@ -538,8 +542,8 @@ def drive(lin: float, ang: float) -> "int | None":
         return None
     _invalidate_turn_verification()
     _cancel_arc()
-    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
-    max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
+    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.40)
+    max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0))
     return motion.send({
         "cmd": "drive",
         "lin": _clampf(lin, -max_lin, max_lin),
@@ -559,8 +563,8 @@ def drive_manual(lin: float, ang: float) -> "int | None":
         return None
     _invalidate_turn_verification()
     _cancel_arc()
-    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
-    max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
+    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.40)
+    max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0))
     return motion.send({
         "cmd": "drive",
         "lin": _clampf(lin, -max_lin, max_lin),

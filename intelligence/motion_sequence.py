@@ -171,10 +171,10 @@ def _step_timeout(decision: ActionDecision) -> float:
     args = decision.args or {}
     if decision.action == "motion.turn":
         amount = abs(float(args.get("deg") or getattr(config, "MOTION_DEFAULT_TURN_DEG", 90.0)))
-        rate = max(1.0, float(getattr(config, "MOTION_DEFAULT_TURN_RATE", 40.0)))
+        rate = max(1.0, float(getattr(config, "MOTION_DEFAULT_TURN_RATE", 75.0)))
         return min(120.0, max(8.0, amount / rate + 8.0))
     amount = abs(float(args.get("dist_m") or getattr(config, "MOTION_DEFAULT_MOVE_DIST_M", 0.30)))
-    speed = max(0.03, float(getattr(config, "MOTION_MAX_LINEAR_MS", 0.25)))
+    speed = max(0.03, float(getattr(config, "MOTION_MAX_LINEAR_MS", 0.40)))
     return min(180.0, max(8.0, amount / speed + 10.0))
 
 

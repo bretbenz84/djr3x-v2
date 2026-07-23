@@ -227,6 +227,20 @@ class ControllerTest(_MotionTestBase):
         self.assertIsNone(mc.move_forward())
         self.assertIsNone(self._last("move"))
 
+    def test_sleep_blocks_every_autonomous_motion_command(self):
+        from state import State
+        self._connect()
+        with mock.patch.object(mc.state_module, "get_state", return_value=State.SLEEP):
+            self.assertIsNone(mc.move_forward())
+            self.assertIsNone(mc.turn_left())
+            self.assertIsNone(mc.come_here())
+            self.assertIsNone(mc.arc_move())
+        self.assertIsNone(self._last("move"))
+        self.assertIsNone(self._last("turn"))
+        self.assertIsNone(self._last("come"))
+        self.assertIsNone(self._last("drive"))
+        self.assertIsNotNone(mc.stop())  # safety stop always remains available
+
     def test_charging_blocks_autonomous_and_manual_drive(self):
         self._connect(charging=True)
         self.assertIsNone(mc.move_forward())
