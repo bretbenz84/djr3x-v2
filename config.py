@@ -7392,6 +7392,15 @@ SOUND_EFFECTS_SERVO_ENABLED  = True   # servo-whir accents on body gestures
 SOUND_EFFECTS_SPEECH_COOLDOWN_SECS = 6.0
 SOUND_EFFECTS_MOTION_COOLDOWN_SECS = 2.5
 SOUND_EFFECTS_SERVO_COOLDOWN_SECS  = 8.0
+# Head-lift hums (droid_hum_upmotion1/2 + droid_hum_downmotion): play only on a
+# SUSTAINED, larger head-lift sweep (a deliberate move_to whose total travel is at
+# least MIN_TRAVEL_QUS — face-tracking micro-steps use a different write path and
+# never trigger). Muted while starting up (the boot sound covers that register) and
+# outside normal operation (sleep/quiet/shutdown droop).
+SOUND_EFFECTS_HEADLIFT_ENABLED = True
+SOUND_EFFECTS_HEADLIFT_MIN_TRAVEL_QUS = 1200   # ~21% of the head-lift's full travel
+SOUND_EFFECTS_HEADLIFT_COOLDOWN_SECS = 5.0
+SOUND_EFFECTS_HEADLIFT_STARTUP_MUTE_SECS = 20.0
 # Optional overrides: map an emotion/key to different clip stem lists without code
 # changes, e.g. {"happy": ["Droid_Excited"]}. Merged over the built-in registry.
 SOUND_EFFECTS_EMOTION_MAP_OVERRIDES: dict = {}

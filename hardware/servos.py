@@ -1227,6 +1227,40 @@ def idle_animation() -> None:
     set_servos({neck_cfg["ch"]: neck_cfg["neutral"], lift_cfg["ch"]: lift_cfg["neutral"]})
 
 
+_headlift_hum_boot_at = time.monotonic()   # process-start reference for the startup mute
+
+
+def _maybe_headlift_hum(targets: "dict[int, int]", current: "dict[int, int]") -> None:
+    """Fire the head-lift motion hum for a SUSTAINED, larger-travel lift sweep.
+
+    Only ``move_to`` sweeps reach here — face-tracking / gaze micro-steps use the
+    direct ``set_servo(s)`` path and never hum. Gated on: total sweep travel >=
+    SOUND_EFFECTS_HEADLIFT_MIN_TRAVEL_QUS, normal operation only (IDLE/ACTIVE — the
+    shutdown droop and sleep poses stay silent), and a startup mute window (the boot
+    sound already owns that register). Direction: higher qus = head up
+    (see _derive_body_state). Best-effort; never raises, never blocks."""
+    try:
+        ch = _channel("headlift")
+        if ch not in targets or ch not in current:
+            return
+        if not bool(getattr(config, "SOUND_EFFECTS_HEADLIFT_ENABLED", True)):
+            return
+        delta = int(targets[ch]) - int(current[ch])
+        min_travel = int(getattr(config, "SOUND_EFFECTS_HEADLIFT_MIN_TRAVEL_QUS", 1200))
+        if abs(delta) < max(1, min_travel):
+            return
+        mute = float(getattr(config, "SOUND_EFFECTS_HEADLIFT_STARTUP_MUTE_SECS", 20.0))
+        if (time.monotonic() - _headlift_hum_boot_at) < mute:
+            return
+        from state import State, get_state
+        if get_state() not in (State.IDLE, State.ACTIVE):
+            return
+        from audio import sound_effects
+        sound_effects.play("headlift_up" if delta > 0 else "headlift_down")
+    except Exception:
+        pass
+
+
 def move_to(
     targets: "dict[int, int]",
     step_us: "int | dict[int, int]" = 40,
@@ -1262,6 +1296,8 @@ def move_to(
         else:
             pos = get_servo(ch)
         current[ch] = _clamp(ch, pos if pos is not None else tgt)
+
+    _maybe_headlift_hum(targets, current)
 
     done = False
     while not done:

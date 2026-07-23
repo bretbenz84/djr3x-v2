@@ -132,7 +132,15 @@ class SoundEffectsTest(unittest.TestCase):
             self.assertTrue(sfx.play("happy"))           # speech family
             self.assertTrue(sfx.play("motion_turn"))     # motion family
             self.assertTrue(sfx.play("servo"))           # servo family
-        self.assertEqual(thread.call_count, 3)
+            self.assertTrue(sfx.play("headlift_up"))     # headlift family
+        self.assertEqual(thread.call_count, 4)
+
+    def test_headlift_family_cooldown_covers_both_directions(self):
+        with mock.patch.object(sfx.threading, "Thread") as thread:
+            self.assertTrue(sfx.play("headlift_up"))
+            self.assertFalse(sfx.play("headlift_down"))  # same family, inside cooldown
+            self.assertTrue(sfx.play("servo"))           # servo family unaffected
+        self.assertEqual(thread.call_count, 2)
 
     def test_same_key_dedup_outlasts_family_cooldown(self):
         with mock.patch.object(config, "SOUND_EFFECTS_MOTION_COOLDOWN_SECS", 0.05, create=True), \
@@ -177,6 +185,67 @@ class SoundEffectsTest(unittest.TestCase):
         path = thread.call_args.kwargs["args"][0]
         self.assertEqual(path.stem, "motion_whir")
 
+
+class HeadliftHumTest(unittest.TestCase):
+    """The hardware/servos.move_to hook: hums only on sustained large-travel head-lift
+    sweeps, in normal operation, past the startup mute."""
+
+    HL = None  # headlift channel id, resolved in setUp
+
+    def setUp(self):
+        from hardware import servos
+        from state import State
+        self.servos = servos
+        self.State = State
+        self.HL = servos._channel("headlift")
+        self._patches = [
+            mock.patch.object(config, "SOUND_EFFECTS_HEADLIFT_ENABLED", True, create=True),
+            mock.patch.object(config, "SOUND_EFFECTS_HEADLIFT_MIN_TRAVEL_QUS", 1200, create=True),
+            mock.patch.object(config, "SOUND_EFFECTS_HEADLIFT_STARTUP_MUTE_SECS", 20.0, create=True),
+            # process "started" 100s ago -> outside the mute window by default
+            mock.patch.object(servos, "_headlift_hum_boot_at", time.monotonic() - 100.0),
+            mock.patch("state.get_state", return_value=State.ACTIVE),
+            mock.patch("audio.sound_effects.play"),
+        ]
+        self.patched = [p.start() for p in self._patches]
+        self.play = self.patched[-1]
+        self.addCleanup(lambda: [p.stop() for p in self._patches])
+
+    def _hum(self, frm: int, to: int, channel: int | None = None):
+        ch = self.HL if channel is None else channel
+        self.servos._maybe_headlift_hum({ch: to}, {ch: frm})
+
+    def test_big_lift_up_hums_up(self):
+        self._hum(4000, 6000)
+        self.play.assert_called_once_with("headlift_up")
+
+    def test_big_lift_down_hums_down(self):
+        self._hum(6000, 4000)
+        self.play.assert_called_once_with("headlift_down")
+
+    def test_small_travel_stays_silent(self):
+        self._hum(6000, 6900)           # 900 qus < 1200 threshold (tracking-scale)
+        self.play.assert_not_called()
+
+    def test_other_channels_stay_silent(self):
+        self._hum(2000, 8000, channel=self.servos._channel("neck"))
+        self.play.assert_not_called()
+
+    def test_startup_mute_window(self):
+        with mock.patch.object(self.servos, "_headlift_hum_boot_at", time.monotonic()):
+            self._hum(4000, 6000)
+        self.play.assert_not_called()
+
+    def test_silent_outside_normal_operation(self):
+        for st in (self.State.SLEEP, self.State.QUIET, self.State.SHUTDOWN):
+            with mock.patch("state.get_state", return_value=st):
+                self._hum(4000, 6000)
+        self.play.assert_not_called()
+
+    def test_disable_flag(self):
+        with mock.patch.object(config, "SOUND_EFFECTS_HEADLIFT_ENABLED", False, create=True):
+            self._hum(4000, 6000)
+        self.play.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

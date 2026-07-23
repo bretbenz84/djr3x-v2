@@ -75,6 +75,9 @@ _REGISTRY: dict = {
     "motion_spinup": ["Wheel_drive_spin-up", "Low_motorized_hum_1", "Low_motorized_hum_2"],
     "arrived":      ["arrived"],
     "slow_down":    ["slow_down"],
+    # Head-lift sweeps (hardware/servos.move_to hook — sustained large travel only)
+    "headlift_up":   ["droid_hum_upmotion1", "droid_hum_upmotion2"],
+    "headlift_down": ["droid_hum_downmotion"],
     # Servo gesture accents (pool — one is picked at random)
     "servo":        ["Soft_robotic_servo", "Short_hydraulic", "Smooth_gimbal_glide",
                      "Rapid_tiny_servo_chatter"],
@@ -97,6 +100,7 @@ _REGISTRY: dict = {
 # Cooldown family per key prefix (speech emotions are everything not listed here).
 _MOTION_KEYS = {"motion_turn", "motion_move", "motion_spinup", "arrived", "slow_down"}
 _SERVO_KEYS = {"servo", "servo_heavy"}
+_HEADLIFT_KEYS = {"headlift_up", "headlift_down"}
 
 _lock = threading.Lock()
 _decode_cache: dict = {}          # resolved Path -> (np.ndarray float32 mono, samplerate)
@@ -145,6 +149,8 @@ def _family(key: str) -> str:
         return "motion"
     if key in _SERVO_KEYS:
         return "servo"
+    if key in _HEADLIFT_KEYS:
+        return "headlift"
     return "speech"
 
 
@@ -153,6 +159,7 @@ def _family_allowed(family: str) -> bool:
         "speech": "SOUND_EFFECTS_SPEECH_ENABLED",
         "motion": "SOUND_EFFECTS_MOTION_ENABLED",
         "servo": "SOUND_EFFECTS_SERVO_ENABLED",
+        "headlift": "SOUND_EFFECTS_HEADLIFT_ENABLED",
     }[family]
     return bool(getattr(config, flag, True))
 
@@ -162,8 +169,9 @@ def _cooldown(family: str) -> float:
         "speech": "SOUND_EFFECTS_SPEECH_COOLDOWN_SECS",
         "motion": "SOUND_EFFECTS_MOTION_COOLDOWN_SECS",
         "servo": "SOUND_EFFECTS_SERVO_COOLDOWN_SECS",
+        "headlift": "SOUND_EFFECTS_HEADLIFT_COOLDOWN_SECS",
     }[family]
-    default = {"speech": 6.0, "motion": 2.5, "servo": 8.0}[family]
+    default = {"speech": 6.0, "motion": 2.5, "servo": 8.0, "headlift": 5.0}[family]
     try:
         return float(getattr(config, name, default))
     except (TypeError, ValueError):
