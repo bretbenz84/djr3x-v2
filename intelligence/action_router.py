@@ -1437,9 +1437,14 @@ def classify_explicit_motion_sequence(
     # path instead of rejecting the whole utterance (field 2026-07-21: "and move
     # backwards" got "I couldn't safely parse that whole route" and nothing moved).
     clauses = [c for c in clauses if c]
-    if len(clauses) == 1:
+    # Fewer than 2 real clauses is NOT a sequence — a lone fragment ("and move
+    # backwards") or a pure connective/disfluency ("and then,", "then,") must fall
+    # through to [] so the caller tries the plain single-command path / normal
+    # conversation, NOT the route-rejection line (field 2026-07-23: "and then," drew
+    # "I couldn't safely parse that whole route" — the 0-clause case reached None).
+    if len(clauses) < 2:
         return []
-    if len(clauses) < 2 or len(clauses) > max(2, int(max_steps)):
+    if len(clauses) > max(2, int(max_steps)):
         return None
     decisions: list[ActionDecision] = []
     misses = 0

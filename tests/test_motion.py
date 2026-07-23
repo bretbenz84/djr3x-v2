@@ -485,6 +485,11 @@ class ClassifierTest(unittest.TestCase):
         # must then classify it.
         self.assertEqual(ar.classify_explicit_motion_sequence("and move backwards"), [])
         self.assertEqual(ar.classify_explicit_motion_sequence("then turn right"), [])
+        # Pure connectives / disfluencies with ZERO clauses are conversation, not a
+        # rejected route (field 2026-07-23: "and then," drew "I couldn't safely parse
+        # that whole route" — the 0-clause case fell through to None).
+        for filler in ("and then,", "and then", "then,", "then"):
+            self.assertEqual(ar.classify_explicit_motion_sequence(filler), [], filler)
         # Chatty comma with ZERO motion clauses is conversation, not a rejected route
         # (pre-existing: this drew "I couldn't safely parse that whole route").
         self.assertEqual(
