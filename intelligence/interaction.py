@@ -11452,6 +11452,14 @@ def _arm_visible_unknown_identity_followup(
 
 def _speech_preroll_secs() -> float:
     preroll = float(getattr(config, "SPEECH_PREROLL_SECS", 0.45) or 0.0)
+    # Far-field robot: the VAD fires later after true onset, so reach further back
+    # (see SPEECH_PREROLL_SECS_AEC in config). Safe — _speech_capture_secs clamps
+    # to the post-TTS capture floor, so this never pulls Rex's own tail.
+    if hardware_aec.is_active():
+        preroll = max(
+            preroll,
+            float(getattr(config, "SPEECH_PREROLL_SECS_AEC", preroll) or 0.0),
+        )
     if _response_wait_active():
         preroll = max(
             preroll,

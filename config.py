@@ -3139,6 +3139,17 @@ INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD = 0.75
 
 # VAD (Silero) — probability threshold above which speech is considered detected
 VAD_THRESHOLD = 0.5
+# Robot (hardware-AEC) override, applied ONLY when audio/hardware_aec.is_active().
+# History: 71fd4bd lowered the global threshold to 0.4 because soft-onset phonemes
+# ("wh" in "what's") don't cross 0.5 in the first chunks, so the VAD fires late and
+# the LEADING words are clipped. 71def95 then reverted the whole change-set because
+# its capture-floor grace part self-transcribed on the no-AEC dev Mac — the revert
+# took the robot's threshold/preroll fix with it, and the front-clipping came back
+# on the robot (field 2026-07-23: "What do you think of your new motor system" heard
+# as "new motor systems", VAD opened ~2s late at far-field). This re-applies ONLY
+# the two safe levers, gated to the ReSpeaker robot; the dangerous lever (capture
+# floor grace) stays at 0.12 everywhere. Dev Mac behavior is unchanged.
+VAD_THRESHOLD_AEC = 0.4
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUDIO STREAM
@@ -3990,6 +4001,13 @@ MIN_SPEECH_DURATION_SECS = 0.45
 # clipped. Question answers get more pre-roll because people often begin while
 # Rex's last syllable or room echo is still fading.
 SPEECH_PREROLL_SECS = 0.45
+# Robot (hardware-AEC) override — see VAD_THRESHOLD_AEC for the full history. At
+# far-field the VAD fires well after true speech onset, so 0.45s of pre-roll still
+# loses the leading words; 1.0 covers the detection delay (leading silence is free
+# for Whisper). SAFE at any length: _speech_capture_secs clamps pre-roll to the
+# post-TTS capture floor, so it can never reach back into Rex's own tail — the
+# floor grace (0.12s) is what guards that seam, and it is not touched here.
+SPEECH_PREROLL_SECS_AEC = 1.0
 POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 
 # How far a NON-question reply's capture may reach back past the post-TTS handoff

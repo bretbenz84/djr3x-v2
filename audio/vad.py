@@ -42,6 +42,25 @@ def _load() -> None:
 _load()
 
 
+def _threshold() -> float:
+    """Effective Silero probability threshold for this machine.
+
+    The ReSpeaker robot listens far-field, where soft-onset phonemes ("wh" in
+    "what's") sit below the 0.5 default for the first chunks — the VAD fires
+    late and the LEADING words are clipped (see VAD_THRESHOLD_AEC in config).
+    hardware_aec.is_active() is the single gate for robot-only audio behavior;
+    it caches after first call, so this is cheap on the streaming path.
+    """
+    try:
+        from audio import hardware_aec
+
+        if hardware_aec.is_active():
+            return float(getattr(config, "VAD_THRESHOLD_AEC", config.VAD_THRESHOLD))
+    except Exception as exc:
+        _log.debug("hardware_aec check failed, using base VAD threshold: %s", exc)
+    return float(config.VAD_THRESHOLD)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def is_speech(audio_chunk: np.ndarray) -> bool:
@@ -59,7 +78,7 @@ def is_speech(audio_chunk: np.ndarray) -> bool:
         tensor = torch.from_numpy(audio_chunk.astype(np.float32))
         with _lock, torch.no_grad():
             prob: float = _model(tensor, config.AUDIO_SAMPLE_RATE).item()
-        return prob >= config.VAD_THRESHOLD
+        return prob >= _threshold()
     except Exception as exc:
         _log.warning("VAD inference error: %s", exc)
         return False
@@ -96,7 +115,7 @@ def get_speech_segments(audio_array: np.ndarray) -> list[tuple[float, float]]:
             segments = _get_speech_timestamps(
                 tensor,
                 _model,
-                threshold=config.VAD_THRESHOLD,
+                threshold=_threshold(),
                 sampling_rate=config.AUDIO_SAMPLE_RATE,
             )
             _model.reset_states()

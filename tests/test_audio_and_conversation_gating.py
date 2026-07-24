@@ -10464,11 +10464,14 @@ class HardwareAecBoundaryTest(unittest.TestCase):
         from intelligence import interaction
         interaction._last_fast_handoff_at = 0.0
 
-    def test_tail_shrinks_when_aec_active(self):
+    def test_tail_matches_dev_seam_when_aec_active(self):
+        # Retuned 2026-07-17 (owner call): the XU316's ~16 dB isn't enough to make
+        # Rex's post-TTS residual silent, so the AEC seam now MATCHES the proven
+        # 0.12s dev-Mac values instead of the old aggressive 0.05s.
         from intelligence import interaction
         with mock.patch("audio.hardware_aec.is_active", return_value=True):
-            self.assertEqual(interaction._reply_playback_tail_secs(True), 0.05)
-            self.assertEqual(interaction._reply_playback_tail_secs(False), 0.05)
+            self.assertEqual(interaction._reply_playback_tail_secs(True), 0.12)
+            self.assertEqual(interaction._reply_playback_tail_secs(False), 0.12)
 
     def test_tail_unchanged_when_aec_inactive(self):
         from intelligence import interaction
@@ -10503,9 +10506,62 @@ class HardwareAecBoundaryTest(unittest.TestCase):
             mock.patch.object(interaction.vad, "reset_state"),
         ):
             interaction._apply_post_tts_handoff("The sky is blue.", source="test")
-        # resume ~immediately (0.05s) and capture floor reaches 0.5s back past handoff
-        self.assertAlmostEqual(interaction._listen_resume_at, 100.05)
-        self.assertAlmostEqual(interaction._listen_capture_floor_at, 99.5)
+        # Retuned 2026-07-17: AEC seam matches the dev-Mac 0.12s values — resume
+        # after 0.12s, capture floor reaches only 0.12s back past the handoff
+        # (0.5s pulled Rex's AEC residual and self-transcribed his trailing words).
+        self.assertAlmostEqual(interaction._listen_resume_at, 100.12)
+        self.assertAlmostEqual(interaction._listen_capture_floor_at, 99.88)
+
+
+class AecEndpointingOverrideTest(unittest.TestCase):
+    """The robot-only endpointing fix (71fd4bd) re-applied behind the AEC gate.
+
+    Far-field, soft-onset phonemes fire the VAD late and the leading words are
+    clipped (field 2026-07-23: 'What do you think of your new motor system' heard
+    as 'new motor systems'). On the ReSpeaker robot the VAD threshold drops to
+    0.4 and pre-roll extends to 1.0s; the no-AEC dev Mac keeps baseline (0.5 /
+    0.45) — reverting these globally (71def95) is what brought the bug back."""
+
+    def test_vad_threshold_lowered_when_aec_active(self):
+        from audio import vad
+        with mock.patch("audio.hardware_aec.is_active", return_value=True):
+            self.assertAlmostEqual(vad._threshold(), 0.4)
+
+    def test_vad_threshold_baseline_when_aec_inactive(self):
+        from audio import vad
+        with mock.patch("audio.hardware_aec.is_active", return_value=False):
+            self.assertAlmostEqual(vad._threshold(), 0.5)
+
+    def test_preroll_extended_when_aec_active(self):
+        from intelligence import interaction
+        with (
+            mock.patch("audio.hardware_aec.is_active", return_value=True),
+            mock.patch.object(interaction, "_response_wait_active", return_value=False),
+        ):
+            self.assertAlmostEqual(interaction._speech_preroll_secs(), 1.0)
+
+    def test_preroll_baseline_when_aec_inactive(self):
+        from intelligence import interaction
+        with (
+            mock.patch("audio.hardware_aec.is_active", return_value=False),
+            mock.patch.object(interaction, "_response_wait_active", return_value=False),
+        ):
+            self.assertAlmostEqual(interaction._speech_preroll_secs(), 0.45)
+
+    def test_preroll_never_reaches_past_capture_floor(self):
+        # The revert's actual complaint: pre-roll must not pull Rex's own tail.
+        # However long the pre-roll, _speech_capture_secs clamps to the floor.
+        from intelligence import interaction
+        with (
+            mock.patch("audio.hardware_aec.is_active", return_value=True),
+            mock.patch.object(interaction, "_response_wait_active", return_value=False),
+            mock.patch.object(interaction, "_listen_capture_floor_at", 99.9),
+        ):
+            # Speech detected at 100.0; naive reach-back would start at 99.0,
+            # but the floor holds it to 99.9 → 0.6s captured, not 1.5s.
+            self.assertAlmostEqual(
+                interaction._speech_capture_secs(100.0, finished_mono=100.5), 0.6
+            )
 
 
 class PostQuestionHandoffStickinessTest(unittest.TestCase):
