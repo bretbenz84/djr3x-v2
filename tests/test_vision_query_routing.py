@@ -31,6 +31,34 @@ def _answer_to_rex_decision():
     )
 
 
+class IntentClassifierPrecedenceTests(unittest.TestCase):
+    """A vision phrasing must out-rank the greedy person-memory heuristic.
+
+    Field 2026-07-23: 'Well, what do you see in my hand? And maybe that gives you the
+    answer.' (a wine glass held up) was classified query_memory — the
+    references_person_memory_target fallback fired on the bare 'my' — and answered
+    'Name the person, and I'll stop pretending my photoreceptors are psychic.'
+    """
+
+    def test_see_in_my_hand_routes_to_vision_not_memory(self):
+        from intelligence import intent_classifier as ic
+        for text in [
+            "Well, what do you see in my hand? And maybe that gives you the answer.",
+            "what do you see in my hand",
+            "what am I holding",
+            "can you see what I'm holding",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(ic.classify_deterministic(text), "query_what_do_you_see")
+
+    def test_real_memory_queries_still_route_to_memory(self):
+        from intelligence import intent_classifier as ic
+        for text in ["what do you know about me", "tell me about my dog",
+                     "what do you remember about me"]:
+            with self.subTest(text=text):
+                self.assertEqual(ic.classify_deterministic(text), "query_memory")
+
+
 class VisionQueryEvidenceTests(unittest.TestCase):
     """has_vision_query_evidence: real camera questions pass, idioms do not."""
 

@@ -300,12 +300,17 @@ def _deterministic_label(text: str) -> str:
         return "general"
     if _CONTEXTUAL_FOLLOWUP_RE.match(cleaned):
         return "general"
+    # A clear vision phrasing ("what do you see", "what's in my hand", "what am I
+    # holding/wearing/showing") is a VISION question, so it must win over the greedy
+    # person-memory heuristic below — that heuristic's references_person_memory_target
+    # fallback fires on the bare "my" and routed "what do you see in my hand?" to
+    # query_memory, which answered "name the person" (field 2026-07-23).
+    if _VISION_QUERY_RE.search(cleaned):
+        return "query_what_do_you_see"
     if _memory_query_allowed(cleaned):
         return "query_memory"
     if _WHO_QUERY_RE.search(cleaned):
         return "query_who_is_speaking"
-    if _VISION_QUERY_RE.search(cleaned):
-        return "query_what_do_you_see"
     if _UPTIME_QUERY_RE.search(cleaned):
         return "query_uptime"
     if _CAPABILITIES_QUERY_RE.search(cleaned):
