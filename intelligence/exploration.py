@@ -301,7 +301,23 @@ def handle_user_turn(text: str, speaker_id: Optional[int]) -> Optional[str]:
             list(getattr(config, "EXPLORE_ENCOURAGE_ACK_LINES", []) or ["On it."])
         )
 
-    # 3. Anything else — a real question/comment. Pause and defer to the pipeline.
+    # 3. An explicit drive command is a MANUAL TAKEOVER — end the walk and release
+    # the turn so the normal motion path executes it. Pausing instead meant the
+    # walk resumed 4 s later and immediately turned wherever ITS plan pointed,
+    # right after the user had aimed the body ("I tell it to turn right, it turns
+    # left, as if it's decided to already turn", field 2026-07-23).
+    try:
+        from intelligence import action_router
+        motion_decision = action_router.classify_explicit_motion(cleaned)
+        if motion_decision is not None and motion_decision.action in {
+            "motion.turn", "motion.move", "motion.arc", "motion.come",
+        }:
+            stop("user_motion_command")
+            return None
+    except Exception:
+        pass
+
+    # 4. Anything else — a real question/comment. Pause and defer to the pipeline.
     if sess.state == "paused":
         # A SECOND non-encouragement turn while already paused: they clearly want
         # to talk. End the mode and release the turn to normal routing.

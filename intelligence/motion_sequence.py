@@ -56,6 +56,13 @@ def start(
         return False
 
     cancel("superseded by a new motion sequence", stop_base=True)
+    # Sequences only carry explicit voice routes — stand realign down so it can't
+    # rotate the body off the user's chosen heading between (or after) the steps.
+    try:
+        from intelligence import motion_agency
+        motion_agency.note_user_motion()
+    except Exception:
+        pass
     event = threading.Event()
     copied = [
         ActionDecision(

@@ -6948,6 +6948,12 @@ MOTION_COME_REACQUIRE_GRACE_SECS = 3.0
 # taking the next (bigger) sweep leg away from them.
 MOTION_COME_SIGHT_FRESH_SECS = 6.0
 MOTION_COME_RESIGHT_TURN_DEG = 30.0
+# After an explicit voice motion command (turn/move/arc/sequence), the social
+# realign/approach behaviors stand down this long: the human deliberately pointed
+# the body, and realign was rotating it straight back toward their face (field
+# 2026-07-23: "turn right a little" -> -45 deg, realign +30 deg 13 s later —
+# "I tell it to turn right, it turns left"). Flinch and come-here are unaffected.
+MOTION_USER_MOTION_STANDDOWN_SECS = 45.0
 # When a VOICE-commanded move/sequence leg ends 'blocked', Rex says this so a cut
 # move doesn't read as an ignored command. Autonomous legs stay silent.
 MOTION_BLOCKED_ANNOUNCE_LINE = "Something's in my way — that's as far as I get."

@@ -74,7 +74,26 @@ _state = {
     "last_turn_at": 0.0,
     "last_approach_at": 0.0,
     "last_flinch_at": 0.0,
+    "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
 }
+
+
+def note_user_motion() -> None:
+    """Record an explicit voice motion command. The social realign/approach
+    behaviors stand down for MOTION_USER_MOTION_STANDDOWN_SECS afterwards — the
+    human deliberately pointed the body, and realign was rotating it right back
+    (field 2026-07-23: "turn right a little" -> -45, then realign +30 toward the
+    face 13 s later, reading as "I tell it to turn right, it turns left"). The
+    flinch reflex and an explicit come-here request are unaffected."""
+    _state["user_motion_at"] = time.monotonic()
+
+
+def _user_motion_standdown(now: float) -> bool:
+    at = float(_state.get("user_motion_at") or 0.0)
+    if at <= 0.0:
+        return False
+    window = _num("MOTION_USER_MOTION_STANDDOWN_SECS", 45.0)
+    return (now - at) < window
 
 _requested_come = {
     "active": False,
@@ -601,6 +620,13 @@ def _step_inner(snapshot: dict, profile) -> None:
     # maneuvers while the human is mid-sentence (motor noise into the mic on THEIR
     # turn) — a reflex flinch is deliberately exempt from this, they are not.
     if getattr(profile, "user_mid_sentence", False):
+        _reset("neck_hits", "far_hits")
+        return
+
+    # The human just steered the body by voice — honor their placement instead of
+    # rotating it back toward their face (see note_user_motion). Counters reset so
+    # stale off-center ticks can't fire the instant the window expires.
+    if _user_motion_standdown(time.monotonic()):
         _reset("neck_hits", "far_hits")
         return
 

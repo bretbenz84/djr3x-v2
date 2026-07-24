@@ -363,6 +363,74 @@ class RequestedComeFieldFixTest(unittest.TestCase):
         self.assertTrue(MA.requested_come_active())
 
 
+class UserMotionStanddownTest(unittest.TestCase):
+    """After an explicit voice motion command, realign must NOT rotate the body
+    back toward the face (field 2026-07-23: "turn right a little" -> -45, realign
+    +30 toward the speaker 13 s later)."""
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
+                         last_approach_at=0.0, user_motion_at=0.0)
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "turn", return_value=7),
+            mock.patch.object(MA.motion_controller, "come", return_value=8),
+            mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
+        ]
+        self.available, self.state, self.turn, self.come, self.battery = [
+            p.start() for p in self._patches
+        ]
+        self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
+        self._neck = 7594   # parked right — realign would fire after 2 confirm ticks
+        self._ws = mock.patch(
+            "world_state.world_state.get",
+            side_effect=lambda key: (
+                {"face_tracking": self._tracking,
+                 "servo_positions": {"neck": self._neck}}
+                if key == "self_state" else {}),
+        )
+        self._ws.start()
+
+    def tearDown(self):
+        MA._state["user_motion_at"] = 0.0
+        self._ws.stop()
+        for p in self._patches:
+            p.stop()
+
+    def _tick(self, n=1):
+        for _ in range(n):
+            MA.step(_snapshot(), _profile())
+
+    def test_realign_stands_down_after_user_motion(self):
+        MA.note_user_motion()
+        self._tick(4)
+        self.turn.assert_not_called()
+
+    def test_realign_resumes_after_window_expires(self):
+        MA.note_user_motion()
+        MA._state["user_motion_at"] = time.monotonic() - (
+            float(config.MOTION_USER_MOTION_STANDDOWN_SECS) + 1.0
+        )
+        self._tick(2)   # confirm ticks
+        self.turn.assert_called_once()
+
+    def test_flinch_reflex_ignores_the_standdown(self):
+        # note_user_motion must not silence the safety reflex path.
+        MA.note_user_motion()
+        with mock.patch.object(MA, "_maybe_flinch", return_value=True) as flinch:
+            self._tick(1)
+        flinch.assert_called_once()
+
+    def test_come_here_ignores_the_standdown(self):
+        MA.note_user_motion()
+        self.assertTrue(MA.request_come_here())
+        self._tick(1)
+        # Person visible far right -> the come align turn still fires.
+        self.turn.assert_called_once()
+
+
 class TurnMathTest(unittest.TestCase):
     def test_proportional_and_clamped(self):
         self.assertAlmostEqual(MA._turn_degrees_for(0.5), -30.0)

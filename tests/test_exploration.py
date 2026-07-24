@@ -180,6 +180,21 @@ class TurnConsumptionTests(unittest.TestCase):
         self.assertIn(line, config.EXPLORE_ENCOURAGE_ACK_LINES)
         self.assertEqual(ex._session.state, "exploring")
 
+    def test_explicit_drive_command_ends_the_walk_and_releases(self):
+        # Manual takeover: "turn right" during a walk must END it (not pause) and
+        # release the turn so the normal motion path executes it — pausing meant
+        # the walk resumed 4 s later and turned wherever ITS plan pointed (field
+        # 2026-07-23: "I tell it to turn right, it turns left").
+        line = ex.handle_user_turn("turn to your right a little", 7)
+        self.assertIsNone(line)                          # released to routing
+        self.assertTrue(ex._session.aborting())
+        self.assertEqual(ex._session.abort_reason, "user_motion_command")
+
+    def test_move_command_ends_the_walk_too(self):
+        line = ex.handle_user_turn("move forward three feet", 7)
+        self.assertIsNone(line)
+        self.assertTrue(ex._session.aborting())
+
 
 # ── 3. FSM end-to-end (synchronous, mocked seams) ─────────────────────────────
 

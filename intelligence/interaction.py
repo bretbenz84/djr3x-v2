@@ -16754,6 +16754,17 @@ def _handle_router_motion_action(
     if action != "motion.stop" and motion_controller.charging():
         return "I'm plugged in and charging. Wheels stay locked."
 
+    if action in {"motion.turn", "motion.move", "motion.arc"}:
+        # The human is steering by voice: the social realign behavior must not
+        # rotate the body back toward their face for a while (field 2026-07-23,
+        # "turn right" undone by a realign left turn 13 s later). Explicit
+        # come/stop manage their own ownership.
+        try:
+            from intelligence import motion_agency
+            motion_agency.note_user_motion()
+        except Exception:
+            pass
+
     # A fresh single command supersedes any queued route. Its own command will
     # supersede the in-flight firmware finite command; stop/come need an explicit
     # controlled stop because they may not immediately issue another finite step.
