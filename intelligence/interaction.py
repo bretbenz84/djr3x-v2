@@ -14,6 +14,7 @@ Public API:
 
 import logging
 import contextvars
+import difflib
 import json
 import random
 import re
@@ -2388,6 +2389,7 @@ def _apply_post_tts_handoff(
     global _last_fast_handoff_at, _post_question_retro_scan_at
     policy = _post_tts_handoff_policy(text)
     now = time.monotonic()
+    _note_rex_spoke(text)   # own-echo rejection reference (covers every source)
 
     # Sticky responsiveness: a streamed reply fires this handoff per sentence and
     # again for the whole reply. If Rex asked a question but his trailing sentence
@@ -2506,6 +2508,63 @@ def _arm_post_tts_window(item=None) -> None:
     after every queue item — not just items played via _speak_blocking."""
     text = getattr(item, "text", None)
     _apply_post_tts_handoff(text, source="speech_queue")
+
+
+# ── Own-echo (reference-text) rejection ───────────────────────────────────────
+# With hardware AEC the mic stays live while Rex plays (barge-in, commands over
+# music). The XU316 cancels ~17 dB, but his residual can still cross the VAD and
+# transcribe VERBATIM — field 2026-07-23 19:56: the "Something's in my way" blocked
+# announce came back 4 s later as unknown_voice_2 saying the same words, spawned an
+# anonymous speaker, and got a full LLM reply. Every line Rex speaks is noted here
+# (at playback start AND at the post-TTS handoff), and a fresh transcript that
+# near-matches one of his own recent lines is dropped as self-echo.
+_recent_rex_lines: "deque[tuple[str, float]]" = deque(maxlen=24)
+_recent_rex_lines_lock = threading.Lock()
+
+
+def _normalize_echo_text(text: Optional[str]) -> str:
+    cleaned = re.sub(r"\[[^\]]{1,32}\]", " ", str(text or ""))   # strip [emotion] tags
+    cleaned = re.sub(r"[^a-z0-9' ]+", " ", cleaned.lower())
+    return " ".join(cleaned.split())
+
+
+def _note_rex_spoke(text: Optional[str]) -> None:
+    norm = _normalize_echo_text(text)
+    if not norm:
+        return
+    now = time.monotonic()
+    with _recent_rex_lines_lock:
+        _recent_rex_lines.append((norm, now))
+
+
+def _note_rex_spoke_item(item=None) -> None:
+    _note_rex_spoke(getattr(item, "text", None))
+
+
+def _looks_like_own_echo(text: str) -> bool:
+    """True when a transcript near-matches something Rex himself just said."""
+    if not bool(getattr(config, "OWN_ECHO_REJECT_ENABLED", True)):
+        return False
+    norm = _normalize_echo_text(text)
+    min_words = int(getattr(config, "OWN_ECHO_MIN_WORDS", 3))
+    if not norm or len(norm.split()) < min_words:
+        # 1-2 word overlaps ("yeah", "okay") are far likelier to be the human.
+        return False
+    window = float(getattr(config, "OWN_ECHO_WINDOW_SECS", 12.0))
+    ratio_floor = float(getattr(config, "OWN_ECHO_SIMILARITY", 0.85))
+    now = time.monotonic()
+    with _recent_rex_lines_lock:
+        recent = [line for line, at in _recent_rex_lines if (now - at) <= window]
+    for line in recent:
+        if not line:
+            continue
+        # Verbatim containment (echo captures are often a clean prefix/suffix of
+        # the line) or high overall similarity.
+        if norm == line or (len(norm) >= 10 and norm in line):
+            return True
+        if difflib.SequenceMatcher(None, norm, line).ratio() >= ratio_floor:
+            return True
+    return False
 
 
 def _speak_async(text: str, emotion: str = "neutral") -> None:
@@ -7695,13 +7754,39 @@ def _handle_pending_offscreen_identify_reply(
                 part for part in (str(pending.get("overheard_text") or ""), text)
                 if part
             ).strip()
-            _safe_enroll_voice(
-                new_pid,
-                enroll_audio,
-                transcript_text=enroll_text,
-                source="offscreen_identify",
-                confirmed=from_engaged_person,
-            )
+            # CLAIM VERIFICATION: when the answered name is an EXISTING person with
+            # established voice prints, the held clip must actually SOUND like them
+            # before it may touch their prints. A claimed name is social testimony,
+            # not biometric proof — field 2026-07-23 20:12: a guest joked "obviously
+            # me, Bret" to the who's-that ask and HER voice clip (0.516 vs Bret's
+            # real prints) was enrolled onto Bret, poisoning his print set. A brand
+            # new person (created=True) or a print-less record still bootstraps.
+            claim_ok = True
+            if not created and enroll_audio is not None:
+                try:
+                    floor = float(getattr(
+                        config, "OFFSCREEN_IDENTIFY_CLAIM_VERIFY_FLOOR", 0.55))
+                    ranked = speaker_id.rank_speakers(enroll_audio)
+                    claimed = next(
+                        (r for r in ranked if int(r[0]) == int(new_pid)), None)
+                    if claimed is not None and float(claimed[2]) < floor:
+                        claim_ok = False
+                        _log.info(
+                            "[interaction] off-camera identify: claimed name %r is an "
+                            "existing person but the held clip scores %.3f against "
+                            "their prints (< %.2f) — NOT enrolling (attribution only)",
+                            intro_name, float(claimed[2]), floor,
+                        )
+                except Exception as exc:
+                    _log.debug("offscreen claim verification failed open: %s", exc)
+            if claim_ok:
+                _safe_enroll_voice(
+                    new_pid,
+                    enroll_audio,
+                    transcript_text=enroll_text,
+                    source="offscreen_identify",
+                    confirmed=from_engaged_person,
+                )
             first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
             if created and first_inc > 0:
                 people_memory.update_familiarity(new_pid, first_inc)
@@ -10098,8 +10183,13 @@ def _handle_intro_voice_capture(
     # phantom newcomer (live-logged 2026-06-18: Bret's correction enrolled onto
     # phantom "Leaf"). NOTE: keep INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD >=
     # SPEAKER_ID_CONFIDENT_THRESHOLD or this band reopens.
-    confident_id_threshold = float(
-        getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70)
+    # Guard floor is DECOUPLED from SPEAKER_ID_CONFIDENT_THRESHOLD: when that
+    # global was raised 0.70 -> 0.75 the [0.70, 0.75) band silently reopened and a
+    # 0.707 introducer match again enrolled the INTRODUCER'S voice onto the
+    # newcomer — the exact voiceprint-twin poisoning this guard was built against.
+    confident_id_threshold = min(
+        float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70)),
+        float(getattr(config, "INTRO_VOICE_INTRODUCER_GUARD_FLOOR", 0.70)),
     )
     if (
         introducer_id is not None
@@ -16334,8 +16424,12 @@ def _handle_router_impersonation(
             "[impersonation] opened capture slot person_id=%s name=%r",
             resolution.person_id, resolution.name,
         )
-        _speak_blocking(resolution.line, emotion="curious", pre_beat_ms=100, log_text=False)
-        return resolution.line
+        # Speak the FRAMED ask ("repeat after me: <phrase>") — the bare phrase gave
+        # the guest no clue what to do (field 2026-07-23). expected_text stays the
+        # phrase alone so the recitation match compares against the right words.
+        prompt = impersonation.capture_prompt(resolution.name, resolution.line)
+        _speak_blocking(prompt, emotion="curious", pre_beat_ms=100, log_text=False)
+        return prompt
 
     # perform
     _log.info(
@@ -16377,16 +16471,31 @@ def _handle_impersonation_capture(
         _pending_impersonation_capture = None
         return ("No worries — no impression today.", False)
 
-    # The clip must come from the target, not a bystander: if the live turn
-    # confidently resolves to someone ELSE, leave the slot for the real target.
-    # An ANONYMOUS slot (person_id=None — a guest Rex doesn't know) is the
+    # RECITATION MATCH: the turn's transcript closely matches the exact phrase Rex
+    # asked the target to repeat. Whoever is speaking IS performing the capture —
+    # identity attribution must not veto it (field 2026-07-23: the guest's reply was
+    # misattributed to a junk voiceprint twin, the strict person gate skipped it,
+    # and the slot silently expired). The phrase is a fixed nursery line Rex just
+    # requested; a bystander coincidentally reciting it is not a real risk.
+    expected_norm = _normalize_echo_text(ctx.get("expected_text"))
+    text_norm = _normalize_echo_text(text)
+    recites = bool(
+        expected_norm and text_norm
+        and difflib.SequenceMatcher(None, text_norm, expected_norm).ratio()
+        >= float(getattr(config, "IMPERSONATION_CAPTURE_MATCH_RATIO", 0.6))
+    )
+
+    # Otherwise the clip must come from the target, not a bystander: if the live
+    # turn confidently resolves to someone ELSE, leave the slot for the real
+    # target. An ANONYMOUS slot (person_id=None — a guest Rex doesn't know) is the
     # mirror image: only an UNKNOWN voice may fill it; a known person speaking
     # in the gap must not have their voice captured as the guest's.
     expected_id = ctx.get("person_id")
-    if expected_id is not None and person_id is not None and person_id != expected_id:
-        return None
-    if expected_id is None and person_id is not None:
-        return None
+    if not recites:
+        if expected_id is not None and person_id is not None and person_id != expected_id:
+            return None
+        if expected_id is None and person_id is not None:
+            return None
 
     min_secs = float(getattr(config, "IMPERSONATION_CAPTURE_MIN_SECS", 4.0))
     if audio_array is None or _audio_duration_secs(audio_array) < min_secs:
@@ -19697,6 +19806,31 @@ def _handle_speech_segment(
             completed = False
             if from_idle_activation:
                 # Don't camp in ACTIVE on speech that was not even meant for Rex.
+                try:
+                    state_module.set_state(State.IDLE)
+                except Exception:
+                    pass
+            return
+
+        # Own-echo rejection: the transcript near-matches a line Rex JUST spoke —
+        # his AEC residual crossed the VAD during/after playback and Whisper heard
+        # him verbatim (field 2026-07-23: "Something's in my way" came back as
+        # unknown_voice_2 and got a full reply). Drop it before it can mint an
+        # anonymous speaker or reach the LLM.
+        if (
+            not text_input
+            # A fresh impersonation capture slot EXPECTS the human to recite Rex's
+            # own words back — never eat their recitation as echo.
+            and not _impersonation_capture_fresh(_pending_impersonation_capture)
+            and _looks_like_own_echo(text)
+        ):
+            _log.info(
+                "[interaction] rejected own-echo transcript (matches a recent Rex line): %r",
+                text,
+            )
+            final_executed_path = "ignored.own_echo"
+            completed = False
+            if from_idle_activation:
                 try:
                     state_module.set_state(State.IDLE)
                 except Exception:
@@ -24059,6 +24193,9 @@ def start(*, text_only: bool = False) -> None:
         pass
 
     speech_queue.register_on_item_done(_arm_post_tts_window)
+    # Note every spoken line at playback START for own-echo rejection — the echo
+    # is captured DURING playback, so noting only at item end can lose the race.
+    speech_queue.register_on_item_start(_note_rex_spoke_item)
     if _text_only_mode:
         _log.info("[interaction] started in text-only mode; wake word and mic loop disabled")
         return

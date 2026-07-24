@@ -76,7 +76,15 @@ def _apply_corrections(text: str) -> str:
     for pattern, replacement in config.WHISPER_CORRECTIONS.items():
         # re.escape so literal dots/parens in keys work; IGNORECASE for case-insensitive match;
         # replacement value is used verbatim so its casing is always preserved.
-        text = re.sub(re.escape(pattern), replacement, text, flags=re.IGNORECASE)
+        # Word-boundary anchored when the key starts/ends with a word character —
+        # a bare substring replace corrupted embedded matches ("vibrate" contains
+        # "brat", "breadth" contains "bread").
+        escaped = re.escape(pattern)
+        if pattern and pattern[0].isalnum():
+            escaped = r"\b" + escaped
+        if pattern and pattern[-1].isalnum():
+            escaped = escaped + r"\b"
+        text = re.sub(escaped, replacement, text, flags=re.IGNORECASE)
     return text
 
 

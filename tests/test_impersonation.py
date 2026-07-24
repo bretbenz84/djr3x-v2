@@ -42,6 +42,18 @@ class PureHelpersTest(unittest.TestCase):
 
     def test_capture_lines_nonempty(self):
         self.assertTrue(impersonation.capture_line())
+
+    def test_capture_prompt_frames_the_ask(self):
+        # Field 2026-07-23: Rex spoke the bare phrase with no instruction and the
+        # guest had no idea she was supposed to repeat it.
+        p = impersonation.capture_prompt("Exudica Marbles", "An apple a day.")
+        self.assertIn("repeat after me", p.lower())
+        self.assertIn("An apple a day.", p)
+        self.assertIn("Exudica", p)
+        # No name still frames correctly.
+        p2 = impersonation.capture_prompt(None, "Mary had a little lamb.")
+        self.assertIn("repeat after me", p2.lower())
+        self.assertIn("Mary had a little lamb.", p2)
         self.assertTrue(impersonation.intro_line())
 
 
@@ -534,6 +546,45 @@ class CaptureConsumerTest(unittest.TestCase):
         perf.assert_called_once()
         self.assertEqual(perf.call_args.args[1], "my mystery guest")
         self.assertIsNone(self.itn._pending_impersonation_capture)
+
+    def test_recitation_match_overrides_misattribution(self):
+        # Field 2026-07-23: the guest recited the phrase but her voice was pinned
+        # on a junk twin (different person_id) and the strict gate skipped it — the
+        # slot silently expired. A transcript matching the requested phrase IS the
+        # recitation, whoever the voice system says is talking.
+        import time
+        from features import impersonation
+        phrase = "An apple a day keeps the doctor away, and a penny saved is a penny earned."
+        self.itn._pending_impersonation_capture = {
+            "person_id": 3, "name": "Exudica", "is_self": True,
+            "expected_text": phrase, "asked_at": time.monotonic(),
+        }
+        fake_ref = local_tts.VoiceRef("/x.wav", "t", "person:3")
+        with mock.patch.object(impersonation, "save_person_capture", return_value=fake_ref) as save, \
+             mock.patch.object(impersonation, "perform", return_value="Uncanny.") as perf:
+            r = self.itn._handle_impersonation_capture(
+                "An apple a day keeps the doctor away and a penny saved is a penny earned",
+                self._good_audio(),
+                person_id=2, raw_best_id=2, speaker_score=0.87,   # wrong person!
+            )
+        self.assertIsNotNone(r)
+        save.assert_called_once()
+        perf.assert_called_once()
+        self.assertIsNone(self.itn._pending_impersonation_capture)
+
+    def test_non_recitation_from_wrong_speaker_still_skipped(self):
+        import time
+        phrase = "An apple a day keeps the doctor away, and a penny saved is a penny earned."
+        self.itn._pending_impersonation_capture = {
+            "person_id": 3, "name": "Exudica", "is_self": True,
+            "expected_text": phrase, "asked_at": time.monotonic(),
+        }
+        r = self.itn._handle_impersonation_capture(
+            "hey can you turn the music up a bit", self._good_audio(),
+            person_id=2, raw_best_id=2, speaker_score=0.87,
+        )
+        self.assertIsNone(r)
+        self.assertIsNotNone(self.itn._pending_impersonation_capture)
 
     def test_good_clip_saves_and_performs(self):
         import time

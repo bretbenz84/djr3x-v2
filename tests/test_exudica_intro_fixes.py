@@ -50,6 +50,89 @@ class WhisperCorrectionTest(unittest.TestCase):
 
         self.assertEqual(_apply_corrections("good morning Brett"), "good morning Bret")
 
+    def test_group_session_mishearings_corrected(self):
+        # Field 2026-07-23 (logs/djr3x-2026-07-23-19-50-57): "Zutica", "Brat"
+        # (spawned a whole phantom person), and "Impersivate" missed the router.
+        from audio.transcription import _apply_corrections
+
+        self.assertEqual(_apply_corrections("we've met, I'm in Zutica"),
+                         "we've met, I'm in Exudica")
+        self.assertEqual(_apply_corrections("hey Brat come here"),
+                         "hey Bret come here")
+        self.assertEqual(_apply_corrections("Impersivate me"), "impersonate me")
+
+    def test_corrections_are_word_bounded(self):
+        # A bare substring replace corrupted embedded matches ("vibrate" contains
+        # "brat", "breadth" contains "bread").
+        from audio.transcription import _apply_corrections
+
+        self.assertEqual(_apply_corrections("set it to vibrate mode"),
+                         "set it to vibrate mode")
+        self.assertEqual(_apply_corrections("the breadth of the room"),
+                         "the breadth of the room")
+
+
+class HairStylistDisplayNameTest(unittest.TestCase):
+    """The special-person prompt hook must address her by the name she goes by
+    NOW — she was introduced as Exudica and Rex greeted her as 'Joy' (field
+    2026-07-23, an awful first impression)."""
+
+    def test_prompt_context_uses_current_alias(self):
+        from intelligence import person_specials as PS
+        ctx = PS.galactic_hair_stylist_prompt_context("Exudica")
+        self.assertIn("ADDRESS HER AS Exudica", ctx)
+        ctx_joy = PS.galactic_hair_stylist_prompt_context("Joy")
+        self.assertIn("ADDRESS HER AS Joy", ctx_joy)
+
+    def test_intro_ack_uses_current_alias(self):
+        from intelligence import person_specials as PS
+        ack = PS.galactic_hair_stylist_intro_ack("Exudica")
+        self.assertTrue(ack.startswith("Exudica"))
+
+
+class OwnEchoRejectionTest(unittest.TestCase):
+    """Reference-text rejection: Rex's AEC residual crossing the VAD must not
+    become a phantom speaker (field 2026-07-23 19:56: the 'Something's in my way'
+    announce came back as unknown_voice_2 and got a full LLM reply)."""
+
+    def setUp(self):
+        from intelligence import interaction as I
+        self.I = I
+        with I._recent_rex_lines_lock:
+            I._recent_rex_lines.clear()
+
+    def tearDown(self):
+        with self.I._recent_rex_lines_lock:
+            self.I._recent_rex_lines.clear()
+
+    def test_verbatim_echo_rejected(self):
+        self.I._note_rex_spoke("Something's in my way — that's as far as I get.")
+        self.assertTrue(self.I._looks_like_own_echo("Something's in my way"))
+        self.assertTrue(self.I._looks_like_own_echo("that's as far as I get"))
+
+    def test_emotion_tags_stripped_before_matching(self):
+        self.I._note_rex_spoke("[amused] Consider it logged. Onward and upward.")
+        self.assertTrue(self.I._looks_like_own_echo("consider it logged onward and upward"))
+
+    def test_short_overlaps_stay_attributable_to_the_human(self):
+        self.I._note_rex_spoke("Yeah, okay. Onward.")
+        self.assertFalse(self.I._looks_like_own_echo("yeah okay"))
+
+    def test_normal_speech_not_rejected(self):
+        self.I._note_rex_spoke("Something's in my way — that's as far as I get.")
+        self.assertFalse(self.I._looks_like_own_echo("what do you see in my hand"))
+        self.assertFalse(self.I._looks_like_own_echo("turn right and move forward five feet"))
+
+    def test_stale_lines_expire(self):
+        norm = self.I._normalize_echo_text("Something's in my way — that's as far as I get.")
+        self.I._recent_rex_lines.append((norm, time.monotonic() - 60.0))
+        self.assertFalse(self.I._looks_like_own_echo("Something's in my way"))
+
+    def test_kill_switch(self):
+        self.I._note_rex_spoke("Something's in my way — that's as far as I get.")
+        with mock.patch.object(config, "OWN_ECHO_REJECT_ENABLED", False, create=True):
+            self.assertFalse(self.I._looks_like_own_echo("Something's in my way"))
+
 
 class _TempPeopleDb(unittest.TestCase):
     def setUp(self):

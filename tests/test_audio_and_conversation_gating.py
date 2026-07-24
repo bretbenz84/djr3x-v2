@@ -9627,6 +9627,73 @@ class GroupChatterGatingTest(unittest.TestCase):
             interaction._pending_offscreen_identify = old_pending
             interaction._session_exchange_count = old_exchange_count
 
+    def _offscreen_claim_case(self, rank_score, expect_enroll):
+        """Claimed name = EXISTING person with prints: the held clip must actually
+        sound like them (>= OFFSCREEN_IDENTIFY_CLAIM_VERIFY_FLOOR) to be enrolled.
+        Field 2026-07-23 20:12: a guest joked 'obviously me, Bret' to the who's-that
+        ask and her clip (0.516 vs Bret's prints) was enrolled onto Bret."""
+        import numpy as np
+        from intelligence import interaction
+
+        old_pending = interaction._pending_offscreen_identify
+        old_exchange_count = interaction._session_exchange_count
+        interaction._pending_offscreen_identify = {
+            "audio": np.array([1.0, 1.0, 1.0], dtype=np.float32),
+            "asked_at": interaction.time.monotonic(),
+            "prior_engaged_id": 3,
+            "prior_engaged_name": "Exudica",
+            "overheard_text": "something rude",
+            "anonymous_speaker_label": "unknown_voice_5",
+        }
+        try:
+            with (
+                mock.patch.object(
+                    interaction.llm, "extract_relationship_introduction",
+                    return_value={"name": None, "relationship": None},
+                ),
+                mock.patch.object(
+                    interaction.people_memory, "find_or_create_person",
+                    return_value=(1, False),          # EXISTING Bret, not created
+                ),
+                mock.patch.object(interaction.config, "IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS", 0.0),
+                mock.patch.object(interaction.config, "IDENTITY_VOICE_ENROLL_MIN_WORDS", 1),
+                mock.patch.object(
+                    interaction.speaker_id, "rank_speakers",
+                    return_value=[(1, "Bret Benziger", rank_score, 2)],
+                ),
+                mock.patch.object(interaction.speaker_id, "enroll_voice") as enroll_voice,
+                mock.patch.object(interaction.people_memory, "update_familiarity"),
+                mock.patch.object(interaction, "_has_unknown_visible_person", return_value=False),
+                mock.patch.object(interaction, "_bind_world_state_identity"),
+                mock.patch.object(interaction, "_retire_anonymous_speaker_slot"),
+                mock.patch.object(interaction.llm, "get_response", return_value="Bret, welcome."),
+                mock.patch.object(interaction, "_speak_blocking", return_value=True),
+                mock.patch.object(interaction.conv_memory, "add_to_transcript"),
+                mock.patch.object(interaction.conv_log, "log_rex"),
+                mock.patch.object(interaction, "_register_rex_utterance"),
+            ):
+                consumed, _ = interaction._handle_pending_offscreen_identify_reply(
+                    "Bret",
+                    person_id=None,
+                    person_name=None,
+                    audio_array=np.array([2.0, 2.0], dtype=np.float32),
+                    anonymous_speaker_label="unknown_voice_6",
+                )
+            self.assertTrue(consumed)
+            if expect_enroll:
+                enroll_voice.assert_called_once()
+            else:
+                enroll_voice.assert_not_called()
+        finally:
+            interaction._pending_offscreen_identify = old_pending
+            interaction._session_exchange_count = old_exchange_count
+
+    def test_offscreen_claimed_existing_person_low_score_not_enrolled(self):
+        self._offscreen_claim_case(rank_score=0.516, expect_enroll=False)
+
+    def test_offscreen_claimed_existing_person_matching_clip_enrolls(self):
+        self._offscreen_claim_case(rank_score=0.74, expect_enroll=True)
+
     def test_offscreen_identity_confusion_reply_repairs_and_clears(self):
         import numpy as np
         from intelligence import interaction, repair_moves

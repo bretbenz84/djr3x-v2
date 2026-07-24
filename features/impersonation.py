@@ -188,6 +188,19 @@ def capture_line() -> str:
     )
 
 
+def capture_prompt(name: object, line: str) -> str:
+    """The SPOKEN capture ask: instruction + phrase. Field 2026-07-23: Rex spoke
+    the bare phrase ("An apple a day...") with zero framing, so the guest had no
+    idea she was supposed to repeat it and the capture slot silently expired.
+    The expected reference transcript stays `line` alone — only the ask is framed.
+    """
+    first = str(name or "").strip().split(" ")[0] if name else ""
+    who = f"{first}, " if first else ""
+    return (
+        f"Okay {who}I need a voice sample — repeat after me, nice and clear: {line}"
+    )
+
+
 def intro_line() -> str:
     return _pick(
         getattr(config, "IMPERSONATION_INTRO_LINES", []),

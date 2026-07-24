@@ -1614,6 +1614,11 @@ IMPERSONATION_ENABLED = _env_bool("IMPERSONATION_ENABLED", True)
 # Live-capture tuning for the "impersonate me" flow.
 IMPERSONATION_CAPTURE_MIN_SECS = 4.0          # reject a too-short reference clip
 IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0     # pending capture slot expiry
+# A turn whose transcript matches the requested phrase at least this closely IS the
+# recitation, whoever the voice system says is talking — misattribution must not
+# strand the capture slot (field 2026-07-23: the guest's recitation was pinned on a
+# junk voiceprint twin and skipped; the slot silently expired).
+IMPERSONATION_CAPTURE_MATCH_RATIO = 0.6
 IMPERSONATION_CAPTURE_END_PAD_SECS = 0.5      # min trailing silence on the saved clip
                                               # (topped up, so the clone isn't clipped)
 # Lines Rex asks the person to repeat (fixed, so the reference transcript is known
@@ -1872,6 +1877,12 @@ WHISPER_CORRECTIONS = {
     "exutica": "Exudica",
     "exutiga": "Exudica",
     "exotica": "Exudica",
+    "zutica":  "Exudica",   # field 2026-07-23: "I'm in Zutica" (leading Ex- lost)
+    "zudica":  "Exudica",
+    # "Brat" — Whisper's most common misread of Bret (field 2026-07-23: an entire
+    # session attributed to a phantom person named "Brat" created from one misread).
+    "brat":    "Bret",
+    "impersivate": "impersonate",   # field 2026-07-23: "Impersivate me" missed the router
 }
 
 # Repetition filter: flag a transcript as a loop artifact only when one word both
@@ -3136,6 +3147,21 @@ INTRO_VOICE_CAPTURE_WINDOW_SECS = 45.0
 # the off-camera-newcomer-as-introducer band (~0.59–0.64 observed) while still
 # trusting a genuinely confident introducer re-take.
 INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD = 0.75
+# Floor for the "live speaker is confidently the introducer — never enroll this
+# onto the newcomer" guard in _handle_intro_voice_capture. Deliberately pinned at
+# the historical 0.70 and DECOUPLED from SPEAKER_ID_CONFIDENT_THRESHOLD: raising
+# that global to 0.75 silently reopened the [0.70, 0.75) band and re-enabled the
+# introducer-voice-onto-newcomer poisoning (the "Leaf" bug shape; see also the
+# Brat/Exudica twin chaos, logs 2026-07-23-19-50-57).
+INTRO_VOICE_INTRODUCER_GUARD_FLOOR = 0.70
+
+# Off-screen "who was that?" claim verification: when the answer names an EXISTING
+# person who already has voice prints, the held clip must score at least this
+# against their prints to be ENROLLED onto them (conversation attribution is not
+# affected). A claimed name is testimony, not biometrics — field 2026-07-23 20:12:
+# a guest joked "obviously me, Bret" and her clip (0.516 vs Bret) was enrolled
+# onto Bret's record. Genuine same-person clips score well above this.
+OFFSCREEN_IDENTIFY_CLAIM_VERIFY_FLOOR = 0.55
 
 # VAD (Silero) — probability threshold above which speech is considered detected
 VAD_THRESHOLD = 0.5
@@ -3983,6 +4009,19 @@ IDLE_LISTEN_WITHOUT_WAKE_WORD = True
 # so it won't make Rex ignore real input. If it false-activated Rex from IDLE he
 # drops straight back to IDLE instead of camping in ACTIVE on the crosstalk.
 CROSSTALK_SUPPRESSION_ENABLED = True
+
+# Own-echo (reference-text) rejection. With hardware AEC the mic stays live while
+# Rex plays; his ~-17 dB residual can still cross the VAD and Whisper transcribes
+# him VERBATIM (field 2026-07-23 19:56: the "Something's in my way" announce came
+# back as unknown_voice_2 saying the same words and got a full LLM reply). Every
+# spoken line is remembered for the window below; a fresh transcript that matches
+# one at >= the similarity floor is dropped as self-echo. MIN_WORDS keeps 1-2 word
+# overlaps ("yeah", "okay") attributable to the human. An armed impersonation
+# capture slot is exempt — there the human is SUPPOSED to recite Rex's words.
+OWN_ECHO_REJECT_ENABLED = True
+OWN_ECHO_WINDOW_SECS = 12.0
+OWN_ECHO_MIN_WORDS = 3
+OWN_ECHO_SIMILARITY = 0.85
 
 # Seconds of sustained silence after speech before the segment is processed.
 # This is the largest "I stopped talking, why is Rex waiting?" knob -- lowering

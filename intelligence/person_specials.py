@@ -199,11 +199,16 @@ def rex_creator_prompt_context(name: object) -> Optional[str]:
 
 
 def galactic_hair_stylist_prompt_context(name: object) -> Optional[str]:
-    """Prompt rule for LLM-generated replies to or about Joy/T-Joy/Excudica."""
+    """Prompt rule for LLM-generated replies to or about Joy/T-Joy/Exudica."""
     if not is_galactic_hair_stylist(name):
         return None
+    display = _hair_stylist_display(name)
     return (
-        "SPECIAL PERSON HOOK: This person is Joy — also known as T-Joy or Exudica — a "
+        f"SPECIAL PERSON HOOK: This person goes by {display} right now — ADDRESS HER "
+        f"AS {display} AND NOTHING ELSE. She has other aliases, but swapping one in "
+        "when she introduced herself under this name reads as Rex getting her name "
+        "wrong (field 2026-07-23: she was introduced as Exudica and Rex called her "
+        "'Joy' — awful first impression). She is a "
         "hair stylist extraordinaire Rex treats as one of the greatest in the galactic "
         "quadrant, and someone he genuinely admires. CHARACTER: a bold, magnetic "
         "femme-fatale presence — confident, striking, commands any room she walks into — "
