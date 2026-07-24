@@ -647,6 +647,54 @@ class RampTowardTest(unittest.TestCase):
         self.assertEqual(mc.ramp_toward(0.0, 1.0, 0.0, 0.0), 1.0)
 
 
+class BlockedAnnounceTest(unittest.TestCase):
+    """A VOICE-commanded move the firmware cuts on an obstacle must SAY so —
+    silence read as 'he ignores my commands' (field 2026-07-23, 'move forward 5
+    feet' stopped at ~2 ft with no acknowledgement). Autonomous legs stay quiet."""
+
+    def setUp(self):
+        with mc._announce_blocked_lock:
+            mc._announce_blocked_seqs.clear()
+        mc._announce_blocked_last_spoken = 0.0
+
+    def _done(self, seq, result="blocked"):
+        mc._on_motion_done({"seq": seq, "result": result})
+
+    def test_registered_blocked_move_speaks(self):
+        from unittest import mock
+        mc.announce_if_blocked(41)
+        with mock.patch("audio.speech_queue.enqueue") as enq, \
+                mock.patch.object(mc, "_fx"):
+            self._done(41)
+        enq.assert_called_once()
+        self.assertIn("way", enq.call_args[0][0].lower())
+
+    def test_unregistered_blocked_move_is_silent(self):
+        from unittest import mock
+        with mock.patch("audio.speech_queue.enqueue") as enq, \
+                mock.patch.object(mc, "_fx"):
+            self._done(99)                      # autonomous/exploration leg
+        enq.assert_not_called()
+
+    def test_completed_registered_move_is_silent(self):
+        from unittest import mock
+        mc.announce_if_blocked(42)
+        with mock.patch("audio.speech_queue.enqueue") as enq, \
+                mock.patch.object(mc, "_fx"):
+            self._done(42, result="completed")
+        enq.assert_not_called()
+
+    def test_cooldown_suppresses_back_to_back_announcements(self):
+        from unittest import mock
+        mc.announce_if_blocked(43)
+        mc.announce_if_blocked(44)
+        with mock.patch("audio.speech_queue.enqueue") as enq, \
+                mock.patch.object(mc, "_fx"):
+            self._done(43)
+            self._done(44)                      # within the 10 s cooldown
+        enq.assert_called_once()
+
+
 class MotionTakeoverTest(_MotionTestBase):
     """interaction._explicit_motion_takeover runs BEFORE the dialogue-act gate, so an
     explicit command isn't swallowed as an answer_to_rex reply when Rex has just spoken

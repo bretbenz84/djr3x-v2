@@ -95,6 +95,13 @@ def _run(
             if seq is None:
                 result = "suppressed"
                 break
+            if decision.action == "motion.move" and seq:
+                # Voice-commanded sequence leg: speak up if the firmware cuts it on
+                # an obstacle (silence read as ignoring the command, field 2026-07-23).
+                try:
+                    motion_controller.announce_if_blocked(int(seq))
+                except Exception:
+                    pass
             if on_issued is not None:
                 try:
                     on_issued(decision)

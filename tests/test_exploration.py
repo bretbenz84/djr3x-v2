@@ -479,6 +479,50 @@ class LocomotionTests(unittest.TestCase):
         self.assertEqual(ex._normalize_floor_hazard("cables across the floor"),
                          "cables across the floor")
 
+    def test_generic_mess_prose_no_longer_grounds_the_robot(self):
+        # Field 2026-07-23: "Some clutter around the kitchen area." vetoed EVERY
+        # forward leg — look-around panned and never drove. Solid clutter is the
+        # ToF's job; only ToF-blind dangers (cables/steps/liquids) may veto.
+        for text in (
+            "Some clutter around the kitchen area.",
+            "A few objects near the couch",
+            "Shoes and a backpack on the floor",
+            "boxes stacked to the left",
+        ):
+            self.assertEqual(ex._normalize_floor_hazard(text), "", text)
+
+    def test_tof_blind_dangers_still_veto(self):
+        for text in (
+            "a power cord runs across the path",
+            "step down into the sunken living room",
+            "wet spill near the doorway",
+            "broken glass by the table",
+            "charger cable on the rug",
+        ):
+            self.assertEqual(ex._normalize_floor_hazard(text), text, text)
+
+    def test_opening_turn_answers_the_invite_with_the_base(self):
+        # First stop: no forward move (no vision read yet), but a chassis turn of at
+        # least EXPLORE_OPENING_TURN_MIN_DEG fires so the invite visibly moves him.
+        sess = _new_session()
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch.object(ex, "_plan_leg_heading", return_value=0.0), \
+                mock.patch.object(ex, "_wait_leg_done", return_value="completed"), \
+                mock.patch("intelligence.motion_controller.turn", return_value=5) as turn:
+            ex._opening_turn(sess)
+        turn.assert_called_once()
+        self.assertGreaterEqual(
+            abs(turn.call_args[0][0]),
+            float(config.EXPLORE_OPENING_TURN_MIN_DEG),
+        )
+
+    def test_opening_turn_skips_without_base(self):
+        sess = _new_session()
+        with mock.patch.object(ex, "base_available", return_value=False), \
+                mock.patch("intelligence.motion_controller.turn") as turn:
+            ex._opening_turn(sess)
+        turn.assert_not_called()
+
     def test_travel_gaze_spans_the_turn_and_move(self):
         sess = _new_session()
         sess.last_open_direction = "left"
@@ -728,15 +772,18 @@ class VisionCapTests(unittest.TestCase):
         seed.assert_not_called()
 
     def test_blind_camera_never_drives_and_ends(self):
-        # No frames at all: counts as failures AND the blind-gate blocks every forward leg.
+        # No frames at all: counts as failures AND the blind-gate blocks every forward
+        # leg. Camera blindness is only DISCOVERED at the first survey, so the one
+        # rotation-in-place opening turn (issued before it, ToF-guided, firmware-safe)
+        # is permitted — but no forward translation may ever happen.
         with mock.patch.object(ex, "_survey", lambda s: []), \
                 mock.patch.object(ex, "base_available", return_value=True), \
-                mock.patch("intelligence.motion_controller.turn") as turn, \
+                mock.patch("intelligence.motion_controller.turn", return_value=None) as turn, \
                 mock.patch("intelligence.motion_controller.move") as move:
             sess = _new_session(state="announce")
             ex._run_session(sess)
         move.assert_not_called()
-        turn.assert_not_called()
+        self.assertLessEqual(turn.call_count, 1)  # at most the opening rotation
         self.assertGreaterEqual(sess.vision_failures, config.EXPLORE_VISION_MAX_FAILURES)
         self.assertFalse(sess.fixated)
 

@@ -82,6 +82,10 @@ _requested_come = {
     "search_turns": 0,
     "last_turn_at": 0.0,    # when the LAST chassis turn (align or scan) was issued
     "scan_sign": 1.0,       # which side the person was last known on (sweep starts there)
+    "last_seen_at": 0.0,    # last time face tracking held the person — sampled EVERY
+                            # tick, including while the base is mid-turn (see step()):
+                            # a sighting during a scan turn must not be thrown away
+    "seen_sign": 0.0,       # which way to turn to re-center that sighting (+ = left)
 }
 
 # Flinch detector state, sampled every idle tick and reset whenever the base is
@@ -126,12 +130,23 @@ def request_come_here() -> bool:
     """Arm a bounded search/align/approach sequence for an explicit voice request."""
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
         return False
+    # An explicit "come here" outranks the autonomous explorer — stop it and take
+    # the base (field 2026-07-23: come requests died with "room exploration owns
+    # the base" and Rex kept wandering instead of coming).
+    try:
+        from intelligence import exploration
+        if exploration.active():
+            exploration.stop("come-here request takes the base")
+    except Exception:
+        pass
     _requested_come.update(
         active=True,
         started_at=time.monotonic(),
         search_turns=0,
         last_turn_at=0.0,
         scan_sign=1.0,
+        last_seen_at=0.0,
+        seen_sign=0.0,
     )
     _reset("neck_hits", "far_hits")
     _log.info("[motion_agency] requested come: searching for a visible person")
@@ -142,11 +157,17 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
     if _requested_come["active"]:
         _log.info("[motion_agency] requested come: %s", reason)
     _requested_come.update(active=False, started_at=0.0, search_turns=0,
-                           last_turn_at=0.0, scan_sign=1.0)
+                           last_turn_at=0.0, scan_sign=1.0,
+                           last_seen_at=0.0, seen_sign=0.0)
 
 
-def _step_requested_come(snapshot: dict, now: float) -> bool:
-    """Run one idle-state step. True means this mode consumed the autonomy tick."""
+def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> bool:
+    """Run one settled-state step. True means this mode consumed the autonomy tick.
+
+    base_idle=False means the firmware is in BLOCKED: scanning/aligning turns are
+    still safe (turning away from a block is always allowed), but the forward
+    approach must wait for a clear front.
+    """
     if not requested_come_active():
         return False
     timeout = _num("MOTION_COME_SEARCH_TIMEOUT_SECS", 45.0)
@@ -166,6 +187,28 @@ def _step_requested_come(snapshot: dict, now: float) -> bool:
         last_turn = float(_requested_come["last_turn_at"])
         if last_turn > 0.0 and (now - last_turn) < grace:
             return True
+        # RESIGHT: face tracking held the person moments ago — typically mid-scan,
+        # when the sweeping camera swept PAST them and a follow-up micro-turn (e.g.
+        # compass correction) lost the lock again (field 2026-07-23: lock on Bret at
+        # scan turn 3, sweep continued to -180 and Rex pirouetted instead of coming).
+        # Turn a small step back toward that sighting and restart the sweep budget
+        # centered there, instead of taking the next ever-bigger sweep leg away.
+        fresh = _num("MOTION_COME_SIGHT_FRESH_SECS", 6.0)
+        seen_at = float(_requested_come["last_seen_at"])
+        seen_sign = float(_requested_come["seen_sign"])
+        if seen_at > 0.0 and (now - seen_at) < fresh and seen_sign != 0.0:
+            deg = abs(_num("MOTION_COME_RESIGHT_TURN_DEG", 30.0))
+            seq = motion_controller.turn(seen_sign * deg)
+            if seq is not None:
+                _requested_come["last_turn_at"] = now
+                _requested_come["search_turns"] = 0
+                _requested_come["scan_sign"] = seen_sign
+                _log.info(
+                    "[motion_agency] requested come: recent sighting %.1fs ago — "
+                    "turning back %+.0f deg toward it",
+                    now - seen_at, seen_sign * deg,
+                )
+            return True
         # Sweep AROUND the last-known side instead of spiraling one direction: net
         # offsets +45, -45, +90, -90, ... (x scan_sign), so the search stays centered
         # on where the person actually was. Relative command i (1-based):
@@ -174,6 +217,10 @@ def _step_requested_come(snapshot: dict, now: float) -> bool:
         i = int(_requested_come["search_turns"]) + 1
         sign = float(_requested_come["scan_sign"]) * (1.0 if i % 2 == 1 else -1.0)
         rel = sign * deg * i
+        # Always rotate the SHORT way to the target offset: the raw relative command
+        # grows to +/-225, +/-270 in the later sweep steps, which the chassis executed
+        # as multi-second pirouettes ("he just spins"). Same net heading, shorter arc.
+        rel = ((rel + 180.0) % 360.0) - 180.0
         seq = motion_controller.turn(rel)
         if seq is not None:
             _requested_come["search_turns"] = i
@@ -200,6 +247,10 @@ def _step_requested_come(snapshot: dict, now: float) -> bool:
             )
         return True
 
+    if not base_idle:
+        # Person found and centered but the front is momentarily blocked — hold
+        # this tick; the approach starts once the zone clears (firmware final say).
+        return True
     stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
     seq = motion_controller.come(0.0, stop_at=stop_at)
     if seq is not None:
@@ -495,6 +546,22 @@ def _step_inner(snapshot: dict, profile) -> None:
         return
 
     st = motion.state()
+
+    # SIGHTING SAMPLER for an active come request — runs on EVERY tick, including
+    # while the base is mid-turn. Scan turns sweep the camera across the person for
+    # only a moment; the settled-state step below never runs during that moment, so
+    # without this the sighting is thrown away and the sweep spins right past them
+    # (field 2026-07-23: face lock on Bret during scan turn 3, sweep went to -180).
+    if requested_come_active():
+        seen = _tracked_person(snapshot)
+        if seen is not None:
+            _requested_come["last_seen_at"] = time.monotonic()
+            frac = neck_offset_fraction()
+            if frac is not None and abs(frac) > 0.05:
+                # Same convention as _turn_degrees_for: positive neck offset
+                # (person to Rex's right) needs a negative (CW) base turn.
+                _requested_come["seen_sign"] = -1.0 if frac >= 0 else 1.0
+
     # The base must be settled (idle) to sample intrusions, but a firmware BLOCKED
     # state is itself a strong front-crowding signal the flinch should answer. Any
     # other state (moving / estop / fault / comms-lost) means the ToF is dominated by
@@ -507,12 +574,13 @@ def _step_inner(snapshot: dict, profile) -> None:
     now = time.monotonic()
 
     # An explicit request owns the social-motion lane. While idle it searches,
-    # aligns, or starts the approach. A blocked search turn cannot safely continue;
-    # the firmware remains the final authority for every turn and forward move.
+    # aligns, or starts the approach. A front BLOCK does NOT end the search — the
+    # firmware always allows turning and driving AWAY from a block, and the front
+    # zone flaps near furniture (field 2026-07-23: "search blocked by an obstacle"
+    # killed a come request that only needed to keep turning). Only the forward
+    # approach must wait for an idle base; _step_requested_come gates it on st.
     if requested_come_active():
-        if st == "blocked":
-            cancel_requested_come("search blocked by an obstacle")
-        elif _step_requested_come(snapshot, now):
+        if _step_requested_come(snapshot, now, base_idle=(st == "idle")):
             return
 
     # ── FLINCH: reflexive back-off when someone crowds the front ─────────────────

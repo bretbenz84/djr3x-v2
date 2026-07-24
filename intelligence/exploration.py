@@ -434,10 +434,19 @@ def _explore_loop(sess: "_Session") -> bool:
         if not _await_resume_if_paused(sess):
             return False
 
-        # PLAN_LEG + TRAVEL (skipped on the very first stop so he surveys where he is,
-        # and a no-op entirely when locomotion is disabled / no base).
+        # PLAN_LEG + TRAVEL (a no-op entirely when locomotion is disabled / no base).
+        # The very first stop surveys where he is instead of driving (no vision read
+        # yet — never drive blind), but it OPENS with a chassis turn toward the most
+        # open ToF direction: an invite should visibly answer with the body, not a
+        # camera pan (owner 2026-07-23: "when I invite him to look around, he needs
+        # to first move — turn, then drive"). Turning in place is blind-safe; the
+        # firmware permits it even while front-blocked.
         if sess.stops_done > 0:
             _travel_one_leg(sess)
+            if not _check_can_continue(sess):
+                return False
+        else:
+            _opening_turn(sess)
             if not _check_can_continue(sess):
                 return False
 
@@ -858,15 +867,38 @@ def _parse_appraisal(raw: str, views: list) -> Optional[dict]:
     }
 
 
+# Floor dangers the ToF reflex genuinely cannot see: thin snag/trip lines, level
+# changes, and spills. Anything solid enough to be an "obstacle" IS visible to the
+# firmware ToF (radial ring + floor-rejected front matrix), which stops the base on
+# its own — vision prose about generic mess must not ground the robot.
+_FLOOR_HAZARD_WORDS = (
+    "cable", "cord", "wire", "charger", "strap", "string", "ribbon", "leash",
+    "step", "stair", "ledge", "drop", "edge of", "threshold",
+    "spill", "liquid", "puddle", "wet", "broken glass", "shard",
+    "rug edge", "curled",
+)
+
+
 def _normalize_floor_hazard(value) -> str:
-    """Turn model-written clear/no-hazard prose into the empty safety sentinel."""
+    """Keep only floor dangers the ToF cannot catch; everything else is clear.
+
+    The vision model happily writes travelogue ("Some clutter around the kitchen
+    area.") and any non-empty text used to veto the forward leg — field 2026-07-23:
+    every leg in a messy room became turn-only and "look around the room" produced a
+    robot that pans and never drives. Solid clutter is the firmware ToF's job (it
+    stops for it reflexively at 0.32 m/s); the semantic gate is ONLY for what the
+    ToF physically misses: cables/cords, steps/ledges, and liquids.
+    """
     text = str(value or "").strip()
     lowered = text.lower().strip(" .!-")
     if not lowered or lowered in {"none", "no", "n/a", "clear", "no hazards"}:
         return ""
     if ("clear" in lowered or "unobstructed" in lowered) and not any(
-        word in lowered for word in ("not clear", "unclear", "cable", "cord", "step", "clutter", "obstacle", "hazard")
+        word in lowered for word in ("not clear", "unclear", "cable", "cord", "step")
     ):
+        return ""
+    if not any(word in lowered for word in _FLOOR_HAZARD_WORDS):
+        _log.info("[explore] floor note without a ToF-blind hazard (%r) — driving anyway", text)
         return ""
     return text
 
@@ -987,6 +1019,35 @@ def _should_fixate(sess: "_Session") -> bool:
 
 
 # ── LOCOMOTION (PLAN_LEG + TRAVEL) ────────────────────────────────────────────
+
+
+def _opening_turn(sess: "_Session") -> None:
+    """First-beat chassis turn toward the most open ToF direction (no forward move).
+
+    Runs before the first survey so accepting an invite LOOKS like exploring from
+    the first second. Blind-safe: rotation only, firmware retains the reflexes.
+    """
+    if not bool(getattr(config, "EXPLORE_LOCOMOTION_ENABLED", True)):
+        return
+    if not base_available() or sess.halt_requested():
+        return
+    try:
+        from intelligence import motion_controller
+    except Exception:
+        return
+    deg = _plan_leg_heading(sess)
+    min_deg = float(getattr(config, "EXPLORE_OPENING_TURN_MIN_DEG", 30.0))
+    if abs(deg) < min_deg:
+        # An open corridor straight ahead plans ~0° — still make the invite visibly
+        # physical with a modest scan turn toward the wider ToF side.
+        deg = min_deg if deg >= 0.0 else -min_deg
+    rate = float(getattr(config, "EXPLORE_TURN_RATE_DEG_S", 70.0))
+    seq = motion_controller.turn(deg, rate=rate)
+    if seq is None:
+        _log.info("[explore] opening turn suppressed (gated)")
+        return
+    _log.info("[explore] opening turn %+.0f deg (invite answered with the base)", deg)
+    _wait_leg_done(sess, seq)
 
 
 def _travel_one_leg(sess: "_Session") -> None:

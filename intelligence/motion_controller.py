@@ -116,6 +116,55 @@ def _fx(key: str) -> None:
         pass
 
 
+# User-commanded seqs that should SPEAK when the firmware cuts them on an obstacle.
+# Silence was the field failure (2026-07-23): "move forward 5 feet" stopped at ~2 ft
+# on a zone block and Rex said nothing, reading as "he ignores my commands". Only
+# explicit voice-command moves register here — autonomous/exploration legs stay quiet.
+_announce_blocked_lock = threading.Lock()
+_announce_blocked_seqs: dict[int, float] = {}   # seq -> registered-at (pruned by age)
+_announce_blocked_last_spoken = 0.0
+
+
+def announce_if_blocked(seq: "int | None") -> None:
+    """Register a user-commanded motion seq: if it later completes as 'blocked',
+    Rex says a short line so the human knows the move was cut, not ignored."""
+    if seq is None or int(seq) <= 0:
+        return
+    now = time.monotonic()
+    with _announce_blocked_lock:
+        _announce_blocked_seqs[int(seq)] = now
+        # Prune anything stale (done frame missed / superseded).
+        for k in [k for k, t in _announce_blocked_seqs.items() if now - t > 120.0]:
+            _announce_blocked_seqs.pop(k, None)
+
+
+def _maybe_announce_blocked(msg: dict) -> None:
+    global _announce_blocked_last_spoken
+    try:
+        seq = int(msg.get("seq"))
+    except (TypeError, ValueError):
+        return
+    with _announce_blocked_lock:
+        if _announce_blocked_seqs.pop(seq, None) is None:
+            return
+        now = time.monotonic()
+        cooldown = float(getattr(config, "MOTION_BLOCKED_ANNOUNCE_COOLDOWN_SECS", 10.0))
+        if (now - _announce_blocked_last_spoken) < cooldown:
+            return
+        _announce_blocked_last_spoken = now
+    try:
+        from audio import speech_queue
+        speech_queue.enqueue(
+            str(getattr(config, "MOTION_BLOCKED_ANNOUNCE_LINE",
+                        "Something's in my way — that's as far as I get.")),
+            emotion="neutral",
+            priority=1,
+            tag="motion_blocked",
+        )
+    except Exception as exc:
+        _log.debug("blocked announce failed: %s", exc)
+
+
 def _on_motion_done(msg: dict) -> None:
     """Reader-thread callback for command completions: the come-here arrival chirp
     and the "whoa, blocked" accent when the base stops a command on an obstacle."""
@@ -123,6 +172,7 @@ def _on_motion_done(msg: dict) -> None:
         result = str((msg or {}).get("result") or "")
         if result == "blocked":
             _fx("slow_down")
+            _maybe_announce_blocked(msg or {})
         elif result == "completed" and _last_come_seq is not None \
                 and msg.get("seq") == _last_come_seq:
             _fx("arrived")

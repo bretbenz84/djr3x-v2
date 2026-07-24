@@ -16847,6 +16847,9 @@ def _handle_router_motion_action(
             seq = motion_controller.move_forward(dist)
             line = "Rolling forward."
         if seq is not None:
+            # A spoken move that the firmware cuts on an obstacle must SAY so —
+            # silence read as "he ignores my commands" (field 2026-07-23).
+            motion_controller.announce_if_blocked(seq)
             _remember_motion_continuation(decision)
             return line
         return None

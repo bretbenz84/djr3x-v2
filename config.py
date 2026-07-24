@@ -6940,6 +6940,18 @@ MOTION_COME_SEARCH_TIMEOUT_SECS = 45.0
 # search WAITS instead of declaring them lost (field 2026-07-21: without it, a +30°
 # align cascaded into a 180° scan spiral that ended in a bookshelf).
 MOTION_COME_REACQUIRE_GRACE_SECS = 3.0
+# Sightings are sampled EVERY autonomy tick — including while a scan turn is mid-
+# flight (the settled-state step alone misses locks that happen as the camera
+# sweeps past, field 2026-07-23: face lock during scan turn 3, sweep continued to
+# -180° and Rex pirouetted). If the person was seen this recently, the search turns
+# a small step back toward that side and restarts the sweep there, instead of
+# taking the next (bigger) sweep leg away from them.
+MOTION_COME_SIGHT_FRESH_SECS = 6.0
+MOTION_COME_RESIGHT_TURN_DEG = 30.0
+# When a VOICE-commanded move/sequence leg ends 'blocked', Rex says this so a cut
+# move doesn't read as an ignored command. Autonomous legs stay silent.
+MOTION_BLOCKED_ANNOUNCE_LINE = "Something's in my way — that's as far as I get."
+MOTION_BLOCKED_ANNOUNCE_COOLDOWN_SECS = 10.0
 MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
 MOTION_DEFAULT_TURN_RATE = 75.0       # deg/s
 MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated distance
@@ -7127,6 +7139,9 @@ EXPLORE_TURN_MAX_DEG = _env_float(
 EXPLORE_TURN_RATE_DEG_S = _env_float(
     "EXPLORE_TURN_RATE_DEG_S", 70.0, min_value=5.0, max_value=85.0,
 )
+EXPLORE_OPENING_TURN_MIN_DEG = _env_float(
+    "EXPLORE_OPENING_TURN_MIN_DEG", 30.0, min_value=0.0, max_value=120.0,
+)  # accepting an invite opens with at least this chassis turn (before the first survey)
 EXPLORE_TETHER_RADIUS_M = _env_float(
     "EXPLORE_TETHER_RADIUS_M", 3.0, min_value=0.5, max_value=10.0,  # odometry leash from start pose
 )

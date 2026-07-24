@@ -260,6 +260,109 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertGreater(self.turn.call_args[0][0], 0)   # starts toward the last-known side
 
 
+class RequestedComeFieldFixTest(unittest.TestCase):
+    """Fixes for the 2026-07-23 'come here just spins' session: mid-turn sightings
+    are remembered and turned back toward; sweep legs rotate the short way; a front
+    zone flap no longer kills the search; an explicit come preempts exploration."""
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "turn", return_value=7),
+            mock.patch.object(MA.motion_controller, "come", return_value=8),
+            mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
+        ]
+        self.available, self.state, self.turn, self.come, self.battery = [
+            p.start() for p in self._patches
+        ]
+        self._tracking = {"locked": False, "visible": False}
+        self._neck = 6000
+        self._ws = mock.patch(
+            "world_state.world_state.get",
+            side_effect=lambda key: (
+                {"face_tracking": self._tracking,
+                 "servo_positions": {"neck": self._neck}}
+                if key == "self_state" else {}),
+        )
+        self._ws.start()
+
+    def tearDown(self):
+        MA.cancel_requested_come("test cleanup")
+        self._ws.stop()
+        for p in self._patches:
+            p.stop()
+
+    def _tick(self, n=1):
+        for _ in range(n):
+            MA.step(_snapshot(), _profile())
+
+    def test_midturn_sighting_turns_back_instead_of_sweeping_on(self):
+        # Scan turn 1 issued; DURING the turn (base moving) the camera sweeps past
+        # the person and face tracking locks briefly, off to Rex's right. Once lost
+        # again, the search must turn back toward that side — not take sweep leg 2.
+        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(1)
+            self.assertEqual(self.turn.call_count, 1)  # sweep leg 1
+            # Mid-turn sighting: base busy, person visible, neck parked right.
+            self.state.return_value = "moving"
+            self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
+            self._neck = 7594
+            self._tick(1)                              # sampler records; step defers
+            self.assertEqual(self.turn.call_count, 1)
+            # Lock lost again, base settled.
+            self.state.return_value = "idle"
+            self._tracking = {"locked": False, "visible": False}
+            self._tick(1)
+        self.assertEqual(self.turn.call_count, 2)
+        resight = self.turn.call_args[0][0]
+        self.assertAlmostEqual(abs(resight), config.MOTION_COME_RESIGHT_TURN_DEG)
+        self.assertLess(resight, 0)                    # back toward the right side
+        self.assertTrue(MA.requested_come_active())
+
+    def test_sweep_legs_rotate_the_short_way(self):
+        # Later sweep legs used to issue -225/-270 relative spins; same net heading
+        # must now be reached the short way (a command is never > 180 deg).
+        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True), \
+             mock.patch.object(config, "MOTION_COME_SEARCH_MAX_TURNS", 6, create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(6)
+        rels = [c.args[0] for c in self.turn.call_args_list]
+        # raw pattern would be +45,-90,+135,-180,+225,-270; the last two wrap to
+        # the equivalent short rotations -135 and +90.
+        self.assertEqual(rels, [45.0, -90.0, 135.0, -180.0, -135.0, 90.0])
+        self.assertTrue(all(abs(r) <= 180.0 for r in rels))
+
+    def test_front_zone_block_does_not_cancel_the_search(self):
+        # Turning away from a block is firmware-legal; a front flap must not kill
+        # the search (it only defers the forward approach).
+        self.state.return_value = "blocked"
+        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(1)
+            self.assertTrue(MA.requested_come_active())
+            self.assertEqual(self.turn.call_count, 1)   # scan turn still issued
+            # Person found and centered while blocked: hold, don't approach yet.
+            self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
+            self._tick(1)
+            self.come.assert_not_called()
+            self.assertTrue(MA.requested_come_active())
+            # Front clears -> approach starts.
+            self.state.return_value = "idle"
+            self._tick(1)
+        self.come.assert_called_once()
+        self.assertFalse(MA.requested_come_active())
+
+    def test_request_come_stops_active_exploration(self):
+        with mock.patch("intelligence.exploration.active", return_value=True), \
+             mock.patch("intelligence.exploration.stop") as stop:
+            self.assertTrue(MA.request_come_here())
+        stop.assert_called_once()
+        self.assertTrue(MA.requested_come_active())
+
+
 class TurnMathTest(unittest.TestCase):
     def test_proportional_and_clamped(self):
         self.assertAlmostEqual(MA._turn_degrees_for(0.5), -30.0)
