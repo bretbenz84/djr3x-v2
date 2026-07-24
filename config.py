@@ -5272,6 +5272,13 @@ SPEAKER_ID_SINGLE_VISIBLE_MATCH_FLOOR = 0.35
 # When the clip is this short, the sole visible known face resolves identity —
 # unless the voice actively points at somebody ELSE.
 SPEAKER_ID_SHORT_UTTERANCE_SECS = 2.0
+# Word-count backstop for the "short utterance" test above. Buffer DURATION is
+# unreliable because VAD pre/post-roll silence pads a genuinely brief reply past
+# the seconds threshold (field 2026-07-23: Bret's 2-word "It's wine" measured >2s
+# of buffer, wasn't flagged short, and resolved to an off-camera unknown). A turn
+# of this many words or fewer is always treated as short regardless of buffer
+# length, since so few words give ANY embedder too little to score reliably.
+SPEAKER_ID_SHORT_UTTERANCE_WORDS = 3
 
 # Pending-question continuity floor: when Rex has just asked a known person a
 # direct profile/curiosity question, their next answer may arrive while the face

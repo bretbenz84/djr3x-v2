@@ -7475,6 +7475,31 @@ def _audio_duration_secs(audio_array: Optional[np.ndarray]) -> float:
     return float(len(audio_array)) / rate
 
 
+def _is_short_utterance(
+    audio_array: Optional[np.ndarray],
+    transcript_text: Optional[str] = None,
+) -> bool:
+    """Whether a turn is too short for the embedder to score reliably.
+
+    Duration alone is unreliable: the captured buffer carries VAD pre/post-roll
+    silence, so a genuine 2-word reply ("It's wine", ~0.8s of speech) can measure
+    >2s of buffer and slip past the seconds threshold. Word count reflects actual
+    SPEECH content and is padding-proof, so a few-word turn is always treated as
+    short — that's exactly the case where a low voice score is uninformative and
+    the sole visible known face should anchor identity. Either signal qualifies.
+    Field 2026-07-23: Bret's "It's wine" scored 0.301, buffer measured >2s, so it
+    was NOT flagged short and the robot gaze-searched a phantom off-camera speaker.
+    """
+    if _audio_duration_secs(audio_array) < float(
+        getattr(config, "SPEAKER_ID_SHORT_UTTERANCE_SECS", 2.0)
+    ):
+        return True
+    max_words = int(getattr(config, "SPEAKER_ID_SHORT_UTTERANCE_WORDS", 3) or 0)
+    if max_words > 0 and transcript_text and _word_count(transcript_text) <= max_words:
+        return True
+    return False
+
+
 def _voice_enrollment_sample_allowed(
     audio_array: Optional[np.ndarray],
     *,
@@ -19985,10 +20010,7 @@ def _handle_speech_segment(
                     speaker_score,
                     float(getattr(config, "SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE", 0.50)),
                 ),
-                short_utterance=(
-                    _audio_duration_secs(audio_array)
-                    < float(getattr(config, "SPEAKER_ID_SHORT_UTTERANCE_SECS", 2.0))
-                ),
+                short_utterance=_is_short_utterance(audio_array, transcribed_text),
             )
             if decision == "voice_agrees":
                 _note_confident_voice(person_id, speaker_score)

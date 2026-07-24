@@ -21,6 +21,34 @@ import numpy as np
 from intelligence import interaction as I
 
 
+class ShortUtteranceDetectionTest(unittest.TestCase):
+    """`short_utterance` must reflect actual SPEECH, not padded buffer length.
+
+    VAD pre/post-roll silence pads a 2-word reply past the seconds threshold, so
+    word count is the padding-proof backstop that keeps a brief turn flagged short.
+    """
+
+    _SR = int(getattr(__import__("config"), "AUDIO_SAMPLE_RATE", 16000) or 16000)
+
+    def _buf(self, secs: float) -> np.ndarray:
+        return np.zeros(int(secs * self._SR), dtype=np.float32)
+
+    def test_padded_two_word_reply_is_short_by_word_count(self):
+        # Field 2026-07-23: "It's wine" sat in a >2s buffer but is 2 words.
+        self.assertTrue(I._is_short_utterance(self._buf(2.4), "It's wine"))
+
+    def test_long_many_word_utterance_is_not_short(self):
+        self.assertFalse(
+            I._is_short_utterance(self._buf(4.0), "happy fourth of july to everyone")
+        )
+
+    def test_brief_buffer_is_short_regardless_of_words(self):
+        self.assertTrue(I._is_short_utterance(self._buf(1.0), "yep"))
+
+    def test_long_buffer_without_transcript_is_not_short(self):
+        self.assertFalse(I._is_short_utterance(self._buf(4.0), None))
+
+
 class VoicePrimaryFaceDecisionTest(unittest.TestCase):
     """The pure attribution predicate used when exactly one known face is visible.
     ws_pid = the single visible known person (id 1). Voice candidate = raw_best_id."""
