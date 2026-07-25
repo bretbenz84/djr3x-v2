@@ -478,6 +478,42 @@ class ClassifierTest(unittest.TestCase):
         self.assertIsNone(ar.classify_explicit_motion_sequence("turn left then sing a song"))
         self.assertIsNone(ar.classify_explicit_motion_sequence("turn left then stop"))
 
+    def test_come_forward_splits_as_its_own_clause(self):
+        # Field 2026-07-24: "come" was missing from the `and`-split verb lookahead,
+        # so "turn around and come forward 5 feet" never split — it fell through to
+        # the single-command path and only the FORWARD half ran; the turn-around was
+        # silently dropped.
+        seq = ar.classify_explicit_motion_sequence("turn around and come forward 5 feet")
+        self.assertEqual([d.action for d in seq], ["motion.turn", "motion.move"])
+        self.assertEqual(seq[0].args, {"direction": "around", "deg": 180.0})
+        self.assertAlmostEqual(seq[1].args["dist_m"], 1.524, places=3)
+
+    def test_trailing_vocative_does_not_kill_the_route(self):
+        # Field 2026-07-24: Whisper heard "...5 feet" as "..., Ozzie"; the junk
+        # trailing clause tripped the no-partial-execution refusal and NOTHING ran.
+        # Plain politeness had the same shape — addressing Rex by name at the end
+        # refused the whole command.
+        for text in (
+            "Turn around and come forward, Ozzie",
+            "turn left then move forward five feet, Rex",
+            "turn left then move forward, buddy",
+        ):
+            seq = ar.classify_explicit_motion_sequence(text)
+            self.assertIsNotNone(seq, text)
+            self.assertEqual([d.action for d in seq], ["motion.turn", "motion.move"], text)
+
+    def test_trailing_real_action_still_refuses(self):
+        # The vocative strip must NOT weaken the partial-execution guard: a genuine
+        # non-motion action after a comma is still a refusal.
+        self.assertIsNone(ar.classify_explicit_motion_sequence("turn left, sing"))
+        self.assertIsNone(ar.classify_explicit_motion_sequence("turn left then move forward, dance"))
+        # A terse but REAL motion clause after a comma is kept, not stripped —
+        # the strip only ever removes fragments the sequence parser would itself
+        # have rejected, converting "refuse everything" into "do the understood part".
+        seq = ar.classify_explicit_motion_sequence("turn left, go forward")
+        self.assertIsNotNone(seq)
+        self.assertEqual([d.action for d in seq], ["motion.turn", "motion.move"])
+
     def test_leading_connective_single_clause_is_not_a_sequence(self):
         # Field 2026-07-21: "and move backwards" was split into ["", "move backwards"],
         # rejected as an invalid sequence, and nothing moved. A lone clause behind a

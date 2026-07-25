@@ -235,5 +235,58 @@ class PlaceQuestionsTest(unittest.TestCase):
         self.assertIn("den", pq.ack_line(cap))
 
 
+class ReplyGroundingTest(unittest.TestCase):
+    """The room belief must reach the REPLY prompt, not just proactive lines.
+
+    Field 2026-07-24: "What room are you in?" got "I'm in whatever room you're in,
+    unfortunately" while the recognizer was scoring the enrolled workshop at
+    0.83-0.87 all session. Cause: belief_clause() was wired into
+    llm._summarize_world_state (the CLASSIC prompt, bypassed under ONE VOICE) and
+    lean_brain._situation_block (the PROACTIVE path only) — never into the lean
+    system prompt that actually answers questions.
+    """
+
+    def setUp(self):
+        pq.reset()
+        self.svc = _FakeService()
+        self.svc.known_names = ["workshop"]
+        self.svc.belief = {"name": "workshop", "place_id": 1}
+        self._orig = pq._service
+        pq._service = lambda: self.svc
+        self.addCleanup(lambda: setattr(pq, "_service", self._orig))
+        self.addCleanup(pq.reset)
+
+    def test_lean_system_prompt_carries_the_room_belief(self):
+        from intelligence import lean_brain
+        prompt = lean_brain._system_prompt(None, {"time_of_day": "evening"})
+        self.assertIn("workshop", prompt)
+
+    def test_reply_messages_carry_the_room_belief(self):
+        # The exact path a spoken question takes: _messages -> _system_prompt.
+        from intelligence import lean_brain
+        msgs = lean_brain._messages(
+            "What room are you in?", None, [], {"time_of_day": "evening"},
+        )
+        self.assertIn("workshop", msgs[0]["content"])
+
+    def test_no_room_line_when_service_is_not_running(self):
+        # Feature off / service down must contribute NOTHING — silence must not
+        # read as "he claims ignorance" (belief_clause returns "" in that case).
+        pq._service = lambda: None
+        from intelligence import lean_brain
+        prompt = lean_brain._system_prompt(None, {"time_of_day": "evening"})
+        self.assertNotIn("Room:", prompt)
+
+    def test_unknown_room_is_stated_honestly_not_dodged(self):
+        # Recognizer running but nothing recognized: he should be TOLD he doesn't
+        # recognize the room, so he can say so instead of inventing a dodge.
+        self.svc.belief = None
+        self.svc.known_names = ["workshop"]
+        from intelligence import lean_brain
+        prompt = lean_brain._system_prompt(None, {"time_of_day": "evening"})
+        self.assertIn("Room:", prompt)
+        self.assertIn("don't recognize", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

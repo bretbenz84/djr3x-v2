@@ -1317,8 +1317,11 @@ _MOTION_SEQUENCE_SEP_RE = re.compile(
     r"\s*(?:"
     r"(?:[;,]\s*)?\b(?:and\s+then|then)\b|"
     r"[;,]|"
-    r"\band\b(?=\s+(?:turn|rotate|spin|pivot|move|go|roll|drive|scoot|"
-    r"head|ease|inch|edge|pull|back\s*up|reverse)\b)"
+    # "come" was missing, so "turn around and come forward 5 feet" never split —
+    # the whole utterance fell through to the single-command path and only the
+    # FORWARD half ran (the turn was silently dropped; field 2026-07-24).
+    r"\band\b(?=\s+(?:turn|rotate|spin|pivot|move|go|roll|drive|scoot|come|"
+    r"advance|creep|head|ease|inch|edge|pull|back\s*up|reverse)\b)"
     r")\s*",
     re.I,
 )
@@ -1412,6 +1415,47 @@ def classify_motion_continuation(
     )
 
 
+# Non-motion ACTIONS that may legitimately trail a route ("turn left, sing"). These
+# must never be mistaken for a vocative — the whole point of the tri-state refusal is
+# that Rex must not run half of "turn left then sing".
+_NON_MOTION_ACTION_WORDS = frozenset({
+    "sing", "dance", "play", "stop", "halt", "wait", "hold", "freeze", "talk",
+    "speak", "listen", "look", "watch", "jump", "shut", "quiet", "sleep", "wake",
+    "dj", "rap", "beatbox", "joke", "laugh", "scan", "search", "find", "follow",
+})
+
+# A trailing address ("..., Rex", "..., buddy") or a one-word Whisper garble
+# ("...5 feet" heard as "..., Ozzie"). Captured so it can be dropped before the
+# route parser treats it as an unsupported clause and refuses the WHOLE command.
+_TRAILING_VOCATIVE_RE = re.compile(
+    r",\s*(?P<frag>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*)?)\s*[.!?]*$"
+)
+
+
+def _strip_trailing_vocative(text: str) -> str:
+    """Drop a trailing comma-address / one-word garble from a route command.
+
+    Field 2026-07-24: "Turn around and come forward, Ozzie" (Whisper's take on
+    "...5 feet") was split into a valid motion clause plus the junk clause
+    "Ozzie", which tripped the no-partial-execution refusal and NOTHING ran. The
+    same shape broke plain politeness — "turn left then move forward five feet,
+    Rex" refused too. Only a comma-introduced fragment of 1-2 alphabetic words
+    that is neither a motion clause nor a known non-motion action is removed, so
+    "turn left, sing" still refuses as designed.
+    """
+    match = _TRAILING_VOCATIVE_RE.search(text or "")
+    if not match:
+        return text
+    frag = match.group("frag").strip()
+    words = frag.lower().split()
+    if any(w.strip(".,!?'-") in _NON_MOTION_ACTION_WORDS for w in words):
+        return text
+    if classify_explicit_motion(frag) is not None:
+        return text          # a real (if terse) motion clause — keep it
+    stripped = text[: match.start()].strip(" ,.")
+    return stripped or text
+
+
 def classify_explicit_motion_sequence(
     text: str,
     *,
@@ -1426,6 +1470,7 @@ def classify_explicit_motion_sequence(
     "move forward and to your right" remains the existing single arc command.
     """
     cleaned = " ".join((text or "").strip().split())
+    cleaned = _strip_trailing_vocative(cleaned)
     if not cleaned or not _MOTION_SEQUENCE_SEP_RE.search(cleaned):
         return []
     if _MOTION_EXPLANATION_RE.search(cleaned) or _MOTION_NEGATED_RE.search(cleaned):

@@ -592,6 +592,12 @@ class PlaceRecognizer:
         self._unknown_armed = True
         self._static_flip_pid, self._static_flip_streak = None, 0
         self._history.clear()               # fresh belief; don't let stale votes re-flip
+        # INFO, not debug: without this the whole feature is invisible in the field
+        # log even while working perfectly (2026-07-24 — four minutes of correct
+        # 0.83-0.87 recognition produced zero log lines, so a downstream grounding
+        # bug looked like a recognizer failure).
+        _log.info("place belief confirmed: %r (place_id=%s, score=%.3f)",
+                  self._current_place.get("name"), pid, float(score))
         self._publish_place(dict(self._current_place))
 
     # ── Enrollment API ───────────────────────────────────────────────────────────

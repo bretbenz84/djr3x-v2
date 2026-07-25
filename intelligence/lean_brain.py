@@ -193,13 +193,36 @@ def _scene_lines(world: Optional[dict]) -> list[str]:
         return []
 
 
+def _room_belief_lines() -> list[str]:
+    """Which ROOM Rex is in, grounded in the place recognizer.
+
+    Lives here (the shared system-prompt builder) rather than only in
+    _situation_block, because that block feeds ONLY the proactive
+    consider_initiating path — so under ONE VOICE a direct question got no room
+    grounding at all and Rex dodged it (field 2026-07-24: "What room are you in?"
+    -> "I'm in whatever room you're in, unfortunately", while the recognizer was
+    scoring the enrolled workshop at 0.83-0.87 the entire time).
+    """
+    try:
+        from intelligence import place_questions
+        clause = place_questions.belief_clause()
+        return [clause] if clause else []
+    except Exception:
+        return []
+
+
 def _system_prompt(
     person_id: Optional[int],
     world: Optional[dict],
     extra_lines: Optional[list[str]] = None,
 ) -> str:
     persona = _persona()
-    ctx = _person_lines(person_id) + _scene_lines(world) + list(extra_lines or [])
+    ctx = (
+        _person_lines(person_id)
+        + _scene_lines(world)
+        + _room_belief_lines()
+        + list(extra_lines or [])
+    )
     if not ctx:
         return persona
     return persona + "\n\nRight now:\n" + "\n".join("- " + line for line in ctx)
@@ -1041,13 +1064,8 @@ def _situation_block(person_id: Optional[int], world: Optional[dict],
     scene = _scene_summary(world)
     if scene:
         lines.append("What you see/hear right now — " + scene)
-    try:
-        from intelligence import place_questions
-        room_clause = place_questions.belief_clause()
-        if room_clause:
-            lines.append(room_clause)
-    except Exception:
-        pass
+    # (The room belief is added by _system_prompt/_room_belief_lines for EVERY lean
+    # call — reply and proactive alike — so it is deliberately not repeated here.)
     topics = _recent_topics(person_id)
     if topics:
         lines.append(
