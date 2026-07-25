@@ -186,6 +186,22 @@ def _queue_batt_full() -> None:
         _tx_queue.append(payload.encode("utf-8"))
 
 
+def _queue_batt_soc(pct: float) -> None:
+    """Tell the firmware the pack is at a KNOWN percentage (docs §5.11).
+
+    batt_full can only ever say 100%, so an accidental click on it left no way to
+    put the gauge back (owner 2026-07-24: a 67% pack stuck reading full).
+    """
+    global _tx_seq
+    pct = max(0.0, min(100.0, float(pct)))
+    with _tx_lock:
+        _tx_seq += 1
+        payload = json.dumps(
+            {"v": 1, "cmd": "batt_soc", "pct": round(pct, 1), "seq": _tx_seq}
+        ) + "\n"
+        _tx_queue.append(payload.encode("utf-8"))
+
+
 def _queue_stop() -> None:
     """Immediate controlled stop (the STOP menu item; also usable any time)."""
     global _tx_seq
@@ -1098,8 +1114,13 @@ def run_app() -> int:
                           for i in range(_MAX_ROWS)]
             # "Charger taper hit cutoff" → sync the firmware's coulomb gauge.
             # Only shown while we own the port (live); hidden when dormant/off.
-            self._mark_full = rumps.MenuItem("Set Battery to 100%",
+            self._mark_full = rumps.MenuItem("Set Battery to 100%…",
                                              callback=self._on_mark_full)
+            # Correcting the gauge needs a value, not just "full" — an accidental
+            # mark-full (easy: it shares this menu with the joystick) otherwise
+            # leaves no way back (owner 2026-07-24).
+            self._set_soc = rumps.MenuItem("Set Battery %…",
+                                           callback=self._on_set_soc)
             # Hardware reboot of the motion base (RTS pulse via the open port) —
             # for un-wedging the board after a bad flash / wedged state without
             # crawling to the USB plug. Live-mode only, like Set-Battery-100%.
@@ -1123,7 +1144,7 @@ def run_app() -> int:
             self._mono_warned = False    # warn once if attributed titles fail
             self.menu = (list(self._rows)
                          + [None, self._joy_item, self._stop_motors]
-                         + [None, self._mark_full, self._restart_esp])
+                         + [None, self._mark_full, self._set_soc, self._restart_esp])
             # A menu that closes mid-drag can eat the mouseUp — force-release
             # the stick whenever ANY menu ends tracking (no-op when centered);
             # the worker then sends the one clean stop.
@@ -1165,8 +1186,46 @@ def run_app() -> int:
         def _on_mark_full(self, _item):
             if _snapshot()["mode"] != "live":
                 return
+            # CONFIRM: this overwrites the coulomb ledger, and the item sits in the
+            # same menu as the joystick — a stray click while reaching for the stick
+            # silently rewrote a 67% pack to full (owner 2026-07-24).
+            win = rumps.Window(
+                title="Mark pack full?",
+                message=("Set the battery gauge to 100%?\n\nOnly do this when the "
+                         "charger's taper current has actually hit cutoff — it "
+                         "overwrites the coulomb ledger."),
+                ok="Set to 100%", cancel="Cancel", dimensions=(0, 0),
+            )
+            if not win.run().clicked:
+                log.info("Set Battery to 100% — cancelled at the confirm.")
+                return
             log.info("User clicked Set Battery to 100% — queueing batt_full.")
             _queue_batt_full()
+
+        def _on_set_soc(self, _item):
+            if _snapshot()["mode"] != "live":
+                return
+            current = _snapshot().get("soc")
+            win = rumps.Window(
+                title="Set battery percentage",
+                message="Tell the firmware the pack's ACTUAL state of charge (0-100).",
+                default_text=("" if current is None else str(int(current))),
+                ok="Set", cancel="Cancel", dimensions=(80, 20),
+            )
+            resp = win.run()
+            if not resp.clicked:
+                return
+            raw = (resp.text or "").strip().rstrip("%").strip()
+            try:
+                pct = float(raw)
+            except ValueError:
+                log.warning("Set Battery %% — ignoring unparseable input %r.", raw)
+                return
+            if not (0.0 <= pct <= 100.0):
+                log.warning("Set Battery %% — %.1f is out of range 0-100.", pct)
+                return
+            log.info("User set battery to %.1f%% — queueing batt_soc.", pct)
+            _queue_batt_soc(pct)
 
         def _on_restart_esp(self, _item):
             if _snapshot()["mode"] != "live":
@@ -1210,6 +1269,7 @@ def run_app() -> int:
             s = _snapshot()
             self._set_title_stable(_fmt_title(s))
             self._mark_full.hidden = (s["mode"] != "live")
+            self._set_soc.hidden = (s["mode"] != "live")
             self._restart_esp.hidden = (s["mode"] != "live")
             self._stop_motors.hidden = (s["mode"] != "live")
             if self._joy_view is not None:

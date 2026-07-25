@@ -36,3 +36,12 @@ bool battery_gauge_available();
 // set to 100%. Thread-safe from the serial task: only sets a flag; the next 1 Hz
 // battery_tick on sensorTask applies it and persists to NVS immediately.
 void battery_request_mark_full();
+
+// Host command "batt_soc": set the SOC ledger to an ARBITRARY percentage. Same
+// thread-safety and persistence as battery_request_mark_full, but for the case
+// batt_full cannot express — correcting the gauge after a mis-click, or seeding it
+// from a known state (owner 2026-07-24: an accidental "Set Battery to 100%" while
+// reaching for the joystick left a 67% pack reading full, with no way to say 67).
+// pct is clamped to 0..100. Values below 100 also clear the full-anchor latch so the
+// rest-voltage anchor can legitimately re-arm.
+void battery_request_set_soc(float pct);

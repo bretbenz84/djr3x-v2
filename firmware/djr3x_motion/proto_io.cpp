@@ -89,6 +89,7 @@ void emit_hello() {
   JsonArray caps = doc["caps"].to<JsonArray>();
   caps.add("drive"); caps.add("turn"); caps.add("move"); caps.add("come"); caps.add("stop");
   if (battery_gauge_available()) caps.add("batt_full");
+  if (battery_gauge_available()) caps.add("batt_soc");
   doc["boot_id"] = bid;
   tx_line(doc);
 }
@@ -322,6 +323,18 @@ static void dispatch(const char* cmd, JsonDocument& doc, uint32_t seq) {
     MotionParams eff;
     bool clamped = apply_config(doc.as<JsonObjectConst>(), eff);
     emit_config_ack(seq, clamped, eff);
+    return;
+  }
+  if (!strcmp(cmd, "batt_soc")) {
+    // Set the SOC ledger to a known percentage (docs §5.11). Same never-gated
+    // rationale as batt_full: it cannot move the base. Requires an explicit,
+    // in-range "pct" — a missing/garbage field must not silently zero the gauge.
+    if (!battery_gauge_available()) { emit_ack(seq, false, R_UNSUPPORTED_CAP); return; }
+    if (!IS_NUM(doc["pct"])) { emit_ack(seq, false, R_BAD_FIELD); return; }
+    const float pct = doc["pct"].as<float>();
+    if (!(pct >= 0.0f && pct <= 100.0f)) { emit_ack(seq, false, R_BAD_FIELD); return; }
+    battery_request_set_soc(pct);
+    emit_ack(seq, true, ACK_OK);
     return;
   }
   if (!strcmp(cmd, "batt_full")) {

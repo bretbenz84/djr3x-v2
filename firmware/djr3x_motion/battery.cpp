@@ -44,6 +44,8 @@ static bool     s_full_anchored = false;  // full-anchor fired since last discha
 static uint32_t s_last_tick_ms  = 0;      // for the Ah integration dt
 static volatile bool s_mark_full_req = false;  // "batt_full" flag: set on the serial
                                                // task, consumed by battery_tick
+static volatile bool  s_set_soc_req = false;   // "batt_soc" flag (same handoff)
+static volatile float s_set_soc_pct = -1.0f;   // 0..100, valid while s_set_soc_req
 static bool s_charging = false;    // debounced on-charger state (calib.h knobs)
 static int  s_chg_ticks = 0;       // consecutive ticks toward the pending edge
 
@@ -133,6 +135,13 @@ bool battery_gauge_available() {
 
 void battery_request_mark_full() { s_mark_full_req = true; }
 
+void battery_request_set_soc(float pct) {
+  if (pct < 0.0f) pct = 0.0f;
+  if (pct > 100.0f) pct = 100.0f;
+  s_set_soc_pct = pct;      // write the value BEFORE arming, so battery_tick can
+  s_set_soc_req = true;     // never observe the flag with a stale percentage
+}
+
 void battery_tick() {
   if (!s_present) return;
 
@@ -196,6 +205,24 @@ void battery_tick() {
     s_saved_mah = s_soc_mah;
     s_saved_at_ms = now;
     emit_log("info", "battery: host marked pack full - SOC set to 100%");
+  }
+
+  // Host-commanded arbitrary SOC (batt_soc): the operator KNOWS the real level —
+  // e.g. correcting an accidental mark-full. Outranks the ledger exactly like the
+  // full mark, and is persisted immediately for the same reason.
+  if (s_set_soc_req) {
+    s_set_soc_req = false;
+    const float pct = s_set_soc_pct;
+    s_soc_mah = (pct / 100.0f) * (float)BATT_CAPACITY_MAH;
+    // Only a genuine 100% should leave the full anchor armed; anything less must
+    // re-arm it so a later real charge can still anchor at the top.
+    s_full_anchored = (pct >= 100.0f);
+    s_prefs.putFloat("mah", s_soc_mah);
+    s_saved_mah = s_soc_mah;
+    s_saved_at_ms = now;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "battery: host set SOC to %.0f%%", pct);
+    emit_log("info", buf);
   }
 
   if (s_soc_mah < 0.0f && have_mv && s_quiet_ticks >= BATT_SOC_ANCHOR_TICKS) {
