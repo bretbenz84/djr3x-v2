@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import random
 import threading
 import time
@@ -1523,6 +1524,51 @@ def _record_episode(sess: "_Session", cand: dict) -> None:
         _log.debug("[explore] episodic capture failed: %s", exc)
 
 
+# Labels that must never become a personal callback. The detector names whatever it
+# sees, including PEOPLE and its own hedges, and every one of those got banked as a
+# fact about the owner: the nine rows in the field DB were "has Bret Benziger in
+# their space" (the owner, filed as his own furniture), "has Mysterious black object
+# in their space", "has Plant in their space" AND "has Plant Display in their space"
+# (the same plant twice). A callback is meant to be a personal detail worth raising
+# later — "you have a thing near you" is not one.
+_LABEL_REJECT_RE = re.compile(
+    r"^(?:a|an|the)?\s*(?:mystery|mysterious|unknown|unidentified|unrecognized|"
+    r"possible|probable|some(?:thing|)|indistinct|blurry|obscured|generic|"
+    r"assorted|misc(?:ellaneous)?)\b",
+    re.IGNORECASE,
+)
+# Too generic to be a callback even when the detector is sure.
+_LABEL_TOO_GENERIC = frozenset({
+    "object", "objects", "item", "items", "thing", "things", "stuff", "shape",
+    "person", "people", "human", "man", "woman", "figure", "face", "background",
+    "wall", "floor", "ceiling", "room", "light", "shadow", "surface",
+})
+
+
+def _label_bankable(label: str, person_name: "str | None") -> bool:
+    low = " ".join(str(label or "").split()).lower()
+    if not low or len(low) < 3:
+        return False
+    if _LABEL_REJECT_RE.match(low):
+        return False
+    if low in _LABEL_TOO_GENERIC:
+        return False
+    if all(w in _LABEL_TOO_GENERIC for w in low.split()):
+        return False
+    # A detected PERSON is not a possession. Reject the current human by name and
+    # anyone Rex knows — "has Bret Benziger in their space" was a real stored row.
+    if person_name and low == str(person_name).strip().lower():
+        return False
+    try:
+        from memory import people as _people
+        for known in (_people.list_person_names() or []):
+            if low == str(known).strip().lower():
+                return False
+    except Exception:
+        pass
+    return True
+
+
 def _bank_callback(sess: "_Session", cand: dict) -> None:
     if not bool(getattr(config, "EXPLORE_BANK_CALLBACK_ENABLED", True)):
         return
@@ -1530,6 +1576,9 @@ def _bank_callback(sess: "_Session", cand: dict) -> None:
         return
     label = str(cand.get("name") or "").strip()
     if not label:
+        return
+    if not _label_bankable(label, sess.person_name):
+        _log.info("[explore] not banking %r as a callback — not a personal detail", label)
         return
     try:
         from memory import callbacks
@@ -1541,6 +1590,9 @@ def _bank_callback(sess: "_Session", cand: dict) -> None:
             sensitivity=callbacks.SENSITIVITY_SAFE,
             source_quote="",
             volunteered_playfully=False,
+            # Rex SAW this; nobody told him. Storing it as 'explicit' put a camera
+            # guess on the same footing as the person's own words.
+            source="observed",
         )
     except Exception as exc:
         _log.debug("[explore] callback bank failed: %s", exc)

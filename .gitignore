@@ -289,3 +289,4 @@ tts_samples/
 
 # Local-LLM evaluation POC (venv, downloaded models, generated results — evaluation only)
 tests/local_llm_poc/
+assets/memory/*.db.bak-*

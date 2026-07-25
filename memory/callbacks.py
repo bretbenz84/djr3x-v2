@@ -118,6 +118,7 @@ def bank(
     volunteered_playfully: bool = False,
     session_id: Optional[str] = None,
     source_fact_id: Optional[int] = None,
+    source: str = "explicit",
 ) -> Optional[int]:
     """Insert or refresh one callback premise. Returns the row id, or None when
     gated/invalid/failed.
@@ -126,7 +127,15 @@ def bank(
     refresh, usage history is KEPT, retirement is never undone, and sensitivity
     only moves toward more conservative (a later 'guarded' read downgrades a
     'safe' row, but a later 'safe' read never upgrades a 'guarded' one).
+
+    `source` records HOW Rex came to believe this. It used to be hardcoded
+    'explicit' for every row, which meant a guess from the object detector was
+    stored with the same standing as something the person said out loud — and the
+    field showed exactly what that produces: "has Mysterious black object in their
+    space" and "has Bret Benziger in their space", the latter filing the owner
+    himself as a piece of his own furniture (2026-07-25).
     """
+    source = (source or "explicit").strip().lower() or "explicit"
     if not _write_enabled():
         return None
     if not isinstance(person_id, int):
@@ -154,7 +163,7 @@ def bank(
             "(person_id, premise, category, topic_slug, sensitivity, source, "
             " source_quote, source_fact_id, volunteered_playfully, session_id, "
             " created_at, updated_at, use_count) "
-            "VALUES (?, ?, ?, ?, ?, 'explicit', ?, ?, ?, ?, ?, ?, 0) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0) "
             "ON CONFLICT(person_id, topic_slug) DO UPDATE SET "
             "  premise = excluded.premise, "
             "  category = excluded.category, "
@@ -169,7 +178,7 @@ def bank(
             "    THEN person_callback_material.sensitivity "
             "    ELSE excluded.sensitivity END",
             (
-                person_id, premise, category, topic_slug, sensitivity,
+                person_id, premise, category, topic_slug, sensitivity, source,
                 (source_quote or "")[:300], source_fact_id,
                 1 if volunteered_playfully else 0, session_id, now, now,
             ),

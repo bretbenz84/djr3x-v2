@@ -189,14 +189,78 @@ def _is_hallucination(text: str) -> bool:
     return False
 
 
-def transcribe(audio_array: np.ndarray) -> str:
+class Transcript(str):
+    """The cleaned text, plus how much Whisper actually believed it.
+
+    Subclasses str so every existing caller keeps working unchanged — the extra
+    fields are there for the ones that need to decide whether this turn is solid
+    enough to LEARN from.
+
+    ``confident`` is False when Whisper's own decode statistics say it was
+    guessing. Whisper does not fail loudly: handed a single quiet word or a
+    half-captured phrase it emits a fluent, plausible sentence with no outward
+    sign anything went wrong. Field 2026-07-25: "wine" was transcribed
+    "I'm going to split it.", "This is the workshop room" became "Shop room.",
+    and an utterance that produced "Spice it." enrolled a PERSON NAMED SPICE.
+    Every one of those was written to durable memory and mined for proactive
+    questions days later. avg_logprob / no_speech_prob are the signal that
+    separates them, and they were being thrown away.
+    """
+
+    avg_logprob: "float | None" = None
+    no_speech_prob: "float | None" = None
+    confident: bool = True
+    backend: str = "none"
+
+    def __new__(cls, text: str, *, avg_logprob=None, no_speech_prob=None,
+                confident: bool = True, backend: str = "none"):
+        obj = super().__new__(cls, text)
+        obj.avg_logprob = avg_logprob
+        obj.no_speech_prob = no_speech_prob
+        obj.confident = bool(confident)
+        obj.backend = backend
+        return obj
+
+
+def _decode_stats(result: dict) -> "tuple[float | None, float | None]":
+    """Mean avg_logprob and max no_speech_prob across the decoded segments."""
+    segments = (result or {}).get("segments") or []
+    logps = [s.get("avg_logprob") for s in segments if isinstance(s, dict)
+             and isinstance(s.get("avg_logprob"), (int, float))]
+    nsps = [s.get("no_speech_prob") for s in segments if isinstance(s, dict)
+            and isinstance(s.get("no_speech_prob"), (int, float))]
+    return (
+        (sum(logps) / len(logps)) if logps else None,
+        max(nsps) if nsps else None,
+    )
+
+
+def _is_confident(avg_logprob, no_speech_prob) -> bool:
+    """Whether this decode is solid enough to LEARN from (not to act on).
+
+    Deliberately permissive: the far-field SNR here is 13-15 dB and genuine
+    speech routinely scores poorly, so a strict gate would make Rex deaf. A
+    failing turn is still heard, replied to, and acted on — it just doesn't
+    become a durable fact, a person's name, or a room."""
+    floor = float(getattr(config, "WHISPER_TRUST_MIN_AVG_LOGPROB", -0.85))
+    ceiling = float(getattr(config, "WHISPER_TRUST_MAX_NO_SPEECH_PROB", 0.5))
+    if avg_logprob is not None and avg_logprob < floor:
+        return False
+    if no_speech_prob is not None and no_speech_prob > ceiling:
+        return False
+    return True
+
+
+def transcribe(audio_array: np.ndarray) -> "Transcript":
     """Transcribe a float32 numpy array (16 kHz mono) and return a cleaned string.
 
     Tries mlx_whisper first; falls back to the OpenAI Whisper API if unavailable
-    or if the local call raises. Returns an empty string on failure.
+    or if the local call raises. Returns an empty string on failure. The result is
+    a Transcript (a str) carrying Whisper's decode confidence — see that class.
     """
     raw = ""
     backend = "none"
+    avg_logprob = no_speech_prob = None
     local_decoded_ok = False
     local_model_ready = _local_model_ready()
 
@@ -216,6 +280,7 @@ def transcribe(audio_array: np.ndarray) -> str:
                         **_mlx_decode_options(),
                     )
                 raw = result.get("text", "").strip()
+                avg_logprob, no_speech_prob = _decode_stats(result)
                 backend = "mlx_whisper"
                 local_decoded_ok = True
             except Exception as exc:
@@ -245,7 +310,7 @@ def transcribe(audio_array: np.ndarray) -> str:
             "[transcription] EMPTY result — segment dropped | backend=%s | "
             "local decoded silence; API fallback skipped", backend,
         )
-        return ""
+        return Transcript("", backend=backend)
 
     if not raw:
         try:
@@ -266,7 +331,7 @@ def transcribe(audio_array: np.ndarray) -> str:
             backend = "openai_whisper"
         except Exception as exc:
             logger.error("OpenAI Whisper fallback failed: %s", exc)
-            return ""
+            return Transcript("", backend=backend)
 
     if not raw:
         # Both engines heard nothing intelligible. Log it — a silently dropped
@@ -282,18 +347,29 @@ def transcribe(audio_array: np.ndarray) -> str:
             "[transcription] EMPTY result — segment dropped | backend=%s | %.2fs audio, rms=%.4f",
             backend, dur, rms,
         )
-        return ""
+        return Transcript("", backend=backend)
 
     if _is_hallucination(raw):
         logger.info(
             "[transcription] hallucination filtered | backend=%s | raw=%r",
             backend, raw,
         )
-        return ""
+        return Transcript("", backend=backend)
 
     cleaned = _apply_corrections(raw)
+    confident = _is_confident(avg_logprob, no_speech_prob)
     logger.info(
-        "[transcription] backend=%s | raw=%r | cleaned=%r",
+        "[transcription] backend=%s | raw=%r | cleaned=%r | avg_logprob=%s "
+        "no_speech_prob=%s trusted=%s",
         backend, raw, cleaned,
+        "n/a" if avg_logprob is None else f"{avg_logprob:.2f}",
+        "n/a" if no_speech_prob is None else f"{no_speech_prob:.2f}",
+        confident,
     )
-    return cleaned
+    if not confident:
+        logger.info(
+            "[transcription] LOW CONFIDENCE — Rex will answer this but not learn "
+            "from it (no facts, no names, no rooms): %r", cleaned,
+        )
+    return Transcript(cleaned, avg_logprob=avg_logprob, no_speech_prob=no_speech_prob,
+                      confident=confident, backend=backend)

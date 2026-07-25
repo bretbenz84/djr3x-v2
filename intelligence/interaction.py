@@ -199,6 +199,25 @@ class _AnonymousSpeakerSlot:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _character_loop_turn_ids = count(1)
+# Whether the transcript driving THIS turn was one Whisper actually believed.
+# A context var rather than a parameter because the enrollment paths that must
+# honor it (person names, room names) sit six frames down through several
+# handlers, and a turn-scoped fact is exactly what a context var is for.
+# Field 2026-07-25: an utterance decoded as "Spice it." enrolled a person named
+# Spice — twice, one second apart — because Rex had just asked "what do I call
+# you?" and the name latch takes whatever the next short utterance says.
+_transcript_trusted: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("transcript_trusted", default=True)
+)
+
+
+def _turn_transcript_trusted() -> bool:
+    try:
+        return bool(_transcript_trusted.get())
+    except Exception:
+        return True
+
+
 _current_character_loop_trace: contextvars.ContextVar[Optional[_CharacterLoopTrace]] = (
     contextvars.ContextVar("current_character_loop_trace", default=None)
 )
@@ -9666,7 +9685,18 @@ def _enroll_new_person(
     the largest face NOT already matched to an existing known person. Use this
     when a known person is visible alongside the newcomer so we don't rebind
     the known person's face to the new name.
+
+    Refuses outright when the transcript this turn came from was one Whisper was
+    guessing at. A misheard name is not a small error: it mints a permanent person
+    with a voiceprint and a face attached, and every later sighting of the real
+    human keeps colliding with the phantom.
     """
+    if not _turn_transcript_trusted():
+        _log.warning(
+            "[interaction] refusing to enroll %r — the transcript it came from was "
+            "low-confidence. Rex will ask again rather than invent a person.", name,
+        )
+        return None
     person_id, created = people_memory.find_or_create_person(name)
     if person_id is None:
         _log.error("failed to enroll new person row for name=%r", name)
@@ -19746,6 +19776,7 @@ def _handle_speech_segment(
     final_executed_path: Optional[str] = None
     suppress_memory_learning = False
     handled_active_game_turn = False
+    # (set for real once the transcript exists — see the transcript_trusted note)
     used_agenda_llm = False
     used_classified_intent = False
     trace_context_token: Optional[contextvars.Token] = None
@@ -19770,6 +19801,12 @@ def _handle_speech_segment(
         # Concurrent transcription + speaker identification, unless the GUI
         # supplied text directly.
         process_started = time.monotonic()
+        # Whisper's own decode confidence for THIS turn. Captured here, once, into a
+        # plain local: `text` is a Transcript (a str subclass) but every .strip() /
+        # .lower() downstream returns a bare str and silently drops the attribute.
+        # False means Rex answers normally but must not LEARN from the turn — no
+        # stored facts, no person names, no room names. See audio/transcription.py.
+        transcript_trusted = True
         if transcribed_text is not None:
             text = str(transcribed_text or "").strip()
             raw_best_id = raw_best_id_override
@@ -19782,6 +19819,16 @@ def _handle_speech_segment(
         else:
             (text, raw_best_id, raw_best_name, speaker_score, speaker_margin,
              required_margin) = _process_audio(audio_array)
+            transcript_trusted = bool(getattr(text, "confident", True))
+            _transcript_trusted.set(transcript_trusted)
+            if not transcript_trusted:
+                # Whisper was guessing. Answer the human normally — being briefly
+                # forgetful is recoverable, mishearing them into a permanent "fact"
+                # is not (field 2026-07-25: "wine" -> "I'm going to split it.", which
+                # became an episode and then a proactive question).
+                suppress_memory_learning = True
+                _log.info("[interaction] low-confidence transcript — replying but not "
+                          "learning from this turn: %r", str(text))
             transcript_ready_at = time.monotonic()
             _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
 
@@ -19875,6 +19922,8 @@ def _handle_speech_segment(
             )
             if completion and completion.get("action") == "merge":
                 text = completion["text"]
+                transcript_trusted = transcript_trusted and bool(
+                    completion.get("trusted", True))
                 merged_audio = completion.get("audio_array")
                 if merged_audio is not None:
                     audio_array = merged_audio

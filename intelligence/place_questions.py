@@ -93,6 +93,17 @@ def _enabled() -> bool:
     return bool(getattr(config, "PLACE_QUESTIONS_ENABLED", True))
 
 
+def _transcript_trusted() -> bool:
+    """Whether the transcript for this turn was one Whisper actually believed.
+    Field 2026-07-25: "This is the workshop room" was decoded "Shop room." and a
+    room called "shop room" was created from it."""
+    try:
+        from intelligence.interaction import _turn_transcript_trusted
+        return bool(_turn_transcript_trusted())
+    except Exception:
+        return True
+
+
 def _room_words() -> list:
     return [str(w).strip().lower() for w in getattr(config, "PLACE_ROOM_WORDS", []) if str(w).strip()]
 
@@ -357,6 +368,9 @@ def maybe_capture_answer(text: str) -> Optional[dict]:
 def _enroll(name: str) -> Optional[int]:
     svc = _service()
     if svc is None:
+        return None
+    if not _transcript_trusted():
+        _log.info("[place_questions] not enrolling %r — low-confidence transcript", name)
         return None
     try:
         return svc.enroll(name)

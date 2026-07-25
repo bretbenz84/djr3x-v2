@@ -175,6 +175,24 @@ WHISPER_FALLBACK_MODEL = "whisper-1"   # OpenAI Whisper API — used if local un
 WHISPER_LANGUAGE      = "en"           # Force English to suppress non-Latin hallucinations
 WHISPER_PRELOAD_ON_STARTUP = True      # Warm MLX Whisper before the first live utterance
 WHISPER_TEMPERATURE = 0.0              # Deterministic decode avoids slow retry ladders
+
+# ---- Trust threshold: what Rex is willing to LEARN from ---------------------
+# Whisper never fails loudly. Handed one quiet word or a half-captured phrase it
+# returns a fluent, confident sentence with no outward sign anything is wrong.
+# Field 2026-07-25: "wine" came back "I'm going to split it."; "This is the
+# workshop room" came back "Shop room."; an utterance decoded as "Spice it."
+# ENROLLED A PERSON NAMED SPICE. All three were written to durable memory and
+# mined for proactive questions days later. avg_logprob / no_speech_prob are the
+# only signal that separates those from real speech, and they were unused.
+#
+# These are LEARNING gates, not hearing gates. A turn below them is still heard,
+# answered and acted on — it just cannot become a stored fact, a person's name,
+# or a room. That asymmetry is deliberate: far-field SNR here is 13-15 dB, so
+# genuine speech scores badly often enough that a hearing gate would make Rex
+# deaf (see the far-field measurements from 2026-07-24). Being occasionally
+# forgetful is recoverable; confidently remembering things you never said is not.
+WHISPER_TRUST_MIN_AVG_LOGPROB = -0.85   # mean per-token logprob; lower = guessing
+WHISPER_TRUST_MAX_NO_SPEECH_PROB = 0.5  # higher = Whisper thinks it was silence
 WHISPER_CONDITION_ON_PREVIOUS_TEXT = False
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries

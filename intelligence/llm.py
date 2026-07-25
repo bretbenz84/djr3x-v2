@@ -1863,6 +1863,120 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
         return ""
 
 
+# Denials / corrections / disclaimers. A turn like this is the human telling Rex he
+# got something WRONG — it is the worst possible seed for a follow-up question, and
+# yet it was the most productive one: field 2026-07-25, Rex asked about baking that
+# never happened and a pizza place he'd invented, Bret corrected him both times, and
+# the shutdown summary turned those very corrections into the NEXT session's open
+# threads ("whether they will attempt baking again", "how the Mount Mike's Pizza
+# turned out"). The loop manufactured its own material.
+_DENIAL_TURN_RE = re.compile(
+    r"\b(?:i\s+(?:don'?t|do\s+not|didn'?t|did\s+not|never)\b|"
+    r"we\s+(?:didn'?t|did\s+not|never)\b|"
+    r"that'?s?\s+not\b|thats\s+not\b|"
+    r"no\s+(?:idea|clue)\b|"
+    r"(?:i\s+)?(?:have\s+)?no\s+idea\s+what\s+you'?re\s+talking\s+about|"
+    r"what\s+are\s+you\s+talking\s+about|"
+    r"you'?re\s+(?:wrong|mistaken|making\s+that\s+up)|"
+    r"(?:i\s+)?never\s+said\b|"
+    r"not\s+(?:true|right|correct)\b|"
+    # Contrastive correction: "We got Mount Mike's Pizza, not Black Widow Pizza."
+    # No negated verb anywhere, so the patterns above all miss it — and this is the
+    # exact shape the owner used when correcting an invented fact.
+    r",\s*not\s+\w|"
+    r"\bnot\s+(?:what|the)\s+\w|"
+    r"wasn'?t\s+me\b)",
+    re.IGNORECASE,
+)
+
+
+def _human_denied_something(transcript: list[dict]) -> bool:
+    return any(_DENIAL_TURN_RE.search(str(e.get("text") or ""))
+               for e in _human_turns_only(transcript))
+
+
+def _format_transcript_attributed(transcript: list[dict]) -> str:
+    """Transcript with Rex's own turns marked as NOT evidence about the human.
+
+    generate_diary_entry needs Rex's lines for context — you cannot tell what an
+    answer means without the question — but it was reading them as source material.
+    Episode 450 recorded "he also mentioned baking, but his confidence seemed more
+    like a cry for help from the oven": "cry for help" is REX'S rhetorical tic, not
+    anything Bret said, and it was filed as a fact about Bret. Episode 442 asserted
+    "indicating a change in his routine", an inference nobody made. Both became
+    proactive questions days later that the owner had to deny.
+    """
+    lines = []
+    for entry in transcript or []:
+        speaker = str(entry.get("speaker", "unknown"))
+        text = str(entry.get("text", ""))
+        if speaker.strip().lower() in _REX_SPEAKER_LABELS:
+            lines.append(f"[YOU, Rex — context only, never evidence] {speaker}: {text}")
+        else:
+            lines.append(f"[HUMAN — the only source of facts] {speaker}: {text}")
+    return "\n".join(lines)
+
+
+# Words that carry no topic. Overlap on these means nothing — every follow-up
+# question contains "whether", "again", "about".
+_THREAD_STOPWORDS = frozenset("""
+about after again against along already also although always another anything
+around because been before being between both came come could didn actually
+doing done down during each either else even ever every from getting going gone
+have having here here's how however into itself just keep know knew like likely
+made make many maybe mean might more most much must never next nothing now only
+other over really said same seem seems should since some someone something still
+such sure take talking than that thats their them then there these they thing
+things think this those though through time told took turn turned under until
+upon very want wanted well were what when where whether which while will with
+without won't would your yours you're
+""".split())
+
+
+def _content_words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z']{4,}", (text or "").lower())
+            if w not in _THREAD_STOPWORDS}
+
+
+def _filtered_open_threads(raw, transcript: list[dict]) -> list:
+    """Prompt rules are guidance; this is the guarantee.
+
+    Drops any thread that echoes something the human denied in this very session.
+    A model that has just been told "we didn't end up doing that" will still, given
+    the chance, file "whether they will attempt it again" — which is exactly how a
+    denial became the next session's opening question (field 2026-07-25).
+
+    A denial turn often carries no topic of its own ("I don't know what you're
+    talking about"), so the Rex turn it answers counts as denied too — that is where
+    the subject actually lives."""
+    threads = [str(t).strip() for t in (raw or []) if str(t).strip()]
+    if not threads:
+        return []
+    denied: set = set()
+    turns = list(transcript or [])
+    for i, entry in enumerate(turns):
+        if str(entry.get("speaker", "")).strip().lower() in _REX_SPEAKER_LABELS:
+            continue
+        if not _DENIAL_TURN_RE.search(str(entry.get("text") or "")):
+            continue
+        denied |= _content_words(str(entry.get("text") or ""))
+        for prev in reversed(turns[:i]):
+            if str(prev.get("speaker", "")).strip().lower() in _REX_SPEAKER_LABELS:
+                denied |= _content_words(str(prev.get("text") or ""))
+                break
+    if not denied:
+        return threads[:3]
+    kept = []
+    for thread in threads:
+        overlap = _content_words(thread) & denied
+        if overlap:
+            _log.info("[diary] dropping open thread %r — the human denied %s this "
+                      "session", thread, sorted(overlap)[:3])
+            continue
+        kept.append(thread)
+    return kept[:3]
+
+
 def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None" = None) -> "dict | None":
     """Session -> ONE first-person diary entry for Rex's episodic memory (rex.db).
 
@@ -1883,6 +1997,12 @@ def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None
     if not transcript:
         return None
     who = ", ".join(people_names or []) or "an unidentified visitor"
+    denial_note = (
+        "NOTE: this human corrected or denied something you said during this "
+        "conversation. Record the CORRECTION as the fact. Do not open any thread "
+        "arising from the thing they denied.\n\n"
+        if _human_denied_something(transcript) else ""
+    )
     prompt = (
         "You are DJ-R3X (Rex), a droid, writing ONE entry in your private diary "
         "about a conversation you just had. Return STRICT JSON:\n"
@@ -1898,12 +2018,25 @@ def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None
         "Record what the PERSON shared (interests, plans, work, life events, mood "
         "with its cause) — not your own jokes, DJ shtick, or Star Wars flavor. Skip "
         "transient surroundings (the room, clutter, temperature, background noise).\n\n"
+        "ATTRIBUTION — the hard rule. Only turns marked [HUMAN] are evidence. Turns "
+        "marked [YOU, Rex] are your own talk: your jokes, your guesses, your "
+        "characterizations of them. NEVER record one as something the human said, "
+        "felt, or did, and never carry your own phrasing into the note as if it were "
+        "theirs. If you only know something because YOU said it, you do not know it.\n\n"
+        "Do not infer beyond the words. If they said they had pizza, that is what "
+        "happened — it is not 'a change in their routine' unless they said so.\n\n"
         "salience 0.0-1.0, honest: 0.2 mundane chit-chat barely worth keeping, "
         "0.5 a normal conversation with real content, 0.8 emotional weight / a "
         "commitment / big news, 1.0 unforgettable. Most sessions are 0.3-0.6.\n\n"
         "open_threads: 0-3 SHORT items I could naturally ask about next time "
-        '("whether the dentist appointment happened"). Only real ones; usually empty.\n\n'
-        f"Who was here: {who}\n\nTranscript:\n{_format_transcript(transcript)}"
+        '("whether the dentist appointment happened"). Only real ones; usually empty. '
+        "An open thread must come from something the HUMAN actually stated or "
+        "committed to. NEVER open one on a topic they denied, corrected, or said they "
+        "knew nothing about — if they told you something did not happen, that thread "
+        "is CLOSED, not reopened, and 'whether they will do it after all' is not a "
+        "thread. Never open one on something only you brought up.\n\n"
+        + denial_note +
+        f"Who was here: {who}\n\nTranscript:\n{_format_transcript_attributed(transcript)}"
     )
     try:
         resp = _client.chat.completions.create(
@@ -1919,7 +2052,7 @@ def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None
             "remember": bool(d.get("remember")),
             "note": str(d.get("note") or "").strip(),
             "salience": max(0.0, min(1.0, float(d.get("salience") or 0.0))),
-            "open_threads": [str(t).strip() for t in (d.get("open_threads") or []) if str(t).strip()][:3],
+            "open_threads": _filtered_open_threads(d.get("open_threads"), transcript),
         }
     except Exception as exc:
         _log.error("generate_diary_entry failed: %s", exc)
