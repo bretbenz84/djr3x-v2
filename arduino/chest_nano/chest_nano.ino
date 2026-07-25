@@ -442,23 +442,22 @@ static inline uint8_t gaugePixel(uint8_t colStart, uint8_t level) {
 	return colStart + (GAUGE_BOTTOM_UP ? (uint8_t)(7 - level) : level);
 }
 
-// Charge-level -> colour band (owner spec 2026-07-24).
-static CRGB chargeBandColor(uint8_t pct) {
-	if (pct <= 25) return CRGB(130, 0, 0);     // 0-25   red
-	if (pct <= 50) return CRGB(130, 45, 0);    // 26-50  orange
-	if (pct <= 75) return CRGB(120, 100, 0);   // 51-75  yellow
-	if (pct <= 90) return CRGB(0, 120, 30);    // 76-90  green
-	return CRGB(0, 45, 150);                   // 91-100 blue
-}
-
-// Colour for ONE pixel of the ladder. Each of the 8 pixels stands for a 12.5% step,
-// and takes the band its own top boundary falls in — so the column always reads
-// red, red, orange, orange, yellow, yellow, green, blue from the bottom up, and the
-// CHARGE decides how many are lit rather than what colour they are. Colouring the
-// whole bar one colour (the first pass at this) made every state look alike; the
-// owner wants to read the level from where the lit region ends.
+// Fixed colour ladder for the 8-pixel gauge, bottom (level 0) to top (level 7):
+// R R O Y G G B B (owner spec 2026-07-24). Each pixel's colour is a property of its
+// POSITION, not of the current charge — the charge only decides how many are lit, so
+// the bar always reads the same way and you judge the level by where it stops.
+// A switch, not a CRGB[8] table: this sketch sits at 89% DRAM and an array would
+// spend 24 bytes of it, while the switch costs flash only.
 static CRGB gaugeLevelColor(uint8_t level) {
-	return chargeBandColor((uint8_t)(((uint16_t)level + 1) * 100 / 8));
+	switch (level) {
+		case 0:
+		case 1:  return CRGB(130,   0,   0);   // red
+		case 2:  return CRGB(130,  45,   0);   // orange
+		case 3:  return CRGB(120, 100,   0);   // yellow
+		case 4:
+		case 5:  return CRGB(  0, 120,  30);   // green
+		default: return CRGB(  0,  45, 150);   // blue (levels 6-7)
+	}
 }
 
 // Off-state charge display. The three first 8-pixel bars (A/B/C) are parallel
