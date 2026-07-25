@@ -23,17 +23,46 @@ import config
 from audio import output_gate, sound_effects as sfx
 
 
+class _StubStream:
+    """Stands in for sd.OutputStream — the overlay path's private device handle."""
+
+    def __init__(self, owner, **kwargs):
+        self.owner = owner
+        self.kwargs = kwargs
+        self.written = []
+
+    def start(self):
+        self.owner.stream_starts += 1
+
+    def write(self, data):
+        self.written.append(len(data))
+        self.owner.stream_writes.append(len(data))
+
+    def stop(self):
+        self.owner.stream_stops += 1
+
+    def close(self):
+        self.owner.stream_closes += 1
+
+
 class _StubSD(types.ModuleType):
     def __init__(self):
         super().__init__("sounddevice")
         self.play_calls = []
         self.stop_calls = 0
+        self.stream_starts = 0
+        self.stream_writes = []
+        self.stream_stops = 0
+        self.stream_closes = 0
 
     def play(self, audio, samplerate, blocksize=None):
         self.play_calls.append((len(audio), samplerate))
 
     def stop(self):
         self.stop_calls += 1
+
+    def OutputStream(self, **kwargs):  # noqa: N802 — mirrors the sounddevice API
+        return _StubStream(self, **kwargs)
 
 
 class SoundEffectsTest(unittest.TestCase):
@@ -96,7 +125,7 @@ class SoundEffectsTest(unittest.TestCase):
                 mock.patch.object(echo_cancel, "set_playing"):
             done = threading.Event()
             t = threading.Thread(
-                target=lambda: (sfx._play_path(path, "happy", concurrent=True), done.set()),
+                target=lambda: (sfx._play_path(path, "happy", mode="concurrent"), done.set()),
                 daemon=True)
             t.start()
             time.sleep(0.1)
@@ -112,8 +141,73 @@ class SoundEffectsTest(unittest.TestCase):
         path = sfx._resolve_stem("Droid_Happy_bouncy")
         with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)):
             with output_gate.hold("test-tts"):
-                sfx._play_path(path, "happy", concurrent=True)    # speaker busy -> drop
+                sfx._play_path(path, "happy", mode="concurrent")    # speaker busy -> drop
         self.assertEqual(self.sd.play_calls, [])
+
+    # ── overlay (voice-commanded motion) discipline ──
+    def test_overlay_plays_even_while_tts_holds_the_speaker(self):
+        # THE BUG: a commanded move speaks a confirmation whose cached audio hits the
+        # speaker ~3 ms after queueing, so the gated drive sound lost the race and was
+        # dropped on nearly every command (field 2026-07-24). Overlay must still play.
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)):
+            with output_gate.hold("tts"):
+                sfx._play_path(path, "motion_move", mode="overlay")
+        self.assertEqual(self.sd.stream_starts, 1, "overlay opened its own stream")
+        self.assertTrue(self.sd.stream_writes, "overlay wrote audio")
+
+    def test_overlay_never_touches_the_shared_play_stream(self):
+        # sounddevice keeps ONE global playback stream: calling sd.play() (or
+        # sd.stop()) here would cut Rex off mid-word. Overlay must use only its own
+        # OutputStream — this is the guard that keeps the fix safe.
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)):
+            with output_gate.hold("tts"):
+                sfx._play_path(path, "motion_move", mode="overlay")
+        self.assertEqual(self.sd.play_calls, [], "overlay must not call sd.play")
+        self.assertEqual(self.sd.stop_calls, 0, "overlay must not call sd.stop")
+        self.assertEqual(self.sd.stream_closes, 1, "overlay closed its stream")
+
+    def test_overlay_does_not_hold_the_output_gate(self):
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(48000, np.float32), 48000)):
+            t = threading.Thread(
+                target=lambda: sfx._play_path(path, "motion_move", mode="overlay"),
+                daemon=True)
+            t.start()
+            time.sleep(0.05)
+            with output_gate.hold("tts", blocking=True, timeout=0.05) as acquired:
+                self.assertTrue(acquired, "overlay must never block TTS")
+            t.join(2.0)
+
+    def test_overlay_leaves_suppression_to_tts(self):
+        # TTS owns the _playing flag while it speaks — the overlay clip must not
+        # un-mute the mic underneath it.
+        from audio import echo_cancel
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)), \
+                mock.patch.object(echo_cancel, "set_playing") as set_playing:
+            with output_gate.hold("tts"):
+                sfx._play_path(path, "motion_move", mode="overlay")
+        self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True])
+
+    def test_overlay_releases_suppression_when_no_tts_follows(self):
+        from audio import echo_cancel
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)), \
+                mock.patch.object(echo_cancel, "set_playing") as set_playing:
+            sfx._play_path(path, "motion_move", mode="overlay")
+        self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
+
+    def test_overlay_is_ducked_below_the_spoken_line(self):
+        path = sfx._resolve_stem("motion_whir")
+        loud = np.ones(4800, np.float32)
+        with mock.patch.object(sfx, "_decode", return_value=(loud, 48000)), \
+                mock.patch.object(config, "SOUND_EFFECTS_VOLUME", 1.0, create=True), \
+                mock.patch.object(config, "SOUND_EFFECTS_OVERLAY_VOLUME", 0.5, create=True):
+            with output_gate.hold("tts"):
+                sfx._play_path(path, "motion_move", mode="overlay")
+        self.assertEqual(self.sd.stream_starts, 1)
 
     def test_concurrent_leaves_suppression_to_tts(self):
         # TTS takes the speaker DURING the chirp -> the chirp must not turn mic
@@ -123,7 +217,7 @@ class SoundEffectsTest(unittest.TestCase):
         with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)), \
                 mock.patch.object(echo_cancel, "set_playing") as set_playing:
             t = threading.Thread(
-                target=lambda: sfx._play_path(path, "happy", concurrent=True), daemon=True)
+                target=lambda: sfx._play_path(path, "happy", mode="concurrent"), daemon=True)
             t.start()
             time.sleep(0.02)                                      # chirp started (idle)
             with output_gate.hold("tts"):                         # TTS takes over mid-chirp
@@ -135,7 +229,7 @@ class SoundEffectsTest(unittest.TestCase):
         path = sfx._resolve_stem("Droid_Happy_bouncy")
         with mock.patch.object(sfx, "_decode", return_value=(np.zeros(480, np.float32), 48000)), \
                 mock.patch.object(echo_cancel, "set_playing") as set_playing:
-            sfx._play_path(path, "happy", concurrent=True)        # idle speaker throughout
+            sfx._play_path(path, "happy", mode="concurrent")        # idle speaker throughout
             self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
 
     # ── preemption ──

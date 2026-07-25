@@ -16873,6 +16873,10 @@ def _handle_router_motion_action(
             motion_agency.note_user_motion()
         except Exception:
             pass
+    if action in {"motion.turn", "motion.move", "motion.arc", "motion.come"}:
+        # Commanded moves speak a confirmation that would otherwise win the race
+        # for the speaker and mute the drive sound — play it in overlay mode.
+        motion_controller.note_user_commanded_motion()
 
     # A fresh single command supersedes any queued route. Its own command will
     # supersede the in-flight firmware finite command; stop/come need an explicit

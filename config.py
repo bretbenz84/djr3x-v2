@@ -7495,6 +7495,14 @@ MOTION_ACK_TIMEOUT_SECS = 0.5         # how long send-and-confirm waits for an a
 SOUND_EFFECTS_ENABLED        = True
 SOUND_EFFECTS_DIR            = "assets/audio/sound_effects"
 SOUND_EFFECTS_VOLUME         = 0.8    # 0..1 gain applied to every clip
+# Gain for OVERLAY clips only — the drive sounds on a voice-COMMANDED move, which
+# play on their own output stream while Rex speaks the confirmation. Ducked below
+# SOUND_EFFECTS_VOLUME so the motor whir sits UNDER "Spinning around." instead of
+# competing with it. Raise toward 0.8 if the motion sounds feel too shy.
+SOUND_EFFECTS_OVERLAY_VOLUME = 0.7
+# How long after an explicit voice motion command its drive sounds keep using
+# overlay mode — long enough to cover every leg of a multi-step spoken route.
+MOTION_COMMANDED_FX_WINDOW_SECS = 20.0
 SOUND_EFFECTS_SPEECH_ENABLED = True   # emotion chirp as a reaction's TTS spins up
 SOUND_EFFECTS_MOTION_ENABLED = True   # whir/turn clips on drive-base commands
 SOUND_EFFECTS_SERVO_ENABLED  = True   # servo-whir accents on body gestures

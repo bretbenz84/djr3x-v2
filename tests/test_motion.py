@@ -683,6 +683,45 @@ class RampTowardTest(unittest.TestCase):
         self.assertEqual(mc.ramp_toward(0.0, 1.0, 0.0, 0.0), 1.0)
 
 
+class CommandedMotionFxTest(unittest.TestCase):
+    """A voice-COMMANDED move must still make its motor sound. Its spoken
+    confirmation ("Spinning around.") reaches the speaker ~3 ms after queueing, so
+    the gated clip lost the race and was silently dropped on nearly every command —
+    while autonomous moves, which say nothing, kept theirs (field 2026-07-24)."""
+
+    def setUp(self):
+        mc._user_commanded_motion_at = 0.0
+        self.addCleanup(lambda: setattr(mc, "_user_commanded_motion_at", 0.0))
+
+    def test_autonomous_motion_uses_the_gated_path(self):
+        with mock.patch("audio.sound_effects.play") as play:
+            mc._fx("motion_turn")
+        play.assert_called_once()
+        self.assertFalse(play.call_args.kwargs.get("overlay"))
+
+    def test_commanded_motion_overlays(self):
+        mc.note_user_commanded_motion()
+        with mock.patch("audio.sound_effects.play") as play:
+            mc._fx("motion_turn")
+        play.assert_called_once()
+        self.assertTrue(play.call_args.kwargs.get("overlay"))
+
+    def test_overlay_marking_expires(self):
+        # A later AUTONOMOUS move must not inherit overlay mode from an old command.
+        mc.note_user_commanded_motion()
+        mc._user_commanded_motion_at = time.monotonic() - (
+            float(config.MOTION_COMMANDED_FX_WINDOW_SECS) + 1.0
+        )
+        with mock.patch("audio.sound_effects.play") as play:
+            mc._fx("motion_turn")
+        self.assertFalse(play.call_args.kwargs.get("overlay"))
+
+    def test_fx_never_raises_when_the_effects_layer_fails(self):
+        mc.note_user_commanded_motion()
+        with mock.patch("audio.sound_effects.play", side_effect=RuntimeError("no audio")):
+            mc._fx("motion_turn")   # must not propagate
+
+
 class BlockedAnnounceTest(unittest.TestCase):
     """A VOICE-commanded move the firmware cuts on an obstacle must SAY so —
     silence read as 'he ignores my commands' (field 2026-07-23, 'move forward 5

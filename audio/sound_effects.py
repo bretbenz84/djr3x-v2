@@ -236,13 +236,21 @@ except Exception:  # circular-import safety in odd tool contexts; wiring is best
 
 # ── Public API ────────────────────────────────────────────────────────────────────
 
-def play(key: str, *, force: bool = False, concurrent: bool = False) -> bool:
+def play(key: str, *, force: bool = False, concurrent: bool = False,
+         overlay: bool = False) -> bool:
     """Fire effect ``key`` asynchronously. Returns True when a playback thread was
     started (cooldowns/enables/no-audio may drop it silently). Never raises, never
     blocks the caller, and never delays other audio (see module docstring).
 
-    ``concurrent=True`` (used by play_for_speech) plays the clip WITHOUT holding the
-    output gate so it can overlap the reply's TTS instead of being preempted by it."""
+    Three playback modes:
+      default      hold the output gate, yield to a blocking source (TTS) — for
+                   accents that must never talk over Rex.
+      concurrent   no gate hold, but only when the speaker is IDLE (play_for_speech
+                   emotion chirps, which fire in the gap before the reply's audio).
+      overlay      own output stream, plays even while Rex is speaking — for the
+                   motor sounds on a VOICE-COMMANDED move, whose spoken
+                   confirmation would otherwise always win the race for the gate.
+    """
     try:
         if not _enabled():
             return False
@@ -269,8 +277,9 @@ def play(key: str, *, force: bool = False, concurrent: bool = False) -> bool:
             _log.warning("[sfx] clip not found for key %r (stem %r in %s)",
                          key, stem, _effects_dir())
             return False
+        mode = "overlay" if overlay else ("concurrent" if concurrent else "gated")
         threading.Thread(
-            target=_play_path, args=(path, key, concurrent), daemon=True,
+            target=_play_path, args=(path, key, mode), daemon=True,
             name="sound-effects",
         ).start()
         return True
@@ -294,7 +303,7 @@ def play_for_speech(emotion: str, tag: Optional[str] = None) -> bool:
     return play(emotion, concurrent=True)
 
 
-def _play_path(path: Path, key: str, concurrent: bool = False) -> None:
+def _play_path(path: Path, key: str, mode: str = "gated") -> None:
     try:
         import sounddevice as sd
     except ImportError:
@@ -310,7 +319,9 @@ def _play_path(path: Path, key: str, concurrent: bool = False) -> None:
         vol = 0.8
     audio = audio * max(0.0, min(1.0, vol))
 
-    if concurrent:
+    if mode == "overlay":
+        _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key)
+    elif mode == "concurrent":
         _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key)
     else:
         _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key)
@@ -369,6 +380,61 @@ def _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key)
             # _playing flag and will release it when the reply ends). Otherwise release
             # with a tail that bridges the chirp->TTS handoff, or restores the mic if
             # this reply turned out to have no spoken audio at all.
+            if output_gate.active_source() != "tts":
+                echo_cancel.set_playing(False, tail_secs=0.4)
+        except Exception:
+            pass
+
+
+def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key) -> None:
+    """Motion accent that plays OVER speech, on its own output stream.
+
+    A voice-COMMANDED move always ships a spoken confirmation ("Spinning
+    around."), and a cached line reaches the speaker ~3 ms after it is queued —
+    so the gated path lost the race and silently dropped the motor sound on
+    almost every command, while autonomous moves (which say nothing) kept theirs.
+    Field 2026-07-24, owner: "when you command him to move, he does not play the
+    sound effects."
+
+    It cannot use sd.play(): sounddevice keeps ONE module-global playback stream,
+    so a second sd.play() would stop Rex's voice mid-word (that is precisely why
+    _play_concurrent refuses when the speaker is busy). A dedicated OutputStream
+    is independent — CoreAudio mixes the two — so the whir rides under the
+    confirmation instead of cancelling it.
+
+    Mic suppression is only RELEASED here when TTS isn't the one speaking; while
+    TTS owns the gate it owns the _playing flag too and will release it itself.
+    """
+    duration = audio.shape[0] / float(samplerate)
+    try:
+        vol = float(getattr(config, "SOUND_EFFECTS_OVERLAY_VOLUME", 0.7))
+    except (TypeError, ValueError):
+        vol = 0.7
+    audio = audio * max(0.0, min(1.0, vol))     # duck under the spoken line
+    if audio.ndim == 1:
+        audio = audio.reshape(-1, 1)
+    stream = None
+    try:
+        echo_cancel.set_playing(True)
+        _log.info("[sfx] ▶ %s (%s, overlay)", path.stem, key)
+        stream = sd.OutputStream(
+            samplerate=samplerate,
+            channels=audio.shape[1],
+            blocksize=int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
+            latency=str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
+        )
+        stream.start()
+        stream.write(audio.astype("float32"))
+    except Exception as exc:
+        _log.debug("[sfx] overlay playback error for %s: %s", path.name, exc)
+    finally:
+        try:
+            if stream is not None:
+                stream.stop()
+                stream.close()
+        except Exception:
+            pass
+        try:
             if output_gate.active_source() != "tts":
                 echo_cancel.set_playing(False, tail_secs=0.4)
         except Exception:

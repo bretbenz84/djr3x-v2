@@ -106,12 +106,35 @@ def connect(port: "str | None" = None) -> bool:
 _last_come_seq: "int | None" = None
 
 
+# A VOICE-COMMANDED move ships a spoken confirmation ("Spinning around.") whose
+# cached audio reaches the speaker ~3 ms after queueing, so the drive sound lost the
+# race for the output gate and was dropped on nearly every command — while
+# autonomous moves, which say nothing, kept theirs (owner 2026-07-24: "when you
+# command him to move, he does not play the sound effects"). The interaction layer
+# stamps this before issuing a commanded move; _fx then plays that clip in OVERLAY
+# mode (own output stream) so it rides under the confirmation instead of losing to it.
+_user_commanded_motion_at = 0.0
+
+
+def note_user_commanded_motion() -> None:
+    """Mark the motion about to be issued as coming from an explicit voice command."""
+    global _user_commanded_motion_at
+    _user_commanded_motion_at = time.monotonic()
+
+
+def _user_commanded_fx() -> bool:
+    if _user_commanded_motion_at <= 0.0:
+        return False
+    window = float(getattr(config, "MOTION_COMMANDED_FX_WINDOW_SECS", 20.0))
+    return (time.monotonic() - _user_commanded_motion_at) <= window
+
+
 def _fx(key: str) -> None:
     """Fire a drive sound effect (audio/sound_effects). Best-effort, never raises,
     never blocks — the effect layer owns cooldowns/enable flags/preemption."""
     try:
         from audio import sound_effects
-        sound_effects.play(key)
+        sound_effects.play(key, overlay=_user_commanded_fx())
     except Exception:
         pass
 

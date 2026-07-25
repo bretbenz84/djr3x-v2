@@ -63,6 +63,12 @@ def start(
         motion_agency.note_user_motion()
     except Exception:
         pass
+    # Every leg of a spoken route is user-commanded: keep the drive sounds in
+    # overlay mode so the "On it — 2 moves." confirmation can't mute them.
+    try:
+        motion_controller.note_user_commanded_motion()
+    except Exception:
+        pass
     event = threading.Event()
     copied = [
         ActionDecision(
