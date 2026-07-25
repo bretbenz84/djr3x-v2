@@ -130,6 +130,15 @@ GUI_POSE_WIREFRAME_ENABLED = True
 # world_state.objects) over the camera preview, like the face boxes and pose
 # wireframe. Off → no object boxes (the detection stream still runs for behaviors).
 GUI_OBJECT_BOXES_ENABLED = True
+# Shade the CAMERA_SELF_OCCLUSION_ZONES over the preview so it is obvious where object
+# detection is switched off, and whether those rectangles still line up with Rex's eye
+# stalks after a camera/hardware move. The original 1-px dash at 27% alpha measured
+# ~11% contrast against a live feed and read as "the block is gone" (owner 2026-07-24)
+# even though the mask was working. Set GUI_OCCLUSION_ZONES_VISIBLE=False to hide them
+# again; the masking itself is unaffected either way (vision/animal_detector).
+GUI_OCCLUSION_ZONES_VISIBLE = True
+GUI_OCCLUSION_ZONE_FILL_ALPHA = 48    # translucent violet wash inside the zone
+GUI_OCCLUSION_ZONE_EDGE_ALPHA = 190   # dashed border
 # Only draw a pose wireframe for a slot with a VISIBLE face whose centre is within
 # GUI_POSE_FACE_COHERENCE_DIST (normalized) of the pose head. Kills phantom wireframes
 # (no face there) and mis-bound wireframes (drawn over the wrong person). Set False to

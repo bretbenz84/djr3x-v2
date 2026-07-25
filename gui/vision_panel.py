@@ -281,17 +281,42 @@ class VisionPanel(QWidget):
         zones = getattr(config, "CAMERA_SELF_OCCLUSION_ZONES", None) or []
         if not zones or not getattr(config, "GUI_OBJECT_BOXES_ENABLED", True):
             return
-        pen = QPen(QColor(185, 140, 255, 70), 1)
+        if not getattr(config, "GUI_OCCLUSION_ZONES_VISIBLE", True):
+            return
+        # Readability, not decoration: at the original 1-px dash on 27% alpha these
+        # outlines measured ~11% contrast against the feed and were invisible in
+        # practice (owner 2026-07-24: "I'm not seeing that blocked off anymore" —
+        # while the mask itself was working fine). The zone is now filled and
+        # labelled so it's obvious WHERE detection is disabled and whether the
+        # rectangles still line up with the eye stalks after a camera move.
+        alpha_fill = int(getattr(config, "GUI_OCCLUSION_ZONE_FILL_ALPHA", 48))
+        alpha_edge = int(getattr(config, "GUI_OCCLUSION_ZONE_EDGE_ALPHA", 190))
+        pen = QPen(QColor(185, 140, 255, alpha_edge), 2)
         pen.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
         for zx0, zy0, zx1, zy1 in zones:
-            painter.drawRect(QRectF(
+            rect = QRectF(
                 image_rect.left() + zx0 * image_rect.width(),
                 image_rect.top() + zy0 * image_rect.height(),
                 (zx1 - zx0) * image_rect.width(),
                 (zy1 - zy0) * image_rect.height(),
-            ))
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(185, 140, 255, alpha_fill))
+            painter.drawRect(rect)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # One label for the whole mask — repeating it per zone just adds clutter.
+        first = zones[0]
+        painter.setPen(QPen(QColor(205, 175, 255, 220), 1))
+        painter.drawText(
+            QPointF(
+                image_rect.left() + first[0] * image_rect.width() + 6,
+                image_rect.top() + first[1] * image_rect.height() + 14,
+            ),
+            "no-detect (eye stalks)",
+        )
 
     def _draw_objects(
         self,

@@ -160,3 +160,51 @@ class CoarseHandPointsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(_GUI_OK, "PySide6 / Qt offscreen platform unavailable")
+class OcclusionZoneVisibilityTest(unittest.TestCase):
+    """The self-occlusion zones must be VISIBLY marked on the preview.
+
+    Field 2026-07-24: "earlier we had put a block on object recognition to certain
+    regions of the camera. Now I'm not seeing that blocked off anymore." The mask
+    itself was working — the outline was a 1-px dash at 27% alpha, which measured
+    ~11% peak contrast against the feed and was invisible in practice. The overlay
+    is the only way to check the rectangles still line up with the eye stalks after
+    a camera move, so it has to actually read on screen.
+    """
+
+    ZONES = [(0.0, 0.5, 0.32, 1.0), (0.6, 0.45, 1.0, 1.0)]
+
+    def _render(self, zones):
+        import config
+        from unittest import mock
+        with mock.patch.object(config, "CAMERA_SELF_OCCLUSION_ZONES", list(zones), create=True):
+            panel = VisionPanel()
+            panel.resize(800, 500)
+            frame = np.full((1080, 1920, 3), 90, dtype=np.uint8)   # flat mid-grey
+            panel.set_snapshot({"frame": frame, "world_state": {}})
+            image = QImage(800, 500, QImage.Format.Format_RGB32)
+            image.fill(0)
+            panel.render(image)
+            buf = np.frombuffer(image.constBits(), dtype=np.uint8)
+            return buf.reshape(500, 800, 4)[:, :, :3].astype(int).copy()
+
+    def test_zones_are_clearly_visible_over_the_feed(self):
+        plain = self._render([])
+        marked = self._render(self.ZONES)
+        diff = np.abs(plain - marked).sum(axis=2)
+        changed = int((diff > 3).sum())
+        # A filled + outlined zone covers a large area at real contrast. The old
+        # hairline dash scored ~2.7k px and a peak delta of 84/765.
+        self.assertGreater(changed, 20000, "occlusion zones are barely marked")
+        self.assertGreater(int(diff.max()), 200, "zone marking has too little contrast")
+
+    def test_zones_can_be_turned_off(self):
+        import config
+        from unittest import mock
+        plain = self._render([])
+        with mock.patch.object(config, "GUI_OCCLUSION_ZONES_VISIBLE", False, create=True):
+            hidden = self._render(self.ZONES)
+        self.assertEqual(int(np.abs(plain - hidden).sum()), 0,
+                         "GUI_OCCLUSION_ZONES_VISIBLE=False must draw nothing")
