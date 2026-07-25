@@ -39,7 +39,9 @@ class MotionAgencyTest(unittest.TestCase):
         # (tests/test_motion.py) leaves the realign stand-down armed and every
         # realign assertion below silently fails.
         MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
-                         last_approach_at=0.0, user_motion_at=0.0)
+                         last_approach_at=0.0, user_motion_at=0.0,
+                         realign_pending_seq=None, traction_fails=0,
+                         no_traction_until=0.0)
         self._patches = [
             mock.patch.object(MA.motion_controller, "available", return_value=True),
             mock.patch.object(MA.motion, "state", return_value="idle"),
@@ -74,6 +76,12 @@ class MotionAgencyTest(unittest.TestCase):
             MA.step(_snapshot(distance_zone=zone, visible=self._visible),
                     profile or _profile())
 
+    def _verdicts(self, *results):
+        """Feed firmware `done` results back for the realign turn seq (always 7)."""
+        seq = iter(results)
+        return mock.patch.object(MA.motion, "done_result",
+                                 side_effect=lambda _s: next(seq, None), create=True)
+
     # ── realign ────────────────────────────────────────────────────────────────
 
     def test_neck_parked_right_turns_base_right(self):
@@ -84,6 +92,65 @@ class MotionAgencyTest(unittest.TestCase):
         deg = self.turn.call_args[0][0]
         self.assertLess(deg, 0)          # + neck frac (Rex's right) -> CW/negative turn
         self.assertGreaterEqual(abs(deg), 10.0)
+
+    # ── no traction (carpet) ───────────────────────────────────────────────────
+    # The firmware aborts a turn that makes no physical yaw progress; two in a row
+    # means the wheels are scrubbing, so the social behaviors stand down.
+
+    def test_two_aborted_turns_stand_down_autonomous_motion(self):
+        self._neck = 7594
+        with self._verdicts("aborted", "aborted"), \
+             mock.patch.object(MA, "_emit_traction_notice"):
+            self._tick(2)                                  # turn 1
+            MA._state["last_turn_at"] = 0.0                # skip the cooldown
+            self._tick(2)                                  # verdict 1 + turn 2
+            MA._state["last_turn_at"] = 0.0
+            self._tick(4)                                  # verdict 2 -> latched
+            before = self.turn.call_count
+            MA._state["last_turn_at"] = 0.0
+            self._tick(6)
+        self.assertEqual(self.turn.call_count, before, "kept grinding after standing down")
+        self.assertGreater(MA._state["no_traction_until"], 0.0)
+
+    def test_one_aborted_turn_does_not_latch(self):
+        # A comms loss aborts finite commands with the same code — one is not enough.
+        self._neck = 7594
+        with self._verdicts("aborted", "completed"):
+            self._tick(2)
+            MA._state["last_turn_at"] = 0.0
+            self._tick(2)
+            MA._state["last_turn_at"] = 0.0
+            self._tick(2)
+        self.assertEqual(MA._state["no_traction_until"], 0.0)
+        self.assertGreaterEqual(self.turn.call_count, 2)
+
+    def test_completed_turn_clears_the_fail_streak(self):
+        self._neck = 7594
+        MA._state["traction_fails"] = 1
+        with self._verdicts("completed"):
+            self._tick(2)
+            MA._state["last_turn_at"] = 0.0
+            self._tick(2)
+        self.assertEqual(MA._state["traction_fails"], 0)
+
+    def test_traction_notice_is_spoken_once(self):
+        self._neck = 7594
+        with self._verdicts("aborted", "aborted"), \
+             mock.patch.object(MA, "_emit_traction_notice") as notice:
+            self._tick(2)
+            MA._state["last_turn_at"] = 0.0
+            self._tick(2)
+            MA._state["last_turn_at"] = 0.0
+            self._tick(6)
+        self.assertEqual(notice.call_count, 1)
+
+    def test_voice_command_clears_the_traction_latch(self):
+        # Explicit commands are never gated: the owner may have carried him to tile.
+        MA._state["no_traction_until"] = time.monotonic() + 300.0
+        MA._state["traction_fails"] = 3
+        MA.note_user_motion()
+        self.assertEqual(MA._state["no_traction_until"], 0.0)
+        self.assertEqual(MA._state["traction_fails"], 0)
 
     def test_single_tick_does_not_turn(self):
         self._neck = 7594

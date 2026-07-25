@@ -423,6 +423,16 @@ def wait_ack(seq: int, timeout: float = 0.5) -> "dict | None":
     return None
 
 
+def done_result(seq: int) -> "str | None":
+    """The firmware's outcome string for ``seq`` ("completed" / "aborted" /
+    "blocked" / "superseded"), or None while it is still in flight or forgotten.
+    Non-blocking, unlike wait_done — callers on the ~1 Hz consciousness tick must
+    never park the tick waiting on the base."""
+    with _state_lock:
+        done = _dones.get(int(seq))
+    return str(done.get("result") or "") or None if done else None
+
+
 def wait_done(seq: int, timeout: float = 8.0) -> "dict | None":
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

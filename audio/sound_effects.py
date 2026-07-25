@@ -167,6 +167,23 @@ def _family_allowed(family: str) -> bool:
     return bool(getattr(config, flag, True))
 
 
+def _suppresses_mic(family: str) -> bool:
+    """Whether playing this family should mute the microphone.
+
+    SPEECH chirps are voice-like and would be transcribed as words, so they mute.
+    DRIVE/SERVO whirs are Rex's own machinery — transcribing a motor whine yields
+    junk the hallucination filters already drop, and muting for it is actively
+    harmful: once the whir LOOPS for the length of a move, the mic stays dead for
+    the whole manoeuvre. Field 2026-07-25, while the base ground away on carpet and
+    realign retried every ~10 s: "repeated commands 'don't move' and 'stop moving'
+    were simply ignored... the move sound effects and motor whine are cutting me
+    off from being heard." He was deafened by his own sound effect.
+    """
+    if family in ("motion", "servo", "headlift"):
+        return bool(getattr(config, "SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC", False))
+    return True
+
+
 def _cooldown(family: str) -> float:
     name = {
         "speech": "SOUND_EFFECTS_SPEECH_COOLDOWN_SECS",
@@ -343,8 +360,10 @@ def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
         if not acquired:
             _log.debug("[sfx] output busy — dropped %s", path.stem)
             return False
+        mutes = _suppresses_mic(_family(key))
         try:
-            echo_cancel.set_playing(True)
+            if mutes:
+                echo_cancel.set_playing(True)
             _log.info("[sfx] ▶ %s (%s)", path.stem, key)
             sd.play(audio, samplerate, blocksize=2048)
             deadline = time.monotonic() + (audio.shape[0] / float(samplerate)) + 0.1
@@ -360,7 +379,8 @@ def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
             _log.debug("[sfx] playback error for %s: %s", path.name, exc)
         finally:
             try:
-                echo_cancel.set_playing(False, tail_secs=0.25)
+                if mutes:
+                    echo_cancel.set_playing(False, tail_secs=0.25)
             except Exception:
                 pass
     return True
@@ -426,8 +446,10 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key,
         audio = audio.reshape(-1, 1)
     stream = None
     started = False
+    mutes = _suppresses_mic(_family(key))
     try:
-        echo_cancel.set_playing(True)
+        if mutes:
+            echo_cancel.set_playing(True)
         _log.info("[sfx] ▶ %s (%s, overlay)", path.stem, key)
         stream = sd.OutputStream(
             samplerate=samplerate,
@@ -458,7 +480,7 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key,
         except Exception:
             pass
         try:
-            if output_gate.active_source() != "tts":
+            if mutes and output_gate.active_source() != "tts":
                 echo_cancel.set_playing(False, tail_secs=0.4)
         except Exception:
             pass

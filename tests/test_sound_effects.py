@@ -181,14 +181,15 @@ class SoundEffectsTest(unittest.TestCase):
             t.join(2.0)
 
     def test_overlay_leaves_suppression_to_tts(self):
-        # TTS owns the _playing flag while it speaks — the overlay clip must not
-        # un-mute the mic underneath it.
+        # TTS owns the _playing flag while it speaks — a voice-like overlay clip
+        # must not un-mute the mic underneath it. (Keyed on a SPEECH family: drive
+        # families never mute at all — see the traction tests below.)
         from audio import echo_cancel
         path = sfx._resolve_stem("motion_whir")
         with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)), \
                 mock.patch.object(echo_cancel, "set_playing") as set_playing:
             with output_gate.hold("tts"):
-                sfx._play_path(path, "motion_move", mode="overlay")
+                sfx._play_path(path, "curious", mode="overlay")
         self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True])
 
     def test_overlay_releases_suppression_when_no_tts_follows(self):
@@ -196,7 +197,42 @@ class SoundEffectsTest(unittest.TestCase):
         path = sfx._resolve_stem("motion_whir")
         with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)), \
                 mock.patch.object(echo_cancel, "set_playing") as set_playing:
-            sfx._play_path(path, "motion_move", mode="overlay")
+            sfx._play_path(path, "curious", mode="overlay")
+        self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
+
+    # ── motor noise must never deafen him ──
+    # Field 2026-07-25: the looping drive whir held mic suppression for the WHOLE
+    # manoeuvre, so repeated "don't move" / "stop moving" were never heard while the
+    # base ground away on carpet. Speech chirps still mute (they transcribe as words);
+    # machinery does not.
+
+    def test_drive_effects_never_mute_the_mic(self):
+        from audio import echo_cancel
+        path = sfx._resolve_stem("motion_whir")
+        for key, mode in (("motion_move", "overlay"), ("motion_move", "gated")):
+            with self.subTest(key=key, mode=mode):
+                with mock.patch.object(sfx, "_decode",
+                                       return_value=(np.zeros(4800, np.float32), 48000)), \
+                        mock.patch.object(echo_cancel, "set_playing") as set_playing:
+                    sfx._play_path(path, key, mode=mode)
+                self.assertEqual(set_playing.call_args_list, [])
+
+    def test_speech_effects_still_mute_the_mic(self):
+        from audio import echo_cancel
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(4800, np.float32), 48000)), \
+                mock.patch.object(echo_cancel, "set_playing") as set_playing:
+            sfx._play_path(path, "curious", mode="gated")
+        self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
+
+    def test_drive_muting_can_be_turned_back_on(self):
+        from audio import echo_cancel
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(config, "SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC", True, create=True), \
+                mock.patch.object(sfx, "_decode",
+                                  return_value=(np.zeros(4800, np.float32), 48000)), \
+                mock.patch.object(echo_cancel, "set_playing") as set_playing:
+            sfx._play_path(path, "motion_move", mode="gated")
         self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
 
     def test_overlay_is_ducked_below_the_spoken_line(self):

@@ -1278,8 +1278,14 @@ _MOTION_TURN_RE = re.compile(
 )
 _MOTION_STOP_RE = re.compile(
     r"\b(halt|freeze|stop\s+(?:moving|driving|rolling)|"
-    r"stop\s+the\s+(?:robot|base|droid|wheels|car)|hold\s+still|don'?t\s+move|"
-    r"quit\s+moving|stay\s+(?:there|put))\b",
+    r"stop\s+the\s+(?:robot|base|droid|wheels|car)|hold\s+still|"
+    # "don't move" is a stop; "don't move FORWARD" is a prohibition on a heading —
+    # letting the stop branch claim it would defeat the negation guard and drive him
+    # forward. A direction after the verb disqualifies it.
+    r"(?:don'?t|do\s+not|stop)\s+mov(?:e|ing)\b"
+    r"(?!\s+(?:forward|forwards|back|backward|backwards|left|right|up|down|"
+    r"closer|away|toward|towards|into|onto|to|past|around|any)\b)|"
+    r"quit\s+moving|stay\s+(?:there|put|still))\b",
     re.I,
 )
 _MOTION_DEG_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:deg|degree|degrees|°)", re.I)
@@ -1503,7 +1509,9 @@ def classify_explicit_motion_sequence(
     cleaned = _strip_trailing_vocative(cleaned)
     if not cleaned or not _MOTION_SEQUENCE_SEP_RE.search(cleaned):
         return []
-    if _MOTION_EXPLANATION_RE.search(cleaned) or _MOTION_NEGATED_RE.search(cleaned):
+    if _MOTION_EXPLANATION_RE.search(cleaned) or (
+        _MOTION_NEGATED_RE.search(cleaned) and not _MOTION_STOP_RE.search(cleaned)
+    ):
         return None
     clauses = [c.strip(" .()") for c in _MOTION_SEQUENCE_SEP_RE.split(cleaned)]
     # A LEADING/TRAILING connective leaves empty fragments ("and move backwards" ->
@@ -1555,7 +1563,14 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
     # commands. This guard must precede every motion family because takeover runs
     # before the general dialogue router (field log: "How come you didn't move
     # forward?" otherwise drove the robot while the user was diagnosing it).
-    if _MOTION_EXPLANATION_RE.search(cleaned) or _MOTION_NEGATED_RE.search(cleaned):
+    # A STOP phrase outranks the negation guard. "Don't move" is BOTH — a negated
+    # motion verb and an explicit halt — and the guard (there to stop "don't turn
+    # left" from turning left) swallowed it entirely, so the phrase did nothing even
+    # when heard perfectly. Field 2026-07-25: the owner said "don't move" twice at a
+    # base grinding against carpet and was ignored both times.
+    if _MOTION_EXPLANATION_RE.search(cleaned) or (
+        _MOTION_NEGATED_RE.search(cleaned) and not _MOTION_STOP_RE.search(cleaned)
+    ):
         return None
 
     # Cardinal-direction commands (needs the calibrated compass at execution time).

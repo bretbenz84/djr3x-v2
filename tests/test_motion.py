@@ -420,6 +420,25 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(self._act("come here"), "motion.come")
         self.assertEqual(self._act("halt"), "motion.stop")
 
+    def test_stop_phrases_outrank_the_negation_guard(self):
+        # "don't move" reads as a NEGATED motion mention to the guard that keeps Rex
+        # from driving off when someone says "don't drive into the wall" — so it was
+        # dropped, and the owner's repeated "don't move" / "stop moving" did nothing
+        # while the base ground away on carpet (field 2026-07-25). A stop phrase is
+        # a COMMAND, not a mention: it wins.
+        for text in ("dont move", "don't move", "do not move", "stop moving",
+                     "quit moving", "stay still", "hold still", "stay put",
+                     "freeze", "halt", "stop the robot"):
+            with self.subTest(text=text):
+                self.assertEqual(self._act(text), "motion.stop")
+
+    def test_negated_motion_is_still_not_a_command(self):
+        # The guard must survive: these mention motion without commanding it.
+        for text in ("don't turn left", "do not go forward",
+                     "don't drive into the wall", "how come you did not move forward"):
+            with self.subTest(text=text):
+                self.assertIsNone(self._act(text))
+
     def test_requested_come_phrases(self):
         for text in ("come here", "come over here", "come to me"):
             self.assertEqual(self._act(text), "motion.come")

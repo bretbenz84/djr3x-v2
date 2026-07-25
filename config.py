@@ -7049,6 +7049,23 @@ MOTION_COME_MAX_APPROACHES = 4
 # 2026-07-23: "turn right a little" -> -45 deg, realign +30 deg 13 s later —
 # "I tell it to turn right, it turns left"). Flinch and come-here are unaffected.
 MOTION_USER_MOTION_STANDDOWN_SECS = 45.0
+
+# ---- No-traction stand-down (carpet) ---------------------------------------
+# Rex cannot pivot on carpet: under his own weight the tyres just scrub. The
+# firmware detects this on its own — finite turns close on integrated gyro yaw,
+# and a turn making no physical yaw progress is aborted (TURN_VERIFY_TIMEOUT in
+# calib.h) — so `done result=aborted` on a turn IS the no-traction signal. After
+# this many consecutive aborted autonomous turns, the social behaviors (realign,
+# approach) stand down for a while rather than grind at the floor. Two, not one:
+# a comms loss aborts finite commands with the same code, and one dropped frame
+# should not park him. EXPLICIT VOICE COMMANDS ARE NEVER GATED — if the owner
+# says "turn right", he tries, and a successful turn clears the latch.
+MOTION_TRACTION_FAIL_STREAK     = 2
+MOTION_TRACTION_STANDDOWN_SECS  = 300.0
+MOTION_TRACTION_ANNOUNCE_ENABLED = True
+MOTION_TRACTION_NOTICE_LINE = (
+    "My wheels can't get a grip on this floor — I'll stay put and just look at you."
+)
 # When a VOICE-commanded move/sequence leg ends 'blocked', Rex says this so a cut
 # move doesn't read as an ignored command. Autonomous legs stay silent.
 MOTION_BLOCKED_ANNOUNCE_LINE = "Something's in my way — that's as far as I get."
@@ -7567,6 +7584,13 @@ MOTION_ACK_TIMEOUT_SECS = 0.5         # how long send-and-confirm waits for an a
 # blocking audio) wants the speaker, the effect stops within ~50 ms — an effect can
 # never delay speech. Keys with multiple files are picked at random per play.
 SOUND_EFFECTS_ENABLED        = True
+# Drive/servo effects play from Rex's own body while he is MOVING, and the drive
+# whir now LOOPS for the whole travel. Treating those as "Rex is talking" held mic
+# suppression up for the entire maneuver, so the owner could not be heard over his
+# own motors — field 2026-07-25: repeated "don't move" / "stop moving" went
+# unheard while a realign loop retried every ~10 s. Speech and music still
+# suppress; motor noise does not.
+SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC = False
 SOUND_EFFECTS_DIR            = "assets/audio/sound_effects"
 SOUND_EFFECTS_VOLUME         = 0.8    # 0..1 gain applied to every clip
 # Gain for OVERLAY clips only — the drive sounds on a voice-COMMANDED move, which

@@ -75,17 +75,49 @@ _state = {
     "last_approach_at": 0.0,
     "last_flinch_at": 0.0,
     "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
+    "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
+    "traction_fails": 0,     # consecutive realigns that produced no actual rotation
+    "no_traction_until": 0.0,
 }
 
 
+def _emit_traction_notice() -> None:
+    """Tell the human ONCE why he stopped trying — silence would read as a freeze."""
+    if not _flag("MOTION_TRACTION_ANNOUNCE_ENABLED", True):
+        return
+    try:
+        from audio import speech_queue
+        speech_queue.enqueue(
+            str(getattr(config, "MOTION_TRACTION_NOTICE_LINE",
+                        "My wheels can't get a grip on this floor — I'll stay put.")),
+            emotion="neutral", priority=1, tag="no_traction",
+        )
+    except Exception as exc:
+        _log.debug("traction notice failed: %s", exc)
+
+
+def _traction_lost(now: float) -> bool:
+    return now < float(_state.get("no_traction_until") or 0.0)
+
+
+def note_traction_recovered(reason: str = "") -> None:
+    """Clear the no-traction latch (a human command, or a turn that actually worked)."""
+    if _state.get("traction_fails") or _state.get("no_traction_until"):
+        _log.info("[motion_agency] traction latch cleared (%s)", reason or "recovered")
+    _state["traction_fails"] = 0
+    _state["no_traction_until"] = 0.0
+    _state["realign_pending_seq"] = None
+
+
 def note_user_motion() -> None:
-    """Record an explicit voice motion command. The social realign/approach
+    """Record an explicit voice motion command. Also clears the no-traction latch. The social realign/approach
     behaviors stand down for MOTION_USER_MOTION_STANDDOWN_SECS afterwards — the
     human deliberately pointed the body, and realign was rotating it right back
     (field 2026-07-23: "turn right a little" -> -45, then realign +30 toward the
     face 13 s later, reading as "I tell it to turn right, it turns left"). The
     flinch reflex and an explicit come-here request are unaffected."""
     _state["user_motion_at"] = time.monotonic()
+    note_traction_recovered("user commanded motion")
 
 
 def _user_motion_standdown(now: float) -> bool:
@@ -750,6 +782,44 @@ def _step_inner(snapshot: dict, profile) -> None:
 
     frac = neck_offset_fraction()
 
+    # ── TRACTION CHECK ───────────────────────────────────────────────────────
+    # The firmware already knows. TURN_IMU_VERIFY closes finite turns on integrated
+    # gyro yaw, and a turn that cannot make physical yaw progress is aborted after
+    # TURN_VERIFY_TIMEOUT rather than grinding forever (calib.h). On carpet that is
+    # exactly what happens: the tyres scrub, yaw never moves, `done result=aborted`.
+    # Field 2026-07-25: seven consecutive realign turns, every one aborted at ~8 s,
+    # motors grinding the whole time while the neck sat 55-98% off-centre. So take
+    # the base at its word instead of second-guessing it from the neck offset —
+    # `aborted` IS the no-traction signal. Two in a row (one alone can be comms
+    # loss, which shares the abort code) stands autonomous driving down.
+    pending = _state.get("realign_pending_seq")
+    if pending is not None:
+        verdict = None
+        try:
+            verdict = motion.done_result(int(pending))
+        except Exception:
+            _state["realign_pending_seq"] = None
+        if verdict == "aborted":
+            _state["realign_pending_seq"] = None
+            _state["traction_fails"] = int(_state.get("traction_fails") or 0) + 1
+            if _state["traction_fails"] >= int(_num("MOTION_TRACTION_FAIL_STREAK", 2)):
+                secs = _num("MOTION_TRACTION_STANDDOWN_SECS", 300.0)
+                _state["no_traction_until"] = now + secs
+                _log.warning(
+                    "[motion_agency] no traction — %d turns aborted without physical "
+                    "yaw progress. Autonomous driving stood down %.0fs; voice "
+                    "commands still work.", _state["traction_fails"], secs,
+                )
+                _emit_traction_notice()
+        elif verdict is not None:
+            _state["realign_pending_seq"] = None
+            if verdict == "completed":
+                _state["traction_fails"] = 0   # the wheels bit — floor is fine
+
+    if _traction_lost(now):
+        _reset("neck_hits", "far_hits")
+        return      # the wheels cannot turn here — do not grind at the carpet
+
     # ── REALIGN: rotate the base under the head ──────────────────────────────
     if _flag("MOTION_FACE_PERSON_ENABLED", True) and frac is not None:
         threshold = _num("MOTION_FACE_NECK_FRACTION", 0.30)
@@ -770,6 +840,7 @@ def _step_inner(snapshot: dict, profile) -> None:
                     frac * 100.0, deg, person.get("person_db_id") or person.get("id"),
                 )
                 _state["last_turn_at"] = now
+                _state["realign_pending_seq"] = seq    # did it actually rotate?
             _reset("neck_hits")
             return  # one maneuver per tick
 
