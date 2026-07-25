@@ -431,20 +431,40 @@ void handleCommand(char *cmd) {
 	// Unknown commands are silently ignored.
 }
 
+// Physical pixel for a logical gauge level, where level 0 is the BOTTOM of the
+// column and level 7 the top. Each 8-pixel panel is wired TOP-DOWN — pixel 0 is the
+// topmost LED — so filling from index 0 lit the gauge from the top and emptied
+// downward, backwards for a battery (owner 2026-07-24: "the LEDs are inverted. The
+// top are showing solid while the bottom are off"). Flip GAUGE_BOTTOM_UP to 0 if the
+// panels are ever rewired the other way.
+#define GAUGE_BOTTOM_UP 1
+static inline uint8_t gaugePixel(uint8_t colStart, uint8_t level) {
+	return colStart + (GAUGE_BOTTOM_UP ? (uint8_t)(7 - level) : level);
+}
+
+// SOC -> colour band (owner spec 2026-07-24). The gauge used to be one of three
+// colours and, with the cyan charge packet on top, mostly read as teal.
+static CRGB chargeBandColor(uint8_t soc) {
+	if (soc <= 25) return CRGB(130, 0, 0);     // 0-25   red
+	if (soc <= 50) return CRGB(130, 45, 0);    // 26-50  orange
+	if (soc <= 75) return CRGB(120, 100, 0);   // 51-75  yellow
+	if (soc <= 90) return CRGB(0, 120, 30);    // 76-90  green
+	return CRGB(0, 45, 150);                   // 91-100 blue
+}
+
 // Off-state charge display. The three first 8-pixel bars (A/B/C) are parallel
-// vertical gauges. Filled pixels show SOC; while attached, a bright energy packet
-// repeatedly climbs from the current fill boundary toward the top.
+// vertical gauges filling from the BOTTOM. Filled pixels show SOC in the band
+// colour; while attached, a bright energy packet repeatedly climbs from the current
+// fill boundary toward the top.
 void chargeGauge() {
 	const uint8_t columns[3] = { PanelAStart, PanelBStart, PanelCStart };
 	const uint8_t filled = chargeSoc == 0 ? 0 : min((uint8_t)8, (uint8_t)((chargeSoc + 11) / 12));
-	const CRGB base = chargeSoc <= 20 ? CRGB(100, 0, 0)
-	                  : chargeSoc <= 50 ? CRGB(95, 35, 0)
-	                  : CRGB(0, 80, 28);
+	const CRGB base = chargeBandColor(chargeSoc);
 
 	FastLED.clear();
 	for (uint8_t col = 0; col < 3; col++) {
 		for (uint8_t level = 0; level < filled; level++)
-			DJLEDs[columns[col] + level] = base;
+			DJLEDs[gaugePixel(columns[col], level)] = base;
 	}
 
 	if (!chargeConnected) return;
@@ -452,15 +472,15 @@ void chargeGauge() {
 		const uint8_t travel = 8 - filled;
 		const uint8_t phase = (millis() / 170UL) % (travel + 2); // two-beat gap
 		if (phase < travel) {
-			const uint8_t level = filled + phase;
+			const uint8_t level = filled + phase;   // climbs UPWARD from the fill line
 			for (uint8_t col = 0; col < 3; col++)
-				DJLEDs[columns[col] + level] = CRGB(80, 190, 255);
+				DJLEDs[gaugePixel(columns[col], level)] = CRGB(80, 190, 255);
 		}
 	} else {
-		// At full there is nowhere left to climb; breathe the top row instead.
+		// At full there is nowhere left to climb; breathe the TOP row instead.
 		const uint8_t glow = beatsin8(18, 70, 255);
 		for (uint8_t col = 0; col < 3; col++)
-			DJLEDs[columns[col] + 7] = CRGB(40, glow, glow);
+			DJLEDs[gaugePixel(columns[col], 7)] = CRGB(40, glow, glow);
 	}
 }
 
