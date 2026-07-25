@@ -105,6 +105,8 @@ _requested_come = {
                             # tick, including while the base is mid-turn (see step()):
                             # a sighting during a scan turn must not be thrown away
     "seen_sign": 0.0,       # which way to turn to re-center that sighting (+ = left)
+    "approach_at": 0.0,     # when the last `come` was issued (retry pacing)
+    "approaches": 0,        # how many times we've launched at them this errand
 }
 
 # Flinch detector state, sampled every idle tick and reset whenever the base is
@@ -166,6 +168,8 @@ def request_come_here() -> bool:
         scan_sign=1.0,
         last_seen_at=0.0,
         seen_sign=0.0,
+        approach_at=0.0,
+        approaches=0,
     )
     _reset("neck_hits", "far_hits")
     _log.info("[motion_agency] requested come: searching for a visible person")
@@ -177,7 +181,8 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
         _log.info("[motion_agency] requested come: %s", reason)
     _requested_come.update(active=False, started_at=0.0, search_turns=0,
                            last_turn_at=0.0, scan_sign=1.0,
-                           last_seen_at=0.0, seen_sign=0.0)
+                           last_seen_at=0.0, seen_sign=0.0,
+                           approach_at=0.0, approaches=0)
 
 
 def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> bool:
@@ -276,15 +281,47 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # Person found and centered but the front is momentarily blocked — hold
         # this tick; the approach starts once the zone clears (firmware final say).
         return True
+    # ── APPROACH ────────────────────────────────────────────────────────────
+    # The errand stays ALIVE across the drive. It used to end the instant `come`
+    # was sent, so anything that stopped him short ended the whole thing: field
+    # 2026-07-24, "if he gets blocked by my dog walking in front of it, he stops
+    # and tells me so. But if my dog moves out of the way he should keep trying."
+    # The firmware reports how the drive ended, which is the only signal that can
+    # tell ARRIVED from STOPPED SHORT — the front ToF cannot, because a dog
+    # standing half a metre away looks exactly like having reached someone.
+    _, last_result = motion_controller.last_come_result()
+    if int(_requested_come["approaches"]) > 0:
+        if last_result == "completed":
+            cancel_requested_come("arrived")
+            return True
+        if last_result is None:
+            return True                 # still driving; nothing to decide yet
+        # Stopped short (blocked/aborted). Reaching here already means the base is
+        # idle again (the not-base_idle hold above), i.e. the path cleared. Wait a
+        # short beat so a dog dawdling in front can't become a 1 Hz retry storm.
+        if (now - float(_requested_come["approach_at"])) < _num(
+            "MOTION_COME_RETRY_GAP_SECS", 2.0
+        ):
+            return True
+        if int(_requested_come["approaches"]) >= int(
+            _num("MOTION_COME_MAX_APPROACHES", 4)
+        ):
+            cancel_requested_come("path stayed blocked after repeated tries")
+            return True
+        _log.info("[motion_agency] requested come: path cleared (last=%s) — resuming",
+                  last_result)
+
     stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
     seq = motion_controller.come(0.0, stop_at=stop_at)
     if seq is not None:
+        _requested_come["approach_at"] = now
+        _requested_come["approaches"] = int(_requested_come["approaches"]) + 1
         _log.info(
             "[motion_agency] requested come: approaching person %s "
-            "(stop_at=%.2fm, obstacle-gated)",
+            "(stop_at=%.2fm, obstacle-gated, try %d)",
             person.get("person_db_id") or person.get("id"), stop_at,
+            int(_requested_come["approaches"]),
         )
-        cancel_requested_come("approach issued")
     return True
 
 

@@ -202,7 +202,10 @@ class MotionAgencyTest(unittest.TestCase):
         self.come.assert_called_once_with(
             0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
         )
-        self.assertFalse(MA.requested_come_active())
+        # The errand now stays ALIVE across the drive so a transient obstruction
+        # (a dog crossing) can be waited out and retried; it ends on the firmware
+        # reporting the drive completed. See ComeResumesAfterBlockTest.
+        self.assertTrue(MA.requested_come_active())
 
     def test_requested_come_matches_recognized_db_lock(self):
         self._tracking = {"locked": True, "visible": True, "lock_key": "db:1"}
@@ -374,7 +377,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             self.state.return_value = "idle"
             self._tick(1)
         self.come.assert_called_once()
-        self.assertFalse(MA.requested_come_active())
+        self.assertTrue(MA.requested_come_active(), "alive until the drive reports back")
 
     def test_come_approaches_a_visible_face_without_a_head_lock(self):
         # THE FIELD FAILURE (2026-07-24, owner ~9 ft away): "my face was detected in
@@ -390,7 +393,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
         self._tick(1)
         self.turn.assert_not_called()          # nothing to align: don't sweep the room
         self.come.assert_called_once()         # go to them
-        self.assertFalse(MA.requested_come_active())
+        self.assertTrue(MA.requested_come_active(), "alive until the drive reports back")
 
     def test_come_aligns_off_the_face_when_the_head_is_not_on_them(self):
         # Same situation but the face sits far to Rex's right in frame. With no head
@@ -413,6 +416,96 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             self.assertTrue(MA.request_come_here())
         stop.assert_called_once()
         self.assertTrue(MA.requested_come_active())
+
+
+class ComeResumesAfterBlockTest(unittest.TestCase):
+    """A come-here errand must survive being stopped short.
+
+    Field 2026-07-24: "If he gets blocked by my dog walking in front of it, he stops
+    and tells me so. But if my dog moves out of the way he should keep trying to come
+    to the speaker." The errand used to end the instant `come` was sent, so anything
+    that interrupted the drive ended the whole thing.
+    """
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
+                         last_approach_at=0.0, user_motion_at=0.0)
+        self._result = None          # what the firmware says the last `come` did
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", side_effect=lambda: self._state_val),
+            mock.patch.object(MA.motion_controller, "turn", return_value=7),
+            mock.patch.object(MA.motion_controller, "come", return_value=8),
+            mock.patch.object(MA.motion_controller, "last_come_result",
+                              side_effect=lambda: (8, self._result)),
+            mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
+        ]
+        (self.available, self.state, self.turn, self.come,
+         self.last_result, self.battery) = [p.start() for p in self._patches]
+        self.addCleanup(lambda: [p.stop() for p in self._patches])
+        self.addCleanup(lambda: MA.cancel_requested_come("test cleanup"))
+        self._state_val = "idle"
+        self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
+        self._neck = 6000            # centred: no align turn, straight to the approach
+        self._ws = mock.patch(
+            "world_state.world_state.get",
+            side_effect=lambda key: (
+                {"face_tracking": self._tracking,
+                 "servo_positions": {"neck": self._neck}}
+                if key == "self_state" else {}),
+        )
+        self._ws.start()
+        self.addCleanup(self._ws.stop)
+
+    def _tick(self, n=1):
+        for _ in range(n):
+            MA.step(_snapshot(), _profile())
+
+    def test_dog_walks_through_then_leaves_and_he_resumes(self):
+        with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick()                          # launch
+            self.assertEqual(self.come.call_count, 1)
+            self.assertTrue(MA.requested_come_active(), "errand must stay alive")
+
+            # Dog steps in: firmware blocks the drive.
+            self._result, self._state_val = "blocked", "blocked"
+            self._tick(3)
+            self.assertEqual(self.come.call_count, 1, "must not butt at the obstruction")
+            self.assertTrue(MA.requested_come_active(), "a block must not end the errand")
+
+            # Dog leaves: the base is free again.
+            self._state_val = "idle"
+            self._tick()
+            self.assertEqual(self.come.call_count, 2, "he must resume once the path clears")
+
+    def test_arrival_ends_the_errand(self):
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.assertEqual(self.come.call_count, 1)
+        self._result = "completed"                # firmware reached the stop distance
+        self._tick()
+        self.assertFalse(MA.requested_come_active(), "arriving must end the errand")
+        self.assertEqual(self.come.call_count, 1, "no re-launch after arriving")
+
+    def test_still_driving_is_left_alone(self):
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self._result = None                       # in flight
+        self._tick(3)
+        self.assertEqual(self.come.call_count, 1, "must not re-issue mid-drive")
+        self.assertTrue(MA.requested_come_active())
+
+    def test_a_permanent_obstruction_gives_up(self):
+        with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True), \
+             mock.patch.object(config, "MOTION_COME_MAX_APPROACHES", 3, create=True):
+            self.assertTrue(MA.request_come_here())
+            for _ in range(12):
+                self._tick()
+                self._result = "blocked"          # never actually clears
+        self.assertLessEqual(self.come.call_count, 3)
+        self.assertFalse(MA.requested_come_active(), "must not retry forever")
 
 
 class UserMotionStanddownTest(unittest.TestCase):

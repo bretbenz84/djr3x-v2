@@ -7035,6 +7035,14 @@ MOTION_COME_SIGHT_FRESH_SECS = 6.0
 # GUI at ~9 ft, but a gaze search had pulled the head away, so the lock was gone and
 # Rex swept the room instead of approaching.
 MOTION_COME_RESIGHT_TURN_DEG = 30.0
+# A come-here errand survives being stopped short: if something steps in front of
+# him mid-approach (field 2026-07-24: "if he gets blocked by my dog walking in
+# front of it... if my dog moves out of the way he should keep trying"), he waits
+# for the path to clear and launches again. The beat between tries keeps a dog
+# dawdling in front from becoming a 1 Hz retry storm; the cap, plus the existing
+# MOTION_COME_SEARCH_TIMEOUT_SECS, stops him butting at a permanent obstruction.
+MOTION_COME_RETRY_GAP_SECS = 2.0
+MOTION_COME_MAX_APPROACHES = 4
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
 # the body, and realign was rotating it straight back toward their face (field

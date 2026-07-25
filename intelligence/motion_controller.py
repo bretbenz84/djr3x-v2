@@ -104,6 +104,15 @@ def connect(port: "str | None" = None) -> bool:
 # ── Sound-effect accents for real drive motion ────────────────────────────────────
 
 _last_come_seq: "int | None" = None
+# Outcome of the most recent `come`, so the come-here errand can tell "I arrived"
+# from "something stepped in front of me". ToF cannot make that call — a dog
+# standing 0.5 m away looks exactly like having reached someone.
+_last_come_result: "str | None" = None
+
+
+def last_come_result() -> "tuple[int | None, str | None]":
+    """(seq, result) of the latest `come`; result is None while it is still running."""
+    return _last_come_seq, _last_come_result
 
 
 # A VOICE-COMMANDED move ships a spoken confirmation ("Spinning around.") whose
@@ -258,6 +267,9 @@ def _on_motion_done(msg: dict) -> None:
             _fx_drive_loop_stop(msg.get("seq") if msg else None)
         except Exception:
             pass
+        global _last_come_result
+        if _last_come_seq is not None and msg.get("seq") == _last_come_seq:
+            _last_come_result = result or None
         if result == "blocked":
             _fx("slow_down")
             _maybe_announce_blocked(msg or {})
@@ -678,8 +690,9 @@ def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
         "stop_at": _clampf(stop_at, 0.05, 5.0),
     })
     if seq is not None:
-        global _last_come_seq
+        global _last_come_seq, _last_come_result
         _last_come_seq = seq
+        _last_come_result = None      # in flight
         _fx_drive_loop_start("motion_move", seq)
     return seq
 
