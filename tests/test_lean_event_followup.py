@@ -16,6 +16,7 @@ from unittest import mock
 
 import config
 from intelligence import interaction, lean_brain
+from tests._lean_impulse_state import reset_impulse_state
 
 
 def _one_chunk_stream(text):
@@ -27,6 +28,7 @@ class _FollowupStateCase(unittest.TestCase):
     """Snapshot + reset the shared per-session follow-up state around each test."""
 
     def setUp(self):
+        reset_impulse_state(self)
         self._saved = (
             interaction._last_followup_exchange,
             interaction._last_followup_at,
@@ -414,6 +416,9 @@ class SpokenEventFollowupWiringTest(_FollowupStateCase):
 
 class UndatedEventClauseTest(unittest.TestCase):
     """A dateless aspiration must NOT be asserted to have happened."""
+
+    def setUp(self):
+        reset_impulse_state(self)
 
     def test_dated_event_asserts_it_happened(self):
         clause = lean_brain._event_followup_clause(

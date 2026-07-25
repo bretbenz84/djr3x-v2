@@ -16,6 +16,7 @@ from unittest import mock
 import config
 from intelligence import interaction, lean_brain
 from memory import episodic_recall
+from tests._lean_impulse_state import reset_impulse_state
 
 
 def _one_chunk_stream(text):
@@ -118,6 +119,7 @@ class SpokenMemoryMusingWiringTest(unittest.TestCase):
     flag, and it's only consulted when no higher cue fires."""
 
     def setUp(self):
+        reset_impulse_state(self)
         self._saved = interaction._lean_memory_mused_this_session
         interaction._lean_memory_mused_this_session = False
         self.addCleanup(

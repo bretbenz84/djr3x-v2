@@ -17,6 +17,7 @@ from unittest import mock
 
 import config
 from intelligence import consciousness, interaction, lean_brain
+from tests._lean_impulse_state import reset_impulse_state
 
 
 def _one_chunk_stream(text):
@@ -212,6 +213,7 @@ class SpokenCelebrationWiringTest(unittest.TestCase):
     other cues (which are never even consulted)."""
 
     def setUp(self):
+        reset_impulse_state(self)
         self._saved_fired = set(consciousness._emotional_checkin_fired)
         self._saved_attempts = dict(interaction._celebration_unvoiced_attempts)
         consciousness._emotional_checkin_fired.clear()

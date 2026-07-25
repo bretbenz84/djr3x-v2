@@ -10,6 +10,7 @@ from unittest import mock
 import config
 from intelligence import lean_brain
 from intelligence.action_governor import ActionGovernor, CandidateMove
+from tests._lean_impulse_state import reset_impulse_state
 
 
 class GovernorSuppressionTest(unittest.TestCase):
@@ -235,10 +236,25 @@ class ImpulseBackoffTest(unittest.TestCase):
 class ImpulseReengageTest(unittest.TestCase):
     """After the fast lull-break has yielded the floor (cap hit), a LONG silence with the person
     still present should still get ONE patient, fresh-topic re-engagement — bypassing the fast cap,
-    routed through the calmer re-engage voice (long_silence=True)."""
+    routed through the calmer re-engage voice (long_silence=True).
 
-    def _run(self, *, quiet_secs, consecutive):
+    ORDERING (disengagement protocol, owner 2026-07-18): the direct engagement PROBE
+    ("am I bothering you?") now deliberately intercepts this exact case and runs FIRST
+    — checking in is the polite move at a quiet person, another topic swing is not. The
+    patient re-engage is what happens on the NEXT long silence, once the probe for this
+    silence-run has been spent (_engagement_probed_this_silence).
+    """
+
+    def setUp(self):
+        # The probe path WRITES process-wide globals (_engagement_probe_at, the
+        # rate-cap deque). Left dirty they made every later _maybe_lean_impulse in
+        # the process return False — this class silently broke 8 tests in three
+        # other modules while passing itself.
+        reset_impulse_state(self)
+
+    def _run(self, *, quiet_secs, consecutive, already_probed=False):
         import intelligence.interaction as I
+        I._engagement_probed_this_silence = already_probed
         captured = {}
         spoken = []
         with contextlib.ExitStack() as es:
@@ -286,8 +302,24 @@ class ImpulseReengageTest(unittest.TestCase):
             fired = I._maybe_lean_impulse(idle_for=60.0, effective_idle_timeout=120.0)
         return fired, captured.get("long_silence"), spoken
 
-    def test_long_silence_reengages_past_the_fast_cap(self):
+    def test_long_silence_probes_before_reengaging(self):
+        # Cap blown + long silence, probe not yet spent → the direct check-in wins.
+        # It speaks (via _speak_engagement_probe, not consider_initiating) and arms
+        # the answer window.
+        import intelligence.interaction as I
         fired, mode, spoken = self._run(quiet_secs=42.0, consecutive=5)   # cap (2) already blown
+        self.assertTrue(fired, "40s+ quiet with the person present → Rex says something")
+        self.assertIsNone(mode, "the probe path does not run consider_initiating")
+        self.assertEqual(len(spoken), 1)
+        self.assertNotIn("long weekend", spoken[0],
+                         "the probe line is spoken, not the generated re-engage topic")
+        self.assertGreater(I._engagement_probe_at, 0.0, "probe answer-window armed")
+        self.assertTrue(I._engagement_probed_this_silence, "probe spent for this silence-run")
+
+    def test_long_silence_reengages_once_the_probe_is_spent(self):
+        # The original intent, now reachable on the NEXT long silence: a patient
+        # fresh-topic swing through the calm long_silence voice.
+        fired, mode, spoken = self._run(quiet_secs=42.0, consecutive=5, already_probed=True)
         self.assertTrue(fired, "40s+ quiet with the person present → one patient re-engage fires")
         self.assertTrue(mode, "re-engage routes through the calm long_silence voice")
         self.assertEqual(len(spoken), 1)
