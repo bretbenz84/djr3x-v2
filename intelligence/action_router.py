@@ -1432,6 +1432,32 @@ _TRAILING_VOCATIVE_RE = re.compile(
 )
 
 
+# A bare MAGNITUDE that follows a comma qualifies the clause BEFORE it — "turn left,
+# 15 degrees" is one command, not a route whose second leg is the noun phrase
+# "15 degrees". Number (digits or words) + a distance/angle unit, optionally hedged.
+_MOTION_MAGNITUDE_TAIL_RE = re.compile(
+    r",\s*(?P<mag>(?:about|around|roughly|approximately|like)?\s*"
+    r"(?:\d+(?:\.\d+)?|" + "|".join(sorted(_WORD_NUMBERS, key=len, reverse=True)) + r")\s*"
+    r"(?:deg|degree|degrees|°|" + _MOTION_UNIT_PAT + r"))"
+    r"(?=\s*(?:$|[.!?,;]|\b(?:and|then)\b))",
+    re.I,
+)
+
+
+def _rejoin_magnitude_clauses(text: str) -> str:
+    """Drop the comma in "<motion>, <magnitude>" so the magnitude stays with its verb.
+
+    Field 2026-07-24: "Turn left, 15 degrees." drew "I couldn't safely parse that
+    whole route" and Rex never moved — the comma split it into ["Turn left",
+    "15 degrees"], the second clause classified as nothing, and the mixed
+    motion/non-motion guard refused the WHOLE utterance. The single-command
+    classifier parses the un-comma'd form perfectly (left, 15 deg), so the comma is
+    pure punctuation here. Unlike _strip_trailing_vocative this REJOINS rather than
+    discards — the angle/distance must survive.
+    """
+    return _MOTION_MAGNITUDE_TAIL_RE.sub(lambda m: " " + m.group("mag").strip(), text or "")
+
+
 def _strip_trailing_vocative(text: str) -> str:
     """Drop a trailing comma-address / one-word garble from a route command.
 
@@ -1470,6 +1496,10 @@ def classify_explicit_motion_sequence(
     "move forward and to your right" remains the existing single arc command.
     """
     cleaned = " ".join((text or "").strip().split())
+    # Re-attach magnitudes BEFORE stripping a vocative: ", 15 degrees" is part of the
+    # command, ", Rex" is not. Both run before the separator scan so a comma that is
+    # only punctuation never looks like a route boundary.
+    cleaned = _rejoin_magnitude_clauses(cleaned)
     cleaned = _strip_trailing_vocative(cleaned)
     if not cleaned or not _MOTION_SEQUENCE_SEP_RE.search(cleaned):
         return []

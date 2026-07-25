@@ -29,8 +29,12 @@ def _snapshot(distance_zone="social", slot="person_1"):
 class MotionAgencyTest(unittest.TestCase):
     def setUp(self):
         MA.cancel_requested_come("test reset")
+        # user_motion_at MUST be reset: motion_sequence.start() calls
+        # motion_agency.note_user_motion(), so any earlier test that ran a route
+        # (tests/test_motion.py) leaves the realign stand-down armed and every
+        # realign assertion below silently fails.
         MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
-                         last_approach_at=0.0)
+                         last_approach_at=0.0, user_motion_at=0.0)
         self._patches = [
             mock.patch.object(MA.motion_controller, "available", return_value=True),
             mock.patch.object(MA.motion, "state", return_value="idle"),
@@ -459,7 +463,8 @@ class FlinchTest(unittest.TestCase):
 
     def setUp(self):
         MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
-                         last_approach_at=0.0, last_flinch_at=0.0)
+                         last_approach_at=0.0, last_flinch_at=0.0,
+                         user_motion_at=0.0)
         MA._reset_flinch()
         MA._flinch_state["last_corner_log_at"] = 0.0
         self.addCleanup(MA._reset_flinch)

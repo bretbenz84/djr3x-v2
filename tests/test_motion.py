@@ -502,6 +502,44 @@ class ClassifierTest(unittest.TestCase):
             self.assertIsNotNone(seq, text)
             self.assertEqual([d.action for d in seq], ["motion.turn", "motion.move"], text)
 
+    def test_comma_before_a_magnitude_is_not_a_route_boundary(self):
+        # Field 2026-07-24: "Turn left, 15 degrees." drew "I couldn't safely parse
+        # that whole route" and Rex never moved — the comma split it into
+        # ["Turn left", "15 degrees"], the second clause classified as nothing, and
+        # the mixed motion/non-motion guard refused the WHOLE utterance.
+        for text, deg in (("Turn left, 15 degrees.", 15.0),
+                          ("turn right, 30 degrees", 30.0),
+                          ("turn left, about 45 degrees", 45.0)):
+            self.assertEqual(ar.classify_explicit_motion_sequence(text), [], text)
+            single = ar.classify_explicit_motion(text)
+            self.assertIsNotNone(single, text)
+            self.assertEqual(single.action, "motion.turn", text)
+            self.assertEqual(single.args.get("deg"), deg, text)
+
+    def test_comma_before_a_distance_is_not_a_route_boundary(self):
+        for text, metres in (("move forward, 3 feet", 0.9144),
+                             ("move forward, two feet", 0.6096),
+                             ("move forward, 2 meters", 2.0)):
+            self.assertEqual(ar.classify_explicit_motion_sequence(text), [], text)
+            single = ar.classify_explicit_motion(text)
+            self.assertIsNotNone(single, text)
+            self.assertAlmostEqual(single.args["dist_m"], metres, places=3, msg=text)
+
+    def test_magnitude_survives_inside_a_real_route(self):
+        # The rejoin must not eat a genuine following clause, and the magnitude must
+        # still land on the RIGHT step.
+        seq = ar.classify_explicit_motion_sequence(
+            "turn left, 15 degrees, then move forward 3 feet")
+        self.assertEqual([d.action for d in seq], ["motion.turn", "motion.move"])
+        self.assertEqual(seq[0].args["deg"], 15.0)
+        self.assertAlmostEqual(seq[1].args["dist_m"], 0.9144, places=4)
+
+        seq = ar.classify_explicit_motion_sequence(
+            "turn right, 30 degrees and move forward 2 meters")
+        self.assertEqual([d.action for d in seq], ["motion.turn", "motion.move"])
+        self.assertEqual(seq[0].args["deg"], 30.0)
+        self.assertAlmostEqual(seq[1].args["dist_m"], 2.0, places=4)
+
     def test_trailing_real_action_still_refuses(self):
         # The vocative strip must NOT weaken the partial-execution guard: a genuine
         # non-motion action after a comma is still a refusal.
