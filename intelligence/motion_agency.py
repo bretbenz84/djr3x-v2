@@ -78,6 +78,9 @@ _state = {
     "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
     "traction_fails": 0,     # consecutive realigns that produced no actual rotation
     "no_traction_until": 0.0,
+    "hold_at": None,         # "don't move" — latched until told to move again
+                             # (None = not held; a stamp of 0.0 is a real hold, so
+                             # the falsy-means-released shorthand is wrong here)
 }
 
 
@@ -109,14 +112,48 @@ def note_traction_recovered(reason: str = "") -> None:
     _state["realign_pending_seq"] = None
 
 
+def note_user_hold(reason: str = "user said stop") -> None:
+    """The human told him to STOP / not move. Unlike a steering command this is a
+    standing instruction, so it LATCHES: realign and approach stay down until he is
+    explicitly told to move again (or MOTION_STOP_STANDDOWN_SECS elapses, if set).
+
+    Field 2026-07-25, the second carpet run: "Don't move." -> "Stopping." -> and 49 s
+    later he was turning again, because a stop only armed the 45 s steering window.
+    The owner's plain meaning is "stay put", not "pause briefly".
+
+    It also must NOT clear the no-traction latch. Being told to stop is the opposite
+    of evidence that the wheels found grip — that clear reset the abort streak to
+    zero mid-count in the same run, so the carpet detector never reached its
+    threshold. Only a real drive command clears it."""
+    _state["hold_at"] = time.monotonic()
+    _log.info("[motion_agency] autonomous motion held (%s)", reason)
+
+
+def release_user_hold(reason: str = "user commanded motion") -> None:
+    if _state.get("hold_at") is not None:
+        _log.info("[motion_agency] hold released (%s)", reason)
+    _state["hold_at"] = None
+
+
+def _user_hold_active(now: float) -> bool:
+    at = _state.get("hold_at")
+    if at is None:
+        return False
+    window = _num("MOTION_STOP_STANDDOWN_SECS", 0.0)
+    return True if window <= 0.0 else (now - float(at)) < window
+
+
 def note_user_motion() -> None:
-    """Record an explicit voice motion command. Also clears the no-traction latch. The social realign/approach
+    """Record an explicit voice motion command. Also releases a stop-hold and clears
+    the no-traction latch — the human is asking for movement, and may have carried
+    him onto a floor he can actually turn on. The social realign/approach
     behaviors stand down for MOTION_USER_MOTION_STANDDOWN_SECS afterwards — the
     human deliberately pointed the body, and realign was rotating it right back
     (field 2026-07-23: "turn right a little" -> -45, then realign +30 toward the
     face 13 s later, reading as "I tell it to turn right, it turns left"). The
     flinch reflex and an explicit come-here request are unaffected."""
     _state["user_motion_at"] = time.monotonic()
+    release_user_hold()
     note_traction_recovered("user commanded motion")
 
 
@@ -183,6 +220,11 @@ def request_come_here() -> bool:
     """Arm a bounded search/align/approach sequence for an explicit voice request."""
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
         return False
+    # "Come here" asks for movement, so it lifts an earlier "don't move" outright
+    # rather than merely bypassing it — otherwise realign would still be silently
+    # held after he had plainly been invited to drive across the room.
+    release_user_hold("come-here request")
+    note_traction_recovered("come-here request")
     # An explicit "come here" outranks the autonomous explorer — stop it and take
     # the base (field 2026-07-23: come requests died with "room exploration owns
     # the base" and Rex kept wandering instead of coming).
@@ -768,10 +810,11 @@ def _step_inner(snapshot: dict, profile) -> None:
         _reset("neck_hits", "far_hits")
         return
 
-    # The human just steered the body by voice — honor their placement instead of
-    # rotating it back toward their face (see note_user_motion). Counters reset so
-    # stale off-center ticks can't fire the instant the window expires.
-    if _user_motion_standdown(time.monotonic()):
+    # The human steered the body by voice (honor their placement instead of rotating
+    # it back toward their face — see note_user_motion), or told him to stay put
+    # outright (note_user_hold, which latches). Counters reset either way, so stale
+    # off-center ticks can't fire the instant the stand-down lifts.
+    if _user_motion_standdown(now) or _user_hold_active(now):
         _reset("neck_hits", "far_hits")
         return
 

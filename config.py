@@ -7050,6 +7050,13 @@ MOTION_COME_MAX_APPROACHES = 4
 # "I tell it to turn right, it turns left"). Flinch and come-here are unaffected.
 MOTION_USER_MOTION_STANDDOWN_SECS = 45.0
 
+# "Don't move" / "stop moving" is a standing instruction, not a 45-second pause, so
+# it LATCHES: the social behaviors (realign, approach) stay down until he is told to
+# move again. 0 = no expiry, which is the plain meaning of the words. Set a positive
+# number of seconds if you would rather he quietly resume on his own. An explicit
+# come-here and the flinch reflex are never gated by this.
+MOTION_STOP_STANDDOWN_SECS = 0.0
+
 # ---- No-traction stand-down (carpet) ---------------------------------------
 # Rex cannot pivot on carpet: under his own weight the tyres just scrub. The
 # firmware detects this on its own — finite turns close on integrated gyro yaw,

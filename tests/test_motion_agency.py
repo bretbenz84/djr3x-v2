@@ -41,7 +41,7 @@ class MotionAgencyTest(unittest.TestCase):
         MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
                          last_approach_at=0.0, user_motion_at=0.0,
                          realign_pending_seq=None, traction_fails=0,
-                         no_traction_until=0.0)
+                         no_traction_until=0.0, hold_at=None)
         self._patches = [
             mock.patch.object(MA.motion_controller, "available", return_value=True),
             mock.patch.object(MA.motion, "state", return_value="idle"),
@@ -143,6 +143,50 @@ class MotionAgencyTest(unittest.TestCase):
             MA._state["last_turn_at"] = 0.0
             self._tick(6)
         self.assertEqual(notice.call_count, 1)
+
+    def test_stop_does_not_clear_the_traction_streak(self):
+        # Field 2026-07-25 (14:30 run): a realign turn aborted (streak 1), the owner
+        # said "Don't move", and note_user_motion() wiped the streak — so the carpet
+        # detector never reached its threshold and he tried again 49 s later. Being
+        # told to stop is the opposite of evidence that the wheels found grip.
+        MA._state["traction_fails"] = 1
+        MA.note_user_hold("user said stop")
+        self.assertEqual(MA._state["traction_fails"], 1)
+
+    # ── "don't move" is a standing instruction ─────────────────────────────────
+
+    def test_hold_outlasts_the_steering_standdown(self):
+        # 49 s after "Stopping." he was realigning again: a stop only armed the 45 s
+        # steering window. The hold latches instead.
+        self._neck = 7594
+        MA.note_user_hold()
+        with mock.patch.object(config, "MOTION_USER_MOTION_STANDDOWN_SECS", 45.0, create=True):
+            MA._state["user_motion_at"] = time.monotonic() - 3600.0   # long expired
+            self._tick(6)
+        self.turn.assert_not_called()
+
+    def test_hold_expires_when_an_expiry_is_configured(self):
+        self._neck = 7594
+        MA.note_user_hold()
+        MA._state["hold_at"] = time.monotonic() - 120.0
+        with mock.patch.object(config, "MOTION_STOP_STANDDOWN_SECS", 60.0, create=True):
+            self._tick(2)
+        self.turn.assert_called_once()
+
+    def test_a_later_move_command_releases_the_hold(self):
+        self._neck = 7594
+        MA.note_user_hold()
+        MA.note_user_motion()
+        MA._state["user_motion_at"] = 0.0        # only the hold is under test here
+        self._tick(2)
+        self.turn.assert_called_once()
+
+    def test_come_here_releases_the_hold(self):
+        MA.note_user_hold()
+        MA._state["no_traction_until"] = time.monotonic() + 300.0
+        MA.request_come_here()
+        self.assertIsNone(MA._state["hold_at"])
+        self.assertEqual(MA._state["no_traction_until"], 0.0)
 
     def test_voice_command_clears_the_traction_latch(self):
         # Explicit commands are never gated: the owner may have carried him to tile.
@@ -583,7 +627,7 @@ class UserMotionStanddownTest(unittest.TestCase):
     def setUp(self):
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
-                         last_approach_at=0.0, user_motion_at=0.0)
+                         last_approach_at=0.0, user_motion_at=0.0, hold_at=None)
         self._patches = [
             mock.patch.object(MA.motion_controller, "available", return_value=True),
             mock.patch.object(MA.motion, "state", return_value="idle"),
@@ -608,6 +652,7 @@ class UserMotionStanddownTest(unittest.TestCase):
 
     def tearDown(self):
         MA._state["user_motion_at"] = 0.0
+        MA._state["hold_at"] = None
         self._ws.stop()
         for p in self._patches:
             p.stop()
@@ -635,6 +680,20 @@ class UserMotionStanddownTest(unittest.TestCase):
         with mock.patch.object(MA, "_maybe_flinch", return_value=True) as flinch:
             self._tick(1)
         flinch.assert_called_once()
+
+    def test_hold_does_not_silence_the_flinch_reflex(self):
+        # A reflex is not a social behavior: someone crowding him still gets a
+        # back-off even while he has been told to stay put.
+        MA.note_user_hold()
+        with mock.patch.object(MA, "_maybe_flinch", return_value=True) as flinch:
+            self._tick(1)
+        flinch.assert_called_once()
+
+    def test_hold_blocks_realign_with_no_expiry(self):
+        MA.note_user_hold()
+        MA._state["hold_at"] = time.monotonic() - 86400.0   # a day ago; 0 = never expires
+        self._tick(4)
+        self.turn.assert_not_called()
 
     def test_come_here_ignores_the_standdown(self):
         MA.note_user_motion()

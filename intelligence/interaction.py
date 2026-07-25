@@ -16863,18 +16863,22 @@ def _handle_router_motion_action(
     if action != "motion.stop" and motion_controller.charging():
         return "I'm plugged in and charging. Wheels stay locked."
 
-    if action in {"motion.turn", "motion.move", "motion.arc", "motion.stop"}:
+    if action in {"motion.turn", "motion.move", "motion.arc"}:
         # The human is steering by voice: the social realign behavior must not
         # rotate the body back toward their face for a while (field 2026-07-23,
         # "turn right" undone by a realign left turn 13 s later).
-        # motion.stop is in this set DELIBERATELY. "Stop moving" used to halt the
-        # base and nothing else, so realign — which had been retrying every ~10 s
-        # because the wheels could not actually turn on carpet — simply fired again
-        # a moment later: field 2026-07-25, "he stopped for a second then started
-        # trying to move his motors again". Telling him to stop has to mean stop.
         try:
             from intelligence import motion_agency
             motion_agency.note_user_motion()
+        except Exception:
+            pass
+    elif action == "motion.stop":
+        # "Don't move" is a STANDING instruction, not a brief pause — it latches
+        # until he's told to move again. Sharing the 45 s steering window meant he
+        # was turning again 49 s after saying "Stopping." (field 2026-07-25).
+        try:
+            from intelligence import motion_agency
+            motion_agency.note_user_hold("user said stop")
         except Exception:
             pass
     if action in {"motion.turn", "motion.move", "motion.arc", "motion.come"}:
