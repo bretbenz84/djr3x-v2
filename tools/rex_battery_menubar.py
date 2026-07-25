@@ -186,6 +186,22 @@ def _queue_batt_full() -> None:
         _tx_queue.append(payload.encode("utf-8"))
 
 
+def _focus_for_dialog() -> None:
+    """Bring this process forward so a modal dialog actually takes the keyboard.
+
+    A menu-bar app runs as an ACCESSORY (no Dock icon, never the active app), so a
+    panel it opens is visible but not KEY — keystrokes keep going to whatever app
+    was frontmost. Owner 2026-07-24: "when I type it goes into any app that has
+    focus, not the window." Activating first makes the panel key; best-effort, since
+    a failure here must never block the dialog itself.
+    """
+    try:
+        from AppKit import NSApplication
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except Exception as exc:
+        log.debug("could not activate for dialog focus: %s", exc)
+
+
 def _queue_batt_soc(pct: float) -> None:
     """Tell the firmware the pack is at a KNOWN percentage (docs §5.11).
 
@@ -1189,6 +1205,7 @@ def run_app() -> int:
             # CONFIRM: this overwrites the coulomb ledger, and the item sits in the
             # same menu as the joystick — a stray click while reaching for the stick
             # silently rewrote a 67% pack to full (owner 2026-07-24).
+            _focus_for_dialog()
             win = rumps.Window(
                 title="Mark pack full?",
                 message=("Set the battery gauge to 100%?\n\nOnly do this when the "
@@ -1206,6 +1223,7 @@ def run_app() -> int:
             if _snapshot()["mode"] != "live":
                 return
             current = _snapshot().get("soc")
+            _focus_for_dialog()
             win = rumps.Window(
                 title="Set battery percentage",
                 message="Tell the firmware the pack's ACTUAL state of charge (0-100).",
