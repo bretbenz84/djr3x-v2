@@ -7422,8 +7422,22 @@ MOTION_COMPASS_TURN_TOLERANCE_DEG = _env_float(
 MOTION_COMPASS_TURN_MAX_CORRECTIONS = _env_int(
     "MOTION_COMPASS_TURN_MAX_CORRECTIONS", 1, min_value=0, max_value=3,
 )
+# 60 (was 30): the cap is a runaway guard, but the base's SYSTEMATIC overshoot is
+# larger than it was — so the guard refused to correct essentially every turn and
+# the verifier logged "not auto-corrected" instead of fixing anything. Measured
+# over 22 turns in one field run (logs/djr3x-2026-07-24-21-58-29): mean overshoot
+# 36.4 deg, max 52, on requests from 12 to 135 deg. The error is roughly CONSTANT
+# rather than proportional, and it tracks turn RATE (~40 deg at 75 deg/s, ~8 deg
+# at the 25 deg/s correction rate) — i.e. about half a second of coast/settle past
+# the firmware's IMU-closed stop. The correction demonstrably works when it is
+# allowed to run: a 27.1 deg error corrected down to 8.7.
+#
+# This is a MITIGATION, not the fix. The base really does turn ~40 deg too far on
+# the first attempt and only then gets pulled back, which is why turns have read
+# as "he went a little far" / "he just spins" all session. The root cause belongs
+# in the firmware's turn stop (or its IMU yaw scale) and needs bench iteration.
 MOTION_COMPASS_TURN_MAX_CORRECTION_DEG = _env_float(
-    "MOTION_COMPASS_TURN_MAX_CORRECTION_DEG", 30.0, min_value=5.0, max_value=90.0,
+    "MOTION_COMPASS_TURN_MAX_CORRECTION_DEG", 60.0, min_value=5.0, max_value=90.0,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
