@@ -186,20 +186,48 @@ def _queue_batt_full() -> None:
         _tx_queue.append(payload.encode("utf-8"))
 
 
-def _focus_for_dialog() -> None:
-    """Bring this process forward so a modal dialog actually takes the keyboard.
+def _run_dialog_focused(win):
+    """Run a rumps.Window modal that actually OWNS the keyboard, then restore.
 
-    A menu-bar app runs as an ACCESSORY (no Dock icon, never the active app), so a
-    panel it opens is visible but not KEY — keystrokes keep going to whatever app
-    was frontmost. Owner 2026-07-24: "when I type it goes into any app that has
-    focus, not the window." Activating first makes the panel key; best-effort, since
-    a failure here must never block the dialog itself.
+    A menu-bar app runs under NSApplicationActivationPolicyAccessory: no Dock icon
+    and it can NEVER become the active application. activateIgnoringOtherApps_ alone
+    does not change that — the panel opens visible but not KEY, so keystrokes keep
+    landing in whatever app is behind it (owner 2026-07-24, twice: "it goes into any
+    app that has focus, not the window").
+
+    The fix is to switch to the REGULAR policy for the life of the dialog, which
+    makes the process a normal foreground app that can take focus, and to name the
+    text field as the window's initial first responder so the caret starts there.
+    The policy is restored in a finally, so the app drops back to menu-bar-only even
+    if the dialog raises.
     """
+    from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
+                        NSApplicationActivationPolicyRegular)
+    app = NSApplication.sharedApplication()
+    prior = None
     try:
-        from AppKit import NSApplication
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        prior = app.activationPolicy()
+        app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        app.activateIgnoringOtherApps_(True)
     except Exception as exc:
-        log.debug("could not activate for dialog focus: %s", exc)
+        log.debug("dialog focus: could not take the foreground (%s)", exc)
+    try:
+        # Put the caret in the text field BEFORE the modal is shown — after
+        # runModal() starts it is too late to set the initial responder.
+        try:
+            field = getattr(win, "_textfield", None)
+            if field is not None:
+                win._alert.window().setInitialFirstResponder_(field)
+        except Exception as exc:
+            log.debug("dialog focus: could not seat the caret (%s)", exc)
+        return win.run()
+    finally:
+        try:
+            app.setActivationPolicy_(
+                prior if prior is not None else NSApplicationActivationPolicyAccessory
+            )
+        except Exception as exc:
+            log.debug("dialog focus: could not restore accessory policy (%s)", exc)
 
 
 def _queue_batt_soc(pct: float) -> None:
@@ -1205,7 +1233,6 @@ def run_app() -> int:
             # CONFIRM: this overwrites the coulomb ledger, and the item sits in the
             # same menu as the joystick — a stray click while reaching for the stick
             # silently rewrote a 67% pack to full (owner 2026-07-24).
-            _focus_for_dialog()
             win = rumps.Window(
                 title="Mark pack full?",
                 message=("Set the battery gauge to 100%?\n\nOnly do this when the "
@@ -1213,7 +1240,7 @@ def run_app() -> int:
                          "overwrites the coulomb ledger."),
                 ok="Set to 100%", cancel="Cancel", dimensions=(0, 0),
             )
-            if not win.run().clicked:
+            if not _run_dialog_focused(win).clicked:
                 log.info("Set Battery to 100% — cancelled at the confirm.")
                 return
             log.info("User clicked Set Battery to 100% — queueing batt_full.")
@@ -1223,14 +1250,13 @@ def run_app() -> int:
             if _snapshot()["mode"] != "live":
                 return
             current = _snapshot().get("soc")
-            _focus_for_dialog()
             win = rumps.Window(
                 title="Set battery percentage",
                 message="Tell the firmware the pack's ACTUAL state of charge (0-100).",
                 default_text=("" if current is None else str(int(current))),
                 ok="Set", cancel="Cancel", dimensions=(80, 20),
             )
-            resp = win.run()
+            resp = _run_dialog_focused(win)
             if not resp.clicked:
                 return
             raw = (resp.text or "").strip().rstrip("%").strip()
