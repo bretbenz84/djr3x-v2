@@ -442,14 +442,23 @@ static inline uint8_t gaugePixel(uint8_t colStart, uint8_t level) {
 	return colStart + (GAUGE_BOTTOM_UP ? (uint8_t)(7 - level) : level);
 }
 
-// SOC -> colour band (owner spec 2026-07-24). The gauge used to be one of three
-// colours and, with the cyan charge packet on top, mostly read as teal.
-static CRGB chargeBandColor(uint8_t soc) {
-	if (soc <= 25) return CRGB(130, 0, 0);     // 0-25   red
-	if (soc <= 50) return CRGB(130, 45, 0);    // 26-50  orange
-	if (soc <= 75) return CRGB(120, 100, 0);   // 51-75  yellow
-	if (soc <= 90) return CRGB(0, 120, 30);    // 76-90  green
+// Charge-level -> colour band (owner spec 2026-07-24).
+static CRGB chargeBandColor(uint8_t pct) {
+	if (pct <= 25) return CRGB(130, 0, 0);     // 0-25   red
+	if (pct <= 50) return CRGB(130, 45, 0);    // 26-50  orange
+	if (pct <= 75) return CRGB(120, 100, 0);   // 51-75  yellow
+	if (pct <= 90) return CRGB(0, 120, 30);    // 76-90  green
 	return CRGB(0, 45, 150);                   // 91-100 blue
+}
+
+// Colour for ONE pixel of the ladder. Each of the 8 pixels stands for a 12.5% step,
+// and takes the band its own top boundary falls in — so the column always reads
+// red, red, orange, orange, yellow, yellow, green, blue from the bottom up, and the
+// CHARGE decides how many are lit rather than what colour they are. Colouring the
+// whole bar one colour (the first pass at this) made every state look alike; the
+// owner wants to read the level from where the lit region ends.
+static CRGB gaugeLevelColor(uint8_t level) {
+	return chargeBandColor((uint8_t)(((uint16_t)level + 1) * 100 / 8));
 }
 
 // Off-state charge display. The three first 8-pixel bars (A/B/C) are parallel
@@ -458,13 +467,18 @@ static CRGB chargeBandColor(uint8_t soc) {
 // fill boundary toward the top.
 void chargeGauge() {
 	const uint8_t columns[3] = { PanelAStart, PanelBStart, PanelCStart };
-	const uint8_t filled = chargeSoc == 0 ? 0 : min((uint8_t)8, (uint8_t)((chargeSoc + 11) / 12));
-	const CRGB base = chargeBandColor(chargeSoc);
+	// Proportional, rounded to nearest pixel. The old (soc+11)/12 saturated at 8
+	// bars from 85% up, so 85% and 100% were indistinguishable — no good when the
+	// point of the bar is to read the level. Any non-zero charge keeps at least one
+	// pixel lit so an almost-flat pack still reads as "something left, and it's red".
+	uint8_t filled = (uint8_t)(((uint16_t)chargeSoc * 8 + 50) / 100);
+	if (chargeSoc > 0 && filled == 0) filled = 1;
+	if (filled > 8) filled = 8;
 
 	FastLED.clear();
 	for (uint8_t col = 0; col < 3; col++) {
 		for (uint8_t level = 0; level < filled; level++)
-			DJLEDs[gaugePixel(columns[col], level)] = base;
+			DJLEDs[gaugePixel(columns[col], level)] = gaugeLevelColor(level);
 	}
 
 	if (!chargeConnected) return;
@@ -477,10 +491,14 @@ void chargeGauge() {
 				DJLEDs[gaugePixel(columns[col], level)] = CRGB(80, 190, 255);
 		}
 	} else {
-		// At full there is nowhere left to climb; breathe the TOP row instead.
+		// At full there is nowhere left to climb; breathe the TOP pixel instead —
+		// in its OWN ladder colour, so a full pack still reads blue rather than
+		// swapping to an unrelated teal.
 		const uint8_t glow = beatsin8(18, 70, 255);
+		CRGB top = gaugeLevelColor(7);
+		top.nscale8_video(glow);
 		for (uint8_t col = 0; col < 3; col++)
-			DJLEDs[gaugePixel(columns[col], 7)] = CRGB(40, glow, glow);
+			DJLEDs[gaugePixel(columns[col], 7)] = top;
 	}
 }
 
