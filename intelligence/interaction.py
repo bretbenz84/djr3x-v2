@@ -20170,7 +20170,13 @@ def _handle_speech_segment(
                     speaker_score,
                     float(getattr(config, "SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE", 0.50)),
                 ),
-                short_utterance=_is_short_utterance(audio_array, transcribed_text),
+                # `text`, NOT `transcribed_text`: the latter is the optional
+                # caller-supplied override and is None on every real voice turn, so
+                # passing it silently disabled the word-count backstop and left only
+                # the padding-fooled duration check (field 2026-07-24: "Come here."
+                # scored 0.232, was ruled off-camera, and the gaze search that
+                # followed broke the face lock come-here depends on).
+                short_utterance=_is_short_utterance(audio_array, text),
             )
             if decision == "voice_agrees":
                 _note_confident_voice(person_id, speaker_score)

@@ -196,7 +196,11 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         cancel_requested_come("no person found before search limit")
         return True
 
-    person = _tracked_person(snapshot)
+    # The head LOCK is a head-behavior signal, not a visibility one — it drops
+    # whenever anything else steers the head and flickers on a small far-away face.
+    # Seeing a known face at all is enough to go to them (field 2026-07-24).
+    locked_person = _tracked_person(snapshot)
+    person = locked_person or _visible_known_person(snapshot)
     if person is None:
         # Re-acquire grace: a chassis turn WE issued swings the camera, so face
         # tracking loses the person for a beat even when they never moved (field
@@ -250,7 +254,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             )
         return True
 
-    frac = neck_offset_fraction()
+    # Align using the neck when the head is on them, else the face's position in
+    # frame — otherwise a come-here acquired without a head lock has no steer.
+    frac = _come_alignment_fraction(person, head_locked=locked_person is not None)
     centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
     if frac is not None and abs(frac) >= centered:
         deg = _turn_degrees_for(frac)
@@ -320,6 +326,75 @@ def neck_offset_fraction() -> Optional[float]:
         return (float(neck) - neutral) / half_span
     except Exception:
         return None
+
+
+def _visible_known_person(snapshot: dict) -> Optional[dict]:
+    """A known person whose face is visible RIGHT NOW, head lock or not.
+
+    The come-here search used to require face_tracking to be LOCKED. That lock is a
+    head-behavior signal, not a "can I see them" signal: it drops whenever something
+    else steers the head (a speaker-gaze search, a scan), and it flickers on a small
+    face across a room. When it dropped, come-here concluded nobody was there and
+    swept the room — field 2026-07-24, owner ~9 ft away: "my face was detected in the
+    GUI when I said come here, but he just turned left and right then around and
+    never came anywhere." The GUI draws from world_state.people, which still had him.
+    """
+    for person in snapshot.get("people") or []:
+        if not isinstance(person, dict):
+            continue
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        pid = person.get("person_db_id")
+        if pid is None or str(pid).strip() == "":
+            continue                      # unknown face — never a come-here target
+        return person
+    return None
+
+
+def _face_offset_fraction(person: Optional[dict]) -> Optional[float]:
+    """Signed horizontal offset of a face box from frame centre, as a fraction of
+    the half-width (+ = toward Rex's right). The alignment signal that still works
+    when the head is NOT pointing at them, so neck offset says nothing useful."""
+    if not person:
+        return None
+    box = person.get("face_box") or person.get("bounding_box") or person.get("bbox")
+    if not box or len(box) < 4:
+        return None
+    try:
+        x, _y, w, _h = (float(v) for v in box[:4])
+    except (TypeError, ValueError):
+        return None
+    try:
+        from world_state import world_state
+        frame = (world_state.get("self_state") or {}).get("frame_size") or {}
+        width = float(frame.get("width") or 0.0)
+    except Exception:
+        width = 0.0
+    if width <= 0.0:
+        width = float(getattr(config, "CAMERA_FRAME_WIDTH", 1920) or 1920)
+    if width <= 0.0:
+        return None
+    centre = x + w / 2.0
+    return max(-1.0, min(1.0, (centre - width / 2.0) / (width / 2.0)))
+
+
+def _come_alignment_fraction(person: Optional[dict], *, head_locked: bool) -> Optional[float]:
+    """How far off-centre the target is, for the come-here align turn.
+
+    WHICH signal is right depends on where the head is pointing, not on magnitude:
+      * head TRACKING them — face-tracking keeps the face centred in frame, so the
+        face offset is ~0 and carries nothing; the neck's offset from neutral IS
+        the body's misalignment (the realign design).
+      * head NOT on them — the neck is wherever something else left it and says
+        nothing about the person, while the face's position in frame is a direct
+        measurement of which way to turn.
+    """
+    if head_locked:
+        frac = neck_offset_fraction()
+        if frac is not None:
+            return frac
+    face_frac = _face_offset_fraction(person)
+    return face_frac if face_frac is not None else neck_offset_fraction()
 
 
 def _tracked_person(snapshot: dict) -> Optional[dict]:
@@ -572,10 +647,11 @@ def _step_inner(snapshot: dict, profile) -> None:
     # without this the sighting is thrown away and the sweep spins right past them
     # (field 2026-07-23: face lock on Bret during scan turn 3, sweep went to -180).
     if requested_come_active():
-        seen = _tracked_person(snapshot)
+        seen_locked = _tracked_person(snapshot)
+        seen = seen_locked or _visible_known_person(snapshot)
         if seen is not None:
             _requested_come["last_seen_at"] = time.monotonic()
-            frac = neck_offset_fraction()
+            frac = _come_alignment_fraction(seen, head_locked=seen_locked is not None)
             if frac is not None and abs(frac) > 0.05:
                 # Same convention as _turn_degrees_for: positive neck offset
                 # (person to Rex's right) needs a negative (CW) base turn.

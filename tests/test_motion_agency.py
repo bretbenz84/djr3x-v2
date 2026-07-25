@@ -21,7 +21,12 @@ def _profile(**over):
     return SimpleNamespace(**base)
 
 
-def _snapshot(distance_zone="social", slot="person_1"):
+def _snapshot(distance_zone="social", slot="person_1", visible=True):
+    """`visible=False` means NOBODY is on camera. The come-here search keys off
+    world_state.people (a head lock is head behavior, not visibility), so clearing
+    only face_tracking no longer simulates an empty room."""
+    if not visible:
+        return {"people": []}
     return {"people": [{"id": slot, "person_db_id": 1,
                         "distance_zone": distance_zone, "face_visible": True}]}
 
@@ -47,6 +52,7 @@ class MotionAgencyTest(unittest.TestCase):
         ]
         # Tracked person: locked+visible on slot person_1.
         self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
+        self._visible = True          # world_state.people also shows them
         self._ws = mock.patch(
             "world_state.world_state.get",
             side_effect=lambda key: (
@@ -65,7 +71,8 @@ class MotionAgencyTest(unittest.TestCase):
 
     def _tick(self, n=1, zone="social", profile=None):
         for _ in range(n):
-            MA.step(_snapshot(distance_zone=zone), profile or _profile())
+            MA.step(_snapshot(distance_zone=zone, visible=self._visible),
+                    profile or _profile())
 
     # ── realign ────────────────────────────────────────────────────────────────
 
@@ -147,6 +154,7 @@ class MotionAgencyTest(unittest.TestCase):
 
     def test_no_tracked_person_resets(self):
         self._tracking = {"locked": False, "visible": False}
+        self._visible = False
         self._tick(6, zone="public")
         self.come.assert_not_called()
 
@@ -181,6 +189,7 @@ class MotionAgencyTest(unittest.TestCase):
 
     def test_requested_come_scans_until_a_person_is_visible(self):
         self._tracking = {"locked": False, "visible": False}
+        self._visible = False        # nobody on camera at all
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.turn.assert_called_once_with(config.MOTION_COME_SEARCH_TURN_DEG)
@@ -217,6 +226,7 @@ class MotionAgencyTest(unittest.TestCase):
 
     def test_requested_come_stops_after_full_search(self):
         self._tracking = {"locked": False, "visible": False}
+        self._visible = False        # nobody on camera
         with mock.patch.object(config, "MOTION_COME_SEARCH_MAX_TURNS", 2, create=True), \
              mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
@@ -229,6 +239,7 @@ class MotionAgencyTest(unittest.TestCase):
         # the grace window the search WAITS instead of stacking more turns (the
         # 2026-07-21 bookshelf spiral).
         self._tracking = {"locked": False, "visible": False}
+        self._visible = False        # nobody on camera at all
         self.assertTrue(MA.request_come_here())
         self._tick(1)                              # scan turn 1 (no prior turn -> no grace)
         self.assertEqual(self.turn.call_count, 1)
@@ -240,6 +251,7 @@ class MotionAgencyTest(unittest.TestCase):
         # Sweep pattern (sign alternates, magnitude grows): +45, -90, +135 — net
         # offsets +45, -45, +90 around the last-known side, not a one-way spiral.
         self._tracking = {"locked": False, "visible": False}
+        self._visible = False        # nobody on camera
         with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(3)
@@ -256,6 +268,7 @@ class MotionAgencyTest(unittest.TestCase):
         align_deg = self.turn.call_args[0][0]
         self.assertGreater(align_deg, 0)
         self._tracking = {"locked": False, "visible": False}
+        self._visible = False        # nobody on camera
         self._tick(2)                              # inside grace -> no scan yet
         self.assertEqual(self.turn.call_count, 1)
         with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
@@ -282,6 +295,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             p.start() for p in self._patches
         ]
         self._tracking = {"locked": False, "visible": False}
+        self._visible = False         # this class exercises the SEARCH path: empty room
         self._neck = 6000
         self._ws = mock.patch(
             "world_state.world_state.get",
@@ -300,7 +314,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
 
     def _tick(self, n=1):
         for _ in range(n):
-            MA.step(_snapshot(), _profile())
+            MA.step(_snapshot(visible=self._visible), _profile())
 
     def test_midturn_sighting_turns_back_instead_of_sweeping_on(self):
         # Scan turn 1 issued; DURING the turn (base moving) the camera sweeps past
@@ -313,12 +327,14 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             # Mid-turn sighting: base busy, person visible, neck parked right.
             self.state.return_value = "moving"
             self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
+            self._visible = True
             self._neck = 7594
             self._tick(1)                              # sampler records; step defers
             self.assertEqual(self.turn.call_count, 1)
             # Lock lost again, base settled.
             self.state.return_value = "idle"
             self._tracking = {"locked": False, "visible": False}
+            self._visible = False        # nobody on camera
             self._tick(1)
         self.assertEqual(self.turn.call_count, 2)
         resight = self.turn.call_args[0][0]
@@ -350,6 +366,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             self.assertEqual(self.turn.call_count, 1)   # scan turn still issued
             # Person found and centered while blocked: hold, don't approach yet.
             self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
+            self._visible = True
             self._tick(1)
             self.come.assert_not_called()
             self.assertTrue(MA.requested_come_active())
@@ -358,6 +375,37 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             self._tick(1)
         self.come.assert_called_once()
         self.assertFalse(MA.requested_come_active())
+
+    def test_come_approaches_a_visible_face_without_a_head_lock(self):
+        # THE FIELD FAILURE (2026-07-24, owner ~9 ft away): "my face was detected in
+        # the GUI when I said come here, but he just turned left and right then
+        # around and never came anywhere." A short "Come here." scored 0.232, was
+        # ruled an off-camera stranger, and the gaze SEARCH that followed pulled the
+        # head off his face — breaking the lock come-here used as its only
+        # visibility signal. world_state.people still had him the whole time.
+        self._tracking = {"locked": False, "visible": False}   # lock pulled away
+        self._visible = True                                   # but plainly on camera
+        self._neck = 6000                                      # head centred: no steer
+        self.assertTrue(MA.request_come_here())
+        self._tick(1)
+        self.turn.assert_not_called()          # nothing to align: don't sweep the room
+        self.come.assert_called_once()         # go to them
+        self.assertFalse(MA.requested_come_active())
+
+    def test_come_aligns_off_the_face_when_the_head_is_not_on_them(self):
+        # Same situation but the face sits far to Rex's right in frame. With no head
+        # lock the neck says "centred", so the align turn has to come from the face's
+        # position in frame or he would drive straight past them.
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = True
+        self._neck = 6000
+        snap = {"people": [{"id": "person_1", "person_db_id": 1,
+                            "distance_zone": "social", "face_visible": True,
+                            "face_box": (1500, 400, 200, 200)}]}   # right of centre
+        self.assertTrue(MA.request_come_here())
+        MA.step(snap, _profile())
+        self.turn.assert_called_once()
+        self.assertLess(self.turn.call_args[0][0], 0, "face on the right -> CW turn")
 
     def test_request_come_stops_active_exploration(self):
         with mock.patch("intelligence.exploration.active", return_value=True), \
@@ -387,6 +435,7 @@ class UserMotionStanddownTest(unittest.TestCase):
             p.start() for p in self._patches
         ]
         self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
+        self._visible = True
         self._neck = 7594   # parked right — realign would fire after 2 confirm ticks
         self._ws = mock.patch(
             "world_state.world_state.get",
@@ -405,7 +454,7 @@ class UserMotionStanddownTest(unittest.TestCase):
 
     def _tick(self, n=1):
         for _ in range(n):
-            MA.step(_snapshot(), _profile())
+            MA.step(_snapshot(visible=self._visible), _profile())
 
     def test_realign_stands_down_after_user_motion(self):
         MA.note_user_motion()

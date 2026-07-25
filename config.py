@@ -7028,6 +7028,12 @@ MOTION_COME_REACQUIRE_GRACE_SECS = 3.0
 # a small step back toward that side and restarts the sweep there, instead of
 # taking the next (bigger) sweep leg away from them.
 MOTION_COME_SIGHT_FRESH_SECS = 6.0
+# Come-here no longer needs the head LOCK to find someone: a known face visible in
+# world_state.people is enough. Alignment then picks its signal by where the head is —
+# neck offset while tracking them (face is centred, so the neck IS the body error),
+# otherwise the face's position in frame. Field 2026-07-24: face plainly visible in the
+# GUI at ~9 ft, but a gaze search had pulled the head away, so the lock was gone and
+# Rex swept the room instead of approaching.
 MOTION_COME_RESIGHT_TURN_DEG = 30.0
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
