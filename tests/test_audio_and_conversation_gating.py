@@ -236,7 +236,9 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_EMOTION", "curious"))
             sleep = stack.enter_context(mock.patch.object(main.time, "sleep"))
             speak = stack.enter_context(mock.patch.object(main.tts, "speak"))
-            thinking = stack.enter_context(mock.patch("audio.sound_effects.play"))
+            # The filler LOOPS now (the clip is ~1.5s but the warmup gap is many
+            # times that) — main.py starts it here and stops it before the ready line.
+            thinking = stack.enter_context(mock.patch("audio.sound_effects.start_loop"))
 
             thread = main._start_startup_boot_tts_thread()
             self.assertIsNotNone(thread)
@@ -245,7 +247,8 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         sleep.assert_called_once_with(1.25)
         speak.assert_called_once_with(line, "curious")
-        thinking.assert_called_once_with("thinking", force=True)
+        thinking.assert_called_once()
+        self.assertEqual(thinking.call_args.args[0], "thinking")
 
     def test_startup_boot_tts_chains_behind_startup_audio_thread(self):
         """The boot filler must follow the startup mp3s immediately: the worker

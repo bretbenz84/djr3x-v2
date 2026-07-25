@@ -895,6 +895,11 @@ def _select_startup_ready_tts_line() -> str:
     return _select_cycling_tts_line(getattr(config, "STARTUP_READY_TTS_LINES", None), state_path)
 
 
+# Handle for the looping startup "thinking" effect (started after the boot line,
+# stopped just before the ready line so it never talks under it).
+_startup_thinking_loop = None
+
+
 def _start_startup_boot_tts_thread(
     wait_for: threading.Thread | None = None,
 ) -> threading.Thread | None:
@@ -946,12 +951,20 @@ def _start_startup_boot_tts_thread(
             logger.info("Playing startup boot TTS after %.1fs delay: %s", delay_secs, line)
             tts.speak(line, emotion)
             if not _is_shutdown_state():
-                # Fill the remaining model-warmup gap before the ready line. This
-                # effect is preemptible, so ready speech takes the speaker as soon
-                # as startup is genuinely complete.
+                # Fill the remaining model-warmup gap before the ready line. LOOPED,
+                # not one-shot: the clip is ~1.5 s and the wait it covers is many
+                # times that, so a single play left most of the gap silent (owner
+                # 2026-07-24). Gated, so it stays preemptible and the ready line
+                # takes the speaker the moment startup is genuinely complete; it is
+                # also stopped explicitly before that line (see _startup_thinking_loop).
                 try:
                     from audio import sound_effects
-                    sound_effects.play("thinking", force=True)
+                    global _startup_thinking_loop
+                    _startup_thinking_loop = sound_effects.start_loop(
+                        "thinking",
+                        gap_secs=float(getattr(config, "STARTUP_THINKING_LOOP_GAP_SECS", 1.2)),
+                        max_secs=float(getattr(config, "STARTUP_THINKING_LOOP_MAX_SECS", 90.0)),
+                    )
                 except Exception as exc:
                     logger.debug("startup thinking effect skipped: %s", exc)
         except Exception as exc:
@@ -1522,6 +1535,14 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # the sensor-warning enqueue); the call below is a defensive, idempotent re-claim.
     # _play_audio_file is a no-op in --noaudio.
     _abort_startup_if_shutdown("ready line")
+    # Startup warmup is over — end the looping "thinking" filler BEFORE announcing
+    # readiness so the loop can't take another pass under the ready line. (It is
+    # preemptible anyway; this just makes the handoff clean and immediate.)
+    try:
+        from audio import sound_effects as _sfx
+        _sfx.stop_loop(_startup_thinking_loop)
+    except Exception as exc:
+        logger.debug("stopping startup thinking loop failed: %s", exc)
     if not no_audio and bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
         ready_line = _select_startup_ready_tts_line()
         try:

@@ -6471,6 +6471,14 @@ STARTUP_BOOT_TTS_DELAY_SECS = _env_float(
     max_value=5.0,
 )
 
+# The "processing" chirp that fills the model-warmup gap between the boot line
+# ("wait, I'm not done") and the ready line. The clip is only ~1.5 s while the gap
+# it covers is many times that, so it LOOPS (owner 2026-07-24: "it should play on a
+# loop until he's ready"). Gated playback, so the ready line preempts it instantly;
+# main.py also stops it explicitly right before speaking.
+STARTUP_THINKING_LOOP_GAP_SECS = 1.2   # quiet beat between repeats — a pulse, not a drone
+STARTUP_THINKING_LOOP_MAX_SECS = 90.0  # cap: never outlive a stalled startup
+
 # "Models loaded, I'm ready" line spoken when startup finishes — REPLACES the old
 # ready chime (see main.py / PLAY_LISTENING_CHIME). main.py cycles through these in
 # DJ-R3X's dry roast style, never repeating consecutively across launches (state in
@@ -7514,6 +7522,15 @@ SOUND_EFFECTS_VOLUME         = 0.8    # 0..1 gain applied to every clip
 # SOUND_EFFECTS_VOLUME so the motor whir sits UNDER "Spinning around." instead of
 # competing with it. Raise toward 0.8 if the motion sounds feel too shy.
 SOUND_EFFECTS_OVERLAY_VOLUME = 0.7
+# ── Looping drive whir ────────────────────────────────────────────────────────
+# The drive clips are ~4 s but a real leg runs longer (12 feet at the exploring
+# speed is ~9 s), so the whir used to fall silent while the wheels were still
+# turning. A finite move/turn now repeats its clip until the base reports done.
+SOUND_EFFECTS_DRIVE_LOOP_ENABLED = True
+SOUND_EFFECTS_DRIVE_LOOP_GAP_SECS = 0.1    # pause between repeats (small = near-seamless)
+# Safety cap: if a `done` frame is ever lost, the whir must not drone forever.
+# Comfortably longer than any single commanded leg.
+SOUND_EFFECTS_DRIVE_LOOP_MAX_SECS = 30.0
 # How long after an explicit voice motion command its drive sounds keep using
 # overlay mode — long enough to cover every leg of a multi-step spoken route.
 MOTION_COMMANDED_FX_WINDOW_SECS = 20.0

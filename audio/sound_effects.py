@@ -327,22 +327,31 @@ def _play_path(path: Path, key: str, mode: str = "gated") -> None:
         _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key)
 
 
-def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key) -> None:
+def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
+                abort=None) -> bool:
     """Serialized, preemptible playback for motion/servo/head-lift accents: acquires the
-    output gate (dropped if busy) and yields to any blocking source (TTS) within ~50 ms."""
+    output gate (dropped if busy) and yields to any blocking source (TTS) within ~50 ms.
+
+    Returns True when the clip actually started. ``abort`` (an Event) cuts playback
+    early — used by the loop driver so a repeat stops the instant the underlying
+    activity ends instead of running the clip out.
+    """
     # Clear BEFORE acquiring: a hook fired after this point (someone about to block on
     # the gate we may win) must be seen by the wait loop below, not erased.
     _yield_event.clear()
     with output_gate.hold("sound-effects", blocking=False) as acquired:
         if not acquired:
             _log.debug("[sfx] output busy — dropped %s", path.stem)
-            return
+            return False
         try:
             echo_cancel.set_playing(True)
             _log.info("[sfx] ▶ %s (%s)", path.stem, key)
             sd.play(audio, samplerate, blocksize=2048)
             deadline = time.monotonic() + (audio.shape[0] / float(samplerate)) + 0.1
             while time.monotonic() < deadline:
+                if abort is not None and abort.is_set():
+                    sd.stop()
+                    break
                 if _yield_event.wait(timeout=0.05):
                     sd.stop()          # speech wants the speaker — hand it over now
                     _log.debug("[sfx] yielded %s to a blocking source", path.stem)
@@ -354,6 +363,7 @@ def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key) -> N
                 echo_cancel.set_playing(False, tail_secs=0.25)
             except Exception:
                 pass
+    return True
 
 
 def _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key) -> None:
@@ -386,7 +396,8 @@ def _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key)
             pass
 
 
-def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key) -> None:
+def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key,
+                  abort=None) -> bool:
     """Motion accent that plays OVER speech, on its own output stream.
 
     A voice-COMMANDED move always ships a spoken confirmation ("Spinning
@@ -414,6 +425,7 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key) ->
     if audio.ndim == 1:
         audio = audio.reshape(-1, 1)
     stream = None
+    started = False
     try:
         echo_cancel.set_playing(True)
         _log.info("[sfx] ▶ %s (%s, overlay)", path.stem, key)
@@ -424,7 +436,18 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key) ->
             latency=str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
         )
         stream.start()
-        stream.write(audio.astype("float32"))
+        started = True
+        if abort is None:
+            stream.write(audio.astype("float32"))
+        else:
+            # Chunked so a loop repeat can be cut the moment the motion ends,
+            # instead of running the whole clip out after the wheels stop.
+            buf = audio.astype("float32")
+            step = max(1, int(samplerate * 0.1))
+            for i in range(0, len(buf), step):
+                if abort.is_set():
+                    break
+                stream.write(buf[i:i + step])
     except Exception as exc:
         _log.debug("[sfx] overlay playback error for %s: %s", path.name, exc)
     finally:
@@ -439,6 +462,113 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key) ->
                 echo_cancel.set_playing(False, tail_secs=0.4)
         except Exception:
             pass
+    return started
+
+
+# ── Looping effects ───────────────────────────────────────────────────────────
+# Some sounds must last as long as the ACTIVITY, not as long as the clip. The two
+# that matter (owner 2026-07-24): the startup "thinking" processing chirp (1.5 s)
+# has to cover a model-warmup wait many times its length, and the drive whir (4 s)
+# has to cover a 12-foot move (~9 s at the exploring speed) instead of going quiet
+# while the wheels are still turning. A loop repeats the clip until stopped,
+# re-picking among a key's variants each pass so it doesn't read as a stuck tape.
+
+
+class LoopHandle:
+    """Handle for a running effect loop. Stop it with sound_effects.stop_loop()."""
+
+    __slots__ = ("key", "_stop", "_thread")
+
+    def __init__(self, key: str):
+        self.key = key
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
+def start_loop(key: str, *, mode: str = "gated", gap_secs: float = 0.15,
+               max_secs: float = 120.0) -> Optional[LoopHandle]:
+    """Repeat effect ``key`` until stop_loop() (or ``max_secs``). Returns a handle.
+
+    ``max_secs`` is a safety cap so a lost completion event can never leave the
+    speaker droning forever. Cooldowns are bypassed inside the loop (the repeat IS
+    the intent) but the family enable flags are still honored, and a gated loop is
+    still preempted by speech on every pass.
+    """
+    if not _enabled():
+        return None
+    family = _family(key)
+    if not _family_allowed(family):
+        return None
+    if not _registry().get(key):
+        return None
+
+    handle = LoopHandle(key)
+    deadline = time.monotonic() + max(0.0, float(max_secs))
+
+    def _run() -> None:
+        while not handle._stop.is_set() and time.monotonic() < deadline:
+            played = _play_once(key, mode=mode, abort=handle._stop)
+            if handle._stop.is_set():
+                break
+            # A dropped pass means the speaker is busy (TTS holds the gate) — back
+            # off so the loop can't spin on a contended gate.
+            handle._stop.wait(max(0.05, gap_secs) if played else 0.5)
+        _log.debug("[sfx] loop %r ended", key)
+
+    thread = threading.Thread(target=_run, daemon=True, name=f"sfx-loop-{key}")
+    handle._thread = thread
+    thread.start()
+    return handle
+
+
+def stop_loop(handle: Optional[LoopHandle], *, join_timeout: float = 1.0) -> None:
+    """Stop a loop started by start_loop(). Safe with None / an already-dead loop."""
+    if handle is None:
+        return
+    handle.stop()
+    thread = handle._thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=max(0.0, join_timeout))
+
+
+def _play_once(key: str, *, mode: str = "gated", abort=None) -> bool:
+    """Synchronously play one pass of ``key``. Returns True if it actually started."""
+    stems = _registry().get(key)
+    if not stems:
+        return False
+    stem = random.choice(list(stems)) if len(stems) > 1 else stems[0]
+    path = _resolve_stem(str(stem))
+    if path is None:
+        return False
+    try:
+        import sounddevice as sd
+    except ImportError:
+        return False
+    from audio import echo_cancel, output_gate
+
+    audio, samplerate = _decode(path)
+    if audio is None or getattr(audio, "size", 0) == 0 or samplerate <= 0:
+        return False
+    try:
+        vol = float(getattr(config, "SOUND_EFFECTS_VOLUME", 0.8))
+    except (TypeError, ValueError):
+        vol = 0.8
+    audio = audio * max(0.0, min(1.0, vol))
+    with _lock:                       # keep the family stamp fresh so a one-shot
+        _last_play_at[_family(key)] = time.monotonic()   # can't cut in mid-loop
+        _last_key_at[key] = time.monotonic()
+    if mode == "overlay":
+        return bool(_play_overlay(sd, echo_cancel, output_gate, audio, samplerate,
+                                  path, key, abort=abort))
+    return bool(_play_gated(sd, echo_cancel, output_gate, audio, samplerate,
+                            path, key, abort=abort))
 
 
 def list_effects() -> dict:

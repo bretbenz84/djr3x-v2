@@ -139,6 +139,65 @@ def _fx(key: str) -> None:
         pass
 
 
+# The drive clips are ~4 s but a real leg is longer — 12 feet at the exploring speed
+# is ~9 s — so the whir used to stop while the wheels were still turning (owner
+# 2026-07-24). For a finite move/turn the effect now LOOPS for the duration of the
+# command and is cut the moment the base reports done.
+_drive_loop_lock = threading.Lock()
+_drive_loop: dict = {}          # seq -> LoopHandle
+
+
+def _fx_drive_loop_start(key: str, seq: "int | None") -> None:
+    if seq is None or int(seq) <= 0:
+        return
+    if not bool(getattr(config, "SOUND_EFFECTS_DRIVE_LOOP_ENABLED", True)):
+        _fx(key)                # one-shot fallback keeps the old behavior
+        return
+    try:
+        from audio import sound_effects
+        handle = sound_effects.start_loop(
+            key,
+            mode="overlay" if _user_commanded_fx() else "gated",
+            gap_secs=float(getattr(config, "SOUND_EFFECTS_DRIVE_LOOP_GAP_SECS", 0.1)),
+            # Safety cap: a dropped `done` frame must never leave the whir droning.
+            max_secs=float(getattr(config, "SOUND_EFFECTS_DRIVE_LOOP_MAX_SECS", 30.0)),
+        )
+    except Exception:
+        return
+    if handle is None:
+        return
+    with _drive_loop_lock:
+        _drive_loop[int(seq)] = handle
+
+
+def _fx_drive_loop_stop(seq: "int | None") -> None:
+    """Stop the whir for a finished command (and reap any stale handles)."""
+    with _drive_loop_lock:
+        handle = _drive_loop.pop(int(seq), None) if seq is not None else None
+        stale = [s for s, h in _drive_loop.items() if not h.running]
+        for s in stale:
+            _drive_loop.pop(s, None)
+    if handle is None:
+        return
+    try:
+        from audio import sound_effects
+        sound_effects.stop_loop(handle, join_timeout=0.2)
+    except Exception:
+        pass
+
+
+def _fx_drive_loop_stop_all() -> None:
+    with _drive_loop_lock:
+        handles = list(_drive_loop.values())
+        _drive_loop.clear()
+    try:
+        from audio import sound_effects
+        for h in handles:
+            sound_effects.stop_loop(h, join_timeout=0.2)
+    except Exception:
+        pass
+
+
 # User-commanded seqs that should SPEAK when the firmware cuts them on an obstacle.
 # Silence was the field failure (2026-07-23): "move forward 5 feet" stopped at ~2 ft
 # on a zone block and Rex said nothing, reading as "he ignores my commands". Only
@@ -193,6 +252,12 @@ def _on_motion_done(msg: dict) -> None:
     and the "whoa, blocked" accent when the base stops a command on an obstacle."""
     try:
         result = str((msg or {}).get("result") or "")
+        # The wheels have stopped — cut the looping whir first, so the arrival /
+        # blocked accent lands in silence instead of on top of a drive sound.
+        try:
+            _fx_drive_loop_stop(msg.get("seq") if msg else None)
+        except Exception:
+            pass
         if result == "blocked":
             _fx("slow_down")
             _maybe_announce_blocked(msg or {})
@@ -538,7 +603,7 @@ def turn(
             epoch=epoch,
             attempt=_verify_attempt,
         )
-        _fx("motion_turn")
+        _fx_drive_loop_start("motion_turn", seq)
     return seq
 
 
@@ -556,7 +621,7 @@ def move(dist: float, speed: "float | None" = None) -> "int | None":
     _cancel_arc()
     seq = motion.send({"cmd": "move", "dist": dist, "speed": speed})
     if seq is not None:
-        _fx("motion_move")
+        _fx_drive_loop_start("motion_move", seq)
     return seq
 
 
@@ -615,7 +680,7 @@ def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
     if seq is not None:
         global _last_come_seq
         _last_come_seq = seq
-        _fx("motion_move")
+        _fx_drive_loop_start("motion_move", seq)
     return seq
 
 
@@ -684,6 +749,7 @@ def drive_manual(lin: float, ang: float) -> "int | None":
 def stop() -> "int | None":
     """Controlled stop. Always honored while connected (bypasses the gate)."""
     _invalidate_turn_verification()
+    _fx_drive_loop_stop_all()   # a stop means silence now, not at the clip's end
     if not motion.connected():
         return None
     _cancel_arc()

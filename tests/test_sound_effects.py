@@ -209,6 +209,61 @@ class SoundEffectsTest(unittest.TestCase):
                 sfx._play_path(path, "motion_move", mode="overlay")
         self.assertEqual(self.sd.stream_starts, 1)
 
+    # ── looping effects ──
+    def test_loop_repeats_until_stopped(self):
+        # A clip shorter than the activity must keep going: the startup "thinking"
+        # chirp is ~1.5 s but covers a much longer warmup, and the ~4 s drive whir
+        # has to cover a ~9 s move (owner 2026-07-24).
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(480, np.float32), 48000)):
+            handle = sfx.start_loop("motion_move", gap_secs=0.01)
+            self.assertIsNotNone(handle)
+            time.sleep(0.25)
+            self.assertGreater(len(self.sd.play_calls), 1, "loop must repeat")
+            sfx.stop_loop(handle)
+        self.assertFalse(handle.running)
+        after = len(self.sd.play_calls)
+        time.sleep(0.15)
+        self.assertEqual(len(self.sd.play_calls), after, "no plays after stop")
+
+    def test_loop_is_cut_immediately_not_at_the_clip_end(self):
+        # stop_loop must abort the in-flight pass, so the whir dies with the wheels
+        # instead of trailing several seconds past the end of the move.
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(48000 * 5, np.float32), 48000)):
+            handle = sfx.start_loop("motion_move", gap_secs=0.01)
+            time.sleep(0.1)
+            t0 = time.monotonic()
+            sfx.stop_loop(handle, join_timeout=2.0)
+            elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 1.0, "a 5s clip must not play out after stop")
+        self.assertGreater(self.sd.stop_calls, 0, "playback was actually cut")
+
+    def test_loop_honors_the_family_kill_switch(self):
+        with mock.patch.object(config, "SOUND_EFFECTS_MOTION_ENABLED", False, create=True):
+            self.assertIsNone(sfx.start_loop("motion_move"))
+
+    def test_loop_unknown_key_is_a_no_op(self):
+        self.assertIsNone(sfx.start_loop("no_such_effect"))
+
+    def test_stop_loop_tolerates_none(self):
+        sfx.stop_loop(None)          # must not raise
+
+    def test_loop_max_secs_caps_a_runaway(self):
+        # A lost `done` frame must never leave the speaker droning.
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(480, np.float32), 48000)):
+            handle = sfx.start_loop("motion_move", gap_secs=0.01, max_secs=0.15)
+            time.sleep(0.4)
+        self.assertFalse(handle.running, "loop must self-terminate at max_secs")
+
+    def test_overlay_loop_uses_its_own_stream_not_sd_play(self):
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(480, np.float32), 48000)):
+            with output_gate.hold("tts"):
+                handle = sfx.start_loop("motion_move", mode="overlay", gap_secs=0.01)
+                time.sleep(0.2)
+                sfx.stop_loop(handle)
+        self.assertGreater(self.sd.stream_starts, 1, "overlay loop repeated")
+        self.assertEqual(self.sd.play_calls, [], "overlay must never touch sd.play")
+
     def test_concurrent_leaves_suppression_to_tts(self):
         # TTS takes the speaker DURING the chirp -> the chirp must not turn mic
         # suppression off at its end (TTS owns _playing now).
