@@ -21,6 +21,7 @@ class _FakeService:
         self.known_names = []   # place_names() return
         self.active_enroll = None  # enrolling_name() return
         self._next_id = 0
+        self.no_drive = {}      # name -> (on, reason)
 
     def get_recognizer(self):
         return object() if self.has_recognizer else None
@@ -41,6 +42,12 @@ class _FakeService:
         self._next_id += 1
         self.enrolled.append(name)
         return self._next_id
+
+    def set_no_drive(self, name, on, reason=None):
+        if name not in self.known_names:
+            return False
+        self.no_drive[name] = (bool(on), reason)
+        return True
 
     def belief_context(self):
         return {
@@ -362,3 +369,113 @@ class ReplyGroundingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DriveRuleTest(unittest.TestCase):
+    """"This room has carpet" / "don't move in the workshop" — a standing rule about
+    the FLOOR, filed against the room so it re-arms whenever he walks back in."""
+
+    def setUp(self):
+        pq.reset()
+        self.svc = _FakeService()
+        self.svc.known_names = ["workshop", "dining room"]
+        self.svc.belief = {"name": "workshop", "place_id": 1}
+        self._orig = pq._service
+        pq._service = lambda: self.svc
+        self.addCleanup(lambda: setattr(pq, "_service", self._orig))
+        self.addCleanup(pq.reset)
+
+    def test_the_owners_own_phrasings_all_land(self):
+        for text in ("This room has carpet.", "This room is carpeted.",
+                     "There's carpet in here.", "Don't try to move in this room.",
+                     "Don't move in this room.", "Don't drive in here.",
+                     "Don't move in the workshop.", "No driving in the workshop."):
+            with self.subTest(text=text):
+                self.svc.no_drive.clear()
+                rule = pq.maybe_capture_drive_rule(text)
+                self.assertIsNotNone(rule, "phrase did not parse")
+                self.assertTrue(rule["no_drive"])
+                self.assertTrue(rule["applied"])
+                self.assertEqual(self.svc.no_drive["workshop"][0], True)
+
+    def test_a_named_room_files_against_that_room_not_the_current_one(self):
+        rule = pq.maybe_capture_drive_rule("Don't move in the dining room.")
+        self.assertEqual(rule["name"], "dining room")
+        self.assertNotIn("workshop", self.svc.no_drive)
+        self.assertEqual(self.svc.no_drive["dining room"][0], True)
+        # He's in the workshop, so this rule must not stop his wheels here and now.
+        self.assertFalse(rule["current"])
+
+    def test_a_rule_about_the_room_he_is_in_is_marked_current(self):
+        self.assertTrue(pq.maybe_capture_drive_rule("This room has carpet.")["current"])
+        self.assertTrue(
+            pq.maybe_capture_drive_rule("Don't move in the workshop.")["current"])
+
+    def test_carpet_is_recorded_as_the_reason(self):
+        pq.maybe_capture_drive_rule("This room has carpet.")
+        self.assertEqual(self.svc.no_drive["workshop"], (True, "carpet"))
+
+    def test_the_rule_can_be_lifted_by_voice(self):
+        pq.maybe_capture_drive_rule("This room has carpet.")
+        rule = pq.maybe_capture_drive_rule("You can drive in here.")
+        self.assertFalse(rule["no_drive"])
+        self.assertEqual(self.svc.no_drive["workshop"][0], False)
+
+    def test_hard_floors_lift_it_too(self):
+        pq.maybe_capture_drive_rule("This room has carpet.")
+        for text in ("This room has hardwood floors.", "No carpet in here.",
+                     "It's fine to drive in the workshop."):
+            with self.subTest(text=text):
+                self.svc.no_drive["workshop"] = (True, "carpet")
+                rule = pq.maybe_capture_drive_rule(text)
+                self.assertIsNotNone(rule)
+                self.assertFalse(rule["no_drive"])
+                self.assertEqual(self.svc.no_drive["workshop"][0], False)
+
+    def test_unrecognized_room_reports_but_cannot_file(self):
+        # He has to stop NOW and say plainly that he can't remember it yet.
+        self.svc.belief = None
+        rule = pq.maybe_capture_drive_rule("This room has carpet.")
+        self.assertTrue(rule["no_drive"])
+        self.assertFalse(rule["applied"])
+        self.assertTrue(rule["here"])
+        self.assertIn("don't know which room", pq.drive_rule_ack_line(rule).lower())
+
+    def test_room_he_has_never_enrolled_reports_but_cannot_file(self):
+        rule = pq.maybe_capture_drive_rule("Don't move in the nursery.")
+        self.assertEqual(rule["name"], "nursery")
+        self.assertFalse(rule["applied"])
+        self.assertEqual(self.svc.no_drive, {})
+
+    def test_direction_words_are_not_rooms(self):
+        # "don't move forward" must reach the motion router, not be filed as a rule
+        # about a room called "forward".
+        for text in ("don't move forward", "don't go closer", "don't move to the left",
+                     "don't drive into the wall"):
+            with self.subTest(text=text):
+                self.assertIsNone(pq.maybe_capture_drive_rule(text))
+
+    def test_unrelated_turns_are_left_alone(self):
+        for text in ("Don't move.", "Come here.", "This is the workshop.",
+                     "What room are you in?", "I love the carpet at my mom's house",
+                     "Back when the den had carpet"):
+            with self.subTest(text=text):
+                self.assertIsNone(pq.maybe_capture_drive_rule(text))
+
+    def test_a_carpet_statement_is_not_mined_for_a_room_name(self):
+        # maybe_capture_answer would happily read "this room has carpet" as a
+        # declaration; the drive rule must win, and interaction.py runs it first.
+        self.assertIsNotNone(pq.maybe_capture_drive_rule("This room has carpet."))
+
+    def test_belief_clause_warns_the_reply_model(self):
+        self.svc.belief = {"name": "workshop", "place_id": 1,
+                           "no_drive": True, "no_drive_reason": "carpet"}
+        clause = pq.belief_clause()
+        self.assertIn("workshop", clause)
+        self.assertIn("not to drive", clause)
+        self.assertIn("carpet", clause)
+
+    def test_belief_clause_is_unchanged_without_a_rule(self):
+        clause = pq.belief_clause()
+        self.assertIn("workshop", clause)
+        self.assertNotIn("not to drive", clause)

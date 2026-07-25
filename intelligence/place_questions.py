@@ -365,6 +365,172 @@ def _enroll(name: str) -> Optional[int]:
         return None
 
 
+# ── "don't drive in this room" ──────────────────────────────────────────────────
+# Rex cannot pivot on carpet — under his own weight the tyres just scrub and the turn
+# never completes (the firmware aborts it; motion_agency stands down after two). The
+# traction detector catches that AFTER a couple of grinding attempts. This lets the
+# owner say it once, up front, and have it stick to the ROOM: "this room has carpet",
+# "don't move in the workshop". Persisted per place, so walking him back in re-arms it.
+
+_DRIVE_VERB = r"(?:mov(?:e|es|ing)|driv(?:e|es|ing)|roll(?:s|ing)?|wander(?:s|ing)?|" \
+              r"go(?:es|ing)?|scoot(?:s|ing)?)"
+
+# The place tail: either a here-reference (resolved against the current belief) or a
+# named room. Deliberately loose — _resolve_room does the real work.
+_PLACE_TAIL = (r"(?P<place>(?:in\s+|into\s+|around\s+)?"
+               r"(?:this\s+|the\s+|that\s+|my\s+|our\s+)?[a-z][a-z' ]{0,24}?)")
+
+_FLOOR_BAD = r"(?:carpet(?:ed|ing)?|shag|a\s+rug|rugs|carpets)"
+_FLOOR_OK = (r"(?:no\s+carpet|hard\s*(?:wood)?\s*floors?|hardwood|tile[ds]?|"
+             r"linoleum|lino|concrete|laminate|vinyl)")
+
+_NO_DRIVE_RES = (
+    # "don't (try to) move in this room" / "don't drive in the workshop"
+    re.compile(r"\b(?:don'?t|do\s+not|never|no)\s+(?:you\s+)?(?:try(?:ing)?\s+to\s+)?"
+               + _DRIVE_VERB + r"\s+(?:around\s+)?" + _PLACE_TAIL + r"\s*[.!]*$", re.I),
+    # "no driving in here"
+    re.compile(r"\bno\s+(?:driving|moving|rolling|wandering)\s+" + _PLACE_TAIL
+               + r"\s*[.!]*$", re.I),
+    # "this room has carpet" / "the workshop is carpeted" / "there's carpet in here"
+    re.compile(r"^" + _PLACE_TAIL + r"\s+(?:has|have|'?s|is|are)\s+(?:got\s+)?(?:a\s+)?"
+               + _FLOOR_BAD + r"\s*[.!]*$", re.I),
+    re.compile(r"\bthere'?s?\s+" + _FLOOR_BAD + r"\s+" + _PLACE_TAIL + r"\s*[.!]*$", re.I),
+)
+
+_CAN_DRIVE_RES = (
+    # "you can move in here" / "it's fine to drive in the workshop"
+    re.compile(r"\b(?:you\s+can|you\s+may|feel\s+free\s+to|it'?s\s+(?:ok|okay|fine|"
+               r"alright)\s+to|ok(?:ay)?\s+to)\s+" + _DRIVE_VERB
+               + r"\s+(?:around\s+)?" + _PLACE_TAIL + r"\s*[.!]*$", re.I),
+    # "this room has hardwood" / "no carpet in here"
+    re.compile(r"^" + _PLACE_TAIL + r"\s+(?:has|have|'?s|is|are)\s+(?:got\s+)?"
+               + _FLOOR_OK + r"\s*[.!]*$", re.I),
+    re.compile(r"^" + _FLOOR_OK + r"\s+" + _PLACE_TAIL + r"\s*[.!]*$", re.I),
+)
+
+# "this room", "here", "in here" — resolve against whatever he currently believes.
+_HERE_WORDS = ("this room", "this place", "this one", "here", "in here", "this area",
+               "the room", "this", "it")
+
+
+def _resolve_room(tail: str) -> "tuple[str | None, bool]":
+    """(room name, was_a_here_reference). None when the phrase points at HERE and he
+    doesn't know where here is — the caller has to say so rather than guess."""
+    cleaned = " ".join(str(tail or "").split()).lower().strip(" .!,")
+    for lead in ("in ", "into ", "around ", "on "):
+        if cleaned.startswith(lead):
+            cleaned = cleaned[len(lead):].strip()
+    if cleaned in _HERE_WORDS:
+        return _believed_room_name(), True
+    for art in _ARTICLES:
+        if cleaned.startswith(art):
+            cleaned = cleaned[len(art):].strip()
+            break
+    if cleaned in _HERE_WORDS:
+        return _believed_room_name(), True
+    return (cleaned or None), False
+
+
+def _believed_room_name() -> Optional[str]:
+    svc = _service()
+    try:
+        belief = svc.current_place() if svc else None
+    except Exception:
+        return None
+    name = (belief or {}).get("name") if isinstance(belief, dict) else None
+    return str(name) if name else None
+
+
+def _looks_like_a_room(name: str) -> bool:
+    """A room he has enrolled, or a phrase built from a known room word. Anything
+    else ("forward", "closer", "the wall") is not somewhere to file a rule against."""
+    low = str(name or "").strip().lower()
+    if not low:
+        return False
+    svc = _service()
+    try:
+        if svc is not None and low in [str(n).lower() for n in svc.place_names()]:
+            return True
+    except Exception:
+        pass
+    return _room_word_re().search(low) is not None
+
+
+def maybe_capture_drive_rule(text: str) -> Optional[dict]:
+    """Consume "this room has carpet" / "don't drive in the workshop" and persist it
+    against the room. Returns None when the turn isn't one of these.
+
+    On a hit: {"name", "no_drive", "reason", "here", "applied", "known"}. `applied` is
+    False when there is no room to attach it to — an unrecognized view, or a room name
+    he has never enrolled. The rule is still REPORTED so the caller can stop him now
+    and explain; it just can't be filed."""
+    if not _enabled() or not _place_available():
+        return None
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned or cleaned.endswith("?"):
+        return None
+    if _PAST_RE.search(cleaned.lower()):
+        return None                      # "back when the den had carpet…"
+
+    no_drive, match = True, None
+    for rx in _NO_DRIVE_RES:
+        match = rx.search(cleaned)
+        if match:
+            break
+    if match is None:
+        no_drive = False
+        for rx in _CAN_DRIVE_RES:
+            match = rx.search(cleaned)
+            if match:
+                break
+    if match is None:
+        return None
+
+    name, here = _resolve_room(match.groupdict().get("place") or "")
+    # The tail has to be a PLACE. Without this, "don't move forward" / "don't go
+    # closer" parse as a rule about a room called "forward" and consume the turn
+    # that the motion router should have had.
+    if not here:
+        if not name or not _looks_like_a_room(name):
+            return None
+    reason = "carpet" if (no_drive and re.search(_FLOOR_BAD, cleaned, re.I)) else None
+    svc = _service()
+    known = bool(name) and name in (svc.place_names() if svc else [])
+    applied = False
+    if name and known and svc is not None:
+        try:
+            applied = bool(svc.set_no_drive(name, no_drive, reason))
+        except Exception as exc:
+            _log.debug("[place_questions] set_no_drive failed: %s", exc)
+    # "Is this about the room he is standing in?" — a rule filed against a room he
+    # isn't in must not stop him where he is.
+    current = here or (bool(name) and name == _believed_room_name())
+    _log.info("[place_questions] drive rule: room=%s no_drive=%s applied=%s current=%s (%r)",
+              name, no_drive, applied, current, cleaned)
+    return {"name": name, "no_drive": no_drive, "reason": reason, "here": here,
+            "applied": applied, "known": known, "current": current}
+
+
+def drive_rule_ack_line(rule: Optional[dict]) -> str:
+    """Acknowledge the rule — and be honest when it could not be filed anywhere."""
+    rule = rule or {}
+    name = str(rule.get("name") or "").strip()
+    if not rule.get("applied"):
+        if rule.get("here") and not name:
+            return ("Understood — wheels off. I don't know which room this is yet, "
+                    "though, so tell me its name and I'll remember it for next time.")
+        if name:
+            return (f"Understood — wheels off. I don't know the {name} yet, so show me "
+                    "around sometime and I'll remember the rule with it.")
+        return "Understood — wheels off."
+    where = f"the {name}" if name and not name.startswith("the ") else (name or "here")
+    if rule.get("no_drive"):
+        if rule.get("reason") == "carpet":
+            return f"Carpet in {where}. Noted — I'll keep my wheels still in there."
+        return f"No driving in {where}. Noted."
+    return f"Good to know — I can roll around in {where} again."
+
+
 def denial_ack_line(denial: Optional[dict]) -> str:
     """Take the correction gracefully and invite the real name — never argue."""
     was = str((denial or {}).get("was") or "that").strip()
@@ -415,13 +581,21 @@ def belief_clause() -> str:
     belief = ctx.get("belief") or {}
     name = belief.get("name")
     top = ctx.get("top") or []
+    # A standing "don't drive in here" belongs in the reply context too, or he'll
+    # cheerfully offer to come over in a room he has been told to stay out of.
+    rule = ""
+    if belief.get("no_drive"):
+        why = belief.get("no_drive_reason")
+        rule = (" You've been told not to drive in this room"
+                + (f" ({why})" if why else "")
+                + " — don't offer to move or come over; say you'll stay put.")
     if name:
         if ctx.get("ambiguous") and len(top) >= 2:
             other = top[1][0] if top[0][0] == name else top[0][0]
             if other and other != name:
                 return (f"Room: you believe you're in the {name}, though right now it "
-                        f"looks a lot like the {other} too — hedge if asked.")
-        return f"Room: you're in the {name} (you recognize it)."
+                        f"looks a lot like the {other} too — hedge if asked." + rule)
+        return f"Room: you're in the {name} (you recognize it).{rule}"
     if int(ctx.get("known_rooms") or 0) == 0:
         return ("Room: you don't know any rooms yet — nobody has taught you one "
                 "(you learn a room when someone tells you its name).")

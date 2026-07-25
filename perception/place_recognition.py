@@ -181,6 +181,17 @@ def _circular_sep(a: float, b: float) -> float:
     return min(d, 360.0 - d)
 
 
+# Columns added to `places` after it shipped, applied by ALTER on load.
+# no_drive: the owner told Rex not to drive in this room — the floor defeats him
+# (carpet: under his own weight the tyres scrub and a pivot never completes) or they
+# simply don't want a droid rolling around in there. Persisted per ROOM, so walking
+# him back in re-arms it without being told twice.
+_PLACE_COLUMNS = (
+    ("no_drive", "no_drive INTEGER NOT NULL DEFAULT 0"),
+    ("no_drive_reason", "no_drive_reason TEXT"),
+)
+
+
 class PlaceRecognizer:
     """Visual place recognition + enrollment. See the module docstring for the full
     architecture, event names, world_state contract, and thread-safety model."""
@@ -235,6 +246,7 @@ class PlaceRecognizer:
         self._dim: Optional[int] = None
         self._places: dict = {}          # place_id -> name
         self._name_to_id: dict = {}      # name -> place_id
+        self._place_attrs: dict = {}     # place_id -> {"no_drive", "no_drive_reason"}
         self._embeddings: list = []      # list[_Embedding]
         self._matrix = np.zeros((0, 1), dtype=np.float32)   # (N, dim)
         self._emb_pids = np.zeros((0,), dtype=np.int64)     # (N,)
@@ -314,6 +326,14 @@ class PlaceRecognizer:
                 CREATE INDEX IF NOT EXISTS idx_place_emb_tag   ON place_embeddings(model_tag);
                 """
             )
+            # Columns added after the table shipped. CREATE TABLE IF NOT EXISTS is a
+            # no-op on an existing places.db, so grafted columns need an explicit
+            # ALTER or the rooms already enrolled would never get them (same pattern
+            # as memory/rex_db.ensure_schema).
+            have = {row[1] for row in self._conn.execute("PRAGMA table_info(places)")}
+            for column, ddl in _PLACE_COLUMNS:
+                if column not in have:
+                    self._conn.execute(f"ALTER TABLE places ADD COLUMN {ddl}")
             self._conn.commit()
 
     def _load_store(self) -> None:
@@ -321,9 +341,16 @@ class PlaceRecognizer:
             self._places.clear()
             self._name_to_id.clear()
             self._embeddings = []
-            for pid, name in self._conn.execute("SELECT place_id, name FROM places"):
+            self._place_attrs.clear()
+            for pid, name, no_drive, reason in self._conn.execute(
+                "SELECT place_id, name, no_drive, no_drive_reason FROM places"
+            ):
                 self._places[pid] = name
                 self._name_to_id[name] = pid
+                self._place_attrs[pid] = {
+                    "no_drive": bool(no_drive),
+                    "no_drive_reason": reason or None,
+                }
             loaded: list = []
             dim_counts: Counter = Counter()
             for eid, pid, blob, dim, heading, captured in self._conn.execute(
@@ -604,11 +631,16 @@ class PlaceRecognizer:
             self._unknown_armed = False
 
     def _confirm_place_locked(self, pid: int, score: float, now: float) -> None:
+        attrs = self._place_attrs.get(pid) or {}
         self._current_place = {
             "name": self._places.get(pid),
             "place_id": pid,
             "score": float(score),
             "since_ts": now,
+            # Carried on the belief so the motion layer can gate on it every tick
+            # without a DB round trip (see set_no_drive).
+            "no_drive": bool(attrs.get("no_drive")),
+            "no_drive_reason": attrs.get("no_drive_reason"),
         }
         self._moved_since_confirm = False
         self._unknown_streak = 0
@@ -849,6 +881,7 @@ class PlaceRecognizer:
         pid = int(cur.lastrowid)
         self._places[pid] = name
         self._name_to_id[name] = pid
+        self._place_attrs[pid] = {"no_drive": False, "no_drive_reason": None}
         return pid, True
 
     def _insert_embedding_locked(self, place_id: int, vector: np.ndarray,
@@ -956,6 +989,40 @@ class PlaceRecognizer:
         """The room name of the active enrollment session, or None when idle."""
         with self._lock:
             return self._enroll.name if self._enroll is not None else None
+
+    def set_no_drive(self, name: str, on: bool, reason: Optional[str] = None) -> bool:
+        """Record (or lift) "don't drive in this room" for ``name``. Persisted, so it
+        survives a restart and re-arms whenever he recognizes the room again.
+
+        Returns False for a room he has never enrolled — the caller should say so
+        rather than silently filing a rule against a name that will never match."""
+        with self._lock:
+            pid = self._name_to_id.get(name)
+            if pid is None:
+                return False
+            self._conn.execute(
+                "UPDATE places SET no_drive = ?, no_drive_reason = ? WHERE place_id = ?",
+                (1 if on else 0, (reason or None) if on else None, pid),
+            )
+            self._conn.commit()
+            self._place_attrs.setdefault(pid, {}).update(
+                no_drive=bool(on), no_drive_reason=(reason or None) if on else None
+            )
+            # An active belief was built from the OLD attrs — refresh it in place so
+            # the rule takes effect on this tick, not on the next re-confirmation.
+            if self._current_place and self._current_place.get("place_id") == pid:
+                self._current_place["no_drive"] = bool(on)
+                self._current_place["no_drive_reason"] = (reason or None) if on else None
+                self._publish_place(dict(self._current_place))
+            _log.info("[place] %s: no_drive=%s (%s)", name, bool(on), reason or "-")
+            return True
+
+    def no_drive_places(self) -> dict:
+        """{room name: reason-or-None} for every room flagged no-drive."""
+        with self._lock:
+            return {self._places[pid]: (a or {}).get("no_drive_reason")
+                    for pid, a in self._place_attrs.items()
+                    if (a or {}).get("no_drive") and pid in self._places}
 
     def current_place(self) -> Optional[dict]:
         with self._lock:

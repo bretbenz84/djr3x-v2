@@ -293,6 +293,18 @@ def place_names() -> list:
     return rec.place_names() if rec is not None else []
 
 
+def set_no_drive(name: str, on: bool, reason: "str | None" = None) -> bool:
+    """Persist "don't drive in <room>". False when the room isn't enrolled (or the
+    recognizer is off), which the caller should say out loud."""
+    rec = _recognizer
+    return bool(rec.set_no_drive(name, on, reason)) if rec is not None else False
+
+
+def no_drive_places() -> dict:
+    rec = _recognizer
+    return rec.no_drive_places() if rec is not None else {}
+
+
 def reject_belief(name: "str | None" = None) -> bool:
     """A human contradicted the believed room — drop it. True when one was dropped."""
     rec = _recognizer

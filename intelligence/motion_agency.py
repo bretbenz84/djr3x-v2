@@ -78,6 +78,7 @@ _state = {
     "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
     "traction_fails": 0,     # consecutive realigns that produced no actual rotation
     "no_traction_until": 0.0,
+    "no_drive_log_at": 0.0,  # throttle for the room-rule log line
     "hold_at": None,         # "don't move" — latched until told to move again
                              # (None = not held; a stamp of 0.0 is a real hold, so
                              # the falsy-means-released shorthand is wrong here)
@@ -133,6 +134,22 @@ def release_user_hold(reason: str = "user commanded motion") -> None:
     if _state.get("hold_at") is not None:
         _log.info("[motion_agency] hold released (%s)", reason)
     _state["hold_at"] = None
+
+
+def no_drive_room() -> "tuple[str | None, str | None] | None":
+    """(room name, reason) when the room he currently believes he's in is flagged
+    no-drive, else None. The flag rides on the belief itself (place_recognition
+    publishes it), so this is a dict lookup, not a DB hit — safe on every tick."""
+    if not _flag("MOTION_ROOM_NO_DRIVE_ENABLED", True):
+        return None
+    try:
+        from perception import place_service
+        belief = place_service.current_place()
+    except Exception:
+        return None
+    if not belief or not belief.get("no_drive"):
+        return None
+    return str(belief.get("name") or "this room"), belief.get("no_drive_reason")
 
 
 def _user_hold_active(now: float) -> bool:
@@ -223,6 +240,11 @@ def request_come_here() -> bool:
     # "Come here" asks for movement, so it lifts an earlier "don't move" outright
     # rather than merely bypassing it — otherwise realign would still be silently
     # held after he had plainly been invited to drive across the room.
+    # A room rule is the one thing come-here does NOT override: the owner set it for
+    # this room deliberately, and "come here" is almost always said from inside it.
+    if no_drive_room() is not None:
+        _log.info("[motion_agency] come-here refused — room is flagged no-drive")
+        return False
     release_user_hold("come-here request")
     note_traction_recovered("come-here request")
     # An explicit "come here" outranks the autonomous explorer — stop it and take
@@ -815,6 +837,20 @@ def _step_inner(snapshot: dict, profile) -> None:
     # outright (note_user_hold, which latches). Counters reset either way, so stale
     # off-center ticks can't fire the instant the stand-down lifts.
     if _user_motion_standdown(now) or _user_hold_active(now):
+        _reset("neck_hits", "far_hits")
+        return
+
+    # A room the owner has told him not to drive in (carpet, or just their house
+    # rules). Persisted per place, so it re-arms every time he recognizes the room —
+    # unlike the traction detector, which has to grind through a couple of failed
+    # turns first. Only the SOCIAL behaviors are gated here; the flinch reflex above
+    # and an explicit come-here still run.
+    room = no_drive_room()
+    if room is not None:
+        if (now - float(_state.get("no_drive_log_at") or 0.0)) > 120.0:
+            _state["no_drive_log_at"] = now
+            _log.info("[motion_agency] holding still — %s is flagged no-drive (%s)",
+                      room[0], room[1] or "owner's rule")
         _reset("neck_hits", "far_hits")
         return
 

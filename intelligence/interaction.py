@@ -16863,6 +16863,22 @@ def _handle_router_motion_action(
     if action != "motion.stop" and motion_controller.charging():
         return "I'm plugged in and charging. Wheels stay locked."
 
+    if action != "motion.stop":
+        # A room the owner told him not to drive in ("this room has carpet", "don't
+        # move in the workshop"). They said not to move AT ALL in there, so a spoken
+        # command is declined too — with the way out stated, since the rule was set
+        # by voice and has to be liftable by voice.
+        try:
+            from intelligence import motion_agency
+            _no_drive = motion_agency.no_drive_room()
+        except Exception:
+            _no_drive = None
+        if _no_drive is not None:
+            _room, _why = _no_drive
+            _because = " — carpet eats my wheels" if _why == "carpet" else ""
+            return (f"You told me not to drive in the {_room}{_because}. "
+                    "Say \"you can drive in here\" if that's changed.")
+
     if action in {"motion.turn", "motion.move", "motion.arc"}:
         # The human is steering by voice: the social realign behavior must not
         # rotate the body back toward their face for a while (field 2026-07-23,
@@ -21007,6 +21023,47 @@ def _handle_speech_segment(
                 conv_log.log_rex(line)
                 _session_exchange_count += 1
                 _register_rex_utterance(line, source="place_denial")
+                return
+            # A DRIVE RULE next: "this room has carpet" / "don't move in the
+            # workshop" is a standing instruction about the FLOOR, not a room name to
+            # enroll and not a one-off stop. It has to run before maybe_capture_answer,
+            # which would otherwise mine "this room has carpet" for a room word.
+            try:
+                _drive_rule = place_questions.maybe_capture_drive_rule(text)
+            except Exception as exc:
+                _log.debug("[interaction] drive-rule check failed: %s", exc)
+                _drive_rule = None
+            if _drive_rule:
+                _record_heard_turn_once()
+                line = place_questions.drive_rule_ack_line(_drive_rule)
+                try:
+                    from intelligence import motion_agency
+                    # Only act on the wheels when the rule is about the room he is
+                    # actually in — "don't drive in the nursery", said from the
+                    # kitchen, files a rule and nothing more.
+                    if not _drive_rule.get("current"):
+                        pass
+                    elif _drive_rule.get("no_drive"):
+                        motion_controller.stop()
+                        motion_agency.cancel_requested_come("room is flagged no-drive")
+                        # Filed against a room, the belief gates every tick on its own.
+                        # Un-filable (view unrecognized / room not enrolled) still has to
+                        # stop him NOW, so fall back to the session-wide hold.
+                        if not _drive_rule.get("applied"):
+                            motion_agency.note_user_hold("no-drive room, unfiled")
+                    else:
+                        motion_agency.release_user_hold("owner cleared the floor")
+                except Exception as exc:
+                    _log.debug("[interaction] drive-rule motion update failed: %s", exc)
+                _log.info("[interaction] drive rule for %r: no_drive=%s applied=%s",
+                          _drive_rule.get("name"), _drive_rule.get("no_drive"),
+                          _drive_rule.get("applied"))
+                _speak_blocking(line, emotion="neutral", pre_beat_ms=100,
+                                post_beat_ms_override=200)
+                conv_memory.add_to_transcript("Rex", line)
+                conv_log.log_rex(line)
+                _session_exchange_count += 1
+                _register_rex_utterance(line, source="place_drive_rule")
                 return
             try:
                 _place_capture = place_questions.maybe_capture_answer(text)

@@ -188,6 +188,44 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertIsNone(MA._state["hold_at"])
         self.assertEqual(MA._state["no_traction_until"], 0.0)
 
+    # ── per-room "don't drive here" ────────────────────────────────────────────
+
+    def _room_rule(self, name="workshop", reason="carpet", on=True):
+        belief = {"name": name, "place_id": 1, "score": 0.9, "since_ts": 0.0,
+                  "no_drive": on, "no_drive_reason": reason}
+        return mock.patch("perception.place_service.current_place",
+                          return_value=belief, create=True)
+
+    def test_no_drive_room_blocks_realign(self):
+        self._neck = 7594
+        with self._room_rule():
+            self._tick(6)
+        self.turn.assert_not_called()
+
+    def test_no_drive_room_reports_the_room_and_reason(self):
+        with self._room_rule():
+            self.assertEqual(MA.no_drive_room(), ("workshop", "carpet"))
+
+    def test_a_room_without_the_rule_still_realigns(self):
+        self._neck = 7594
+        with self._room_rule(on=False):
+            self._tick(2)
+        self.turn.assert_called_once()
+
+    def test_come_here_is_refused_in_a_no_drive_room(self):
+        # The one case come-here does NOT override: "come here" is nearly always said
+        # from inside the very room the owner flagged.
+        with self._room_rule():
+            self.assertFalse(MA.request_come_here())
+        self.assertFalse(MA.requested_come_active())
+
+    def test_the_room_rule_can_be_disabled_wholesale(self):
+        self._neck = 7594
+        with mock.patch.object(config, "MOTION_ROOM_NO_DRIVE_ENABLED", False, create=True), \
+                self._room_rule():
+            self._tick(2)
+        self.turn.assert_called_once()
+
     def test_voice_command_clears_the_traction_latch(self):
         # Explicit commands are never gated: the owner may have carried him to tile.
         MA._state["no_traction_until"] = time.monotonic() + 300.0

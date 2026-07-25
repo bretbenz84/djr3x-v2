@@ -7057,6 +7057,13 @@ MOTION_USER_MOTION_STANDDOWN_SECS = 45.0
 # come-here and the flinch reflex are never gated by this.
 MOTION_STOP_STANDDOWN_SECS = 0.0
 
+# Per-ROOM "don't drive here", set by voice ("this room has carpet", "don't move in
+# the workshop") and persisted against the recognized place, so it re-arms every time
+# he walks back in instead of having to be repeated. Gates autonomous motion outright
+# and declines spoken drive commands with the reason; lifted by "you can drive in
+# here" / "this room has hardwood". Off = the flag is still stored but not enforced.
+MOTION_ROOM_NO_DRIVE_ENABLED = True
+
 # ---- No-traction stand-down (carpet) ---------------------------------------
 # Rex cannot pivot on carpet: under his own weight the tyres just scrub. The
 # firmware detects this on its own — finite turns close on integrated gyro yaw,

@@ -606,3 +606,85 @@ class PlaceRecognitionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoDrivePersistenceTest(PlaceRecognitionTest):
+    """The owner's "this room has carpet" rule, filed against the ROOM so it re-arms
+    every time he recognizes it — the whole point of hanging it off place recognition
+    rather than a session flag."""
+
+    def test_flag_round_trips_through_the_db(self):
+        import os
+        import tempfile
+
+        db = os.path.join(tempfile.mkdtemp(), "places.db")
+        emb = lambda f: np.asarray(f, dtype=np.float32)  # noqa: E731
+        pr = PlaceRecognizer(emb, db_path=db, model_tag="A")
+        pr.enroll_from_frames("workshop", [E[0]] * 3)
+        self.assertTrue(pr.set_no_drive("workshop", True, "carpet"))
+        pr.close()
+
+        pr2 = PlaceRecognizer(emb, db_path=db, model_tag="A")
+        self.addCleanup(pr2.close)
+        self.assertEqual(pr2.no_drive_places(), {"workshop": "carpet"})
+
+    def test_migration_adds_the_columns_to_an_existing_db(self):
+        # places.db already exists in the field with two rooms in it; CREATE TABLE IF
+        # NOT EXISTS is a no-op there, so without the ALTER those rooms could never
+        # carry a rule.
+        import os
+        import sqlite3
+        import tempfile
+
+        db = os.path.join(tempfile.mkdtemp(), "places.db")
+        con = sqlite3.connect(db)
+        con.executescript(
+            "CREATE TABLE places (place_id INTEGER PRIMARY KEY, name TEXT UNIQUE "
+            "NOT NULL, created_at TEXT NOT NULL, notes TEXT);"
+            "INSERT INTO places (name, created_at, notes) VALUES ('den', '2020', NULL);"
+        )
+        con.commit()
+        con.close()
+
+        emb = lambda f: np.asarray(f, dtype=np.float32)  # noqa: E731
+        pr = PlaceRecognizer(emb, db_path=db, model_tag="A")   # must not raise
+        self.addCleanup(pr.close)
+        self.assertTrue(pr.set_no_drive("den", True, "carpet"))
+        self.assertEqual(pr.no_drive_places(), {"den": "carpet"})
+
+    def test_unknown_room_is_refused_not_silently_filed(self):
+        pr, _clk, _ev, _box, _ws = self._make()
+        self.assertFalse(pr.set_no_drive("garage", True, "carpet"))
+
+    def test_the_belief_carries_the_flag(self):
+        pr, clk, _ev, _box, ws = self._make()
+        pr.enroll_from_frames("workshop", [E[0]] * 5)
+        pr.set_no_drive("workshop", True, "carpet")
+        for _ in range(6):
+            clk.adv(2.0)
+            pr.observe(E[0])
+        belief = pr.current_place()
+        self.assertEqual(belief["name"], "workshop")
+        self.assertTrue(belief["no_drive"])
+        self.assertEqual(belief["no_drive_reason"], "carpet")
+        self.assertTrue(ws.value["no_drive"])       # published to world_state too
+
+    def test_setting_it_updates_a_live_belief_immediately(self):
+        # Otherwise the rule wouldn't bite until the next re-confirmation — he would
+        # keep driving for a while after being told to stop.
+        pr, clk, _ev, _box, ws = self._make()
+        pr.enroll_from_frames("workshop", [E[0]] * 5)
+        for _ in range(6):
+            clk.adv(2.0)
+            pr.observe(E[0])
+        self.assertFalse(pr.current_place()["no_drive"])
+        pr.set_no_drive("workshop", True, "carpet")
+        self.assertTrue(pr.current_place()["no_drive"])
+        self.assertTrue(ws.value["no_drive"])
+
+    def test_lifting_the_rule_clears_the_reason(self):
+        pr, _clk, _ev, _box, _ws = self._make()
+        pr.enroll_from_frames("workshop", [E[0]] * 3)
+        pr.set_no_drive("workshop", True, "carpet")
+        pr.set_no_drive("workshop", False)
+        self.assertEqual(pr.no_drive_places(), {})
