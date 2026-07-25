@@ -7552,6 +7552,14 @@ PLACE_MATCH_MIN            = 0.68    # best score in [MIN, CONFIDENT) -> tentati
 # 0.01-0.05 between them, flip-flopping frame to frame — absolute score alone can't
 # separate look-alikes. Within the margin the frame is only ever "tentative".
 PLACE_MATCH_MARGIN         = 0.04
+# Bar for a CONFIDENT call when only ONE room is enrolled, i.e. there is no runner-up
+# and PLACE_MATCH_MARGIN proves nothing. Measured on the robot 2026-07-25: the correct
+# room scores 0.85-0.88 while a DIFFERENT room in the same house still scores
+# 0.75-0.82 — straddling PLACE_MATCH_CONFIDENT, which is how the dining room got
+# announced as "the workshop". Once a second room is enrolled the margin test does the
+# discriminating and this no longer applies. Lower it only if he under-recognizes a
+# genuinely single-room setup.
+PLACE_MATCH_SOLO_CONFIDENT = 0.86
 PLACE_HYSTERESIS_FRAMES    = 5       # ring-buffer length; belief flips on a confident majority
 PLACE_UNKNOWN_STREAK       = 8       # consecutive unknowns (after moving) -> unknown_place event
 PLACE_PERSON_OCCLUSION_FRAC = 0.35   # skip frames where a person bbox covers > this fraction
@@ -7639,6 +7647,16 @@ PLACE_KNOWN_ACK_TEMPLATES = [
     "The {name} — yeah, I know this one. Taking another look anyway.",
     "Yep, the {name}. I recognize it. Refreshing my memory.",
     "The {name}, right. Good — my circuits agree.",
+]
+# Spoken when a human CONTRADICTS the believed room ("this is not the workshop").
+# The belief is dropped and the real name invited — Rex never argues the point. Field
+# 2026-07-24: the correction drew "Yep, the workshop. I recognize it." instead, which
+# is both wrong and infuriating; a person standing in the room outranks a cosine score.
+PLACE_DENIAL_ACK_TEMPLATES = [
+    "My mistake — scratch the {was}. Where am I, then?",
+    "Noted, not the {was}. What room is this?",
+    "Fair enough, I had it wrong. What should I call this room?",
+    "Wiping the {was} from the record. Where are we actually?",
 ]
 # Spoken if a promised room capture later fails (he said "Got it" but couldn't get
 # enough clear looks — e.g. someone stood in front of the lens the whole time).

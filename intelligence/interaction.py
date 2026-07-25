@@ -20972,8 +20972,29 @@ def _handle_speech_segment(
         # directly and never misrouted as a person introduction. Conservative: an
         # unprompted line only enrolls when it names a known room word (place_questions).
         if not game_conversation_lock:
+            # A DENIAL runs first: "this is not the workshop" must drop the belief, not
+            # be mined for a room name. Field 2026-07-24: Rex answered a correction with
+            # "Yep, the workshop. I recognize it." — a person standing in the room
+            # outranks a cosine score, and doubling down is the worst possible reply.
             try:
                 from intelligence import place_questions
+                _place_denial = place_questions.maybe_capture_denial(text)
+            except Exception as exc:
+                _log.debug("[interaction] place denial check failed: %s", exc)
+                _place_denial = None
+            if _place_denial:
+                _record_heard_turn_once()
+                line = place_questions.denial_ack_line(_place_denial)
+                _log.info("[interaction] believed room denied by %s: %r",
+                          person_name or "the user", _place_denial.get("was"))
+                _speak_blocking(line, emotion="curious", pre_beat_ms=100,
+                                post_beat_ms_override=200)
+                conv_memory.add_to_transcript("Rex", line)
+                conv_log.log_rex(line)
+                _session_exchange_count += 1
+                _register_rex_utterance(line, source="place_denial")
+                return
+            try:
                 _place_capture = place_questions.maybe_capture_answer(text)
             except Exception as exc:
                 _log.debug("[interaction] place-name capture failed: %s", exc)

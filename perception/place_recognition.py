@@ -213,6 +213,8 @@ class PlaceRecognizer:
         self._match_confident = float(_cfg("PLACE_MATCH_CONFIDENT", 0.80))
         self._match_min = float(_cfg("PLACE_MATCH_MIN", 0.68))
         self._match_margin = float(_cfg("PLACE_MATCH_MARGIN", 0.04))
+        # Bar for a confident call with NO runner-up to discriminate against.
+        self._solo_confident = float(_cfg("PLACE_MATCH_SOLO_CONFIDENT", 0.86))
         self._hysteresis_frames = max(1, int(_cfg("PLACE_HYSTERESIS_FRAMES", 5)))
         self._majority = (self._hysteresis_frames // 2) + 1
         self._unknown_streak_max = max(1, int(_cfg("PLACE_UNKNOWN_STREAK", 8)))
@@ -416,16 +418,29 @@ class PlaceRecognizer:
         """Classify from the FULL score list, not the best alone: a confident match must
         clear the absolute threshold AND beat the runner-up room by PLACE_MATCH_MARGIN.
         Look-alike rooms both score high on every frame with hundredths between them
-        (field data 2026-07-21); inside the margin the honest answer is "tentative"."""
+        (field data 2026-07-21); inside the margin the honest answer is "tentative".
+
+        SOLO GALLERY: with only one room enrolled there IS no runner-up, so the margin
+        test proves nothing and used to pass by default — any indoor scene clearing the
+        absolute threshold was confidently claimed as that room. Measured on this robot
+        2026-07-25: the correct room scores 0.85-0.88 but a DIFFERENT room in the same
+        house still scores 0.75-0.82, straddling the 0.80 threshold. That is exactly how
+        the dining room got announced as "the workshop". Without a competitor to
+        discriminate against, demand the much stricter PLACE_MATCH_SOLO_CONFIDENT.
+        """
         if not scores:
             return UNKNOWN
         best = scores[0]
         if best.score < self._match_min:
             return UNKNOWN
         runner_up = scores[1].score if len(scores) > 1 else None
-        confident = best.score >= self._match_confident and (
-            runner_up is None or (best.score - runner_up) >= self._match_margin
-        )
+        if runner_up is None:
+            confident = best.score >= self._solo_confident
+        else:
+            confident = (
+                best.score >= self._match_confident
+                and (best.score - runner_up) >= self._match_margin
+            )
         return CONFIDENT if confident else TENTATIVE
 
     def score_frame(self, frame) -> QueryResult:
@@ -501,10 +516,18 @@ class PlaceRecognizer:
         # 2026-07-21 field session proved the permissive version cross-pollinates: with
         # the belief lagging reality, in-band frames of the OLD room were appended to the
         # believed room's gallery, making two look-alike galleries converge further.
+        # SOLO GALLERY: `len(scores) < 2` used to satisfy the margin test by default, so
+        # with one room enrolled EVERY in-band frame was appended no matter where the
+        # robot actually was. That is the contamination engine behind the 2026-07-25
+        # field report: 12 of the workshop's 15 embeddings were captured during dining
+        # room sessions, dragging the two galleries together until a different room
+        # scored 0.91 against "workshop". With nothing to discriminate against there is
+        # no evidence the frame belongs here, so do not grow the gallery at all.
         if (self._current_place and best
+                and len(scores) >= 2
                 and best.place_id == self._current_place["place_id"]
                 and self._refresh_min <= best.score <= self._refresh_max
-                and (len(scores) < 2 or (best.score - scores[1].score) >= self._match_margin)):
+                and (best.score - scores[1].score) >= self._match_margin):
             self._append_embedding(best.place_id, q, now)
 
         self._update_belief(best, cls, scores, now)
@@ -978,6 +1001,42 @@ class PlaceRecognizer:
             self._unknown_armed = True
             self._static_flip_pid, self._static_flip_streak = None, 0
             self._publish_place(None)
+
+    def reject_belief(self, name: Optional[str] = None) -> bool:
+        """A human said this is NOT the room Rex believes he is in — drop the belief.
+
+        Field 2026-07-24: "This is not the workshop" was answered with "Yep, the
+        workshop. I recognize it." A person standing in the room outranks a cosine
+        score, and doubling down is the worst possible response. Returns True when a
+        belief was actually dropped.
+
+        ``name`` (when given) must match the current belief; a denial about a
+        DIFFERENT room ("this isn't the garage" while believing the kitchen) says
+        nothing about the current belief and is ignored. The gallery is left alone —
+        this only clears the live belief, which re-arms the ask-what-room-this-is cue
+        so Rex can be told the real answer.
+        """
+        with self._lock:
+            current = self._current_place
+            if not current:
+                return False
+            if name:
+                want = " ".join(str(name).strip().lower().split())
+                have = " ".join(str(current.get("name") or "").strip().lower().split())
+                if want and have and want != have:
+                    return False
+            _log.info("place belief REJECTED by a human — dropping %r",
+                      current.get("name"))
+            self._history.clear()
+            self._current_place = None
+            # Treat it like a move: the freeze gate must not re-pin the same room, and
+            # the unknown-streak event should be able to fire again.
+            self._moved_since_confirm = True
+            self._unknown_streak = 0
+            self._unknown_armed = True
+            self._static_flip_pid, self._static_flip_streak = None, 0
+            self._publish_place(None)
+            return True
 
     def close(self) -> None:
         with self._lock:

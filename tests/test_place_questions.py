@@ -8,6 +8,7 @@ with no model, camera, or DB.
 
 import unittest
 
+import config
 from intelligence import place_questions as pq
 
 
@@ -233,6 +234,77 @@ class PlaceQuestionsTest(unittest.TestCase):
         self.assertTrue(pq.recently_captured())
         self.assertEqual(pq.last_capture()["name"], "den")
         self.assertIn("den", pq.ack_line(cap))
+
+
+class DenialTest(unittest.TestCase):
+    """"This is not the workshop" must DROP the belief. Field 2026-07-24: it drew
+    "Yep, the workshop. I recognize it." — a human standing in the room outranks a
+    cosine score, and doubling down is the worst possible reply."""
+
+    def setUp(self):
+        pq.reset()
+        self.svc = _FakeService()
+        self.svc.known_names = ["workshop", "kitchen", "garage"]
+        self.svc.belief = {"name": "workshop", "place_id": 1}
+        self.svc.rejected = []
+        self.svc.reject_belief = self._reject
+        self._orig = pq._service
+        pq._service = lambda: self.svc
+        self.addCleanup(lambda: setattr(pq, "_service", self._orig))
+        self.addCleanup(pq.reset)
+
+    def _reject(self, name=None):
+        self.svc.rejected.append(name)
+        self.svc.belief = None
+        return True
+
+    def test_direct_denial_drops_the_belief(self):
+        for text in ("This is not the workshop.",
+                     "this isn't the workshop",
+                     "that is not the workshop",
+                     "you're not in the workshop"):
+            self.setUp()
+            out = pq.maybe_capture_denial(text)
+            self.assertEqual(out, {"was": "workshop"}, text)
+            self.assertEqual(self.svc.rejected, ["workshop"], text)
+
+    def test_denial_of_a_different_room_is_ignored(self):
+        self.assertIsNone(pq.maybe_capture_denial("this is not the garage"))
+        self.assertEqual(self.svc.rejected, [])
+
+    def test_opinions_and_unrelated_negations_are_not_denials(self):
+        for text in ("I do not like the workshop",
+                     "we are not done in the workshop",
+                     "the workshop is great",
+                     "this is not what I expected",
+                     "no",
+                     "What room are you in?"):
+            self.assertIsNone(pq.maybe_capture_denial(text), text)
+        self.assertEqual(self.svc.rejected, [])
+
+    def test_no_belief_means_nothing_to_deny(self):
+        self.svc.belief = None
+        self.assertIsNone(pq.maybe_capture_denial("this is not the workshop"))
+        self.assertEqual(self.svc.rejected, [])
+
+    def test_denial_ack_invites_the_real_name(self):
+        # Check EVERY template, not one random draw: the ack must always end in a
+        # question so the correction leads straight into learning the real name.
+        for template in config.PLACE_DENIAL_ACK_TEMPLATES:
+            line = template.format(was="workshop")
+            self.assertTrue(line.strip().endswith("?"), template)
+            self.assertNotIn("{", line, template)     # no unfilled placeholders
+        # The rendered line never argues the point.
+        for _ in range(20):
+            line = pq.denial_ack_line({"was": "workshop"})
+            self.assertNotIn("recognize", line.lower())
+
+    def test_a_normal_room_statement_still_enrolls(self):
+        # The denial check must not swallow the ordinary teach path.
+        self.assertIsNone(pq.maybe_capture_denial("this is the dining room"))
+        cap = pq.maybe_capture_answer("this is the dining room")
+        self.assertIsNotNone(cap)
+        self.assertEqual(cap["name"], "dining room")
 
 
 class ReplyGroundingTest(unittest.TestCase):

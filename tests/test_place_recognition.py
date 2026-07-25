@@ -296,8 +296,11 @@ class PlaceRecognitionTest(unittest.TestCase):
         self.assertEqual(len(pr._enroll.vectors), 0)
 
     def test_incremental_refresh_band(self):
+        # Needs a SECOND gallery: refresh is only safe when there is a runner-up to
+        # discriminate against (see test_solo_gallery_never_refreshes).
         pr, clk, ev, box, ws = self._make()
         pr.enroll_from_frames("office", [E[0]] * 5)
+        pr.enroll_from_frames("attic", [E[5]] * 5)      # far from office; a real runner-up
         box["motion"] = MotionState(wheels_moving=True)
         for _ in range(5):
             clk.adv(2.0)
@@ -311,6 +314,65 @@ class PlaceRecognitionTest(unittest.TestCase):
         clk.adv(2.0)
         pr.observe(E[0])  # confident, out of band -> no append
         self.assertEqual(int((pr._emb_pids == pid).sum()), n0 + 1)
+
+    def test_solo_gallery_never_refreshes(self):
+        # THE CONTAMINATION ENGINE (field 2026-07-25): with one room enrolled the
+        # margin guard was satisfied by default (`len(scores) < 2`), so every in-band
+        # frame was appended no matter where the robot actually was. 12 of the
+        # workshop's 15 embeddings turned out to be dining-room views, dragging the
+        # galleries together until a DIFFERENT room scored 0.91 against "workshop".
+        # With nothing to compare against there is no evidence the frame belongs here.
+        pr, clk, ev, box, ws = self._make()
+        pr.enroll_from_frames("workshop", [E[0]] * 5)
+        box["motion"] = MotionState(wheels_moving=True)
+        for _ in range(6):
+            clk.adv(2.0)
+            pr.observe(E[0])
+        pid = pr._name_to_id["workshop"]
+        n0 = int((pr._emb_pids == pid).sum())
+        clk.adv(2.0)
+        pr.observe(q_cos(0, 0.75))      # squarely inside the refresh band
+        self.assertEqual(int((pr._emb_pids == pid).sum()), n0,
+                         "a solo gallery must not grow from an unverifiable frame")
+
+    def test_solo_gallery_needs_a_stricter_score_to_be_confident(self):
+        # Measured on the robot: the correct room scores 0.85-0.88 but a DIFFERENT
+        # room in the same house still scores 0.75-0.82 — straddling
+        # PLACE_MATCH_CONFIDENT. With no runner-up the margin proves nothing, so the
+        # bar rises to PLACE_MATCH_SOLO_CONFIDENT. This is why the dining room was
+        # announced as "the workshop".
+        pr, clk, ev, box, ws = self._make()
+        pr.enroll_from_frames("workshop", [E[0]] * 5)
+        self.assertEqual(pr.score_frame(q_cos(0, 0.82)).classification, P.TENTATIVE)
+        self.assertEqual(pr.score_frame(q_cos(0, 0.90)).classification, P.CONFIDENT)
+
+    def test_human_denial_drops_the_belief(self):
+        # "This is not the workshop" must clear the belief, not draw "Yep, the
+        # workshop. I recognize it." (field 2026-07-24).
+        pr, clk, ev, box, ws = self._make()
+        pr.enroll_from_frames("workshop", [E[0]] * 5)
+        box["motion"] = MotionState(wheels_moving=True)
+        for _ in range(6):
+            clk.adv(2.0)
+            pr.observe(E[0])
+            if pr.current_place():
+                break
+        self.assertIsNotNone(pr.current_place())
+        self.assertTrue(pr.reject_belief("workshop"))
+        self.assertIsNone(pr.current_place())
+        self.assertIsNone(ws.get("current_place"))
+        # A denial naming a DIFFERENT room says nothing about this belief.
+        for _ in range(6):
+            clk.adv(2.0)
+            pr.observe(E[0])
+            if pr.current_place():
+                break
+        self.assertIsNotNone(pr.current_place())
+        self.assertFalse(pr.reject_belief("garage"))
+        self.assertIsNotNone(pr.current_place())
+        # No belief held -> nothing to reject.
+        pr.reject_belief("workshop")
+        self.assertFalse(pr.reject_belief())
 
     def test_refresh_never_fires_on_ambiguous_frames(self):
         # Field regression (2026-07-21): refresh on frames where ANOTHER room out-scores

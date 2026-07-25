@@ -291,3 +291,9 @@ def belief_context():
 def place_names() -> list:
     rec = _recognizer
     return rec.place_names() if rec is not None else []
+
+
+def reject_belief(name: "str | None" = None) -> bool:
+    """A human contradicted the believed room — drop it. True when one was dropped."""
+    rec = _recognizer
+    return bool(rec.reject_belief(name)) if rec is not None else False

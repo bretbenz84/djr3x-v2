@@ -198,6 +198,78 @@ def _bare_answer(text: str) -> Optional[str]:
     return n
 
 
+# "this is NOT the workshop" / "you're not in the workshop" / "that's not the kitchen".
+# Deliberately narrow: an explicit negation attached to a here-statement about a room.
+def _room_tail(group: str) -> str:
+    return (r"(?:in\s+|at\s+)?(?:the\s+|a\s+|my\s+|our\s+)?"
+            rf"(?P<{group}>[a-z][a-z' ]{{1,24}}?)")
+
+
+_PLACE_DENIAL_RE = re.compile(
+    # Anchored at the START on a HERE-subject, so "I do not like the workshop" (an
+    # opinion) and "we're not done in the kitchen" (not about the belief) can't match.
+    r"^(?:"
+    r"(?:this|that|it|here)\s*(?:'s|s|is|was)?\s*(?:not|isn't|is n't|ain't)\s+"
+    + _room_tail("room_a") +
+    r"|(?:you|we)\s*(?:'re|re|are)?\s*(?:not|aren't|are n't)\s+(?:in|at)\s+"
+    + _room_tail("room_b") +
+    r")\s*[.!]*$",
+    re.I,
+)
+
+
+def _denial_room(match) -> str:
+    return (match.group("room_a") or match.group("room_b") or "") if match else ""
+
+
+def maybe_capture_denial(text: str) -> Optional[dict]:
+    """Consume "this is not the <room>" — drop the believed room instead of arguing.
+
+    Field 2026-07-24: Rex answered "This is not the workshop." with "Yep, the
+    workshop. I recognize it." A human standing in the room outranks a cosine score.
+    Returns {"was": <dropped room>} when a belief was actually dropped, else None.
+    Never enrolls anything: it only clears the belief, which re-arms the
+    ask-what-room-this-is cue so the real name can be captured next.
+    """
+    if not _enabled() or not _place_available():
+        return None
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned or cleaned.endswith("?"):
+        return None
+    low = cleaned.lower()
+    if " not " not in f" {low} " and "n't" not in low:
+        return None
+    if _PAST_RE.search(low):
+        return None                       # reminiscing, not a statement about HERE
+    svc = _service()
+    try:
+        believed = ((svc.current_place() if svc else None) or {}).get("name")
+    except Exception:
+        believed = None
+    if not believed:
+        return None
+    believed_norm = _normalize(believed)
+    # Require the anchored here-denial AND that it names the room Rex actually
+    # believes. Precision over recall: a merely-contains-the-name test fired on "I
+    # do not like the workshop", and "this isn't the garage" while believing the
+    # kitchen says nothing about the kitchen.
+    m = _PLACE_DENIAL_RE.search(low)
+    if m is None:
+        return None
+    named = _normalize(_denial_room(m))
+    if not named or named != believed_norm:
+        return None
+    try:
+        if not svc.reject_belief(believed):
+            return None
+    except Exception as exc:
+        _log.debug("[place_questions] reject_belief failed: %s", exc)
+        return None
+    _log.info("[place_questions] human denied the believed room %r — belief dropped",
+              believed)
+    return {"was": believed}
+
+
 def _extract_room_name(text: str, *, latched: bool) -> Optional[str]:
     cleaned = " ".join(str(text or "").split())
     if not cleaned or cleaned.endswith("?"):
@@ -291,6 +363,15 @@ def _enroll(name: str) -> Optional[int]:
     except Exception as exc:
         _log.debug("[place_questions] enroll failed: %s", exc)
         return None
+
+
+def denial_ack_line(denial: Optional[dict]) -> str:
+    """Take the correction gracefully and invite the real name — never argue."""
+    was = str((denial or {}).get("was") or "that").strip()
+    templates = getattr(config, "PLACE_DENIAL_ACK_TEMPLATES", None) or [
+        "My mistake — scratch the {was}. Where am I, then?",
+    ]
+    return random.choice(list(templates)).format(was=was)
 
 
 def ack_line(capture: Optional[dict]) -> str:
