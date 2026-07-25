@@ -443,20 +443,24 @@ static inline uint8_t gaugePixel(uint8_t colStart, uint8_t level) {
 }
 
 // Fixed colour ladder for the 8-pixel gauge, bottom (level 0) to top (level 7):
-// R R O Y G G B B (owner spec 2026-07-24). Each pixel's colour is a property of its
-// POSITION, not of the current charge — the charge only decides how many are lit, so
-// the bar always reads the same way and you judge the level by where it stops.
+// red -> red/orange -> orange -> yellow -> yellow/green -> green -> green/blue ->
+// blue (owner spec 2026-07-24). The half-steps are midpoint blends of their two
+// neighbours, so the column ramps smoothly instead of stepping between five flat
+// bands. Each pixel's colour is a property of its POSITION, not of the current
+// charge — the charge only decides how many are lit, so the bar always reads the
+// same way and the level is judged by where it stops.
 // A switch, not a CRGB[8] table: this sketch sits at 89% DRAM and an array would
 // spend 24 bytes of it, while the switch costs flash only.
 static CRGB gaugeLevelColor(uint8_t level) {
 	switch (level) {
-		case 0:
-		case 1:  return CRGB(130,   0,   0);   // red
+		case 0:  return CRGB(130,   0,   0);   // red
+		case 1:  return CRGB(130,  22,   0);   // red/orange
 		case 2:  return CRGB(130,  45,   0);   // orange
 		case 3:  return CRGB(120, 100,   0);   // yellow
-		case 4:
+		case 4:  return CRGB( 60, 110,  15);   // yellow/green
 		case 5:  return CRGB(  0, 120,  30);   // green
-		default: return CRGB(  0,  45, 150);   // blue (levels 6-7)
+		case 6:  return CRGB(  0,  82,  90);   // green/blue
+		default: return CRGB(  0,  45, 150);   // blue
 	}
 }
 
