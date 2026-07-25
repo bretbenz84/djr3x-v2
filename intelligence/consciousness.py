@@ -3077,6 +3077,13 @@ def _step_room_reaction(snapshot: dict, profile: SituationProfile) -> None:
         since_spoke = float("inf")
     if since_spoke > after_rex:
         return
+    # ...but NOT instantly. The first analysis window after his TTS unmutes still
+    # holds his own decaying tail + room echo, which reads as applause/laughter —
+    # field 2026-07-24 19:58:31: Rex took a bow at a silent, seated room ~10 s after
+    # his own line. Real applause from a human starts later than his own reverb.
+    min_after_rex = float(getattr(config, "ROOM_REACTION_MIN_AFTER_REX_SECS", 1.5))
+    if since_spoke < min_after_rex:
+        return
     # Global cooldown (also collapses the 2-3 consecutive True reads of one burst).
     if (now - float(_room_reacted.get("last_at", 0.0))) < float(
         getattr(config, "ROOM_REACTION_MIN_GAP_SECS", 20.0)

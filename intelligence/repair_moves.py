@@ -25,7 +25,14 @@ _MISHEARD_PAT = re.compile(
     r"i (?:didn'?t say|did not say)|"
     r"that'?s not what i said|that is not what i said|not what i said|"
     r"that'?s not (?:his|her|their|my) name|that is not (?:his|her|their|my) name|"
-    r"(?:his|her|their|the) name was|"
+    # A NAME CORRECTION needs a correction cue in front of it. The bare
+    # "(his|her|their|the) name was" fired on ordinary storytelling — field
+    # 2026-07-24: "We got it from a dear friend who lived on a boat. Her name
+    # was... Goldnatt." was ruled a misheard-repair, so Rex answered a warm story
+    # with "Static in the receptors; that came through garbled." and the next two
+    # turns were spent untangling it. Narration and answers ("her name was Ada")
+    # must stay ordinary conversation.
+    r"(?:no,?\s+|actually,?\s+|not\s+)(?:his|her|their|the|my)\s+name\s+(?:was|is)|"
     r"wrong word|wrong name|got my words wrong|transcribed (?:it )?wrong|mis-?transcribed"
     r")\b"
     # Bare "i said" means a correction ("no, I said blues") — but NOT when it's an

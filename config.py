@@ -4057,7 +4057,13 @@ SPEECH_PREROLL_SECS = 0.45
 # for Whisper). SAFE at any length: _speech_capture_secs clamps pre-roll to the
 # post-TTS capture floor, so it can never reach back into Rex's own tail — the
 # floor grace (0.12s) is what guards that seam, and it is not touched here.
-SPEECH_PREROLL_SECS_AEC = 1.0
+# 1.5 (was 1.0): even with the AEC-gated threshold + 1.0 s reach-back, a soft opener
+# was still lost at far field — field 2026-07-24 19:59, "Feel free to explore the room"
+# transcribed as "Explore the room." At the measured ~13-15 dB SNR the VAD can open
+# more than a second after true onset. Leading silence is free for Whisper and
+# _speech_capture_secs still clamps to the post-TTS capture floor, so this cannot
+# reach into Rex's own tail.
+SPEECH_PREROLL_SECS_AEC = 1.5
 POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 
 # How far a NON-question reply's capture may reach back past the post-TTS handoff
@@ -4704,14 +4710,22 @@ VISUAL_CURIOSITY_OBJECTS_MIN_CONFIDENCE = 0.40
 # needy). Yields to live speech/music/games like every reaction.
 ROOM_REACTION_ENABLED = True
 ROOM_REACTION_AFTER_REX_SECS = 12.0   # laughter/applause only counts within this of a Rex line
+# ...but not INSTANTLY: the first analysis window after his TTS unmutes still carries
+# his own decaying tail + room echo, which reads as applause. Field 2026-07-24: he took
+# a bow at a silent, seated room. Real human applause starts later than his own reverb.
+ROOM_REACTION_MIN_AFTER_REX_SECS = 1.5
 ROOM_REACTION_MIN_GAP_SECS = 20.0     # global cooldown (also de-dups one multi-cycle burst)
 # Low cap: laughter detection has false positives (TV/AC/his own TTS tail), and even one
 # unearned victory lap reads as needy — two read as a malfunction (field log 2026-07-03).
 ROOM_REACTION_SESSION_CAP = 2         # max take-a-bow / follow-throughs per session
+# Keep every line free of claims about what the person is PHYSICALLY doing. Rex cannot
+# see posture reliably, and asserting it lands as a malfunction when he's wrong — field
+# 2026-07-24: "No need to stand. ...Oh, you're already standing." was delivered to a
+# seated owner. Same rule as the persona's "never invent physical details".
 ROOM_APPLAUSE_REACTION_LINES = [
-    "Thank you, thank you. No need to stand. ...Oh, you're already standing.",
+    "Thank you, thank you. Hold the applause — actually, don't.",
     "Please, hold your applause. ...Okay, don't.",
-    "A standing ovation, or you're all just stretching. I'll take it either way.",
+    "I'll take that as a rave review.",
     "And THIS is why they keep me plugged in.",
     "I'd take a bow, but my actuators bill by the hour.",
 ]

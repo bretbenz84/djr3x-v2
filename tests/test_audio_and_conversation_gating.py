@@ -10605,7 +10605,10 @@ class AecEndpointingOverrideTest(unittest.TestCase):
             mock.patch("audio.hardware_aec.is_active", return_value=True),
             mock.patch.object(interaction, "_response_wait_active", return_value=False),
         ):
-            self.assertAlmostEqual(interaction._speech_preroll_secs(), 1.0)
+            self.assertAlmostEqual(
+                interaction._speech_preroll_secs(),
+                float(interaction.config.SPEECH_PREROLL_SECS_AEC),
+            )
 
     def test_preroll_baseline_when_aec_inactive(self):
         from intelligence import interaction

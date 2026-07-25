@@ -28,7 +28,9 @@ class StepRoomReactionTest(unittest.TestCase):
         c._room_reacted["count"] = 0.0
         c._room_reacted["last_at"] = 0.0
 
-    def _run(self, audio, *, can_speak=True, profile=None, since_spoke=1.0):
+    # since_spoke default sits comfortably past ROOM_REACTION_MIN_AFTER_REX_SECS —
+    # below it, the reaction is (correctly) suppressed as Rex's own TTS tail.
+    def _run(self, audio, *, can_speak=True, profile=None, since_spoke=3.0):
         captured = {}
         with mock.patch.object(c, "_can_proactive_speak", return_value=can_speak), \
              mock.patch("audio.speech_queue.seconds_since_last_speech", return_value=since_spoke), \
@@ -66,6 +68,27 @@ class StepRoomReactionTest(unittest.TestCase):
     def test_ignores_ambient_when_rex_did_not_speak_recently(self):
         # Rex's last line finished long ago → a laugh now is ambient, not at him.
         self.assertNotIn("line", self._run({"applause_detected": True}, since_spoke=999.0))
+
+    def test_ignores_his_own_tail_right_after_he_stops(self):
+        # Field 2026-07-24 19:58:31: Rex took a bow at a silent, SEATED room. The first
+        # analysis window after his TTS unmutes still holds his decaying tail + room
+        # echo, and that read as applause. Real applause starts later than his reverb.
+        self.assertNotIn("line", self._run({"applause_detected": True}, since_spoke=0.2))
+        self.assertNotIn("line", self._run({"laughter_detected": True}, since_spoke=0.9))
+        # Past the guard it still works.
+        self.assertIn("line", self._run({"applause_detected": True}, since_spoke=2.0))
+
+    def test_applause_lines_never_claim_what_the_person_is_doing(self):
+        # Rex cannot see posture reliably; asserting it reads as a malfunction when he
+        # is wrong ("No need to stand. ...Oh, you're already standing." to a seated
+        # owner). Same rule as the persona's "never invent physical details".
+        banned = ("standing", "stand up", "on your feet", "sitting", "seated",
+                  "stretching")
+        for line in (list(c.config.ROOM_APPLAUSE_REACTION_LINES)
+                     + list(c.config.ROOM_LAUGHTER_REACTION_LINES)):
+            low = line.lower()
+            for word in banned:
+                self.assertNotIn(word, low, f"{line!r} asserts a posture Rex can't see")
 
     def test_session_cap(self):
         c._room_reacted["count"] = float(c.config.ROOM_REACTION_SESSION_CAP)

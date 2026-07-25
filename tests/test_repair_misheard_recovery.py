@@ -73,5 +73,39 @@ class DetectBroadenedTest(unittest.TestCase):
         self.assertTrue(rm.correction_has_content(m["correction"]))
 
 
+class NarrationIsNotACorrectionTest(unittest.TestCase):
+    """A story that happens to mention a name must not be read as "you misheard me".
+
+    Field 2026-07-24: "We got it from a dear friend who lived on a boat. Her name
+    was... Goldnatt." matched the bare `(his|her|their|the) name was` alternative, so
+    Rex answered a warm story with "Static in the receptors; that came through
+    garbled. Give it to me again?" — and the next two turns were spent untangling it.
+    """
+
+    def test_storytelling_is_not_a_repair(self):
+        for text in (
+            "We got it from a dear friend who lived on a boat. Her name was... Goldnatt.",
+            "Her name was Ada",
+            "his name was Jeff and he lived next door",
+            "the name was on the box",
+            "my name was on the list",
+        ):
+            self.assertIsNone(rm.detect(text), text)
+
+    def test_real_name_corrections_still_fire(self):
+        for text in ("no, her name was Sarah",
+                     "actually his name was Jeff",
+                     "not my name was wrong"):
+            self.assertIsNotNone(rm.detect(text), text)
+
+    def test_other_misheard_forms_unaffected(self):
+        for text in ("you misheard me",
+                     "that's not what I said",
+                     "no, I said blues",
+                     "you didn't catch that"):
+            m = rm.detect(text)
+            self.assertIsNotNone(m, text)
+
+
 if __name__ == "__main__":
     unittest.main()
