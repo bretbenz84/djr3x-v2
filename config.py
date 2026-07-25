@@ -7142,10 +7142,25 @@ MOTION_FLINCH_ENABLED = True
 # front reads (parked near a wall / the charge cable) and, when a charger flap unlocked
 # the wheels, inching him backward. Now he must be genuinely crowded — closer, a bigger
 # closing trend, more confirmations, and a longer settle between flinches.
-MOTION_FLINCH_TRIGGER_M = 0.18         # must crowd inside ~7 inches before the reflex can arm
-MOTION_FLINCH_APPROACH_DROP_M = 0.26   # require a clear closing trend, not ordinary ToF jitter
-MOTION_FLINCH_CONFIRM_TICKS = 8        # sustained intrusion; isolated noisy frames cannot fire it
-MOTION_FLINCH_MIN_VALID_M = 0.05       # front reads below this are treated as sensor noise (idle only)
+# ⚠ These four interact — check the FEASIBLE WINDOW before touching any of them.
+# A flinch needs, simultaneously:  MIN_VALID <= d < TRIGGER  and  d <= baseline - DROP.
+# The 2026-07-23 hardening (TRIGGER 0.26->0.18, DROP 0.20->0.26, CONFIRM 5->8) left no
+# window at all for the ordinary case: with a foot hovering ~0.30 m away, DROP demanded
+# d <= 0.04 m while MIN_VALID discarded everything under 0.05 m — mathematically
+# unfireable. Field 2026-07-24: "I moved my foot from about 1 foot to 1 inch from the
+# front ToF array and he did not back up." (1 inch = 0.025 m: invisible twice over.)
+# The false triggers that hardening was for came from the CHARGER voltage sag, and that
+# was fixed at its root (firmware Schmitt hysteresis + sticky charging() + drive
+# lockout while plugged in), so the reflex does not need to be deaf to pay for it.
+MOTION_FLINCH_TRIGGER_M = 0.25         # crowding inside ~10 inches can arm the reflex
+MOTION_FLINCH_APPROACH_DROP_M = 0.12   # a real closing trend, but never wider than the
+                                       # trigger radius or the window closes again
+MOTION_FLINCH_CONFIRM_TICKS = 3        # ~3 s at CONSCIOUSNESS_LOOP_INTERVAL_SECS=1.0.
+                                       # 8 ticks meant holding a foot there for 8 s —
+                                       # not a reflex. 3 still rejects single-frame noise.
+MOTION_FLINCH_MIN_VALID_M = 0.02       # 0/1 cm reads are sensor garbage; 1 inch is a REAL
+                                       # foot. The old 0.05 blinded him exactly when
+                                       # something was closest — the worst possible time.
 MOTION_FLINCH_BASELINE_ADAPT_M = 0.12  # max per-tick drift of the open-distance baseline
 MOTION_FLINCH_CLEAR_CONFIRM_TICKS = 3  # consecutive clear ticks before the baseline may RISE (so a
                                        # multi-frame ToF dropout can't inflate it and fake an approach)
@@ -7153,7 +7168,7 @@ MOTION_FLINCH_BACKUP_M = 0.30          # nominal retreat distance
 MOTION_FLINCH_REAR_MARGIN_M = 0.30     # clearance to keep behind him (stop short of the wall)
 MOTION_FLINCH_MIN_BACKUP_M = 0.10      # below this the retreat isn't worth it -> hold (cornered)
 MOTION_FLINCH_SPEED_MS = 0.20          # m/s of the retreat (firmware still slows near the wall)
-MOTION_FLINCH_COOLDOWN_SECS = 12.0     # settle time between flinches (raised so he can't
+MOTION_FLINCH_COOLDOWN_SECS = 8.0      # settle time between flinches (so he can't
                                        # inch backward in a rapid blocked->back-off loop)
 MOTION_FLINCH_ALLOW_MID_SENTENCE = True  # a reflex fires even while they're talking; False defers it
 

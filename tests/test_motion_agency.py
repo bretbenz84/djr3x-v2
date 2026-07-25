@@ -537,6 +537,10 @@ class FlinchTest(unittest.TestCase):
             mock.patch.object(config, "MOTION_FLINCH_APPROACH_DROP_M", 0.20, create=True),
             mock.patch.object(config, "MOTION_FLINCH_CONFIRM_TICKS", 5, create=True),
             mock.patch.object(config, "MOTION_FLINCH_COOLDOWN_SECS", 6.0, create=True),
+            # Pinned too, so "sub-floor read" keeps meaning what the fixtures assume
+            # (30 mm is noise at a 50 mm floor). The SHIPPING floor is lower — a foot
+            # at 1 inch is a real object — and is guarded by FlinchShippingDefaultsTest.
+            mock.patch.object(config, "MOTION_FLINCH_MIN_VALID_M", 0.05, create=True),
         ]
         (self.available, self.state, self.telemetry, self.move, self.turn,
          self.come, self.ws, *_cfg) = [p.start() for p in self._patches]
@@ -777,3 +781,102 @@ class FlinchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FlinchShippingDefaultsTest(unittest.TestCase):
+    """FlinchTest pins its own thresholds so the LOGIC stays testable while the
+    shipping numbers are tuned. That is exactly how the reflex silently died: the
+    2026-07-23 hardening left the SHIPPING config with no feasible window at all,
+    and every logic test still passed.
+
+    A flinch needs, at the same instant:
+        MIN_VALID <= d < TRIGGER      and      d <= baseline - DROP
+    With the hardened values (TRIGGER 0.18, DROP 0.26, MIN_VALID 0.05) and a foot
+    hovering ~0.30 m out, that demanded d <= 0.04 while discarding everything under
+    0.05 — unfireable. Field 2026-07-24: "I moved my foot from about 1 foot to 1 inch
+    from the front ToF array and he did not back up."
+    """
+
+    def _cfg(self, name, default=None):
+        return float(getattr(config, name, default))
+
+    def test_a_reachable_distance_window_exists(self):
+        trigger = self._cfg("MOTION_FLINCH_TRIGGER_M")
+        drop = self._cfg("MOTION_FLINCH_APPROACH_DROP_M")
+        min_valid = self._cfg("MOTION_FLINCH_MIN_VALID_M")
+        # Someone standing a foot away who then crowds in is the ordinary case.
+        baseline = 0.30
+        highest_firing_d = baseline - drop
+        self.assertGreaterEqual(
+            highest_firing_d, min_valid,
+            f"no feasible window: DROP={drop} needs d<={highest_firing_d:.3f} m but "
+            f"MIN_VALID={min_valid} discards anything under it",
+        )
+        self.assertLess(min_valid, trigger, "the noise floor swallows the trigger radius")
+
+    def test_drop_is_not_wider_than_the_trigger_radius(self):
+        # If DROP >= TRIGGER the reflex can only ever fire for a target that started
+        # outside the trigger AND ended near zero — the window collapses.
+        self.assertLess(self._cfg("MOTION_FLINCH_APPROACH_DROP_M"),
+                        self._cfg("MOTION_FLINCH_TRIGGER_M"))
+
+    def test_confirm_window_is_a_reflex_not_a_wait(self):
+        ticks = self._cfg("MOTION_FLINCH_CONFIRM_TICKS")
+        interval = self._cfg("CONSCIOUSNESS_LOOP_INTERVAL_SECS", 1.0)
+        self.assertGreaterEqual(ticks, 2, "single-frame noise must not fire it")
+        self.assertLessEqual(ticks * interval, 4.0,
+                             f"{ticks} ticks x {interval}s is a wait, not a reflex")
+
+    def test_an_inch_away_is_a_real_reading_not_noise(self):
+        # 1 inch = 0.0254 m. The reflex matters MOST when something is closest, so
+        # the noise floor must sit below a genuine very-close object.
+        self.assertLess(self._cfg("MOTION_FLINCH_MIN_VALID_M"), 0.0254)
+
+
+class FlinchEndToEndDefaultsTest(unittest.TestCase):
+    """Drive the real _maybe_flinch with the SHIPPING defaults through the owner's
+    exact scenario: idle at ~1 ft, then a foot at ~1 inch, held."""
+
+    def setUp(self):
+        MA._reset_flinch()
+        MA._state.update(last_flinch_at=0.0, user_motion_at=0.0)
+        self.addCleanup(MA._reset_flinch)
+        self._front_m = 0.30
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "move", return_value=9),
+            mock.patch.object(MA.motion, "telemetry", side_effect=lambda: {
+                "tof_mm": {"fl": int(self._front_m * 1000), "fr": int(self._front_m * 1000),
+                           "rl": 4000, "rr": 4000}}),
+        ]
+        self.available, self.state, self.move, self.telemetry = [
+            p.start() for p in self._patches
+        ]
+        self.addCleanup(lambda: [p.stop() for p in self._patches])
+
+    def _run(self, approach_m, hold_ticks, standoff_m=0.30):
+        prof = _profile()
+        self._front_m = standoff_m
+        for _ in range(5):                       # establish the open-distance baseline
+            MA._maybe_flinch(prof, time.monotonic(), "idle")
+        self._front_m = approach_m
+        for tick in range(1, hold_ticks + 1):
+            if MA._maybe_flinch(prof, time.monotonic(), "idle"):
+                return tick
+        return None
+
+    def test_foot_at_one_inch_backs_him_off(self):
+        fired = self._run(0.025, hold_ticks=8)
+        self.assertIsNotNone(fired, "the reflex never fired on a foot at 1 inch")
+        self.assertLessEqual(fired, 4, "a reflex must not take more than a few seconds")
+        self.move.assert_called()
+        self.assertLess(self.move.call_args[0][0], 0, "back-off must move BACKWARD")
+
+    def test_static_clutter_never_fires(self):
+        # A wall parked at 20 cm the whole time has no closing trend.
+        self.assertIsNone(self._run(0.20, hold_ticks=12, standoff_m=0.20))
+        self.move.assert_not_called()
+
+    def test_a_momentary_poke_does_not_fire(self):
+        self.assertIsNone(self._run(0.025, hold_ticks=1))
