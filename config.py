@@ -1861,7 +1861,18 @@ PROACTIVE_YIELD_ONSET_MAX_SECS = 3.0        # hard cap on how far back the recov
 
 # Seeds Whisper with expected vocabulary — significantly reduces misreadings of
 # names and domain terms. Add any names or terms Rex commonly hears.
-WHISPER_INITIAL_PROMPT = "Bret, DJ-R3X, Rex, Batuu, Star Wars, cantina, droid"
+# Biases the decoder toward vocabulary Rex actually hears. This matters MOST at the
+# marginal far-field SNR measured on the robot (~13-15 dB, tools/mic_check.py): where
+# the acoustics are ambiguous the language prior decides the word, so the domain must
+# be represented. It previously carried only Star Wars flavor and NONE of the command
+# vocabulary that was failing — "turn around and come forward five feet" came out as
+# "...come forward, Ozzie" (field 2026-07-24). Keep it short: an over-long prompt makes
+# Whisper hallucinate its contents into the transcript.
+WHISPER_INITIAL_PROMPT = (
+    "Bret, Exudica, DJ-R3X, Rex, droid, Batuu, cantina. "
+    "Turn around, turn left, turn right, come here, come forward, move forward, "
+    "move back, go north, one two three four five six seven eight nine ten feet."
+)
 
 # Applied after transcription and before the command parser.
 # Keys are lowercased misreadings; values are the correct replacements.

@@ -10,6 +10,7 @@ so what it reports is what Whisper actually receives.
     ./venv/bin/python tools/mic_check.py channels     # what is on each mic channel
     ./venv/bin/python tools/mic_check.py noise        # room noise floor (stay quiet)
     ./venv/bin/python tools/mic_check.py speech       # speak from your normal spot
+    ./venv/bin/python tools/mic_check.py spectrum     # WHERE the noise is + filter payoff
     ./venv/bin/python tools/mic_check.py distance     # guided 3ft / 6ft / 9ft sweep
     ./venv/bin/python tools/mic_check.py transcribe   # end-to-end: hear it as Rex does
     ./venv/bin/python tools/mic_check.py all          # channels + noise + speech + verdict
@@ -201,9 +202,14 @@ def test_channels(secs: float = 6.0) -> dict:
             live = [s for s in stats if s["rms_dbfs"] >= -70.0]
             if live:
                 print(f"    -> set AUDIO_AEC_INPUT_CHANNEL={live[0]['ch']} in .env")
+        elif abs(corr) > 0.999 and abs(stats[0]["rms_dbfs"] - stats[1]["rms_dbfs"]) < 0.5:
+            print("  The two channels are IDENTICAL — one processed mono stream")
+            print("  duplicated, not two raw capsules. That is what the AEC/beamforming")
+            print("  firmware emits, so the on-chip processing IS in the signal path.")
+            print("  Mixing costs nothing here: leave AUDIO_AEC_INPUT_CHANNEL blank.")
         elif abs(corr) > 0.9:
-            print("  Both channels carry nearly the SAME signal (two mic capsules).")
-            print("  Mixing them is fine; hardware AEC may not be flashed.")
+            print("  Both channels carry nearly the same signal (two raw capsules).")
+            print("  Mixing them is fine, but no array processing is being applied.")
         else:
             print("  Both channels carry DIFFERENT live audio — inspect before choosing.")
     return {"channels": stats}
@@ -253,6 +259,70 @@ def test_speech(secs: float = 8.0, floor_dbfs: float | None = None,
     print(f"  peak        : {_peak_dbfs(mono):6.1f} dBFS")
     print(f"  clipping    : {clip * 100:5.2f}%")
     return {"speech_dbfs": speech_db, "snr_db": snr, "clip": clip, "audio": mono}
+
+
+def _band_energy(x: np.ndarray, edges: list[tuple[float, float]]) -> list[float]:
+    """RMS dBFS per frequency band, via a real FFT magnitude spectrum."""
+    if x.size < 1024:
+        return [-120.0] * len(edges)
+    spec = np.abs(np.fft.rfft(x.astype(np.float64) * np.hanning(x.size)))
+    freqs = np.fft.rfftfreq(x.size, 1.0 / SR)
+    # Parseval-consistent scaling so band sums are comparable to a broadband RMS.
+    power = (spec ** 2) / (x.size * np.sum(np.hanning(x.size) ** 2) / x.size)
+    out = []
+    for lo, hi in edges:
+        sel = (freqs >= lo) & (freqs < hi)
+        p = float(np.sum(power[sel])) * 2.0 / (x.size ** 2) * x.size
+        out.append(10.0 * np.log10(p) if p > 1e-12 else -120.0)
+    return out
+
+
+def test_spectrum(secs: float = 5.0) -> None:
+    """Locate the noise in FREQUENCY, and price a high-pass filter.
+
+    Makeup gain cannot improve SNR, but removing noise where speech ISN'T can.
+    Room rumble (HVAC, fans, servo whine, structural) piles up below ~150 Hz,
+    while speech intelligibility for ASR lives roughly 150 Hz - 6 kHz. If the
+    noise floor is bottom-heavy, a high-pass is free SNR.
+    """
+    print("\n=== NOISE SPECTRUM ===")
+    print("Stay SILENT — measuring where the room noise actually sits.")
+    _countdown(f"Recording {secs:.0f}s of silence...", 3)
+    noise = _as_pipeline_mono(_record(secs))
+
+    print("\nSpeak normally from your usual spot for the comparison.")
+    _countdown(f"Recording {secs:.0f}s of speech...", 3)
+    speech = _as_pipeline_mono(_record(secs))
+
+    bands = [(0, 80), (80, 150), (150, 300), (300, 1000),
+             (1000, 3000), (3000, 6000), (6000, 8000)]
+    n_db = _band_energy(noise, bands)
+    s_db = _band_energy(speech, bands)
+
+    print(f"\n  {'band (Hz)':>12}  {'noise dB':>9}  {'speech dB':>10}  {'SNR dB':>7}")
+    for (lo, hi), nd, sd in zip(bands, n_db, s_db):
+        print(f"  {f'{lo}-{hi}':>12}  {nd:>9.1f}  {sd:>10.1f}  {sd - nd:>7.1f}")
+
+    # Price a high-pass at each candidate cutoff: how much noise power is removed
+    # versus how much speech power is sacrificed.
+    print("\n  If a high-pass filter were applied to the capture:")
+    total_n = sum(10 ** (d / 10.0) for d in n_db)
+    total_s = sum(10 ** (d / 10.0) for d in s_db)
+    base_snr = 10.0 * np.log10(total_s / total_n) if total_n > 0 else 0.0
+    print(f"    {'cutoff':>8}  {'noise cut':>10}  {'speech lost':>12}  {'net SNR gain':>13}")
+    for cut_idx, cutoff in ((1, 80), (2, 150), (3, 300)):
+        kept_n = sum(10 ** (d / 10.0) for d in n_db[cut_idx:])
+        kept_s = sum(10 ** (d / 10.0) for d in s_db[cut_idx:])
+        if kept_n <= 0 or kept_s <= 0:
+            continue
+        new_snr = 10.0 * np.log10(kept_s / kept_n)
+        print(f"    {cutoff:>6} Hz  "
+              f"{10 * np.log10(total_n / kept_n):>9.1f} dB  "
+              f"{10 * np.log10(total_s / kept_s):>11.1f} dB  "
+              f"{new_snr - base_snr:>12.1f} dB")
+    print(f"\n  (current broadband SNR over these bands: {base_snr:.1f} dB)")
+    print("  A net gain of >= 2 dB is worth filtering; below that the noise is")
+    print("  broadband (it sits ON the speech) and only distance/room fixes help.")
 
 
 def test_distance() -> None:
@@ -314,10 +384,19 @@ def _verdict(floor: float, speech: dict) -> None:
 
     if clip <= CLIP_WARN_FRAC and level < TARGET_SPEECH_DBFS - 6:
         head = TARGET_SPEECH_DBFS - level
-        suggested = round(gain * (10 ** (head / 20.0)), 1)
-        suggested = min(suggested, 4.0)
-        print(f"\n  Speech sits {head:.0f} dB below target and is not clipping, so there is")
-        print(f"  headroom: try AUDIO_INPUT_GAIN={suggested} (currently {gain}).")
+        suggested = min(round(gain * (10 ** (head / 20.0)), 1), 4.0)
+        print(f"\n  Speech sits {head:.0f} dB below target with no clipping, so there IS")
+        print(f"  level headroom (AUDIO_INPUT_GAIN={suggested} vs {gain} today).")
+        if snr < GOOD_SNR_DB:
+            # Be explicit: makeup gain is a multiply — it raises the noise by the
+            # same dB it raises the voice. It cannot buy back SNR, and this is the
+            # exact trap the .env history records (6x and 2x both "ran hot").
+            print("  BUT gain multiplies speech AND noise equally — it will NOT improve")
+            print(f"  the {snr:.0f} dB SNR above, so it will not fix word errors. Raise it")
+            print("  only if quiet audio is causing MISSED speech (VAD not triggering),")
+            print("  not to chase accuracy. Fix the SNR first.")
+        else:
+            print("  SNR is healthy, so this is a safe level-only lift.")
         print("  Re-run afterwards — back off if clipping appears or startles return.")
     print("=" * 68)
 
@@ -326,7 +405,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("test", nargs="?", default="all",
-                    choices=["channels", "noise", "speech", "distance", "transcribe", "all"])
+                    choices=["channels", "noise", "speech", "spectrum",
+                             "distance", "transcribe", "all"])
     ap.add_argument("--secs", type=float, default=None, help="override recording length")
     args = ap.parse_args()
 
@@ -338,6 +418,8 @@ def main() -> None:
             test_noise(args.secs or 5.0)
         elif args.test == "speech":
             test_speech(args.secs or 8.0)
+        elif args.test == "spectrum":
+            test_spectrum(args.secs or 5.0)
         elif args.test == "distance":
             test_distance()
         elif args.test == "transcribe":
