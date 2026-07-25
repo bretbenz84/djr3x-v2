@@ -470,12 +470,15 @@ static CRGB gaugeLevelColor(uint8_t level) {
 // fill boundary toward the top.
 void chargeGauge() {
 	const uint8_t columns[3] = { PanelAStart, PanelBStart, PanelCStart };
-	// Proportional, rounded to nearest pixel. The old (soc+11)/12 saturated at 8
-	// bars from 85% up, so 85% and 100% were indistinguishable — no good when the
-	// point of the bar is to read the level. Any non-zero charge keeps at least one
-	// pixel lit so an almost-flat pack still reads as "something left, and it's red".
-	uint8_t filled = (uint8_t)(((uint16_t)chargeSoc * 8 + 50) / 100);
-	if (chargeSoc > 0 && filled == 0) filled = 1;
+	// Each pixel owns exactly one eighth of the range, so pixel k lights the moment
+	// the charge passes (k-1)*12.5% (owner spec 2026-07-24). That is a CEILING, not
+	// a round-to-nearest: rounding lit pixel k only at the MIDDLE of its band, so
+	// the bar lagged a whole LED behind the charge for most of the range (13% still
+	// showed one pixel, 26% two, 88% seven). Ceiling of 0 is 0, so an empty pack is
+	// dark and any non-zero charge keeps at least the red pixel lit.
+	//   LED 1 >0%   LED 2 >12.5%  LED 3 >25%    LED 4 >37.5%
+	//   LED 5 >50%  LED 6 >62.5%  LED 7 >75%    LED 8 >87.5%
+	uint8_t filled = (uint8_t)(((uint16_t)chargeSoc * 8 + 99) / 100);
 	if (filled > 8) filled = 8;
 
 	FastLED.clear();
