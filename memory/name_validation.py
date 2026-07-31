@@ -35,7 +35,25 @@ _FILLER_UTTERANCES = {
     "er",
     "err",
     "huh",
+    "mhm",
+    "mmhmm",
+    "uhhuh",
+    "yeah",
+    "yep",
+    "yup",
+    "nah",
+    "wow",
+    "whoa",
+    "ha",
+    "haha",
+    "hehe",
 }
+# A "name" whose every token is a backchannel/laugh syllable is a transcribed
+# non-verbal noise, not a person ("Mm-hmm", "Uh-huh", "Ha ha") — live incident
+# 2026-07-26: Whisper heard "Mm-hmm" at an identity prompt and a phantom person
+# was enrolled with the speaker's own face and voice, which then OUTSCORED the
+# real person on their own speech every session after.
+_BACKCHANNEL_TOKENS = _FILLER_UTTERANCES | {"he", "ho", "hah", "heh", "hmmm"}
 _BAD_SINGLE_TOKENS = {
     "again",
     "back",
@@ -200,6 +218,8 @@ def normalize_person_name(value: str, *, allow_single: bool = True) -> Optional[
 
     key = normalized_name_key(text)
     if not key or key in _FILLER_UTTERANCES:
+        return None
+    if all(part in _BACKCHANNEL_TOKENS for part in key.split()):
         return None
 
     raw_tokens = _NAME_TOKEN_RE.findall(text)

@@ -28,17 +28,39 @@ class StepRoomReactionTest(unittest.TestCase):
         c._room_reacted["count"] = 0.0
         c._room_reacted["last_at"] = 0.0
 
+    @staticmethod
+    def _smiling_person(mood="happy", confidence=0.8, age_secs=0.5):
+        return {
+            "face_box": (10, 10, 100, 100),
+            "face_expression": {
+                "expression": "smile",
+                "mood": mood,
+                "confidence": confidence,
+                "source": "mediapipe_face_landmarker",
+                "updated_at": time.time() - age_secs,
+            },
+        }
+
     # since_spoke default sits comfortably past ROOM_REACTION_MIN_AFTER_REX_SECS —
     # below it, the reaction is (correctly) suppressed as Rex's own TTS tail.
-    def _run(self, audio, *, can_speak=True, profile=None, since_spoke=3.0):
+    # A fresh visible smile is included by default: the amusement-corroboration
+    # gate requires a human who actually looks amused, not just burst-y audio.
+    def _run(self, audio, *, can_speak=True, profile=None, since_spoke=3.0,
+             people=None, sfx_ago=float("inf"), base_moving=False):
+        if people is None:
+            people = [self._smiling_person()]
         captured = {}
         with mock.patch.object(c, "_can_proactive_speak", return_value=can_speak), \
              mock.patch("audio.speech_queue.seconds_since_last_speech", return_value=since_spoke), \
+             mock.patch("audio.sound_effects.seconds_since_last_play", return_value=sfx_ago), \
+             mock.patch("intelligence.motion_controller.is_moving", return_value=base_moving), \
              mock.patch.object(
                  c, "_speak_async",
                  side_effect=lambda line, **k: captured.update(line=line, kw=k) or True), \
              mock.patch("sequences.animations.play_body_beat") as beat:
-            c._step_room_reaction({"audio_scene": audio}, profile or _Profile())
+            c._step_room_reaction(
+                {"audio_scene": audio, "people": people}, profile or _Profile()
+            )
             captured["beat"] = beat.call_args[0][0] if beat.called else None
         return captured
 
@@ -64,6 +86,31 @@ class StepRoomReactionTest(unittest.TestCase):
 
     def test_no_signal_does_nothing(self):
         self.assertNotIn("line", self._run({}))
+
+    def test_no_visible_smile_means_no_reaction(self):
+        # Field 2026-07-30: servo/motor noise read as laughter and Rex said
+        # "See? That one was free." at a not-laughing owner. Without a fresh
+        # amused face in view, burst-y audio must not earn a victory lap.
+        self.assertNotIn("line", self._run({"laughter_detected": True}, people=[]))
+        stone_faced = self._smiling_person(mood="neutral")
+        self.assertNotIn(
+            "line", self._run({"applause_detected": True}, people=[stone_faced])
+        )
+        low_conf = self._smiling_person(confidence=0.2)
+        self.assertNotIn(
+            "line", self._run({"laughter_detected": True}, people=[low_conf])
+        )
+
+    def test_recent_sound_effect_suppresses_reaction(self):
+        # A chirp/whir that just played is still inside the scene analyzer's
+        # rolling window and reads as rhythmic bursts.
+        self.assertNotIn("line", self._run({"laughter_detected": True}, sfx_ago=1.0))
+        self.assertIn("line", self._run({"laughter_detected": True}, sfx_ago=30.0))
+
+    def test_moving_base_suppresses_reaction(self):
+        self.assertNotIn(
+            "line", self._run({"applause_detected": True}, base_moving=True)
+        )
 
     def test_ignores_ambient_when_rex_did_not_speak_recently(self):
         # Rex's last line finished long ago → a laugh now is ambient, not at him.

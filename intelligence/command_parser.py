@@ -228,6 +228,46 @@ def _reduce_shutdown_clause(clean: str) -> str:
     return value
 
 
+# Whisper near-homophones of "shut down" seen in the field ("Cut down.",
+# 2026-07-30, wake model at 0.945). Accepted ONLY as confirmation of an
+# acoustic shut_down wake hit — the wake model already heard the phrase; the
+# transcript just spells it wrong. Never used for typed text or ordinary
+# spoken turns, and "look down" (the phrase the confirm gate exists to
+# reject) is deliberately NOT here.
+_SHUTDOWN_WAKE_HOMOPHONE_CORES = {
+    "cut down",
+    "shot down",
+    "shut town",
+    "shet down",
+    "shut it down",
+}
+# NOT included: "sit down" (could be aimed at a pet — powering off on a
+# marginal wake hit there is worse than one missed shutdown) and "look down"
+# (the very phrase this confirm gate exists to protect).
+
+
+def is_shutdown_wake_confirmation(text: str) -> bool:
+    """True when *text* confirms an acoustic shut_down wake hit.
+
+    Same clause/negation discipline as is_standalone_shutdown_command, but the
+    reduced clause may also be a known Whisper near-homophone of "shut down".
+    Only call this when the shut_down wake model already fired.
+    """
+    if is_standalone_shutdown_command(text):
+        return True
+    if not text or not text.strip():
+        return False
+    for clause in _SHUTDOWN_CLAUSE_SPLIT_RE.split(text.lower()):
+        clean = _plain(clause)
+        if not clean:
+            continue
+        if _SHUTDOWN_NEGATION_GUARD_RE.search(clean):
+            continue
+        if _reduce_shutdown_clause(clean) in _SHUTDOWN_WAKE_HOMOPHONE_CORES:
+            return True
+    return False
+
+
 def is_standalone_shutdown_command(text: str) -> bool:
     """True when any clause of the utterance is a direct full-shutdown command.
 

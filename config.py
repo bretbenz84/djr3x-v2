@@ -4340,6 +4340,14 @@ STARTUP_PROFILE_QUESTION_ENABLED = False
 # speech and do not let proactive conversation prompts speak over the music.
 DJ_SUPPRESS_CONVERSATION_DURING_PLAYBACK = True
 IDLE_LISTEN_DURING_DJ_PLAYBACK = False
+# While conversation is suppressed by playback, keep a NARROW ear open for music
+# control: VAD + transcription still run (hardware AEC required — the ReSpeaker
+# cancels its own playback from the mic), but ONLY stop/skip/volume/shutdown
+# commands execute; every other transcript — radio announcers included — is
+# dropped with a [dj_listen] log line. Field 2026-07-30: "stop the music",
+# repeated at a turned-down amp, was unreachable because the only override was a
+# wake word at a RAISED threshold; the owner had to kill the process.
+DJ_COMMAND_LISTEN_ENABLED = True
 DJ_DUCK_DURING_SPEECH = True
 DJ_LISTEN_DUCK_VOLUME = 0.18
 DJ_START_AFTER_TTS_DELAY_SECS = 0.25
@@ -4745,6 +4753,18 @@ ROOM_REACTION_MIN_GAP_SECS = 20.0     # global cooldown (also de-dups one multi-
 # Low cap: laughter detection has false positives (TV/AC/his own TTS tail), and even one
 # unearned victory lap reads as needy — two read as a malfunction (field log 2026-07-03).
 ROOM_REACTION_SESSION_CAP = 2         # max take-a-bow / follow-throughs per session
+# The burst detectors can't tell a human laugh from Rex's OWN mechanicals — servo
+# whine, drive-base motors, and sfx chirps all read as rhythmic bursts (field
+# 2026-07-30: "See? That one was free." fired at a not-laughing owner right after
+# a back-up move; an applause bow fired at plain face-tracking servo noise).
+# Guard 1: skip while the base is moving or within this window of any sfx start.
+ROOM_REACTION_SELF_NOISE_GUARD_ENABLED = True
+ROOM_REACTION_SELF_NOISE_GUARD_SECS = 4.0
+# Guard 2: only credit laughter/applause when a visible face looks amused RIGHT
+# NOW (MediaPipe "happy" at/above this confidence, fresh reading). No smile in
+# view — including an empty room — means no victory lap.
+ROOM_REACTION_REQUIRE_VISIBLE_AMUSEMENT = True
+ROOM_REACTION_AMUSEMENT_MIN_CONFIDENCE = 0.5
 # Keep every line free of claims about what the person is PHYSICALLY doing. Rex cannot
 # see posture reliably, and asserting it lands as a malfunction when he's wrong — field
 # 2026-07-24: "No need to stand. ...Oh, you're already standing." was delivered to a

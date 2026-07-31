@@ -114,6 +114,32 @@ class ShutdownVsSleepSplitTests(unittest.TestCase):
                 match = cp.parse(text)
                 self.assertFalse(match is not None and match.command_key == "shutdown")
 
+    def test_shutdown_wake_confirmation_accepts_whisper_homophones(self):
+        """The acoustic shut_down wake model already heard the phrase; a
+        transcript spelling it "Cut down." must confirm, not veto (live
+        2026-07-30: wake at 0.945 was ignored and Rex quipped instead)."""
+        from intelligence import command_parser as cp
+
+        for text in ("Cut down.", "Shot down.", "shut town", "Shut down.", "shut it down"):
+            with self.subTest(text=text):
+                self.assertTrue(cp.is_shutdown_wake_confirmation(text))
+        # Homophones stay wake-confirm-only, never general shutdown commands.
+        self.assertFalse(cp.is_standalone_shutdown_command("Cut down."))
+
+    def test_shutdown_wake_confirmation_still_rejects_non_shutdown(self):
+        from intelligence import command_parser as cp
+
+        for text in (
+            "Look down.",
+            "sit down",
+            "don't shut down",
+            "cut down the music",
+            "I had to cut down a tree",
+            "",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(cp.is_shutdown_wake_confirmation(text))
+
     def test_embedded_and_prefixed_shutdown_phrases(self):
         from intelligence import command_parser as cp
 

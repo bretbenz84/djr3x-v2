@@ -833,7 +833,11 @@ def _on_wake_word(model_name: str) -> None:
             except Exception as exc:
                 text = ""
                 _log.warning("[wake_word] shutdown confirm transcription failed: %s", exc)
-            if not command_parser.is_standalone_shutdown_command(text):
+            # Homophone-tolerant: the acoustic model already heard the phrase, so
+            # a transcript of "Cut down." / "Shot down." confirms rather than
+            # vetoes (live 2026-07-30: wake at 0.945, Whisper wrote "Cut down.",
+            # Rex quipped instead of powering off). "look down" still rejects.
+            if not command_parser.is_shutdown_wake_confirmation(text):
                 _log.info(
                     "[wake_word] shut_down wake hit NOT confirmed by transcript %r — "
                     "ignoring (likely 'look down')", text,
@@ -972,6 +976,98 @@ def _stop_dj_for_wake() -> bool:
         except Exception:
             pass
     return stopped
+
+
+# Commands the restricted during-music listener may execute. Everything else a
+# transcript yields during playback (radio announcers, singing along, ordinary
+# chatter) is logged and DROPPED — never routed to conversation, memory, or any
+# other action.
+_DJ_LISTEN_COMMAND_KEYS = {
+    "dj_stop", "dj_skip", "volume_up", "volume_down", "shutdown",
+}
+
+
+def _dj_command_listen_available() -> bool:
+    """True when Rex can safely keep listening for music commands DURING playback.
+
+    Requires the ReSpeaker's hardware AEC (music routed out the same device is
+    cancelled from the mic before we ever see it). Without it, the mic hears
+    the speakers directly and VAD would chase the track itself — there the old
+    behavior (deaf + wake-word barge-in) remains the safe fallback.
+    """
+    if not bool(getattr(config, "DJ_COMMAND_LISTEN_ENABLED", True)):
+        return False
+    try:
+        from audio import hardware_aec
+        return bool(hardware_aec.is_active())
+    except Exception:
+        return False
+
+
+def _dj_command_listen_step(*, allowed_states: tuple[State, ...]) -> None:
+    """One restricted listen poll while DJ/radio playback owns the room.
+
+    Live failure 2026-07-30: during radio playback the conversation loop was
+    fully suppressed and the only override was a wake word at a RAISED
+    threshold — "stop the music", repeated at a turned-down amp, did nothing
+    and the owner had to kill the process. This keeps a narrow ear open: VAD on
+    the hardware-AEC-cleaned mic, transcribe the segment, and act ONLY on
+    music-control/shutdown commands (_DJ_LISTEN_COMMAND_KEYS). Anything else —
+    including whatever the radio station says — is dropped with a log line.
+    """
+    chunk = stream.get_audio_chunk(_CHUNK_SECS)
+    if len(chunk) == 0 or not vad.is_speech(chunk):
+        _stop_event.wait(_CHUNK_SECS)
+        return
+
+    restore_volume = _duck_dj_for_speech()
+    try:
+        segment = _accumulate_speech(
+            time.monotonic(), allowed_states=allowed_states, raw_vad=True
+        )
+        if segment is None or len(segment) == 0:
+            return
+        try:
+            text = (transcription.transcribe(segment) or "").strip()
+        except Exception as exc:
+            _log.debug("[dj_listen] transcription failed: %s", exc)
+            return
+        if not text:
+            return
+        try:
+            match = command_parser.parse(text)
+        except Exception:
+            match = None
+        key = match.command_key if match is not None else None
+        if key not in _DJ_LISTEN_COMMAND_KEYS:
+            _log.info(
+                "[dj_listen] dropped non-command speech during playback: %r (key=%s)",
+                text, key,
+            )
+            return
+
+        from features import dj as dj_mod
+        _log.info("[dj_listen] executing %s during playback text=%r", key, text)
+        if key == "dj_stop":
+            dj_mod.stop()
+            echo_cancel.clear_suppression_tail()
+            _speak_blocking("Music stopped.", emotion="neutral")
+        elif key == "dj_skip":
+            dj_mod.skip()
+        elif key == "volume_up":
+            dj_mod.volume_up()
+        elif key == "volume_down":
+            dj_mod.volume_down()
+        elif key == "shutdown":
+            dj_mod.stop()
+            echo_cancel.clear_suppression_tail()
+            # No _interrupted.set() here: the ack just finished speaking and
+            # playback is already stopped — nothing is in flight to cut off.
+            _speak_blocking("Powering off. Don't have too much fun without me.",
+                            emotion="neutral")
+            state_module.set_state(State.SHUTDOWN)
+    finally:
+        _restore_dj_volume(restore_volume)
 
 
 def _start_dj_after_response(track) -> None:
@@ -11682,6 +11778,7 @@ def _accumulate_speech(
     speech_start_mono: float,
     *,
     allowed_states: tuple[State, ...] = (State.ACTIVE,),
+    raw_vad: bool = False,
 ) -> Optional[np.ndarray]:
     """
     Poll VAD until config.SILENCE_TIMEOUT_SECS of sustained silence, then
@@ -11689,6 +11786,12 @@ def _accumulate_speech(
 
     speech_start_mono is the monotonic timestamp when speech was first detected
     in the main loop — used to calculate how much of the buffer to grab.
+
+    raw_vad: skip the echo_cancel software attenuation before VAD. Used by the
+    during-DJ command listener — playback holds software suppression for the
+    whole track, which would flatten the user's speech to 5% and end the
+    segment after the first chunk; the ReSpeaker's HARDWARE AEC (a
+    prerequisite of that listener) has already removed the music.
     """
     silence_timeout = config.SILENCE_TIMEOUT_SECS
     silence_elapsed = 0.0
@@ -11702,7 +11805,7 @@ def _accumulate_speech(
             _stop_event.wait(_CHUNK_SECS)
             continue
 
-        is_speech = vad.is_speech(_chunk_for_vad(chunk))
+        is_speech = vad.is_speech(chunk if raw_vad else _chunk_for_vad(chunk))
         _situation_assessor.set_vad_active(is_speech)
         if is_speech:
             silence_elapsed = 0.0
@@ -23934,7 +24037,12 @@ def _loop() -> None:
                 except Exception:
                     pass
                 _last_speech_at = time.monotonic()
-                _stop_event.wait(0.1)
+                # Same narrow music-command ear as the ACTIVE loop: "stop the
+                # music" must work from IDLE too, radio chatter stays dropped.
+                if _dj_command_listen_available():
+                    _dj_command_listen_step(allowed_states=(State.IDLE,))
+                else:
+                    _stop_event.wait(0.1)
                 continue
             if (
                 speech_queue.is_speaking()
@@ -24044,7 +24152,13 @@ def _loop() -> None:
             except Exception:
                 pass
             _last_speech_at = time.monotonic()
-            _stop_event.wait(0.1)
+            # Keep a narrow ear open for music-control/shutdown commands
+            # ("stop the music") — everything else stays suppressed. Falls
+            # back to deaf + wake-word barge-in without hardware AEC.
+            if _dj_command_listen_available():
+                _dj_command_listen_step(allowed_states=(State.ACTIVE,))
+            else:
+                _stop_event.wait(0.1)
             continue
 
         # Idle timeout → end session and return to IDLE

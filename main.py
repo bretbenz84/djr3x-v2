@@ -1191,8 +1191,20 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # needs no services: the mp3s already exercised the same audio output path.
     startup_boot_tts_thread = _start_startup_boot_tts_thread(wait_for=startup_audio_thread)
 
-    logger.info("Playing startup animation...")
-    animations.startup()
+    # The wake-up choreography (head lift + neck sweep) takes 15-25s of pure
+    # servo motion. It used to run HERE on the main thread, serializing the
+    # whole boot behind it (2026-07-30 logs: services + model preloads didn't
+    # even start until it finished). Run it in the background instead — the
+    # model preloads below are CPU/IO work that doesn't touch the servos, and
+    # the boot look-around scan chains behind this thread so only one thing
+    # ever drives the head.
+    logger.info("Playing startup animation (backgrounded — services load underneath)...")
+    startup_animation_thread = threading.Thread(
+        target=animations.startup,
+        daemon=True,
+        name="startup_animation",
+    )
+    startup_animation_thread.start()
     if startup_audio_thread is not None and startup_audio_thread.is_alive():
         logger.info("Waiting for startup audio to finish before starting microphone services...")
         startup_audio_thread.join()
@@ -1253,9 +1265,20 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         and bool(getattr(config, "STARTUP_LOADING_SCAN_ENABLED", True))
     ):
         logger.info("Starting startup look-around scan during model loading...")
+
+        def _scan_after_startup_animation() -> None:
+            # Chain behind the (now backgrounded) wake-up choreography so only
+            # one thing drives the head at a time; the scan then takes over
+            # seamlessly for however long the preloads still run.
+            try:
+                if startup_animation_thread.is_alive():
+                    startup_animation_thread.join(timeout=45.0)
+            except Exception:
+                pass
+            animations.boot_scan_thread(startup_scan_stop)
+
         startup_scan_thread = threading.Thread(
-            target=animations.boot_scan_thread,
-            args=(startup_scan_stop,),
+            target=_scan_after_startup_animation,
             daemon=True,
             name="startup_loading_scan",
         )
@@ -1421,6 +1444,12 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # All CPU-heavy preload work is now complete; restore the normal GIL interval.
     if _audio_qos:
         sys.setswitchinterval(_prior_switch_interval)
+    # Preloads may finish before the backgrounded wake-up choreography does —
+    # wait for it here so consciousness/face-tracking never fight the animation
+    # for the head (boot time is now max(animation, preloads), not their sum).
+    if startup_animation_thread.is_alive():
+        logger.info("Waiting for startup animation to finish...")
+        startup_animation_thread.join(timeout=45.0)
     if startup_scan_thread is not None:
         startup_scan_stop.set()
         startup_scan_thread.join(timeout=3.0)

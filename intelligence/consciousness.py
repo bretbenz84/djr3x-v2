@@ -3043,6 +3043,27 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     )
 
 
+def _visible_amused_person(snapshot: dict) -> bool:
+    """True when a currently visible face carries a fresh, confident smile.
+
+    Used to corroborate the audio scene's laughter/applause booleans — the
+    MediaPipe expression telemetry ("happy"/smile, per-face adaptive baseline)
+    is the witness that a human actually reacted, not Rex's own noise floor.
+    """
+    min_conf = _safe_confidence(
+        getattr(config, "ROOM_REACTION_AMUSEMENT_MIN_CONFIDENCE", 0.5)
+    )
+    for person in _visible_face_people(snapshot):
+        reading = _expression_reading(person)
+        if str(reading.get("mood") or "") != "happy":
+            continue
+        if not _face_expression_reading_is_recent(reading):
+            continue
+        if _safe_confidence(reading.get("confidence")) >= min_conf:
+            return True
+    return False
+
+
 def _step_room_reaction(snapshot: dict, profile: SituationProfile) -> None:
     """Land the laugh / take a bow: react to the ROOM responding to Rex's material.
 
@@ -3062,6 +3083,35 @@ def _step_room_reaction(snapshot: dict, profile: SituationProfile) -> None:
     laughter = bool(audio.get("laughter_detected"))
     if not (applause or laughter):
         return
+
+    # The burst detectors can't tell a human laugh from Rex's OWN mechanicals —
+    # servo whine, drive-base motor noise, and sound-effect chirps all read as
+    # rhythmic bursts (field 2026-07-30: "See? That one was free." at a
+    # not-laughing owner right after a back-up move + motion whir; and an
+    # applause bow at plain servo noise). Two extra gates:
+    #   1. self-noise: skip while the base is moving or within a short window
+    #      of any sound-effect start (sfx accompany every autonomous maneuver).
+    if bool(getattr(config, "ROOM_REACTION_SELF_NOISE_GUARD_ENABLED", True)):
+        try:
+            from intelligence import motion_controller
+            if motion_controller.is_moving():
+                return
+        except Exception:
+            pass
+        try:
+            from audio import sound_effects
+            if sound_effects.seconds_since_last_play() < float(
+                getattr(config, "ROOM_REACTION_SELF_NOISE_GUARD_SECS", 4.0)
+            ):
+                return
+        except Exception:
+            pass
+    #   2. visual corroboration: only credit the laugh/applause when a visible
+    #      face actually looks amused right now. A bow at a stone-faced (or
+    #      empty) room reads as a glitch, so no fresh smile → no reaction.
+    if bool(getattr(config, "ROOM_REACTION_REQUIRE_VISIBLE_AMUSEMENT", True)):
+        if not _visible_amused_person(snapshot):
+            return
 
     now = time.monotonic()
     # Only react when this is plausibly a response to REX — i.e. his last line FINISHED

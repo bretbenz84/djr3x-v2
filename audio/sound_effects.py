@@ -113,6 +113,21 @@ _last_key_at: dict = {}           # key -> monotonic ts
 _yield_event = threading.Event() # set by output_gate's blocking acquirers via the hook
 
 
+def seconds_since_last_play() -> float:
+    """Seconds since ANY sound effect last STARTED (inf if none this session).
+
+    Consumers (e.g. consciousness room reactions) use this as a self-noise
+    guard: a chirp/whir that just played may still be inside the auditory
+    scene analyzer's rolling window, where its rhythmic bursts read as
+    laughter/applause.
+    """
+    with _lock:
+        ts = max(_last_play_at.values(), default=0.0)
+    if ts <= 0.0:
+        return float("inf")
+    return max(0.0, time.monotonic() - ts)
+
+
 def _registry() -> dict:
     reg = dict(_REGISTRY)
     reg.update(getattr(config, "SOUND_EFFECTS_REGISTRY_OVERRIDES", {}) or {})
