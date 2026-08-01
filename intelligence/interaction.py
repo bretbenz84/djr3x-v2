@@ -252,6 +252,12 @@ _session_router_control_topics: dict[int, str] = {}
 _interest_idle_followups_spoken: set[tuple[Optional[int], str]] = set()
 _low_memory_idle_questions_spoken: set[int] = set()
 _recent_memory_candidates = deque(maxlen=12)
+
+# The diary open-thread Rex most recently referenced out loud ("you mentioned the
+# wheels in the parking lot..."), kept so a confused "I don't remember saying
+# that" can be answered by QUOTING the source instead of a stock discard line
+# (field 2026-08-01 12:31). {"episode_id", "thread", "when", "at"} or None.
+_last_thread_reference: "dict | None" = None
 _idle_outro_spoken: bool = False
 # Topics the human just asked to drop ("change the subject"). Session-local with
 # a cooldown so the proactive/idle layer (and the LLM prompt) stop re-raising the
@@ -5529,6 +5535,17 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 open_threads.mark_asked(open_thread["episode_id"], open_thread["thread"])
             except Exception as exc:
                 _log.debug("[lean] open-thread spend failed: %s", exc)
+            # Remember WHAT was just referenced so a baffled "I don't remember
+            # saying that" can be answered with the actual source (episode
+            # summary + when) instead of a stock discard line — see
+            # _last_thread_reference in _execute_memory_boundary_command.
+            global _last_thread_reference
+            _last_thread_reference = {
+                "episode_id": int(open_thread.get("episode_id") or 0),
+                "thread": str(open_thread.get("thread") or ""),
+                "when": str(open_thread.get("when") or "recently"),
+                "at": time.monotonic(),
+            }
         if place_question:
             # Mark asked + arm the answer-capture latch so the person's next reply
             # ("the living room") names + enrolls the room. The lean_impulse frame
@@ -13865,7 +13882,53 @@ def _execute_memory_forget_fact_command(
 
 def _execute_memory_boundary_command(
     person_id: Optional[int],
+    utterance: str = "",
 ) -> str:
+    # "I don't remember saying that" right after Rex referenced a diary open
+    # thread is CONFUSION, not a delete request — answer it by quoting the
+    # source (what the diary says and when), so the human can either go "oh,
+    # right" or recognize a mis-hearing. Field 2026-08-01 12:31: "you mentioned
+    # the wheels in the parking lot" → "I don't remember saying what that was"
+    # → the old stock line ("Nothing recent to discard") explained nothing.
+    # Confusion-shaped only ("don't remember", "what are you talking about") —
+    # an explicit "forget that" must still reach the real discard flow below.
+    confused = bool(re.search(
+        r"don'?t (?:remember|recall|know)|never said|what (?:are you|was that|do you mean)"
+        r"|no idea what",
+        str(utterance or ""), re.IGNORECASE,
+    ))
+    global _last_thread_reference
+    ref = _last_thread_reference
+    if confused and ref and (time.monotonic() - float(ref.get("at") or 0.0)) < 240.0:
+        _last_thread_reference = None       # one grounding per reference
+        summary = ""
+        try:
+            from memory import rex_db
+            row = rex_db.fetchone(
+                "SELECT summary FROM rex_episodes WHERE id = ?",
+                (int(ref.get("episode_id") or 0),),
+            )
+            if row is not None:
+                summary = str(row["summary"] or "").strip()
+        except Exception as exc:
+            _log.debug("[memory] thread-reference lookup failed: %s", exc)
+        if len(summary) > 220:
+            summary = summary[:217].rstrip() + "..."
+        if summary:
+            resp = (
+                f"Here's what I had: {ref.get('when')}, my notes from our chat say — "
+                f"\"{summary}\" — and the loose end I was poking at was "
+                f"\"{ref.get('thread')}\". If that's not a real thing, I probably "
+                "misheard you, and I won't bring it up again."
+            )
+        else:
+            resp = (
+                f"It was a note I made {ref.get('when')}: \"{ref.get('thread')}\". "
+                "If that doesn't ring a bell, I probably misheard you — dropping it."
+            )
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
     candidate = None
     for item in reversed(_recent_memory_candidates):
         if person_id is None or int(item.get("person_id")) == int(person_id):
@@ -14220,7 +14283,7 @@ def _execute_command(
         return _execute_memory_forget_fact_command(args, person_id, person_name)
 
     if key == "memory_boundary":
-        return _execute_memory_boundary_command(person_id)
+        return _execute_memory_boundary_command(person_id, utterance=str(args.get("statement") or ""))
 
     if key == "memory_correct_fact":
         # A correction about a ROOM OBJECT Rex just remarked on ("actually,
@@ -17440,7 +17503,7 @@ def _handle_router_takeover_action(
             person_id,
             text,
         )
-        return _execute_memory_boundary_command(person_id)
+        return _execute_memory_boundary_command(person_id, utterance=str(text or ""))
 
     if action == "identity.who_is_speaking":
         _log.info(

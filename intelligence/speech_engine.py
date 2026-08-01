@@ -230,6 +230,16 @@ def speak_async(
             # tts.speak would ALSO log it at playback, double-printing every proactive
             # line in the conversation log (the cosmetic "duplicate" in the field log).
             done = speech_queue.enqueue(text, emotion, priority=0, log_text=False)
+            # The reply model reads conv_memory's transcript — a proactive line
+            # missing from it is invisible to the NEXT turn. Field 2026-08-01:
+            # the startup greeting asked "How did watching The Odyssey go?", the
+            # human said "I loved the movie", and Rex replied "Which one?" — his
+            # own question never made it into the context.
+            try:
+                from memory import conversations as conv_memory
+                conv_memory.add_to_transcript("Rex", text)
+            except Exception:
+                pass
             _c._mark_governor_candidate(candidate_id, "accepted", "current_behavior_enqueued_speech")
             should_open_wait_on_done = (
                 on_done is None and (wait_secs is not None or _c._utterance_expects_reply(text))
@@ -750,6 +760,13 @@ def generate_and_speak_presence(
             _log.info("consciousness: firing presence reaction — %s: %r", label, text[:120])
             _c._last_presence_reaction_at[tag_key] = time.monotonic()
             done = speech_queue.enqueue(text, emotion, priority=1, tag=tag)
+            # Same transcript rule as speak_async: a greeting/reaction the reply
+            # model can't see makes the next human turn contextless.
+            try:
+                from memory import conversations as conv_memory
+                conv_memory.add_to_transcript("Rex", text)
+            except Exception:
+                pass
             if isinstance(tag_key, int) and _c._presence_line_counts_as_greeting(label, purpose):
                 try:
                     from memory import people as people_mod
