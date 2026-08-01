@@ -13,6 +13,9 @@ so what it reports is what Whisper actually receives.
     ./venv/bin/python tools/mic_check.py spectrum     # WHERE the noise is + filter payoff
     ./venv/bin/python tools/mic_check.py distance     # guided 3ft / 6ft / 9ft sweep
     ./venv/bin/python tools/mic_check.py transcribe   # end-to-end: hear it as Rex does
+    ./venv/bin/python tools/mic_check.py listen       # record + PLAY BACK what Rex hears
+    ./venv/bin/python tools/mic_check.py ab           # A/B one change (charger in/out)
+    ./venv/bin/python tools/mic_check.py score        # scripted accuracy benchmark, logged
     ./venv/bin/python tools/mic_check.py all          # channels + noise + speech + verdict
 
 Nothing here writes to the robot's databases or speaks. Run it with the main app
@@ -358,6 +361,201 @@ def test_transcribe(secs: float = 8.0) -> None:
     print(f"\n  Rex would hear: {text!r}\n")
 
 
+def _playback(mono: np.ndarray, label: str, boost_db: float = 0.0) -> None:
+    """Play a captured take through the default output so you hear WHAT REX HEARS.
+    boost_db lifts very quiet material (room noise floor) into the audible range —
+    the print always says when the level is not verbatim."""
+    import sounddevice as sd
+
+    x = mono
+    if boost_db > 0.0:
+        x = np.clip(mono * (10.0 ** (boost_db / 20.0)), -1.0, 1.0)
+        print(f"  ▶ playback ({label}, boosted +{boost_db:.0f} dB so it's audible)...")
+    else:
+        print(f"  ▶ playback ({label}, verbatim level)...")
+    try:
+        sd.play(x, SR)
+        sd.wait()
+    except Exception as exc:
+        print(f"  playback failed: {exc}")
+
+
+def test_listen(secs: float = 6.0) -> None:
+    """Record through the exact robot capture path, then play it back — first
+    verbatim, then boosted. Use it two ways: stay silent to HEAR the room noise
+    Rex sits in, or speak from your normal spot to hear yourself as he does."""
+    print("\n=== LISTEN: HEAR WHAT REX HEARS ===")
+    print("Stay silent to audition the room noise, or speak from your normal spot.")
+    _countdown(f"Recording {secs:.0f}s...", 3)
+    mono = _as_pipeline_mono(_record(secs))
+    outdir = _ROOT / "logs" / "mic_check"
+    from datetime import datetime
+    path = outdir / f"listen-{datetime.now().strftime('%Y%m%d-%H%M%S')}.wav"
+    _save_wav(path, mono)
+    print(f"  level {_dbfs(mono):.1f} dBFS   clipping {_clip_fraction(mono) * 100:.2f}%"
+          + "".join(f"   {hz}Hz hum +{db:.0f}dB" for hz, db in _hum_db(mono) if db >= 10.0))
+    _playback(mono, "as captured")
+    if _dbfs(mono) < -45.0:
+        _playback(mono, "noise floor", boost_db=30.0)
+    print(f"  saved: {path}")
+
+
+def _save_wav(path: Path, mono: np.ndarray) -> None:
+    """Write pipeline-mono float audio as 16-bit WAV (stdlib only)."""
+    import wave
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pcm = (np.clip(mono, -1.0, 1.0) * 32767.0).astype(np.int16)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(pcm.tobytes())
+
+
+def _hum_db(x: np.ndarray) -> list[tuple[int, float]]:
+    """Mains-hum check: for each of 60/120/180/240 Hz, how many dB the spectrum
+    peak within ±3 Hz sits above the local floor (median of ±5–25 Hz around it).
+    Values above ~10 dB mean a tonal hum component is really there — the signature
+    of a charger/supply ground loop rather than broadband room noise."""
+    spec = np.abs(np.fft.rfft(x * np.hanning(x.size)))
+    freqs = np.fft.rfftfreq(x.size, 1.0 / SR)
+    out = []
+    for hz in (60, 120, 180, 240):
+        band = spec[(freqs >= hz - 3) & (freqs <= hz + 3)]
+        ring = spec[((freqs >= hz - 25) & (freqs <= hz - 5))
+                    | ((freqs >= hz + 5) & (freqs <= hz + 25))]
+        if band.size == 0 or ring.size == 0:
+            continue
+        floor = float(np.median(ring)) or 1e-12
+        out.append((hz, 20.0 * np.log10(float(np.max(band)) / floor)))
+    return out
+
+
+_AB_BANDS = [(0.0, 120.0), (120.0, 300.0), (300.0, 1000.0),
+             (1000.0, 3000.0), (3000.0, 8000.0)]
+
+
+def _ab_condition(label: str, secs: float, outdir: Path) -> dict:
+    input(f"\n[{label}] Set up this condition, keep the room QUIET, press Enter...")
+    _countdown(f"[{label}] Recording {secs:.0f}s of room noise...", 3)
+    mono = _as_pipeline_mono(_record(secs))
+    _save_wav(outdir / f"ab-{label}.wav", mono)
+    bands = _band_energy(mono, _AB_BANDS)
+    hum = _hum_db(mono)
+    print(f"  [{label}] floor {_dbfs(mono):.1f} dBFS"
+          + "".join(f"   {hz}Hz +{db:.0f}dB" for hz, db in hum if db >= 6.0))
+    _playback(mono, f"condition {label} room noise", boost_db=30.0)
+    return {"floor": _dbfs(mono), "bands": bands, "hum": dict(hum)}
+
+
+def test_ab(secs: float = 6.0) -> None:
+    """Two identical noise measurements around ONE deliberate change — built to
+    settle 'what changed since it worked'. Prime suspect from the 2026-07-31 run:
+    the battery charger (Rex was deaf from boot until 3 s after it was unplugged).
+    Use it for any single variable: charger, AC, a moved mic, a new appliance."""
+    print("\n=== A/B NOISE COMPARISON ===")
+    print("Measure the same thing twice, changing exactly ONE condition between")
+    print("runs — e.g. A = charger PLUGGED IN, B = charger UNPLUGGED.")
+    outdir = _ROOT / "logs" / "mic_check"
+    a = _ab_condition("A", secs, outdir)
+    print("\nNow change the ONE thing (e.g. unplug the charger).")
+    b = _ab_condition("B", secs, outdir)
+
+    print("\n" + "─" * 68)
+    print(f"  {'':>14}  {'A':>10}  {'B':>10}  {'delta':>8}")
+    print(f"  {'floor dBFS':>14}  {a['floor']:>10.1f}  {b['floor']:>10.1f}"
+          f"  {a['floor'] - b['floor']:>+8.1f}")
+    for (lo, hi), ea, eb in zip(_AB_BANDS, a["bands"], b["bands"]):
+        da = 10.0 * np.log10(max(ea, 1e-12) / max(eb, 1e-12))
+        print(f"  {f'{lo:.0f}-{hi:.0f} Hz':>14}  {'':>10}  {'':>10}  {da:>+8.1f}")
+    print("─" * 68)
+    delta = a["floor"] - b["floor"]
+    if delta >= 3.0:
+        print(f"  Condition A is {delta:.1f} dB NOISIER than B — the changed thing is a")
+        print("  real noise source. Every dB of floor is a dB of SNR Whisper loses.")
+    elif delta <= -3.0:
+        print(f"  Condition B is {-delta:.1f} dB noisier than A.")
+    else:
+        print("  No meaningful floor difference — this variable is NOT the problem.")
+    worst_hum = max(list(a["hum"].values()) + [0.0])
+    if worst_hum >= 10.0 and worst_hum > max(list(b["hum"].values()) + [0.0]) + 6.0:
+        print("  A shows tonal mains hum that B lacks — classic charger/ground-loop")
+        print("  signature. Keep that source unplugged (or on another circuit) while")
+        print("  Rex listens.")
+    print(f"  Recordings saved under {outdir}/ — listen to them.")
+
+
+_SCORE_SENTENCES = [
+    "Rex, can you hear me?",
+    "Turn around and come forward five feet.",
+    "I'm going to watch a movie tonight.",
+    "What do you see in this room right now?",
+    "Play some cantina music and lower the volume.",
+]
+
+
+def _word_accuracy(ref: str, hyp: str) -> float:
+    """1 - WER, floored at 0. Tokens are lowercased with punctuation stripped."""
+    import re
+
+    tok = lambda s: re.sub(r"[^a-z0-9' ]", " ", s.lower()).split()
+    r, h = tok(ref), tok(hyp)
+    if not r:
+        return 0.0
+    d = np.zeros((len(r) + 1, len(h) + 1), dtype=np.int32)
+    d[:, 0] = np.arange(len(r) + 1)
+    d[0, :] = np.arange(len(h) + 1)
+    for i in range(1, len(r) + 1):
+        for j in range(1, len(h) + 1):
+            d[i, j] = min(d[i - 1, j] + 1, d[i, j - 1] + 1,
+                          d[i - 1, j - 1] + (r[i - 1] != h[j - 1]))
+    return max(0.0, 1.0 - float(d[len(r), len(h)]) / len(r))
+
+
+def test_score(secs: float = 6.0) -> None:
+    """Scripted end-to-end transcription benchmark through the EXACT robot path
+    (pipeline mono + the robot's transcription backend), scored as word accuracy
+    and appended to logs/mic_check/history.jsonl — so 'it used to be rock solid'
+    becomes a number you can compare across days, positions, and fixes. Stand at
+    your NORMAL talking spot and read each sentence naturally."""
+    import json
+    from datetime import datetime
+
+    print("\n=== SCORED TRANSCRIPTION BENCHMARK ===")
+    from audio import transcription
+    outdir = _ROOT / "logs" / "mic_check"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    floor = test_noise(4.0)
+    rows = []
+    for i, ref in enumerate(_SCORE_SENTENCES, 1):
+        input(f'\n[{i}/{len(_SCORE_SENTENCES)}] Read: "{ref}"  — press Enter, then speak...')
+        _countdown(f"Recording {secs:.0f}s...", 2)
+        mono = _as_pipeline_mono(_record(secs))
+        _save_wav(outdir / f"score-{stamp}-{i}.wav", mono)
+        hyp = str(transcription.transcribe(mono) or "").strip()
+        acc = _word_accuracy(ref, hyp)
+        rows.append({"ref": ref, "heard": hyp, "accuracy": round(acc, 3),
+                     "dbfs": round(_dbfs(mono), 1)})
+        print(f"   heard: {hyp!r}   accuracy {acc * 100:.0f}%")
+        _playback(mono, "what Rex heard")
+    mean_acc = float(np.mean([r["accuracy"] for r in rows]))
+    print("\n" + "─" * 68)
+    for r in rows:
+        print(f"  {r['accuracy'] * 100:>4.0f}%  {r['dbfs']:>7.1f} dBFS  {r['heard']!r}")
+    print("─" * 68)
+    print(f"  MEAN WORD ACCURACY: {mean_acc * 100:.0f}%   (noise floor {floor:.1f} dBFS)")
+    print("  >=95% healthy | 85-95% marginal | <85% transcription is genuinely broken")
+    record = {"ts": stamp, "mean_accuracy": round(mean_acc, 3), "floor_dbfs": round(floor, 1),
+              "gain": float(getattr(config, "AUDIO_INPUT_GAIN", 1.0) or 1.0),
+              "rows": rows}
+    hist = outdir / "history.jsonl"
+    hist.parent.mkdir(parents=True, exist_ok=True)
+    with hist.open("a") as f:
+        f.write(json.dumps(record) + "\n")
+    print(f"  Appended to {hist} — re-run after any change and compare.")
+
+
 def _verdict(floor: float, speech: dict) -> None:
     snr, level, clip = speech["snr_db"], speech["speech_dbfs"], speech["clip"]
     gain = float(getattr(config, "AUDIO_INPUT_GAIN", 1.0) or 1.0)
@@ -406,7 +604,7 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("test", nargs="?", default="all",
                     choices=["channels", "noise", "speech", "spectrum",
-                             "distance", "transcribe", "all"])
+                             "distance", "transcribe", "listen", "ab", "score", "all"])
     ap.add_argument("--secs", type=float, default=None, help="override recording length")
     args = ap.parse_args()
 
@@ -414,6 +612,12 @@ def main() -> None:
     try:
         if args.test == "channels":
             test_channels(args.secs or 6.0)
+        elif args.test == "listen":
+            test_listen(args.secs or 6.0)
+        elif args.test == "ab":
+            test_ab(args.secs or 6.0)
+        elif args.test == "score":
+            test_score(args.secs or 6.0)
         elif args.test == "noise":
             test_noise(args.secs or 5.0)
         elif args.test == "speech":
