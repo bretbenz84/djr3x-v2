@@ -55,28 +55,40 @@ class ChestChargeGaugeTest(unittest.TestCase):
         self.meter = _load_meter()
         self.meter._chest_charge_state = None
         self.meter._chest_retry_at = 0.0
+        self.meter._chest_sent_at = 0.0
 
-    def test_soc_maps_to_eight_visible_levels(self):
+    def test_soc_maps_to_twentyfour_visible_levels(self):
+        # Ceiling mapping, matching the Nano's 24-pixel contiguous meter.
         self.assertEqual(self.meter._charge_level(0), 0)
         self.assertEqual(self.meter._charge_level(1), 1)
-        self.assertEqual(self.meter._charge_level(50), 5)
-        self.assertEqual(self.meter._charge_level(100), 8)
+        self.assertEqual(self.meter._charge_level(50), 12)
+        self.assertEqual(self.meter._charge_level(100), 24)
         self.assertIsNone(self.meter._charge_level(None))
 
     def test_sync_sends_only_on_level_or_charger_change(self):
         with mock.patch.object(self.meter, "_send_chest_command", return_value=True) as send:
             self.meter._sync_chest_charge("live", 50, False)
-            self.meter._sync_chest_charge("live", 51, False)  # same visible level
-            self.meter._sync_chest_charge("live", 51, True)   # animation changes
-            self.meter._sync_chest_charge("live", 61, True)   # next visible level
+            self.meter._sync_chest_charge("live", 49, False)  # same visible level (12)
+            self.meter._sync_chest_charge("live", 49, True)   # animation changes
+            self.meter._sync_chest_charge("live", 55, True)   # next visible level
         self.assertEqual(
             send.call_args_list,
             [
                 mock.call("CHARGE:50:0"),
-                mock.call("CHARGE:51:1"),
-                mock.call("CHARGE:61:1"),
+                mock.call("CHARGE:49:1"),
+                mock.call("CHARGE:55:1"),
             ],
         )
+
+    def test_stale_baseline_repaints_after_refresh_window(self):
+        # A reflashed/rebooted Nano forgets its mode; the periodic refresh
+        # repaints even when the visible state never changed.
+        with mock.patch.object(self.meter, "_send_chest_command", return_value=True) as send:
+            self.meter._sync_chest_charge("live", 50, False)
+            self.meter._sync_chest_charge("live", 50, False)  # deduped
+            self.meter._chest_sent_at -= self.meter.CHEST_REFRESH_S + 1
+            self.meter._sync_chest_charge("live", 50, False)  # refresh fires
+        self.assertEqual(send.call_count, 2)
 
     def test_dormant_state_resets_baseline_without_writing(self):
         self.meter._chest_charge_state = (4, True)

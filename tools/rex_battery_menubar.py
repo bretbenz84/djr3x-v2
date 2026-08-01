@@ -564,7 +564,7 @@ def _sync_mouth_charge(mode: str, soc, charging: bool) -> None:
 # ── Chest charge gauge sync ──────────────────────────────────────────────────
 # Same ownership model as the mouth above: while Rex is off this battery worker
 # has the live SOC/charger state and briefly opens the chest Nano only when the
-# visible 8-segment level or attached state changes. The Nano keeps animating
+# visible 24-pixel meter level or attached state changes. The Nano keeps animating
 # after the serial handle closes; main.py owns it again when Rex wakes.
 
 def _chest_port() -> str:
@@ -600,6 +600,13 @@ def _send_chest_command(cmd: str) -> bool:
 
 _chest_charge_state: "tuple[int, bool] | None" = None
 _chest_retry_at = 0.0
+_chest_sent_at = 0.0
+
+# Repaint even when nothing changed, so the meter self-heals if the Nano
+# rebooted behind our back (reflash, test tool, brownout) — the dedup baseline
+# can't see that. Opening the port resets the Nano (~2 s dark blip), so keep
+# this rare.
+CHEST_REFRESH_S = 30 * 60.0
 
 
 def _reset_chest_charge_baseline() -> None:
@@ -608,26 +615,26 @@ def _reset_chest_charge_baseline() -> None:
 
 
 def _charge_level(soc) -> "int | None":
-    """Visible 0..8 bar level, matching the Nano's rounded-up mapping."""
+    """Visible 0..24 meter level, matching the Nano's ceiling mapping."""
     try:
         value = max(0, min(100, int(soc)))
     except (TypeError, ValueError):
         return None
-    return 0 if value == 0 else min(8, (value + 11) // 12)
+    return min(24, (value * 24 + 99) // 100)
 
 
 def _sync_chest_charge(mode: str, soc, charging: bool) -> None:
-    global _chest_charge_state, _chest_retry_at
+    global _chest_charge_state, _chest_retry_at, _chest_sent_at
     if mode != "live":
         _chest_charge_state = None
         return
     level = _charge_level(soc)
     if level is None:
         return
-    target = (level, bool(charging))
-    if _chest_charge_state == target:
-        return
     now = time.time()
+    target = (level, bool(charging))
+    if _chest_charge_state == target and now - _chest_sent_at < CHEST_REFRESH_S:
+        return
     if now < _chest_retry_at:
         return
     # Send the actual percentage for future display refinements; level-based
@@ -635,6 +642,7 @@ def _sync_chest_charge(mode: str, soc, charging: bool) -> None:
     value = max(0, min(100, int(soc)))
     if _send_chest_command(f"CHARGE:{value}:{1 if charging else 0}"):
         _chest_charge_state = target
+        _chest_sent_at = now
     else:
         _chest_retry_at = now + 30.0
 
