@@ -31,6 +31,13 @@ def _model() -> str:
     return str(getattr(config, "OLLAMA_MODEL", "qwen2.5:1.5b")).strip()
 
 
+def _is_thinking_model(model: str) -> bool:
+    """Qwen3+ era models default to thinking mode, which must be disabled for
+    the sidecar's tiny token budgets (see generate())."""
+    m = model.lower()
+    return m.startswith(("qwen3", "qwen4")) or "think" in m
+
+
 def enabled() -> bool:
     return (
         bool(getattr(config, "LOCAL_LLM_ENABLED", False))
@@ -167,6 +174,12 @@ def generate(
             "num_predict": int(max_tokens),
         },
     }
+    if _is_thinking_model(_model()):
+        # Thinking models (qwen3.x families) burn the tiny sidecar token budgets
+        # on <think> and return EMPTY strings — every classifier silently dies.
+        # Proven in the 2026-08-01 shoot-out: first run scored 0% across the
+        # board until this flag was set.
+        payload["think"] = False
     if system:
         payload["system"] = system
 

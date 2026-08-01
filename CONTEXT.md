@@ -193,7 +193,7 @@ firmware/
 4. Prewarm output and preload models when enabled.
 5. Enter the main state loop until shutdown.
 
-The local Ollama model `qwen2.5:1.5b` is a REQUIRED boot dependency by default (`LOCAL_LLM_ENABLED=True`, `OLLAMA_PRELOAD_REQUIRED=True`): `main.py` preloads it and aborts with `sys.exit(1)` if the Ollama server is unreachable. To degrade gracefully, set `OLLAMA_PRELOAD_REQUIRED=False` (boots with a warning, no sidecar) or disable it entirely with `LOCAL_LLM_ENABLED=False`.
+The local Ollama model `qwen2.5:1.5b` (config.OLLAMA_MODEL) is a REQUIRED boot dependency by default (`LOCAL_LLM_ENABLED=True`, `OLLAMA_PRELOAD_REQUIRED=True`): `main.py` preloads it and aborts with `sys.exit(1)` if the Ollama server is unreachable. To degrade gracefully, set `OLLAMA_PRELOAD_REQUIRED=False` (boots with a warning, no sidecar) or disable it entirely with `LOCAL_LLM_ENABLED=False`.
 
 ### Speech And Text Turns
 
@@ -885,7 +885,7 @@ OpenAI is used for main chat, vision/scene analysis, extraction, and classifiers
 
 ElevenLabs is used for TTS in audio mode only. No-audio mode must not call ElevenLabs.
 
-Ollama/local LLM (`qwen2.5:1.5b`) is the low-latency sidecar for quick local tasks. It is ENABLED by default and is a hard boot dependency (`OLLAMA_PRELOAD_REQUIRED=True`): `main.py` aborts (`sys.exit(1)`) if the Ollama server is unreachable. Set `OLLAMA_PRELOAD_REQUIRED=False` to boot without it (warning only, no sidecar), or `LOCAL_LLM_ENABLED=False` to disable it entirely.
+Ollama/local LLM (`qwen2.5:1.5b`, config.OLLAMA_MODEL) is the low-latency sidecar for quick local tasks. It is ENABLED by default and is a hard boot dependency (`OLLAMA_PRELOAD_REQUIRED=True`): `main.py` aborts (`sys.exit(1)`) if the Ollama server is unreachable. Set `OLLAMA_PRELOAD_REQUIRED=False` to boot without it (warning only, no sidecar), or `LOCAL_LLM_ENABLED=False` to disable it entirely.
 
 Network calls may dominate response latency. Prefer local fast paths for clear commands, short acks for slow paths, and telemetry-driven optimization.
 

@@ -454,6 +454,12 @@ OPENAI_WARMUP_ON_STARTUP = True
 LOCAL_LLM_ENABLED = True
 LOCAL_LLM_PROVIDER = "ollama"
 OLLAMA_BASE_URL = "http://localhost:11434"
+# Evaluated qwen3.5:2b as a replacement 2026-08-01 and REJECTED it on latency
+# (tests/local_llm_poc/SIDECAR_FINDINGS.md): +40pt intent accuracy, but 941ms
+# median PER UNIQUE UTTERANCE on this M2/16GB (prompt eval dominates) vs 222ms
+# here — the owner's constraint is that the reply path must not get slower.
+# If a future swap tries a qwen3+ model: local_llm.generate() already sends
+# "think": false for them (thinking mode returns EMPTY at small token budgets).
 OLLAMA_MODEL = "qwen2.5:1.5b"
 OLLAMA_KEEP_ALIVE = -1  # Negative keeps the model loaded until explicitly stopped.
 OLLAMA_PRELOAD_ON_STARTUP = True
