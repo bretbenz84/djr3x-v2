@@ -172,6 +172,21 @@ INTERACTION_PAUSED = False
 
 WHISPER_LOCAL_MODEL   = "mlx-community/whisper-large-v3-turbo"
 WHISPER_FALLBACK_MODEL = "whisper-1"   # OpenAI Whisper API — used if local unavailable
+
+# Primary local ASR backend: "qwen3" (Qwen3-ASR via mlx_audio) or "whisper".
+# Switched to qwen3 2026-07-31: identical word accuracy on this room's recorded
+# takes (tools/asr_bench.py) at ~2x the speed (0.57s vs 1.02s median). The
+# fallback chain is unchanged in spirit: qwen3 -> local whisper -> OpenAI API.
+TRANSCRIPTION_BACKEND = "qwen3"
+QWEN_ASR_MODEL_REPO = "mlx-community/Qwen3-ASR-1.7B-8bit"
+QWEN_ASR_MODEL_DIR  = "assets/models/qwen_asr/Qwen3-ASR-1.7B-8bit"
+# Trust floor for the mean per-token logprob of a Qwen3 decode (the .confident
+# gate that keeps low-quality turns out of durable memory). Calibrated on the
+# 2026-07-31 mic_check takes: every clean decode scored 0.0 to -0.03 while the
+# two truncated/garbage captures scored -0.75 and -1.25 — a far cleaner
+# separation than Whisper's avg_logprob gives.
+QWEN_ASR_TRUST_MIN_AVG_LOGPROB = -0.35
+QWEN_ASR_MAX_TOKENS = 256   # segments are <=30s of speech; don't let a loop run long
 WHISPER_LANGUAGE      = "en"           # Force English to suppress non-Latin hallucinations
 WHISPER_PRELOAD_ON_STARTUP = True      # Warm MLX Whisper before the first live utterance
 WHISPER_TEMPERATURE = 0.0              # Deterministic decode avoids slow retry ladders

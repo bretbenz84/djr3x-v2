@@ -64,6 +64,8 @@ from config import (
     RESEMBLYZER_MODEL_DIR,
     WHISPER_LOCAL_MODEL,
     WHISPER_MODEL_DIR,
+    QWEN_ASR_MODEL_REPO,
+    QWEN_ASR_MODEL_DIR,
     QWEN_TTS_MODEL_DIR,
     LOCAL_TTS_MODEL_ID,
     LOCAL_TTS_MODEL_VARIANT,
@@ -85,6 +87,7 @@ REQUIRED_DIRS = [
     "assets/models/ecapa",
     "assets/models/resemblyzer",
     "assets/models/qwen_tts",
+    "assets/models/qwen_asr",
     "assets/voices/rex",
     "assets/voices/people",
     "assets/voices/famous",
@@ -644,6 +647,38 @@ def download_whisper_model(
         print("    (~800 MB, may take several minutes on first run)")
         snapshot_download(
             repo_id=WHISPER_LOCAL_MODEL,
+            local_dir=str(local_dir),
+            local_dir_use_symlinks=False,
+        )
+        return [label], [], []
+    except Exception as exc:
+        return [], [], [f"{label}: {exc}"]
+
+
+def download_qwen_asr_model(
+    root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    """Qwen3-ASR — the primary transcription backend (config.TRANSCRIPTION_BACKEND).
+    Same shape as the whisper download: config.json is the completion sentinel."""
+    local_dir = root / QWEN_ASR_MODEL_DIR
+    label = f"qwen_asr/{QWEN_ASR_MODEL_REPO}"
+
+    if (local_dir / "config.json").exists():
+        return [], [label], []
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return [], [], [
+            f"{label}: huggingface_hub not installed — "
+            f"run: {sys.executable} -m pip install huggingface_hub"
+        ]
+
+    try:
+        print(f"    Downloading {QWEN_ASR_MODEL_REPO}")
+        print("    (~2 GB, may take several minutes on first run)")
+        snapshot_download(
+            repo_id=QWEN_ASR_MODEL_REPO,
             local_dir=str(local_dir),
             local_dir_use_symlinks=False,
         )
@@ -1304,72 +1339,77 @@ def main() -> None:
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[1/14] Creating project directories ...")
+    print("[1/15] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
 
-    print("[2/14] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
+    print("[2/15] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
     c, s, f = download_insightface_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/14] dlib face recognition models (legacy fallback backend) ...")
+    print("[3/15] dlib face recognition models (legacy fallback backend) ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/14] MediaPipe Face Landmarker model ...")
+    print("[4/15] MediaPipe Face Landmarker model ...")
     c, s, f = download_mediapipe_face_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/14] MediaPipe Pose Landmarker model ...")
+    print("[5/15] MediaPipe Pose Landmarker model ...")
     c, s, f = download_mediapipe_pose_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[6/14] MediaPipe Object Detector model ...")
+    print("[6/15] MediaPipe Object Detector model ...")
     c, s, f = download_mediapipe_object_detector(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[7/14] RF-DETR object-detector model (primary local detector) ...")
+    print("[7/15] RF-DETR object-detector model (primary local detector) ...")
     c, s2, f = download_rfdetr_model(root)
     all_created += c; all_skipped += s2; all_failed += f
     _report(c, s2, f)
 
-    print("[8/14] MobileCLIP-S2 place-recognition image encoder ...")
+    print("[8/15] MobileCLIP-S2 place-recognition image encoder ...")
     c, s, f = download_mobileclip_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[9/14] mlx-whisper large-v3-turbo model ...")
+    print("[9/15] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[10/14] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
+    print("[10/15] Qwen3-ASR model (primary transcription backend) ...")
+    c, s, f = download_qwen_asr_model(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[11/15] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
     c, s, f = download_ecapa_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[11/14] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
+    print("[12/15] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[12/14] Qwen3-TTS voice-clone model (on-device TTS engine) ...")
+    print("[13/15] Qwen3-TTS voice-clone model (on-device TTS engine) ...")
     c, s, f = download_qwen_tts_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[13/14] Ollama local sidecar model ...")
+    print("[14/15] Ollama local sidecar model ...")
     c, s, f = install_ollama_model()
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[14/14] Database schema and personality defaults ...")
+    print("[15/15] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)

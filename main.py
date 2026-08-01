@@ -1327,9 +1327,10 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")
     elif bool(getattr(config, "WHISPER_PRELOAD_ON_STARTUP", True)):
-        logger.info("Pre-loading local Whisper...")
+        logger.info("Pre-loading local ASR (%s)...",
+                    getattr(config, "TRANSCRIPTION_BACKEND", "whisper"))
         if not transcription.preload():
-            logger.warning("Local Whisper preload failed; first transcription may be slower.")
+            logger.warning("Local ASR preload failed; first transcription may be slower.")
     else:
         logger.info("Local Whisper preload disabled by config.WHISPER_PRELOAD_ON_STARTUP")
     _preload_breath()

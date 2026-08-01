@@ -50,7 +50,13 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # OLLAMA_MODEL = "qwen2.5:1.5b"           # any model pulled into your Ollama
 # OLLAMA_BASE_URL = "http://localhost:11434"
 
-# Local speech-to-text (MLX Whisper) model id. Larger = more accurate, slower.
+# Local speech-to-text backend: "qwen3" (Qwen3-ASR — ~2x faster than Whisper at
+# equal measured accuracy) or "whisper". Either falls back to the other, then to
+# the OpenAI API.
+# TRANSCRIPTION_BACKEND = "qwen3"
+# QWEN_ASR_MODEL_REPO = "mlx-community/Qwen3-ASR-1.7B-8bit"
+
+# Local Whisper (fallback backend, or primary when TRANSCRIPTION_BACKEND="whisper").
 # WHISPER_LOCAL_MODEL = "mlx-community/whisper-large-v3-turbo"
 
 # ElevenLabs voice — the cloned-voice id Rex speaks with (from your ElevenLabs

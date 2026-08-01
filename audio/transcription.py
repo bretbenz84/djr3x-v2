@@ -27,6 +27,74 @@ def _local_model_ready() -> bool:
     return (_WHISPER_LOCAL_DIR / "config.json").exists()
 
 
+# ── Qwen3-ASR backend (primary since 2026-07-31; see TRANSCRIPTION_BACKEND) ──
+_QWEN_LOCAL_DIR = (Path(__file__).resolve().parents[1]
+                   / getattr(config, "QWEN_ASR_MODEL_DIR", "assets/models/qwen_asr")).resolve()
+_qwen_model = None
+_QWEN_LOAD_FAILED = False
+
+
+def _qwen_backend_selected() -> bool:
+    return str(getattr(config, "TRANSCRIPTION_BACKEND", "whisper")).strip().lower() == "qwen3"
+
+
+def _qwen_ready() -> bool:
+    return (_QWEN_LOCAL_DIR / "config.json").exists()
+
+
+def _get_qwen_model():
+    """Lazy-load the Qwen3-ASR model once; a load failure latches so a broken
+    install degrades to the whisper path instead of retrying every segment."""
+    global _qwen_model, _QWEN_LOAD_FAILED
+    if _qwen_model is not None or _QWEN_LOAD_FAILED:
+        return _qwen_model
+    try:
+        from mlx_audio.stt.utils import load_model
+        from utils.mlx_lock import MLX_LOCK
+        with MLX_LOCK:
+            _qwen_model = load_model(str(_QWEN_LOCAL_DIR))
+        logger.info("[transcription] Qwen3-ASR loaded from %s", _QWEN_LOCAL_DIR)
+    except Exception as exc:
+        _QWEN_LOAD_FAILED = True
+        logger.warning("[transcription] Qwen3-ASR load failed (%s) — "
+                       "falling back to whisper for this run", exc)
+    return _qwen_model
+
+
+def _qwen_transcribe(audio_array: np.ndarray) -> "tuple[str, float | None]":
+    """Decode with Qwen3-ASR, returning (text, mean per-token logprob).
+
+    The public mlx_audio generate() discards logprobs, so this walks the
+    streaming API and keeps them: the mean token logprob is the .confident
+    signal (see Transcript) — calibrated 2026-07-31, clean decodes sit at
+    0.0..-0.03 and truncated/garbage captures at -0.75 and below."""
+    model = _get_qwen_model()
+    if model is None:
+        raise RuntimeError("Qwen3-ASR model unavailable")
+    from utils.mlx_lock import MLX_LOCK
+    tokens: "list[int]" = []
+    logps: "list[float]" = []
+    max_tokens = int(getattr(config, "QWEN_ASR_MAX_TOKENS", 256))
+    # MLX_LOCK: same shared-Metal-runtime rule as mlx_whisper below — concurrent
+    # evaluation with the local TTS engine is a fatal native crash.
+    with MLX_LOCK:
+        for token, logprobs in model.stream_generate(
+            audio_array,
+            language=str(getattr(config, "WHISPER_LANGUAGE", "en") or "en"),
+            max_tokens=max_tokens,
+        ):
+            t = int(token)
+            tokens.append(t)
+            try:
+                logps.append(float(logprobs[t]))
+            except Exception:
+                pass
+        import mlx.core as mx
+        mx.synchronize()
+    text = model._tokenizer.decode(tokens).strip()
+    return text, (sum(logps) / len(logps)) if logps else None
+
+
 def _mlx_decode_options() -> dict:
     return {
         "initial_prompt": config.WHISPER_INITIAL_PROMPT,
@@ -39,7 +107,26 @@ def _mlx_decode_options() -> dict:
 
 
 def preload() -> bool:
-    """Warm local MLX Whisper so the first live utterance does not pay setup cost."""
+    """Warm the active local ASR backend so the first live utterance does not
+    pay setup cost. With TRANSCRIPTION_BACKEND="qwen3" this loads Qwen3-ASR and
+    runs a short silent decode; whisper preloads as before (and remains the
+    fallback, so a missing qwen model degrades instead of failing)."""
+    if _qwen_backend_selected() and _qwen_ready():
+        try:
+            start = time.monotonic()
+            dummy = np.zeros(int(config.AUDIO_SAMPLE_RATE * 0.25), dtype=np.float32)
+            _qwen_transcribe(dummy)
+            logger.info("[transcription] preloaded Qwen3-ASR in %.3fs",
+                        time.monotonic() - start)
+            return True
+        except Exception as exc:
+            logger.warning("[transcription] Qwen3-ASR preload failed: %s — "
+                           "whisper path will be used", exc)
+    elif _qwen_backend_selected():
+        logger.warning(
+            "[transcription] TRANSCRIPTION_BACKEND=qwen3 but model missing at %s "
+            "(run setup_assets.py) — whisper path will be used", _QWEN_LOCAL_DIR,
+        )
     if not _MLX_AVAILABLE:
         return False
     if not _local_model_ready():
@@ -235,14 +322,21 @@ def _decode_stats(result: dict) -> "tuple[float | None, float | None]":
     )
 
 
-def _is_confident(avg_logprob, no_speech_prob) -> bool:
+def _is_confident(avg_logprob, no_speech_prob, backend: str = "mlx_whisper") -> bool:
     """Whether this decode is solid enough to LEARN from (not to act on).
 
     Deliberately permissive: the far-field SNR here is 13-15 dB and genuine
     speech routinely scores poorly, so a strict gate would make Rex deaf. A
     failing turn is still heard, replied to, and acted on — it just doesn't
-    become a durable fact, a person's name, or a room."""
-    floor = float(getattr(config, "WHISPER_TRUST_MIN_AVG_LOGPROB", -0.85))
+    become a durable fact, a person's name, or a room.
+
+    The floor is backend-specific — Whisper's avg_logprob and Qwen3's mean
+    token logprob live on different scales (Qwen3 at temperature 0 is far more
+    peaked: clean decodes ~0.0, garbage below -0.7)."""
+    if backend == "qwen3_asr":
+        floor = float(getattr(config, "QWEN_ASR_TRUST_MIN_AVG_LOGPROB", -0.35))
+    else:
+        floor = float(getattr(config, "WHISPER_TRUST_MIN_AVG_LOGPROB", -0.85))
     ceiling = float(getattr(config, "WHISPER_TRUST_MAX_NO_SPEECH_PROB", 0.5))
     if avg_logprob is not None and avg_logprob < floor:
         return False
@@ -264,7 +358,16 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
     local_decoded_ok = False
     local_model_ready = _local_model_ready()
 
-    if _MLX_AVAILABLE:
+    if _qwen_backend_selected() and _qwen_ready() and not _QWEN_LOAD_FAILED:
+        try:
+            raw, avg_logprob = _qwen_transcribe(audio_array)
+            raw = raw.strip()
+            backend = "qwen3_asr"
+            local_decoded_ok = True
+        except Exception as exc:
+            logger.warning("Qwen3-ASR failed (%s), falling back to local whisper", exc)
+
+    if not local_decoded_ok and _MLX_AVAILABLE:
         if local_model_ready:
             try:
                 # MLX_LOCK: mlx_whisper shares the MLX/Metal runtime with the
@@ -357,7 +460,7 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
         return Transcript("", backend=backend)
 
     cleaned = _apply_corrections(raw)
-    confident = _is_confident(avg_logprob, no_speech_prob)
+    confident = _is_confident(avg_logprob, no_speech_prob, backend)
     logger.info(
         "[transcription] backend=%s | raw=%r | cleaned=%r | avg_logprob=%s "
         "no_speech_prob=%s trusted=%s",
