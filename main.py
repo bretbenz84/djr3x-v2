@@ -798,7 +798,11 @@ def _shutdown() -> None:
     # close the serial ports, so neither the sound nor the fade is cut short. Even
     # with no audio, hold for the remainder of the LED fade so it doesn't snap off.
     if _audio_thread is not None:
-        _audio_thread.join()
+        # Bounded: an unbounded join on a wedged audio device hangs the whole
+        # power-down (the 2026-07-31 21:56 force-quit chain).
+        _audio_thread.join(timeout=15.0)
+        if _audio_thread.is_alive():
+            logger.warning("Shutdown audio still playing/stuck after 15s — proceeding.")
     fade_remaining = float(getattr(config, "SHUTDOWN_LED_FADE_SECS", 4.0)) - (
         time.monotonic() - powerdown_started
     )
@@ -1579,7 +1583,18 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             if ready_line:
                 emotion = str(getattr(config, "STARTUP_READY_TTS_EMOTION", "neutral") or "neutral")
                 logger.info("Speaking ready line — models loaded, listening: %s", ready_line)
-                tts.speak(ready_line, emotion)
+                # Bounded: with a wedged audio device (CoreAudio hang, field
+                # 2026-07-31 21:56) a blocking speak here froze the whole startup
+                # thread — which in turn wedged the GUI shutdown. Startup must
+                # finish even if this line never finishes playing.
+                _ready_t = threading.Thread(
+                    target=lambda: tts.speak(ready_line, emotion),
+                    daemon=True, name="startup_ready_line",
+                )
+                _ready_t.start()
+                _ready_t.join(timeout=20.0)
+                if _ready_t.is_alive():
+                    logger.warning("Ready line still playing/stuck after 20s — continuing startup.")
             else:
                 # No ready lines configured → fall back to the original chime.
                 logger.info("Playing ready chime — models loaded, listening.")
@@ -1964,8 +1979,13 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
         # so a hung preload can never wedge shutdown.
         if startup_thread.is_alive():
             logger.info("Waiting for controller startup to stop before shutdown...")
-            if not startup_done.wait(timeout=120.0):
-                logger.warning("Controller startup still running after 120s — shutting down anyway.")
+            # 120s read as a total freeze in the field (2026-07-31 21:56: the
+            # startup thread was stuck in a wedged audio call and the operator
+            # force-quit long before the backstop fired). The abort checkpoints
+            # resolve in seconds when things are healthy; anything longer is
+            # exactly the hung case this bound exists for.
+            if not startup_done.wait(timeout=20.0):
+                logger.warning("Controller startup still running after 20s — shutting down anyway.")
         if startup_exit.get("code"):
             # Failed boot: skip the power-down theatrics, just tear down quietly.
             setattr(config, "PLAY_SHUTDOWN_AUDIO", False)

@@ -195,17 +195,35 @@ def is_active() -> bool:
 
 
 def stop() -> None:
-    """Stop and close the microphone stream."""
+    """Stop and close the microphone stream.
+
+    Every lock acquire here is BOUNDED: a watchdog reopen wedged inside a
+    CoreAudio call holds _stream_lock forever (field 2026-07-31 21:56 — the
+    ReSpeaker's USB audio hung, the reopen never returned, and this function's
+    unbounded acquire deadlocked the whole shutdown until a force-quit). When
+    the lock is wedged there is nothing left to close cleanly anyway — the
+    process is exiting and the OS reclaims the device."""
     global _stream, _running
 
-    with _stream_lock:
-        _running = False
+    if _stream_lock.acquire(timeout=5.0):
+        try:
+            _running = False
+        finally:
+            _stream_lock.release()
+    else:
+        _running = False   # benign unlocked write: readers poll it without the lock
+        _log.error("Audio stream lock wedged (CoreAudio hang?) — skipping clean close.")
+        _stop_watchdog()
+        return
 
     # Stop the watchdog first (without holding _stream_lock — it joins a thread
     # that itself takes the lock during a reopen) so it can't reopen mid-teardown.
     _stop_watchdog()
 
-    with _stream_lock:
+    if not _stream_lock.acquire(timeout=5.0):
+        _log.error("Audio stream lock still wedged — leaving the stream to the OS.")
+        return
+    try:
         if _stream is None:
             return
         try:
@@ -216,6 +234,8 @@ def stop() -> None:
         finally:
             _stream = None
             _log.info("Audio stream stopped.")
+    finally:
+        _stream_lock.release()
 
 
 # ── Stall watchdog ────────────────────────────────────────────────────────────
@@ -302,18 +322,32 @@ def _start_watchdog() -> None:
 def _stop_watchdog() -> None:
     global _watchdog_thread
 
-    with _stream_lock:
+    # Bounded acquires for the same reason as stop(): a reopen wedged in
+    # CoreAudio holds _stream_lock, and this must still be able to signal the
+    # watchdog and return rather than deadlock the teardown behind it.
+    if _stream_lock.acquire(timeout=2.0):
+        try:
+            t = _watchdog_thread
+            if t is None:
+                return
+            _watchdog_stop.set()
+        finally:
+            _stream_lock.release()
+    else:
         t = _watchdog_thread
+        _watchdog_stop.set()
         if t is None:
             return
-        _watchdog_stop.set()
 
     t.join(timeout=2.0)
     if t.is_alive():
         _log.warning("[stream_watchdog] thread did not stop cleanly.")
 
-    with _stream_lock:
-        _watchdog_thread = None
+    if _stream_lock.acquire(timeout=2.0):
+        try:
+            _watchdog_thread = None
+        finally:
+            _stream_lock.release()
 
 
 def last_callback_age() -> float:
