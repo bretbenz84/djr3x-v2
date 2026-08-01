@@ -22,8 +22,8 @@ Available commands (from chest_nano.ino):
     SPEAK:happy      confetti
     SPEAK:neutral    RandomBlocks2
     SLEEP            dim red slow breathe
-    CHARGE:65:1      3x8 charge gauge at 65%, animated upward while attached
-    CHARGE:65:0      steady 3x8 charge gauge at 65%
+    CHARGE:65:1      24-LED charge meter at 65%, animated upward while attached
+    CHARGE:65:0      24-LED charge meter at 65%, top lit pixel blinking
     OFF              all LEDs off
     NEXT             cycle to next pattern
     scan             re-scan and list serial ports

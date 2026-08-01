@@ -100,7 +100,7 @@ enum ChestMode : uint8_t {
     CM_COMPLIMENT,    // reacting to a compliment: blue glow + gold/white sparkles (self-ends ~2.5s)
     CM_FADEOFF,       // shutdown: smoothly fade the current frame to black, then OFF
     CM_SLEEP,         // sleep: very dim slow red breath
-    CM_CHARGE,        // Rex off: 3x8 SOC gauge; upward pulse while charging
+    CM_CHARGE,        // Rex off: contiguous 24-LED SOC meter; upward pulse while charging
     CM_OFF,           // all off
     CM_MANUAL,        // NEXT command: cycle gPatterns[] manually
 };
@@ -349,7 +349,7 @@ void nextPattern()
 //                        happy    → bouncing gold heads + cheery pops + confetti
 //   SPEAK_STOP       — return to IDLE (end of speech)
 //   SLEEP            — very dim slow red breathing pulse
-//   CHARGE:{soc}:{0|1} — 3x8 SOC gauge; final field says charger attached
+//   CHARGE:{soc}:{0|1} — contiguous 24-LED SOC meter; final field says charger attached
 //   OFF              — all LEDs off
 //   NEXT             — cycle to next pattern in gPatterns[]
 
@@ -442,17 +442,17 @@ static inline uint8_t gaugePixel(uint8_t colStart, uint8_t level) {
 	return colStart + (GAUGE_BOTTOM_UP ? (uint8_t)(7 - level) : level);
 }
 
-// Fixed colour ladder for the 8-pixel gauge, bottom (level 0) to top (level 7):
-// red -> red/orange -> orange -> yellow -> yellow/green -> green -> green/blue ->
-// blue (owner spec 2026-07-24). The half-steps are midpoint blends of their two
-// neighbours, so the column ramps smoothly instead of stepping between five flat
-// bands. Each pixel's colour is a property of its POSITION, not of the current
-// charge — the charge only decides how many are lit, so the bar always reads the
-// same way and the level is judged by where it stops.
-// A switch, not a CRGB[8] table: this sketch sits at 89% DRAM and an array would
-// spend 24 bytes of it, while the switch costs flash only.
-static CRGB gaugeLevelColor(uint8_t level) {
-	switch (level) {
+// Anchor colour ladder for the charge meter, red (bottom of the range) to blue
+// (top): red -> red/orange -> orange -> yellow -> yellow/green -> green ->
+// green/blue -> blue (owner spec 2026-07-24, colour thresholds kept for the
+// 24-LED meter 2026-08-01). Each meter pixel's colour is a property of its
+// POSITION, not of the current charge — the charge only decides how many are
+// lit, so the meter always reads the same way and the level is judged by where
+// it stops.
+// A switch, not a CRGB table: this sketch sits at 89% DRAM and an array would
+// spend DRAM, while the switch costs flash only.
+static CRGB gaugeAnchorColor(uint8_t anchor) {
+	switch (anchor) {
 		case 0:  return CRGB(130,   0,   0);   // red
 		case 1:  return CRGB(130,  22,   0);   // red/orange
 		case 2:  return CRGB(130,  45,   0);   // orange
@@ -464,48 +464,60 @@ static CRGB gaugeLevelColor(uint8_t level) {
 	}
 }
 
-// Off-state charge display. The three first 8-pixel bars (A/B/C) are parallel
-// vertical gauges filling from the BOTTOM. Filled pixels show SOC in the band
-// colour; while attached, a bright energy packet repeatedly climbs from the current
-// fill boundary toward the top.
-void chargeGauge() {
+// Static colour of contiguous meter level 0..23: the 8 anchors stretched across
+// 24 steps by blending adjacent anchors. Panel A (levels 0-7) lands on the
+// red/orange end, panel B (8-15) the yellow/green middle, panel C (16-23) the
+// green/blue end. Computed on the fly — no CRGB[24] table (DRAM is at 89%).
+static CRGB gauge24Color(uint8_t level) {
+	const uint16_t pos = (uint16_t)level * 7u * 256u / 23u; // 8.8 fixed point, 0..7.0
+	const uint8_t  i   = (uint8_t)(pos >> 8);
+	const uint8_t  f   = (uint8_t)(pos & 0xFF);
+	if (i >= 7) return gaugeAnchorColor(7);
+	return blend(gaugeAnchorColor(i), gaugeAnchorColor(i + 1), f);
+}
+
+// Meter level 0..23 -> physical pixel. The three first 8-pixel bars form ONE
+// contiguous 24-LED meter split into thirds: panel A holds levels 0-7, B 8-15,
+// C 16-23, each filling from the BOTTOM of its bar.
+static inline uint8_t gauge24Pixel(uint8_t level) {
 	const uint8_t columns[3] = { PanelAStart, PanelBStart, PanelCStart };
-	// Each pixel owns exactly one eighth of the range, so pixel k lights the moment
-	// the charge passes (k-1)*12.5% (owner spec 2026-07-24). That is a CEILING, not
-	// a round-to-nearest: rounding lit pixel k only at the MIDDLE of its band, so
-	// the bar lagged a whole LED behind the charge for most of the range (13% still
-	// showed one pixel, 26% two, 88% seven). Ceiling of 0 is 0, so an empty pack is
-	// dark and any non-zero charge keeps at least the red pixel lit.
-	//   LED 1 >0%   LED 2 >12.5%  LED 3 >25%    LED 4 >37.5%
-	//   LED 5 >50%  LED 6 >62.5%  LED 7 >75%    LED 8 >87.5%
-	uint8_t filled = (uint8_t)(((uint16_t)chargeSoc * 8 + 99) / 100);
-	if (filled > 8) filled = 8;
+	return gaugePixel(columns[level >> 3], level & 7);
+}
+
+// Off-state charge display: one contiguous 24-LED meter across panels A/B/C
+// (owner spec 2026-08-01; previously three parallel 8-LED gauges). Full pack =
+// all 24 lit; as charge depletes, pixels go dark one by one from the blue end
+// down, each pixel keeping its own static colour. The topmost lit pixel blinks
+// until it goes off. While the charger is attached, a bright energy packet also
+// climbs from the fill boundary to the top of the whole meter.
+void chargeGauge() {
+	// Each pixel owns one twenty-fourth of the range, so pixel k lights the
+	// moment the charge passes (k-1)*100/24 %. That is a CEILING, not a
+	// round-to-nearest (rounding made the bar lag a whole LED behind the charge
+	// for most of the range back when this was the 8-level gauge). Ceiling of 0
+	// is 0, so an empty pack is dark and any non-zero charge keeps at least the
+	// bottom red pixel lit.
+	uint8_t filled = (uint8_t)(((uint16_t)chargeSoc * 24 + 99) / 100);
+	if (filled > 24) filled = 24;
 
 	FastLED.clear();
-	for (uint8_t col = 0; col < 3; col++) {
-		for (uint8_t level = 0; level < filled; level++)
-			DJLEDs[gaugePixel(columns[col], level)] = gaugeLevelColor(level);
-	}
+	for (uint8_t level = 0; level < filled; level++)
+		DJLEDs[gauge24Pixel(level)] = gauge24Color(level);
+
+	// The last lit pixel blinks — it is the one currently draining toward its
+	// threshold. ~1 Hz square wave; the off phase leaves it dark.
+	if (filled > 0 && ((millis() / 500UL) & 1))
+		DJLEDs[gauge24Pixel(filled - 1)] = CRGB::Black;
 
 	if (!chargeConnected) return;
-	if (filled < 8) {
-		const uint8_t travel = 8 - filled;
+	if (filled < 24) {
+		const uint8_t travel = 24 - filled;
 		const uint8_t phase = (millis() / 170UL) % (travel + 2); // two-beat gap
-		if (phase < travel) {
-			const uint8_t level = filled + phase;   // climbs UPWARD from the fill line
-			for (uint8_t col = 0; col < 3; col++)
-				DJLEDs[gaugePixel(columns[col], level)] = CRGB(80, 190, 255);
-		}
-	} else {
-		// At full there is nowhere left to climb; breathe the TOP pixel instead —
-		// in its OWN ladder colour, so a full pack still reads blue rather than
-		// swapping to an unrelated teal.
-		const uint8_t glow = beatsin8(18, 70, 255);
-		CRGB top = gaugeLevelColor(7);
-		top.nscale8_video(glow);
-		for (uint8_t col = 0; col < 3; col++)
-			DJLEDs[gaugePixel(columns[col], 7)] = top;
+		if (phase < travel)   // climbs UPWARD from the fill line, crossing panels
+			DJLEDs[gauge24Pixel(filled + phase)] = CRGB(80, 190, 255);
 	}
+	// At full there is nowhere left to climb; the blinking top blue pixel
+	// already marks the state.
 }
 
 void readSerial() {

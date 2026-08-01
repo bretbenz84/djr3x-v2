@@ -146,9 +146,13 @@ a full attached pack after charging current has tapered to zero.
 
 The same off-state worker drives the chest Nano's `CHARGE:<soc>:<attached>` mode
 only while `main.py` is not running. The first eight LEDs of each of panels A/B/C
-form three synchronized vertical gauges: dim red/amber/green segments show SOC;
-when attached, a cyan-white packet climbs upward from the current fill boundary.
-At 100% the top row breathes instead. The display is steady when unplugged. When
+form ONE contiguous 24-LED meter split into thirds: panel A holds the red/orange
+low end, panel B the yellow/green middle, panel C the green/blue top, each bar
+filling bottom-up. Every pixel has a fixed colour tied to its position; the
+charge only decides how many are lit (pixel k lights above (k-1)*100/24 %), so
+as the pack drains, pixels go dark one by one from the blue end down. The
+topmost lit pixel blinks (~1 Hz) until it goes off. When attached, a cyan-white
+packet also climbs from the fill boundary to the top of the whole meter. When
 R3X starts, the battery companion releases ownership and normal startup/active
 chest animations replace the gauge; it is never shown while `main.py` is alive,
 including the controller's sleep state.

@@ -165,7 +165,7 @@ def sleep() -> None:
 
 
 def charge_status(soc: int, charging: bool) -> None:
-    """Show the off-state three-column battery gauge."""
+    """Show the off-state contiguous 24-LED battery meter."""
     send_command(f"CHARGE:{max(0, min(100, int(soc)))}:{1 if charging else 0}")
 
 
