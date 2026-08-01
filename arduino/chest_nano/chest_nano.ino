@@ -108,6 +108,8 @@ ChestMode chestMode = CM_OFF;
 uint32_t complimentStartMs = 0;   // millis() when CM_COMPLIMENT began (self-timeout)
 uint8_t chargeSoc = 0;             // 0..100, supplied by off-state battery monitor
 bool chargeConnected = false;
+uint32_t chargeIntroStartMs = 0;   // millis() when CM_CHARGE was entered (intro sweep)
+#define CHARGE_INTRO_MS 2000
 
 // FADEOFF: freeze the last rendered frame and ramp master brightness to 0 over
 // CHEST_FADEOFF_MS, then go fully OFF — a lifelike "powering down" fade.
@@ -401,6 +403,10 @@ void handleCommand(char *cmd) {
 			chargeSoc = (uint8_t)constrain(soc, 0, 100);
 			chargeConnected = connected != 0;
 			FastLED.setBrightness(55);  // visible while off, never room-filling
+			// Intro sweep only when ENTERING charge mode (handoff from main.py,
+			// or first paint after a reboot) — SOC updates while already in
+			// CM_CHARGE must not replay it.
+			if (chestMode != CM_CHARGE) chargeIntroStartMs = millis();
 			chestMode = CM_CHARGE;
 		}
 
@@ -499,6 +505,18 @@ void chargeGauge() {
 	// bottom red pixel lit.
 	uint8_t filled = (uint8_t)(((uint16_t)chargeSoc * 24 + 99) / 100);
 	if (filled > 24) filled = 24;
+
+	// Intro sweep on entering CM_CHARGE: instead of snapping the whole meter on
+	// at once, reveal the pixels in order over CHARGE_INTRO_MS until the fill
+	// line is reached. Blink and charge packet stay suppressed until it lands.
+	const uint32_t elapsed = millis() - chargeIntroStartMs;
+	if (elapsed < CHARGE_INTRO_MS) {
+		const uint8_t reveal = (uint8_t)(((uint32_t)filled * elapsed) / CHARGE_INTRO_MS);
+		FastLED.clear();
+		for (uint8_t level = 0; level < reveal; level++)
+			DJLEDs[gauge24Pixel(level)] = gauge24Color(level);
+		return;
+	}
 
 	FastLED.clear();
 	for (uint8_t level = 0; level < filled; level++)
