@@ -7187,8 +7187,12 @@ MOTION_FACE_PERSON_ENABLED = True
 MOTION_FACE_NECK_FRACTION = 0.85      # neck offset (fraction of half-span) that counts as the
                                       # sweep being EXHAUSTED — the neck, not the wheels, is the
                                       # primary tracker (was 0.30, which turned the base far too often)
-MOTION_FACE_EDGE_FRACTION = 0.70      # face must ALSO sit past this fraction of the frame half-width
-                                      # (extreme left/right), same side as the neck, before a base turn
+MOTION_FACE_EDGE_FRACTION = 0.30      # face must ALSO sit at least this far off-centre (fraction of the
+                                      # frame half-width, same side as the neck) before a base turn.
+                                      # With the neck exhausted, any sustained same-side offset means the
+                                      # neck can't re-center them — this bar only needs to clear tracking
+                                      # jitter (~0.06), NOT the physical frame edge (0.70 never fired:
+                                      # field 2026-07-31, neck pinned at min, face 38% off, no turn)
 MOTION_FACE_CONFIRM_TICKS = 2         # consecutive ticks with both conditions before turning
 MOTION_FACE_TURN_MAX_DEG = 60.0       # base turn at full neck deflection (proportional below)
 MOTION_FACE_TURN_MIN_DEG = 10.0       # smallest worthwhile correction

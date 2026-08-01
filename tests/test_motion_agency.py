@@ -139,6 +139,18 @@ class MotionAgencyTest(unittest.TestCase):
         self._tick(5)
         self.turn.assert_not_called()
 
+    def test_neck_pinned_with_face_moderately_off_centre_turns(self):
+        # THE FIELD FAILURE (2026-07-31 20:14): neck pinned at its hard minimum
+        # (1984, frac -1.0) with the face 38% left of centre (x=594 on 1920) — the
+        # neck could not reach further, but the old 0.70 "extreme edge" bar meant
+        # the base never turned. Any sustained same-side offset past tracking
+        # jitter must fire once the sweep is exhausted.
+        self._neck = 1984
+        self._face_box = (494, 400, 200, 200)   # centre x=594 -> frac -0.38
+        self._tick(2)
+        self.turn.assert_called_once()
+        self.assertGreater(self.turn.call_args[0][0], 0)   # person left -> CCW/left turn
+
     def test_face_escaping_the_opposite_edge_does_not_turn(self):
         # Neck parked right but the face at the LEFT edge: the neck can still sweep
         # toward them — a base turn keyed off the neck would rotate the wrong way.

@@ -110,5 +110,57 @@ class ReactiveBypassTest(unittest.TestCase):
             self.assertTrue(speech_engine.can_proactive_speak(reactive=True))
 
 
+class PresenceLockWaitTest(unittest.TestCase):
+    """A presence reaction must WAIT for the shared reaction lock (bounded), not
+    try-once-and-die. Field 2026-07-31 20:10:29: the startup greeting hit the lock
+    while a low-value donut room-change ask slept its 2s pre-speak delay inside it;
+    the greeting was skipped silently, the donut ask was then dropped as superseded
+    (the greeting had taken its purpose claim) — and Rex greeted nobody."""
+
+    def _patched(self, stack):
+        def p(name, **kw):
+            stack.enter_context(mock.patch.object(consciousness, name, **kw))
+
+        p("_observe_governor_candidate", return_value="cg-test")
+        p("_mark_governor_candidate", return_value=None)
+        p("_claim_proactive_purpose", return_value="tok")
+        p("_release_proactive_purpose", return_value=None)
+        p("_proactive_purpose_current", return_value=True)
+        p("_can_proactive_speak", return_value=True)
+        p("note_rex_utterance", return_value=None)
+        p("_record_proactive_question", return_value=None)
+        p("_utterance_expects_reply", return_value=False)
+        p("_presence_line_counts_as_greeting", return_value=False)
+        stack.enter_context(mock.patch.object(
+            speech_engine.config, "PRESENCE_REACTION_DELAY_SECS", 0.0, create=True))
+        stack.enter_context(mock.patch.object(
+            speech_engine.config, "PRESENCE_SPEAK_GRACE_SECS", 5.0, create=True))
+        done = mock.Mock()
+        enq = stack.enter_context(
+            mock.patch("audio.speech_queue.enqueue", return_value=done))
+        return enq
+
+    def test_greeting_waits_out_a_busy_lock_instead_of_dying(self):
+        import time
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            enq = self._patched(stack)
+            consciousness._presence_reaction_lock.acquire()   # a loser holds it
+            try:
+                self.assertTrue(speech_engine.generate_and_speak_presence(
+                    "prompt", "greeting under test", 1,
+                    direct_text="hello there"))
+                time.sleep(0.4)                # well past the old try-once skip
+                enq.assert_not_called()        # still waiting, not dropped
+            finally:
+                consciousness._presence_reaction_lock.release()
+            deadline = time.monotonic() + 3.0
+            while not enq.called and time.monotonic() < deadline:
+                time.sleep(0.05)
+        enq.assert_called_once()               # spoke once the lock freed
+        self.assertEqual(enq.call_args[0][0], "hello there")
+
+
 if __name__ == "__main__":
     unittest.main()

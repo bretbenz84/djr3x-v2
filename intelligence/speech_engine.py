@@ -700,11 +700,22 @@ def generate_and_speak_presence(
             time.sleep(0.5)
 
     def _task():
-        if not _c._presence_reaction_lock.acquire(blocking=False):
-            _log.debug("generate_and_speak_presence: reaction already in progress, skipping — %s", label)
+        # Wait for the lock (bounded), never try-once-and-skip. Field 2026-07-31
+        # 20:10:29: the startup greeting (score 80) hit this lock while a low-value
+        # donut room-change ask (score 20) was sleeping its 2s pre-speak delay
+        # inside it. The greeting was skipped silently at debug level; the donut
+        # ask was then dropped as superseded (the greeting had taken its claim) —
+        # so NEITHER spoke and Rex never greeted his maker. Waiting is safe: this
+        # runs on its own daemon thread, and _wait_proactive_clear still re-checks
+        # the claim after the wait, so work that went stale drops out on its own.
+        grace = float(getattr(config, "PRESENCE_SPEAK_GRACE_SECS", 8.0))
+        if not _c._presence_reaction_lock.acquire(timeout=grace):
+            _log.info(
+                "consciousness: presence reaction dropped — lock busy past %.0fs grace (%s)",
+                grace, label,
+            )
             _c._release_proactive_purpose(token)
             return
-        grace = float(getattr(config, "PRESENCE_SPEAK_GRACE_SECS", 8.0))
         try:
             if not _wait_proactive_clear(grace):
                 _log.info(

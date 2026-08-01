@@ -35,9 +35,13 @@ was turning far too often). Two conditions must BOTH hold, each for
 MOTION_FACE_CONFIRM_TICKS consecutive ticks:
   1. the neck sweep is EXHAUSTED — the neck sits past MOTION_FACE_NECK_FRACTION
      (near its travel limit) of its half-span, so it cannot pan further; and
-  2. the face is at the EXTREME left/right of the camera frame — past
-     MOTION_FACE_EDGE_FRACTION of the half-width, on the same side the neck is
-     pointing (face-tracking can no longer re-center it).
+  2. the face still sits meaningfully off-centre — past MOTION_FACE_EDGE_FRACTION
+     of the half-width, on the same side the neck is pointing. With the neck at its
+     limit, ANY sustained same-side offset means face-tracking can no longer
+     re-center them, so this threshold only needs to clear tracking jitter/deadband
+     (~0.06), not reach the physical frame edge (field 2026-07-31 20:14: neck pinned
+     at its minimum, face 38% off-centre, and a 0.70 "extreme edge" bar meant the
+     base never turned).
 Then the base turns by a proportional chunk and face-tracking naturally re-centers
 the neck as it comes around. Iterative small corrections + a cooldown, never one
 exact spin (no oscillation).
@@ -916,7 +920,7 @@ def _step_inner(snapshot: dict, profile) -> None:
     # genuinely run out of neck and still can't hold them.
     if _flag("MOTION_FACE_PERSON_ENABLED", True) and frac is not None:
         threshold = _num("MOTION_FACE_NECK_FRACTION", 0.85)
-        edge = _num("MOTION_FACE_EDGE_FRACTION", 0.70)
+        edge = _num("MOTION_FACE_EDGE_FRACTION", 0.30)
         face_frac = _face_offset_fraction(person)
         neck_exhausted = abs(frac) >= threshold
         # Same-side check: neck panned right (+) with the face escaping right (+).
