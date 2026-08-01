@@ -401,6 +401,12 @@ Mac → turn(seq=N)        ESP32 → ack(seq=N, accepted)
   also supersede.
 - A reflex STOP/CLIFF mid-finite → `done result:"blocked"`, `state:"blocked"`. Motion in
   that direction is refused until the zone clears; motion *away* is still allowed.
+  - **Block grace (2026-08-01):** the reflex zeroes velocity toward the block on the
+    first tick as always, but the finite command only *terminates* `done:"blocked"`
+    after the block has persisted `FINITE_BLOCK_GRACE_MS` (calib.h, 900 ms)
+    continuously. A transient phantom (single-frame ToF speckle) pauses the move,
+    which resumes on its own when the zone clears — instead of a lone bad frame
+    killing the whole command. Additive behavior change; no wire change.
 
 ---
 

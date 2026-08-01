@@ -297,6 +297,14 @@ reversing; the swing side when spinning):
 
 - A STOP/CLIFF condition **overrides any command** — the Mac cannot override the ESP32's
   reflex stop (only `stop`/`estop`/re-clear, never "drive into the wall anyway").
+- **Phantom-tolerant, in two layers (2026-08-01** — a parked base flapped BLOCKED ~600
+  times in 7 min with >1 m genuinely clear and refused a spoken "move forward"**):**
+  (1) each matrix-ToF half publishes its *second*-nearest qualifying zone, so a lone
+  speckle zone reads as clear (`TOF_MATRIX_MIN_OBSTACLE_ZONES`, calib.h — a real
+  obstacle near enough to matter subtends multiple zones); (2) a finite move/come
+  survives a block that clears within `FINITE_BLOCK_GRACE_MS` (900 ms) — velocity is
+  still cut instantly, but the command pauses and resumes instead of dying on a
+  transient. Only a persistent block (real wall/person) ends it with `done:blocked`.
 - The robot may still move *away* from a blockage (e.g. blocked in front → reverse/turn
   still allowed if those directions are clear).
 - Zone thresholds and max speed are co-tuned so **stopping distance < min reliable ToF

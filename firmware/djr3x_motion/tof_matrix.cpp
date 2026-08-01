@@ -273,8 +273,13 @@ static void mx_init_task(void*) {
 // Pure function over the raw grid + precomputed geometry. Orientation is
 // normalized here: after TOF_MATRIX_FLIP_V/H, row 0 = physically TOP and col 0 =
 // the ROBOT'S LEFT edge of the FOV (verify both on the bench — see calib.h).
+// Each half publishes its SECOND-nearest qualifying zone (TOF_MATRIX_MIN_OBSTACLE_ZONES,
+// calib.h): a real obstacle close enough to matter subtends multiple zones, so second ≈
+// nearest for anything genuine, while a lone speckle zone — the phantom near return that
+// pinned a parked base BLOCKED with >1 m clear (field 2026-08-01) — reads as clear.
 static void mx_aggregate(int16_t* out_fl, int16_t* out_fr) {
-  float best_left = 1.0e9f, best_right = 1.0e9f;
+  float best_left = 1.0e9f,  best_right = 1.0e9f;   // nearest qualifying zone per half
+  float best2_left = 1.0e9f, best2_right = 1.0e9f;  // second-nearest per half
   for (int r = 0; r < 8; r++) {
     const int rr = TOF_MATRIX_FLIP_V ? (7 - r) : r;
     for (int c = 0; c < 8; c++) {
@@ -286,12 +291,22 @@ static void mx_aggregate(int16_t* out_fl, int16_t* out_fr) {
       if (v < TOF_MATRIX_MIN_MM) continue;               // sub-min-range speckle
       if ((float)v >= s_row_reject_mm[r]) continue;      // the floor (or beyond it)
       const float horiz = (float)v * s_row_cos[r];       // project ray -> horizontal
-      if (c < 4) { if (horiz < best_left)  best_left  = horiz; }
-      else       { if (horiz < best_right) best_right = horiz; }
+      if (c < 4) {
+        if (horiz < best_left)       { best2_left = best_left;   best_left = horiz; }
+        else if (horiz < best2_left) { best2_left = horiz; }
+      } else {
+        if (horiz < best_right)       { best2_right = best_right;  best_right = horiz; }
+        else if (horiz < best2_right) { best2_right = horiz; }
+      }
     }
   }
-  *out_fl = (best_left  < 1.0e9f) ? (int16_t)(best_left  + 0.5f) : (int16_t)TOF_MATRIX_CLEAR_MM;
-  *out_fr = (best_right < 1.0e9f) ? (int16_t)(best_right + 0.5f) : (int16_t)TOF_MATRIX_CLEAR_MM;
+#if TOF_MATRIX_MIN_OBSTACLE_ZONES >= 2
+  const float pub_left = best2_left, pub_right = best2_right;
+#else
+  const float pub_left = best_left,  pub_right = best_right;
+#endif
+  *out_fl = (pub_left  < 1.0e9f) ? (int16_t)(pub_left  + 0.5f) : (int16_t)TOF_MATRIX_CLEAR_MM;
+  *out_fr = (pub_right < 1.0e9f) ? (int16_t)(pub_right + 0.5f) : (int16_t)TOF_MATRIX_CLEAR_MM;
 }
 
 // ---- Public API ---------------------------------------------------------------

@@ -156,13 +156,25 @@ void control_tick(float dt) {
     c.cmd_mode = CMD_NONE;
   }
 
-  // A reflex block in the finite command's OWN travel direction terminates it
-  // once with done:blocked (contract §7.4). Motion away from the block keeps
-  // running (its travel dir won't match blocked_dir). The completion below is
-  // skipped because emitDone is now set.
-  if (!halted && !emitDone && c.state == ST_BLOCKED && c.finite.kind != CMD_NONE) {
+  // A reflex block in the finite command's OWN travel direction terminates it with
+  // done:blocked (contract §7.4) — but only after FINITE_BLOCK_GRACE_MS of
+  // CONTINUOUS block (calib.h). The reflex gate below still zeroes velocity toward
+  // the block on the very first tick (safety is unchanged); the grace only decides
+  // when the COMMAND gives up. A phantom near frame that clears within the window
+  // pauses the move, which then resumes on its own toward its remaining distance
+  // (field 2026-08-01: single-zone ToF speckle killed "move forward 3 feet"
+  // instantly with >1 m genuinely clear). Motion away from the block keeps running
+  // (its travel dir won't match blocked_dir).
+  if (!halted && !emitDone && c.finite.kind != CMD_NONE) {
     MotionDir ft = finite_travel_dir(c.finite);
-    if (ft != DIR_NONE && (ft == c.blocked_dir || c.blocked_dir == DIR_BOTH)) {
+    const bool block_matches =
+        c.state == ST_BLOCKED && ft != DIR_NONE &&
+        (ft == c.blocked_dir || c.blocked_dir == DIR_BOTH);
+    if (!block_matches) {
+      c.finite.block_match_ms = 0;
+    } else if (c.finite.block_match_ms == 0) {
+      c.finite.block_match_ms = now | 1;             // never 0 = "not blocked"
+    } else if ((uint32_t)(now - c.finite.block_match_ms) >= FINITE_BLOCK_GRACE_MS) {
       emitDone = true; dres = DONE_BLOCKED; dseq = c.finite.seq; dodom = c.odom;
       c.finite = FiniteCmd();
       c.cmd_mode = CMD_NONE;

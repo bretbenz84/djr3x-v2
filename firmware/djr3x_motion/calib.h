@@ -336,6 +336,17 @@
 // (2) hold a hand at the robot's front-LEFT — if fr (not fl) drops, set FLIP_H 1.
 #define TOF_MATRIX_FLIP_V          0     // 1 = raw row 0 is physically the BOTTOM
 #define TOF_MATRIX_FLIP_H          0     // 1 = raw col 0 is the robot's RIGHT
+// Speckle rejection (field 2026-08-01): a parked base flapped BLOCKED/clear ~600
+// times in 7 min with >1 m genuinely clear ahead — single-zone phantom near returns
+// (VL53L7CX speckle) dipped under the at-rest 0.10 m stop floor, and the two-frame
+// attack confirm passed them because consecutive speckle frames agree within
+// ATTACK_CONFIRM. A real obstacle near enough to matter subtends MULTIPLE zones of
+// the 4x8 half-grid (a chair leg at 0.3 m spans several rows even if one column),
+// so each half now publishes its SECOND-nearest qualifying zone: one lone screaming
+// zone is discarded as speckle. Deliberate coverage trade: an object thin enough to
+// light exactly one zone (a bare cable end-on) is invisible — docs §6.3 already
+// disclaims full coverage of thin obstacles.
+#define TOF_MATRIX_MIN_OBSTACLE_ZONES 2  // qualifying zones per half before it counts
 
 // ---- Hallway steering assist (manual forward drive) ------------------------
 // While the gamepad commands FORWARD, the base steers itself away from walls using
@@ -462,6 +473,17 @@
 #define ZONE_SPEED_REF_MS     0.80f   // speed at which the configured zones fully apply
                                       // (tracks the hardwood-mode ceiling; carpet mode
                                       // tops out higher but is drag-limited in practice)
+
+// ---- Finite-command reflex-block grace (control.cpp) ------------------------
+// A finite move/come used to terminate done:blocked the instant the reflex latched
+// BLOCKED in its travel direction — so a single phantom near frame killed the whole
+// command ("move forward 3 feet" refused with >1 m genuinely clear, field
+// 2026-08-01). The reflex still zeroes velocity toward the block IMMEDIATELY
+// (safety unchanged); the command itself now survives a block that clears within
+// this window and resumes on its own. Only a block that persists — a real wall or
+// person — gives up with done:blocked. Sized well above the ToF flap period
+// (~150-225 ms per phantom episode) and below "feels stuck" for the operator.
+#define FINITE_BLOCK_GRACE_MS  900
 
 // ---- Approach slowdown creep floor (control.cpp slow-zone taper) ------------
 // The progressive slow-zone taper scales the commanded speed toward zero at the stop

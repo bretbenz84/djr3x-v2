@@ -147,6 +147,15 @@ floor-rejected left/right-half obstacle distances **override `fl`/`fr`** (or
 min-combine when the radial array is also built in). Rear/side coverage still needs
 the radial array — **reversing is unprotected** with only the matrix wired.
 
+**Speckle rejection (2026-08-01):** each half publishes its *second*-nearest
+qualifying zone (`TOF_MATRIX_MIN_OBSTACLE_ZONES`, calib.h). A lone phantom zone —
+VL53L7CX speckle that pinned a parked base BLOCKED with >1 m genuinely clear —
+reads as clear; any real obstacle close enough to matter lights multiple zones, so
+second ≈ nearest. Trade: an object thin enough to hit exactly one zone is invisible.
+Paired with `FINITE_BLOCK_GRACE_MS` (control.cpp): a finite move pauses through a
+transient block and resumes, only giving up `done:blocked` after 900 ms of
+continuous block.
+
 ```bash
 # Live drive base + gamepad + front matrix — THE robot build with this sensor wired.
 # ⚠ FQBN MUST be the Bluepad32 core. Field lesson 2026-07-16: flashing this firmware

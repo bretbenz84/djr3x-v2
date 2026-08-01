@@ -117,6 +117,13 @@ struct FiniteCmd {
   float    imu_yaw_last_deg = 0;
   float    imu_progress_rad = 0;  // signed, +CCW/left
   uint32_t turn_started_ms = 0;
+  // Reflex-block grace (control_tick): millis() when the current run of
+  // blocked-in-my-travel-direction ticks started, 0 when not blocked. The command
+  // only terminates done:blocked after FINITE_BLOCK_GRACE_MS of CONTINUOUS block —
+  // a transient phantom (single-frame ToF speckle) pauses the move instead of
+  // killing it. The reflex still zeroes velocity instantly; only the give-up is
+  // delayed.
+  uint32_t block_match_ms = 0;
   // come bookkeeping
   bool     come_turning  = false;  // phase 1: rotating to heading
   float    come_stop_at  = 0;      // m
