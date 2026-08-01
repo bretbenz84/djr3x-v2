@@ -128,6 +128,11 @@ class WhisperOutroHallucinationTest(unittest.TestCase):
         import numpy as np
         from audio import transcription as tr
         with (
+            # Pin the whisper backend: this is a whisper-path contract, and with
+            # TRANSCRIPTION_BACKEND=qwen3 (2026-07-31) the real Qwen model would
+            # load and decode instead of the mock. The qwen silence contract is
+            # pinned separately in tests/test_transcription_backend.py.
+            mock.patch.object(config, "TRANSCRIPTION_BACKEND", "whisper", create=True),
             mock.patch.object(tr, "_MLX_AVAILABLE", True),
             mock.patch.object(tr, "_local_model_ready", return_value=True),
             mock.patch.object(tr, "mlx_whisper", create=True) as mlx,

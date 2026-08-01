@@ -785,12 +785,16 @@ _OPEN_THREAD_INSTRUCTION = (
     "[Something {who} left unresolved {when} has been quietly on your mind, and the "
     "conversation just reached a lull — a natural moment to check back in.]\n"
     "{situation}"
-    "The unresolved thing: \"{thread}\". Ask ONE short, genuinely curious in-character "
-    "question about how it turned out — the way a friend who actually remembered would. "
-    "Warm and specific, not an interrogation. Do NOT say 'I remember' / 'you told me' / "
-    "'according to my records', and do not mention memory banks or that you were waiting "
-    "for a quiet moment — it's just been on your mind. You MUST ask the one question; do "
-    "not reply PASS."
+    "The unresolved thing: \"{thread}\", which came up {when}. Ask ONE short, genuinely "
+    "curious in-character question about how it turned out — the way a friend who "
+    "actually remembered would. The question MUST anchor itself: name the thing AND "
+    "when it came up, conversationally (\"the other day you mentioned X — did that "
+    "happen?\"). Without the anchor a days-old thread lands as a non-sequitur (field "
+    "2026-07-31: \"did you go with 'sick' hair?\" out of nowhere — the human had no "
+    "idea what Rex meant). \"You mentioned\" / \"you were saying\" phrasing is natural "
+    "and ALLOWED; do NOT say 'I remember' / 'according to my records', and do not "
+    "mention memory banks or that you were waiting for a quiet moment. If the thread "
+    "is too vague to anchor in one plain sentence, reply PASS instead of guessing."
 )
 
 

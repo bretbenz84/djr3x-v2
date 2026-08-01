@@ -1111,6 +1111,12 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
     # Step toward neutral
     done = False
     while not done:
+        # Re-check EVERY step, not just at entry: a neutral() already in flight
+        # when the shutdown droop latches used to keep streaming its remaining
+        # steps — so the head drooped into the rest pose and then rose right
+        # back up to neutral as this loop finished (field 2026-07-31).
+        if _program_servo_updates_blocked():
+            return
         done = True
         moves: dict[int, int] = {}
         for name, cfg in config.SERVO_CHANNELS.items():
@@ -1301,6 +1307,11 @@ def move_to(
 
     done = False
     while not done:
+        # Same mid-flight abort as neutral(): once the shutdown latch (or the
+        # manual override) engages, an in-progress interpolation must stop
+        # streaming rather than finish marching to its stale target.
+        if _program_servo_updates_blocked():
+            return
         done = True
         moves: dict[int, int] = {}
         for ch, tgt in targets.items():

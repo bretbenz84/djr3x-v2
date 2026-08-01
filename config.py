@@ -2485,6 +2485,26 @@ FACE_TRACKING_TILT_MAX_STEP_QUS = _env_int(
     max_value=2000,
 )
 
+# Edge boost: scale the neck per-tick cap UP as the face sits farther off-centre,
+# so a person who stepped to Rex's side gets a committed ~1s sweep instead of a
+# capped crawl (field 2026-07-31: a lateral move took ~5s to re-face — the flat
+# cap x optical-flow damping throttled big corrections to ~81 qus/tick). Below
+# the error fraction nothing changes: same caps, dead zone, and reversal damping,
+# so near-centre tracking stays exactly as smooth as before. The boost multiplies
+# the DAMPED cap, so optical-flow and reversal damping still bite first.
+FACE_TRACKING_EDGE_BOOST_ERROR_FRAC = _env_float(
+    "FACE_TRACKING_EDGE_BOOST_ERROR_FRAC",
+    0.30,   # boost begins once the face is >30% of the half-width off-centre
+    min_value=0.05,
+    max_value=1.0,
+)
+FACE_TRACKING_EDGE_BOOST_MULT = _env_float(
+    "FACE_TRACKING_EDGE_BOOST_MULT",
+    2.5,    # cap multiplier at the very edge of frame (linear ramp from 1.0)
+    min_value=1.0,
+    max_value=6.0,
+)
+
 # Face tracking is a live gaze correction, not a slow idle animation. Use a
 # faster Maestro profile for the head channels before sending tracking targets.
 # Speed must comfortably exceed the per-tick step above so the head reaches each
@@ -2846,9 +2866,16 @@ SPEAKER_GAZE_SEARCH_DWELL_SECS = _env_float(
     min_value=0.0,
     max_value=10.0,
 )
+# How long a speaker's already-locked face may flicker out before the gaze
+# SEARCH sweep launches. 0.45s was far too twitchy: a two-frame detector dropout
+# right after a speech turn launched a full hold-down room sweep that fought
+# face-tracking recapture — the head-lift swung nearly full travel twice in ~6s
+# (field 2026-07-31 21:41, read as "violent head movement"). A person who
+# genuinely walks away stays gone past this window and still gets searched for;
+# ordinary (non-speaker) tracking already holds a lost face 8s through flicker.
 SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS = _env_float(
     "SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS",
-    0.45,
+    3.0,
     min_value=0.0,
     max_value=10.0,
 )
@@ -7568,7 +7595,12 @@ NEWS_REMARK_COOLDOWN_SECS = _env_float("NEWS_REMARK_COOLDOWN_SECS", 900.0, min_v
 OPEN_THREAD_FOLLOWUP_ENABLED = _env_bool("OPEN_THREAD_FOLLOWUP_ENABLED", True)
 OPEN_THREAD_PRIORITY = _env_int("OPEN_THREAD_PRIORITY", 62, min_value=1, max_value=100)
 OPEN_THREAD_MIN_AGE_HOURS = _env_float("OPEN_THREAD_MIN_AGE_HOURS", 6.0, min_value=0.0, max_value=720.0)
-OPEN_THREAD_MAX_AGE_DAYS = _env_float("OPEN_THREAD_MAX_AGE_DAYS", 21.0, min_value=0.1, max_value=365.0)
+# 21 days was too generous: week-old minutiae ("sick hair", a mis-heard "Ex
+# tuning") surfaced as baffling non-sequiturs (field 2026-07-31). Within a few
+# days a thread still feels like attentiveness; past that it reads as either
+# surveillance or gibberish, and stale threads are also where old ASR poison
+# lives longest.
+OPEN_THREAD_MAX_AGE_DAYS = _env_float("OPEN_THREAD_MAX_AGE_DAYS", 5.0, min_value=0.1, max_value=365.0)
 
 # Spoken once when the charger is plugged in (firmware detects sustained charge
 # current, locks out the wheels, and reports charging:true in telemetry).

@@ -12099,6 +12099,21 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             vertical_gain *= reversal_damping
             lift_max_step = max(1, int(lift_max_step * reversal_damping))
             tilt_max_step = max(1, int(tilt_max_step * reversal_damping))
+        # Edge boost: the flat per-tick cap made a face far off-centre re-face in
+        # ~5s (cap 180 x live damping 0.45 = 81 qus/tick). Scale the cap with the
+        # error so big lateral moves sweep fast while near-centre behavior — dead
+        # zone, damping, small caps — is untouched. Applied AFTER the damping
+        # above so oscillation guards still bite first.
+        if frame_cx > 0:
+            _boost_frac = float(getattr(config, "FACE_TRACKING_EDGE_BOOST_ERROR_FRAC", 0.30))
+            _boost_max = float(getattr(config, "FACE_TRACKING_EDGE_BOOST_MULT", 2.5))
+            _err_frac = min(1.0, abs(error_x) / frame_cx)
+            if _boost_max > 1.0 and _boost_frac < 1.0 and _err_frac > _boost_frac:
+                _boost = 1.0 + (_err_frac - _boost_frac) / max(1e-6, 1.0 - _boost_frac) * (
+                    _boost_max - 1.0
+                )
+                neck_max_step = max(1, int(neck_max_step * _boost))
+
         if abs(error_x) > dead_zone and frame_cx > 0:
             neck_span = (int(neck_cfg["max"]) - int(neck_cfg["min"])) / 2.0
             target_neck = _clamp_servo(

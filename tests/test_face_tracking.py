@@ -832,9 +832,14 @@ class FaceTrackingTests(unittest.TestCase):
         # Left-edge face → neck turns left (below neutral).
         self.assertLess(updates[neck_ch], neutral)
         # Responsive: comfortably more than the old ~54 qus/tick crawl, and never
-        # beyond the per-tick step cap.
+        # beyond the per-tick step cap — which at the frame edge is scaled up by
+        # the edge boost (2026-07-31: a flat cap made a lateral re-face take ~5s).
         self.assertGreaterEqual(neck_move, 150)
-        self.assertLessEqual(neck_move, c.config.FACE_TRACKING_NECK_MAX_STEP_QUS)
+        self.assertLessEqual(
+            neck_move,
+            c.config.FACE_TRACKING_NECK_MAX_STEP_QUS
+            * float(getattr(c.config, "FACE_TRACKING_EDGE_BOOST_MULT", 1.0)),
+        )
 
     @unittest.skipIf(cv2 is None, "OpenCV unavailable")
     def test_live_tracking_people_advances_box_between_recognition_ticks(self):
