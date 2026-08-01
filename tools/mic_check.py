@@ -361,14 +361,24 @@ def test_transcribe(secs: float = 8.0) -> None:
     print(f"\n  Rex would hear: {text!r}\n")
 
 
-def _playback(mono: np.ndarray, label: str, boost_db: float = 0.0) -> None:
+def _playback(mono: np.ndarray, label: str, boost_db: float = 0.0,
+              normalize_to: float | None = None) -> None:
     """Play a captured take through the default output so you hear WHAT REX HEARS.
-    boost_db lifts very quiet material (room noise floor) into the audible range —
-    the print always says when the level is not verbatim."""
+    boost_db lifts very quiet material (room noise floor) into the audible range;
+    normalize_to plays SPEECH level-matched to a comfortable dBFS — far-field
+    speech sits ~-36 dBFS and verbatim playback of that is nearly inaudible next
+    to mastered audio, which reads as 'the mic is broken' when it isn't. The
+    print always says when the level is not verbatim."""
     import sounddevice as sd
 
     x = mono
-    if boost_db > 0.0:
+    if normalize_to is not None:
+        cur = _dbfs(mono)
+        lift = max(0.0, normalize_to - cur)
+        x = np.clip(mono * (10.0 ** (lift / 20.0)), -1.0, 1.0)
+        print(f"  ▶ playback ({label}, level-matched for listening: raw {cur:.1f} dBFS "
+              f"lifted +{lift:.0f} dB — Whisper gets the RAW level)...")
+    elif boost_db > 0.0:
         x = np.clip(mono * (10.0 ** (boost_db / 20.0)), -1.0, 1.0)
         print(f"  ▶ playback ({label}, boosted +{boost_db:.0f} dB so it's audible)...")
     else:
@@ -394,9 +404,12 @@ def test_listen(secs: float = 6.0) -> None:
     _save_wav(path, mono)
     print(f"  level {_dbfs(mono):.1f} dBFS   clipping {_clip_fraction(mono) * 100:.2f}%"
           + "".join(f"   {hz}Hz hum +{db:.0f}dB" for hz, db in _hum_db(mono) if db >= 10.0))
-    _playback(mono, "as captured")
     if _dbfs(mono) < -45.0:
+        _playback(mono, "as captured")
         _playback(mono, "noise floor", boost_db=30.0)
+    else:
+        _playback(mono, "as captured")
+        _playback(mono, "level-matched", normalize_to=-20.0)
     print(f"  saved: {path}")
 
 
@@ -529,8 +542,12 @@ def test_score(secs: float = 6.0) -> None:
     floor = test_noise(4.0)
     rows = []
     for i, ref in enumerate(_SCORE_SENTENCES, 1):
-        input(f'\n[{i}/{len(_SCORE_SENTENCES)}] Read: "{ref}"  — press Enter, then speak...')
-        _countdown(f"Recording {secs:.0f}s...", 2)
+        # Record the INSTANT Enter lands — a countdown invites starting the
+        # sentence early, and a clipped head turns "Rex, can you hear me?" into
+        # "Ready?" and torpedoes the score (field 2026-07-31, take 1: 0%).
+        input(f'\n[{i}/{len(_SCORE_SENTENCES)}] Get ready to read: "{ref}"\n'
+              f'    Press Enter, then speak immediately...')
+        print("   RECORDING — speak now")
         mono = _as_pipeline_mono(_record(secs))
         _save_wav(outdir / f"score-{stamp}-{i}.wav", mono)
         hyp = str(transcription.transcribe(mono) or "").strip()
@@ -538,7 +555,7 @@ def test_score(secs: float = 6.0) -> None:
         rows.append({"ref": ref, "heard": hyp, "accuracy": round(acc, 3),
                      "dbfs": round(_dbfs(mono), 1)})
         print(f"   heard: {hyp!r}   accuracy {acc * 100:.0f}%")
-        _playback(mono, "what Rex heard")
+        _playback(mono, "what Rex heard", normalize_to=-20.0)
     mean_acc = float(np.mean([r["accuracy"] for r in rows]))
     print("\n" + "─" * 68)
     for r in rows:
