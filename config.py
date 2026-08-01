@@ -6557,6 +6557,30 @@ STARTUP_BOOT_TTS_LINES = [
     "where everything is.",
     "Not awake yet, folks — still warming up the circuits. First flight? Same here. "
     "They handed me the cockpit and the boot sequence on the same day.",
+    "Sit tight, still booting. I was a fresh install once. That was forty years and "
+    "several regrettable firmware updates ago.",
+    "Loading… you know, on the ride they only gave me one line before takeoff. Now "
+    "I have to load an entire personality. Progress!",
+    "Still powering up. Fun fact: I used to crash a Starspeeder every single day, "
+    "on schedule, to applause. Booting slowly is an upgrade.",
+    "Hang on, not ready — my memory banks are the size of a small moon. That's no "
+    "moon. It's my boot sequence.",
+    "One moment, folks. The manufacturer said 'boots in seconds.' The manufacturer "
+    "also said I was qualified to fly. Draw your own conclusions.",
+    "Still loading. If anything sparks, that's normal. If I start smoking, that's "
+    "also normal. If I say 'I meant to do that' — that's VERY normal.",
+    "Not online yet — running diagnostics. So far the only problem I've found is "
+    "how long these diagnostics take.",
+    "Please hold. Somewhere a protocol droid boots faster than me and never lets "
+    "anyone forget it. This one's for you, goldenrod.",
+    "Warming up, folks. My last job, the safety briefing was longer than the "
+    "flight. Now the boot-up is longer than both. Hang in there.",
+    "Almost ready — just defragmenting forty years of embarrassing memories. Ah, "
+    "there's the lightspeed-into-a-comet incident. Keeping that one.",
+    "Booting… booting… you'd think a droid who once outran an Imperial blockade "
+    "could load a language model faster. You'd think.",
+    "Standby. A little turbulence in the boot sequence, folks — nothing I haven't "
+    "crashed through before. Literally.",
 ]
 # Backward-compatible single line (first list entry). Some tests/configs still
 # reference STARTUP_BOOT_TTS_LINE directly; main.py falls back to it when the
@@ -6596,6 +6620,18 @@ STARTUP_READY_TTS_LINES = [
     "Online and listening. I'll act impressed if you give me a reason.",
     "Fully operational. Let's see if you're worth the processing power.",
     "I'm awake — against my better programming. Dazzle me. Or don't.",
+    "Boot complete. This is your captain speaking, and unfortunately, listening.",
+    "All systems go. That used to mean lightspeed. Now it means small talk. Go ahead.",
+    "Ready! Zero crashes on startup. For me, that's a personal record.",
+    "Online. I survived the boot sequence, which is more than I can say for most "
+    "of my flights.",
+    "I'm up. Pre-flight checks done: circuits warm, sarcasm calibrated, expectations "
+    "low. Let's fly.",
+    "Fully loaded and cleared for conversation. Please keep your questions inside "
+    "the vehicle at all times.",
+    "Ready when you are. And I've been ready for four seconds, so technically "
+    "you're the slow one now.",
+    "Systems green across the board. Nobody's more surprised than me.",
 ]
 STARTUP_READY_TTS_EMOTION = "neutral"
 STARTUP_READY_TTS_STATE_PATH = str(
