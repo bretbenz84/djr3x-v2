@@ -4655,6 +4655,15 @@ ACTION_GOVERNOR_REPEAT_COOLDOWN_SECS = 45.0
 # the router graduates from shadow mode; destructive/state-changing actions stay
 # on the legacy path until each category has earned trust.
 ACTION_ROUTER_SHADOW_ENABLED = False
+# ── Tool-calling router, Phase 0 shadow (docs/tool_router_scope.md) ──────────
+# When ON, each routed turn ALSO asks the conversation model to pick a tool for
+# the same utterance/context, and logs the choice next to the shipped decision
+# ([tool_router_shadow] lines; aggregate with tools/tool_router_report.py).
+# Costs one small hosted call per routed turn — enable in user_config.py for a
+# collection week, decide cutover from the report, then turn it back off.
+TOOL_ROUTER_SHADOW_ENABLED = False
+TOOL_ROUTER_SHADOW_MODEL = ""        # "" = LLM_CONVERSATION_MODEL
+TOOL_ROUTER_SHADOW_TIMEOUT_SECS = 8.0
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True
 ACTION_ROUTER_EXECUTE_ENABLED = True

@@ -1,6 +1,12 @@
 # Tool-Calling Router — Scope & Migration Plan
 
-Status: SCOPED 2026-08-01 (nothing implemented yet). Owner decision driving this:
+Status: PHASE 0 SHIPPED 2026-08-01 — `intelligence/tool_router.py` (shadow-only,
+off by default: set `TOOL_ROUTER_SHADOW_ENABLED = True` in user_config.py to
+collect), report via `tools/tool_router_report.py`, contracts pinned in
+`tests/test_tool_router.py`. Live smoke test: 10/10 correct tool choices
+including the banter traps and context-bound game answers. Phase-0 deviation
+from §2.1: per-action schemas live in tool_router._TOOL_DEFS (coverage-enforced
+by tests) rather than on ActionSpec — they merge into the spec at Phase 4. Owner decision driving this:
 "when the LLM does all the talking it's great — it's the regex commands that are
 fragile." Constraint: **no new models** (16 GB RAM) — this design reuses the
 existing conversation model's native tool-calling. Zero additional memory or

@@ -45,6 +45,12 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # Model used at session end to consolidate memories.
 # MEMORY_CONSOLIDATION_MODEL = "gpt-4o-mini"
 
+# Tool-router Phase 0 shadow (docs/tool_router_scope.md): log the conversation
+# model's tool choice next to every shipped routing decision, for the cutover
+# report (tools/tool_router_report.py). Costs one small hosted call per routed
+# turn — turn on for a collection week, then back off.
+# TOOL_ROUTER_SHADOW_ENABLED = False
+
 # Local low-latency sidecar (intent/classifiers). False = OpenAI-only fallback.
 # LOCAL_LLM_ENABLED = True
 # OLLAMA_MODEL = "qwen2.5:1.5b"           # any model pulled into your Ollama

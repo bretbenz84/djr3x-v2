@@ -22504,6 +22504,14 @@ def _handle_speech_segment(
                 router_decision = action_router.decide(text, router_context)
                 _latency_log(turn_start, "action_router", router_started)
                 action_router.log_decision(router_decision, router_context, mode="execute")
+                # Phase 0 tool-router shadow: fire-and-forget comparison of the
+                # conversation model's tool choice vs the shipped decision
+                # (docs/tool_router_scope.md). No-op unless enabled in config.
+                try:
+                    from intelligence import tool_router
+                    tool_router.start_shadow(text, router_context, router_decision.action)
+                except Exception as exc:
+                    _log.debug("[tool_router] shadow launch failed: %s", exc)
                 _router_audit_note_decision(
                     router_audit,
                     router_decision,
