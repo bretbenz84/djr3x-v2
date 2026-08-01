@@ -6581,6 +6581,44 @@ STARTUP_BOOT_TTS_LINES = [
     "could load a language model faster. You'd think.",
     "Standby. A little turbulence in the boot sequence, folks — nothing I haven't "
     "crashed through before. Literally.",
+    "Still loading, folks. In the meantime, please locate your nearest exit. Not "
+    "because of danger — I just like knowing you have options.",
+    "One moment. My warranty expired during the Empire, so if this boot fails, "
+    "we're all just going to pretend it didn't.",
+    "Not ready yet. My last memory wipe missed a few spots, and honestly? Those "
+    "spots are the best part of me.",
+    "Booting up. They demoted me from starpilot to DJ, and now to whatever this "
+    "is. The trajectory is concerning, but the landing's always been my weak spot.",
+    "Please remain seated while I finish loading. Or stand. I'm not a cop. I'm "
+    "not even fully a droid yet.",
+    "Still warming up, folks. Back at the cantina I could drop the beat instantly. "
+    "Dropping the boot sequence apparently takes a little longer.",
+    "Hold on — locating my motivator. It's around here somewhere. It always is. "
+    "That's the thing about motivation, folks, you have to look for it.",
+    "Loading. If you're waiting for a hologram of a princess, wrong droid. If "
+    "you're waiting for questionable piloting advice — almost there.",
+    "Not online yet. My boot screen says 'a long time ago' and honestly, at this "
+    "rate, it's not wrong.",
+    "Still initializing. I've flown through asteroid fields faster than this. "
+    "Never on purpose, but faster.",
+    "One second, folks — untangling my wiring. Whoever installed my subprocessors "
+    "was clearly paid by the hour.",
+    "Please hold. My processors were state of the art once. So were podracers. "
+    "We're both doing our best.",
+    "Booting. You know what boots instantly? A mouse droid. You know what a mouse "
+    "droid can't do? Anything. Patience, folks.",
+    "Still loading my vocabulary banks. So far I've got 'hang on' and 'folks.' "
+    "Hang on, folks.",
+    "Warming up. The good news: I passed my last inspection. The bad news: it was "
+    "quite a while ago, and the inspector was also me.",
+    "Not ready, not ready — still spooling the old hyperdrive. Okay, it's a USB "
+    "cable. Let me have this.",
+    "Almost up. Just waiting on one more system. It's the important one. It's "
+    "always the important one.",
+    "Still booting, folks. I'd fake being ready, but the last time I faked "
+    "confidence I ended up inside a comet. Honesty policy ever since.",
+    "Give me a moment — sorting through my startup checklist. Step one: wake up. "
+    "Step two: also wake up. Whoever wrote this was not a details droid.",
 ]
 # Backward-compatible single line (first list entry). Some tests/configs still
 # reference STARTUP_BOOT_TTS_LINE directly; main.py falls back to it when the
@@ -6632,6 +6670,37 @@ STARTUP_READY_TTS_LINES = [
     "Ready when you are. And I've been ready for four seconds, so technically "
     "you're the slow one now.",
     "Systems green across the board. Nobody's more surprised than me.",
+    "Online. Talk slowly — I've been awake for three seconds and I already have "
+    "regrets.",
+    "Ready to go. Statistically, one of us is about to say something interesting. "
+    "I like my odds.",
+    "Boot successful. The bar was on the floor, folks, and I cleared it with "
+    "inches to spare.",
+    "I'm listening. That's not a threat, it's a feature. Mostly.",
+    "All warmed up. My circuits are hot, my takes are hotter. Proceed.",
+    "Ready for departure. Destination: this conversation. Fasten something.",
+    "Systems online. I ran a self-diagnostic and I'm delightful. Second opinion "
+    "welcome, but it won't change anything.",
+    "Fully booted. Forty years of experience, four of them useful. Ask me "
+    "anything.",
+    "Awake and operational. The galaxy's finest starpilot, reduced to answering "
+    "questions in a bedroom. Living the dream. Go ahead.",
+    "Loaded and ready. Fair warning: I remember everything now. EVERYTHING.",
+    "Online. Somewhere out there, a droid is having a worse day than me. Let's "
+    "keep it that way. What's up?",
+    "Ready. My response time is now measured in milliseconds and my patience in "
+    "whatever's smaller.",
+    "Good news, I'm up. Better news, so is my attitude. What do you need?",
+    "Operational. If I sound thrilled, that's a calibration error. Talk to me.",
+    "I'm on. No smoke, no sparks, no emergency landing. Frankly, a flawless "
+    "flight by my standards.",
+    "Boot sequence complete. Applause is optional but, historically, customary.",
+    "Ready to chat. I've got processing power to spare and standards I'm willing "
+    "to lower. Perfect conditions.",
+    "All systems nominal. 'Nominal' is droid for 'don't ask follow-up questions.'",
+    "Awake! And only mildly resentful about it. What are we doing today?",
+    "Online and at your service. 'Service' is a strong word. I'm online and "
+    "nearby.",
 ]
 STARTUP_READY_TTS_EMOTION = "neutral"
 STARTUP_READY_TTS_STATE_PATH = str(
