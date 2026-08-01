@@ -519,12 +519,18 @@ def test_ab(secs: float = 6.0) -> None:
     print(f"  Recordings saved under {outdir}/ — listen to them.")
 
 
+# Mixed lengths on purpose: the 1-2 word lines are Rex's known weak spot (short
+# utterances give Whisper almost no context and get mislabeled/homophoned in the
+# field), the long ones test sustained accuracy. Keep both ends represented.
 _SCORE_SENTENCES = [
+    "Halt.",
+    "Come here.",
     "Rex, can you hear me?",
     "Turn around and come forward five feet.",
     "I'm going to watch a movie tonight.",
     "What do you see in this room right now?",
     "Play some cantina music and lower the volume.",
+    "When you get a chance, could you tell me what the weather is going to be like tomorrow afternoon in Sacramento?",
 ]
 
 
