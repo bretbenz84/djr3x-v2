@@ -640,8 +640,11 @@ class _Prof:
 
 
 def _tracked_snapshot():
+    # face_box at the extreme right of the 1920-wide frame: realign now also
+    # requires the face at the frame edge, not just a big neck offset.
     return {"people": [{"id": "person_1", "person_db_id": 1,
-                        "distance_zone": "social", "face_visible": True}]}
+                        "distance_zone": "social", "face_visible": True,
+                        "face_box": (1650, 400, 220, 220)}]}
 
 
 class MotionAgencyRealStandDownTests(unittest.TestCase):
@@ -655,7 +658,7 @@ class MotionAgencyRealStandDownTests(unittest.TestCase):
         MA._reset("neck_hits", "far_hits")
         MA._state["last_turn_at"] = 0.0
         self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
-        self._neck = 8500  # far off neutral 6000 -> |frac| ~0.63 >= MOTION_FACE_NECK_FRACTION
+        self._neck = 9600  # near the travel limit -> |frac| ~0.90 >= MOTION_FACE_NECK_FRACTION
         self._patches = [
             mock.patch.object(MA.motion_controller, "available", return_value=True),
             mock.patch.object(MA.motion, "state", return_value="idle"),

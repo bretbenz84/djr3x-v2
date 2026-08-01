@@ -28,13 +28,19 @@ the two behaviors below, FLINCH needs no tracked/known person (someone can walk 
 while Rex looks elsewhere) and — being a reflex — may fire even mid-sentence
 (MOTION_FLINCH_ALLOW_MID_SENTENCE).
 
-REALIGN — turn the base to face the person the head is tracking. The neck servo is
-the signal: face-tracking keeps the FACE centered in frame, so frame error goes to
-zero even when the body points the wrong way — but the neck's offset from neutral is
-exactly the body's misalignment. When the neck sits past MOTION_FACE_NECK_FRACTION of
-its half-span for MOTION_FACE_CONFIRM_TICKS consecutive ticks, the base turns by a
-proportional chunk and face-tracking naturally re-centers the neck as it comes around.
-Iterative small corrections + a cooldown, never one exact spin (no oscillation).
+REALIGN — turn the base to face the person the head is tracking, but ONLY as the
+last resort after the neck has done all it can (owner spec 2026-07-31: the neck
+servo, not the wheels, is the primary way to keep the camera on someone — the base
+was turning far too often). Two conditions must BOTH hold, each for
+MOTION_FACE_CONFIRM_TICKS consecutive ticks:
+  1. the neck sweep is EXHAUSTED — the neck sits past MOTION_FACE_NECK_FRACTION
+     (near its travel limit) of its half-span, so it cannot pan further; and
+  2. the face is at the EXTREME left/right of the camera frame — past
+     MOTION_FACE_EDGE_FRACTION of the half-width, on the same side the neck is
+     pointing (face-tracking can no longer re-center it).
+Then the base turns by a proportional chunk and face-tracking naturally re-centers
+the neck as it comes around. Iterative small corrections + a cooldown, never one
+exact spin (no oscillation).
 
 APPROACH — when the tracked person stays at "public" distance (vision/proxemics:
 face width < 30% of frame) for MOTION_APPROACH_CONFIRM_TICKS ticks AND the base is
@@ -899,10 +905,21 @@ def _step_inner(snapshot: dict, profile) -> None:
         _reset("neck_hits", "far_hits")
         return      # the wheels cannot turn here — do not grind at the carpet
 
-    # ── REALIGN: rotate the base under the head ──────────────────────────────
+    # ── REALIGN: rotate the base under the head — neck first, wheels last ─────
+    # The neck servo is the primary tracker. The wheels only engage once the neck
+    # sweep is exhausted (parked near its travel limit) AND the face has drifted to
+    # the extreme edge of the frame on that same side — i.e. face-tracking has
+    # genuinely run out of neck and still can't hold them.
     if _flag("MOTION_FACE_PERSON_ENABLED", True) and frac is not None:
-        threshold = _num("MOTION_FACE_NECK_FRACTION", 0.30)
-        if abs(frac) >= threshold:
+        threshold = _num("MOTION_FACE_NECK_FRACTION", 0.85)
+        edge = _num("MOTION_FACE_EDGE_FRACTION", 0.70)
+        face_frac = _face_offset_fraction(person)
+        neck_exhausted = abs(frac) >= threshold
+        # Same-side check: neck panned right (+) with the face escaping right (+).
+        # A face on the OPPOSITE side means the neck can still sweep toward it.
+        face_at_edge = (face_frac is not None and abs(face_frac) >= edge
+                        and face_frac * frac > 0.0)
+        if neck_exhausted and face_at_edge:
             _state["neck_hits"] += 1
         else:
             _state["neck_hits"] = 0

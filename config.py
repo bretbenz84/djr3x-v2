@@ -7184,8 +7184,12 @@ AUTONOMOUS_MOTION_ENABLED = _env_bool("AUTONOMOUS_MOTION_ENABLED", True)
 # Turn the base under the head. The NECK is the signal: face-tracking centers the
 # face in frame, so a neck parked off-neutral = the body points the wrong way.
 MOTION_FACE_PERSON_ENABLED = True
-MOTION_FACE_NECK_FRACTION = 0.30      # neck offset (fraction of half-span) that arms a turn
-MOTION_FACE_CONFIRM_TICKS = 2         # consecutive ticks past the fraction before turning
+MOTION_FACE_NECK_FRACTION = 0.85      # neck offset (fraction of half-span) that counts as the
+                                      # sweep being EXHAUSTED — the neck, not the wheels, is the
+                                      # primary tracker (was 0.30, which turned the base far too often)
+MOTION_FACE_EDGE_FRACTION = 0.70      # face must ALSO sit past this fraction of the frame half-width
+                                      # (extreme left/right), same side as the neck, before a base turn
+MOTION_FACE_CONFIRM_TICKS = 2         # consecutive ticks with both conditions before turning
 MOTION_FACE_TURN_MAX_DEG = 60.0       # base turn at full neck deflection (proportional below)
 MOTION_FACE_TURN_MIN_DEG = 10.0       # smallest worthwhile correction
 MOTION_FACE_TURN_COOLDOWN_SECS = 8.0  # settle time between corrections (no oscillation)

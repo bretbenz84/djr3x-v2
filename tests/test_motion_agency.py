@@ -21,14 +21,27 @@ def _profile(**over):
     return SimpleNamespace(**base)
 
 
-def _snapshot(distance_zone="social", slot="person_1", visible=True):
+def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=None):
     """`visible=False` means NOBODY is on camera. The come-here search keys off
     world_state.people (a head lock is head behavior, not visibility), so clearing
     only face_tracking no longer simulates an empty room."""
     if not visible:
         return {"people": []}
-    return {"people": [{"id": slot, "person_db_id": 1,
-                        "distance_zone": distance_zone, "face_visible": True}]}
+    person = {"id": slot, "person_db_id": 1,
+              "distance_zone": distance_zone, "face_visible": True}
+    if face_box is not None:
+        person["face_box"] = face_box
+    return {"people": [person]}
+
+
+# Realign arming fixtures (owner spec 2026-07-31: neck first, wheels last).
+# Neck 9600 on the 1984/9984/6000 channel -> +0.90 of half-span (sweep exhausted);
+# the face box centre at x=1760 on the default 1920-wide frame -> +0.83 of the
+# half-width (extreme right of frame), same side as the neck.
+_EXHAUSTED_NECK_RIGHT = 9600
+_EDGE_FACE_RIGHT = (1650, 400, 220, 220)
+_EDGE_FACE_LEFT = (50, 400, 220, 220)
+_CENTERED_FACE = (860, 400, 200, 200)
 
 
 class MotionAgencyTest(unittest.TestCase):
@@ -64,6 +77,13 @@ class MotionAgencyTest(unittest.TestCase):
         )
         self._ws.start()
         self._neck = 6000  # neutral (SERVO_CHANNELS neck: 1984/9984/6000)
+        self._face_box = None
+
+    def _arm_realign(self):
+        """Meet BOTH realign conditions: neck sweep exhausted to Rex's right AND
+        the face at the extreme right edge of frame."""
+        self._neck = _EXHAUSTED_NECK_RIGHT
+        self._face_box = _EDGE_FACE_RIGHT
 
     def tearDown(self):
         MA.cancel_requested_come("test cleanup")
@@ -73,7 +93,8 @@ class MotionAgencyTest(unittest.TestCase):
 
     def _tick(self, n=1, zone="social", profile=None):
         for _ in range(n):
-            MA.step(_snapshot(distance_zone=zone, visible=self._visible),
+            MA.step(_snapshot(distance_zone=zone, visible=self._visible,
+                              face_box=self._face_box),
                     profile or _profile())
 
     def _verdicts(self, *results):
@@ -84,21 +105,54 @@ class MotionAgencyTest(unittest.TestCase):
 
     # ── realign ────────────────────────────────────────────────────────────────
 
-    def test_neck_parked_right_turns_base_right(self):
-        # Neck at +40% of half-span (6000 + 0.4*3984 ≈ 7594) for 2 ticks.
-        self._neck = 7594
+    def test_exhausted_neck_and_edge_face_turn_base_right(self):
+        # Neck at +90% of half-span (sweep exhausted) AND face at the extreme right
+        # edge of frame, held for 2 ticks -> the base finally turns.
+        self._arm_realign()
         self._tick(2)
         self.turn.assert_called_once()
         deg = self.turn.call_args[0][0]
         self.assertLess(deg, 0)          # + neck frac (Rex's right) -> CW/negative turn
         self.assertGreaterEqual(abs(deg), 10.0)
 
+    def test_moderate_neck_offset_never_turns_the_base(self):
+        # The old trigger (neck ≥ 30% off-neutral) fired constantly. The neck servo
+        # is the primary tracker now: 40% off-neutral is just the neck doing its job,
+        # even with the face at the frame edge — no wheels.
+        self._neck = 7594                       # +40% of half-span
+        self._face_box = _EDGE_FACE_RIGHT
+        self._tick(5)
+        self.turn.assert_not_called()
+
+    def test_exhausted_neck_with_centered_face_does_not_turn(self):
+        # Neck at its limit but face-tracking is still holding the face in the middle
+        # of frame: the camera has them, so the wheels stay put.
+        self._neck = _EXHAUSTED_NECK_RIGHT
+        self._face_box = _CENTERED_FACE
+        self._tick(5)
+        self.turn.assert_not_called()
+
+    def test_exhausted_neck_without_a_face_box_does_not_turn(self):
+        # No face-box measurement -> no proof the face is at the frame edge -> hold.
+        self._neck = _EXHAUSTED_NECK_RIGHT
+        self._face_box = None
+        self._tick(5)
+        self.turn.assert_not_called()
+
+    def test_face_escaping_the_opposite_edge_does_not_turn(self):
+        # Neck parked right but the face at the LEFT edge: the neck can still sweep
+        # toward them — a base turn keyed off the neck would rotate the wrong way.
+        self._neck = _EXHAUSTED_NECK_RIGHT
+        self._face_box = _EDGE_FACE_LEFT
+        self._tick(5)
+        self.turn.assert_not_called()
+
     # ── no traction (carpet) ───────────────────────────────────────────────────
     # The firmware aborts a turn that makes no physical yaw progress; two in a row
     # means the wheels are scrubbing, so the social behaviors stand down.
 
     def test_two_aborted_turns_stand_down_autonomous_motion(self):
-        self._neck = 7594
+        self._arm_realign()
         with self._verdicts("aborted", "aborted"), \
              mock.patch.object(MA, "_emit_traction_notice"):
             self._tick(2)                                  # turn 1
@@ -114,7 +168,7 @@ class MotionAgencyTest(unittest.TestCase):
 
     def test_one_aborted_turn_does_not_latch(self):
         # A comms loss aborts finite commands with the same code — one is not enough.
-        self._neck = 7594
+        self._arm_realign()
         with self._verdicts("aborted", "completed"):
             self._tick(2)
             MA._state["last_turn_at"] = 0.0
@@ -125,7 +179,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertGreaterEqual(self.turn.call_count, 2)
 
     def test_completed_turn_clears_the_fail_streak(self):
-        self._neck = 7594
+        self._arm_realign()
         MA._state["traction_fails"] = 1
         with self._verdicts("completed"):
             self._tick(2)
@@ -134,7 +188,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertEqual(MA._state["traction_fails"], 0)
 
     def test_traction_notice_is_spoken_once(self):
-        self._neck = 7594
+        self._arm_realign()
         with self._verdicts("aborted", "aborted"), \
              mock.patch.object(MA, "_emit_traction_notice") as notice:
             self._tick(2)
@@ -158,7 +212,7 @@ class MotionAgencyTest(unittest.TestCase):
     def test_hold_outlasts_the_steering_standdown(self):
         # 49 s after "Stopping." he was realigning again: a stop only armed the 45 s
         # steering window. The hold latches instead.
-        self._neck = 7594
+        self._arm_realign()
         MA.note_user_hold()
         with mock.patch.object(config, "MOTION_USER_MOTION_STANDDOWN_SECS", 45.0, create=True):
             MA._state["user_motion_at"] = time.monotonic() - 3600.0   # long expired
@@ -166,7 +220,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.turn.assert_not_called()
 
     def test_hold_expires_when_an_expiry_is_configured(self):
-        self._neck = 7594
+        self._arm_realign()
         MA.note_user_hold()
         MA._state["hold_at"] = time.monotonic() - 120.0
         with mock.patch.object(config, "MOTION_STOP_STANDDOWN_SECS", 60.0, create=True):
@@ -174,7 +228,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.turn.assert_called_once()
 
     def test_a_later_move_command_releases_the_hold(self):
-        self._neck = 7594
+        self._arm_realign()
         MA.note_user_hold()
         MA.note_user_motion()
         MA._state["user_motion_at"] = 0.0        # only the hold is under test here
@@ -197,7 +251,7 @@ class MotionAgencyTest(unittest.TestCase):
                           return_value=belief, create=True)
 
     def test_no_drive_room_blocks_realign(self):
-        self._neck = 7594
+        self._arm_realign()
         with self._room_rule():
             self._tick(6)
         self.turn.assert_not_called()
@@ -207,7 +261,7 @@ class MotionAgencyTest(unittest.TestCase):
             self.assertEqual(MA.no_drive_room(), ("workshop", "carpet"))
 
     def test_a_room_without_the_rule_still_realigns(self):
-        self._neck = 7594
+        self._arm_realign()
         with self._room_rule(on=False):
             self._tick(2)
         self.turn.assert_called_once()
@@ -220,7 +274,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertFalse(MA.requested_come_active())
 
     def test_the_room_rule_can_be_disabled_wholesale(self):
-        self._neck = 7594
+        self._arm_realign()
         with mock.patch.object(config, "MOTION_ROOM_NO_DRIVE_ENABLED", False, create=True), \
                 self._room_rule():
             self._tick(2)
@@ -235,7 +289,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertEqual(MA._state["traction_fails"], 0)
 
     def test_single_tick_does_not_turn(self):
-        self._neck = 7594
+        self._arm_realign()
         self._tick(1)
         self.turn.assert_not_called()
 
@@ -244,14 +298,14 @@ class MotionAgencyTest(unittest.TestCase):
         self.turn.assert_not_called()
 
     def test_turn_cooldown_blocks_immediate_second_turn(self):
-        self._neck = 7594
+        self._arm_realign()
         self._tick(2)               # fires
         self._tick(2)               # still within cooldown
         self.assertEqual(self.turn.call_count, 1)
 
     def test_invert_flag_flips_direction(self):
         with mock.patch.object(config, "MOTION_FACE_TURN_INVERT", True, create=True):
-            self._neck = 7594
+            self._arm_realign()
             self._tick(2)
         self.assertGreater(self.turn.call_args[0][0], 0)
 
@@ -268,7 +322,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.come.assert_not_called()
 
     def test_not_facing_them_blocks_approach(self):
-        self._neck = 7594  # 40% off-center — realign wins first, approach counter idle
+        self._neck = 7594  # 40% off-center — not facing them, approach counter idle
         self._tick(6, zone="public")
         self.come.assert_not_called()
 
@@ -280,7 +334,7 @@ class MotionAgencyTest(unittest.TestCase):
     # ── gates ──────────────────────────────────────────────────────────────────
 
     def test_mid_sentence_freezes_everything(self):
-        self._neck = 7594
+        self._arm_realign()
         self._tick(4, profile=_profile(user_mid_sentence=True))
         self._tick(4, zone="public", profile=_profile(user_mid_sentence=True))
         self.turn.assert_not_called()
@@ -290,13 +344,13 @@ class MotionAgencyTest(unittest.TestCase):
         prof = _profile(suppress_proactive=True)
         self._tick(6, zone="public", profile=prof)
         self.come.assert_not_called()
-        self._neck = 7594
+        self._arm_realign()
         self._tick(2, profile=prof)
         self.turn.assert_called_once()   # realigning to face someone is not speech-like
 
     def test_moving_base_defers(self):
         self.state.return_value = "moving"
-        self._neck = 7594
+        self._arm_realign()
         self._tick(4, zone="public")
         self.turn.assert_not_called()
         self.come.assert_not_called()
@@ -309,7 +363,7 @@ class MotionAgencyTest(unittest.TestCase):
 
     def test_master_kill_switch(self):
         with mock.patch.object(config, "AUTONOMOUS_MOTION_ENABLED", False, create=True):
-            self._neck = 7594
+            self._arm_realign()
             self._tick(4, zone="public")
         self.turn.assert_not_called()
         self.come.assert_not_called()
@@ -678,7 +732,9 @@ class UserMotionStanddownTest(unittest.TestCase):
         ]
         self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
         self._visible = True
-        self._neck = 7594   # parked right — realign would fire after 2 confirm ticks
+        self._neck = _EXHAUSTED_NECK_RIGHT   # sweep exhausted right
+        self._face_box = _EDGE_FACE_RIGHT    # face at frame edge — realign would fire
+                                             # after 2 confirm ticks
         self._ws = mock.patch(
             "world_state.world_state.get",
             side_effect=lambda key: (
@@ -697,7 +753,8 @@ class UserMotionStanddownTest(unittest.TestCase):
 
     def _tick(self, n=1):
         for _ in range(n):
-            MA.step(_snapshot(visible=self._visible), _profile())
+            MA.step(_snapshot(visible=self._visible, face_box=self._face_box),
+                    _profile())
 
     def test_realign_stands_down_after_user_motion(self):
         MA.note_user_motion()
