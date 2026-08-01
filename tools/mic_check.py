@@ -74,7 +74,27 @@ def _clip_fraction(x: np.ndarray) -> float:
     return float(np.mean(np.abs(x) >= 0.999))
 
 
+# Set by --device: capture through a DIFFERENT mic than the robot's .env one.
+# The point is comparative diagnosis — run `score` on the ReSpeaker, then again
+# with --device "MacBook" from the same spot: if another mic in the same room
+# scores clearly better, the board (or its always-on DSP) is the weak link; if
+# both score the same, the SNR is the room's physics and no board swap fixes it.
+_DEVICE_OVERRIDE: "int | str | None" = None
+
+
 def _device_index() -> int | None:
+    if _DEVICE_OVERRIDE is not None:
+        import sounddevice as sd
+        try:
+            return int(_DEVICE_OVERRIDE)
+        except (TypeError, ValueError):
+            pass
+        want = str(_DEVICE_OVERRIDE).strip().lower()
+        for i, dev in enumerate(sd.query_devices()):
+            if want in str(dev.get("name", "")).lower() and int(dev.get("max_input_channels", 0)) > 0:
+                return i
+        raise SystemExit(f"--device {_DEVICE_OVERRIDE!r} matched no input device "
+                         f"(try: python -c \"import sounddevice; print(sounddevice.query_devices())\")")
     if AUDIO_DEVICE_INDEX is not None:
         return int(AUDIO_DEVICE_INDEX)
     name = str(getattr(config, "AUDIO_DEVICE_NAME", "") or "").strip().lower()
@@ -563,7 +583,13 @@ def test_score(secs: float = 6.0) -> None:
     print("─" * 68)
     print(f"  MEAN WORD ACCURACY: {mean_acc * 100:.0f}%   (noise floor {floor:.1f} dBFS)")
     print("  >=95% healthy | 85-95% marginal | <85% transcription is genuinely broken")
-    record = {"ts": stamp, "mean_accuracy": round(mean_acc, 3), "floor_dbfs": round(floor, 1),
+    try:
+        import sounddevice as sd
+        dev_name = str(sd.query_devices(_device_index()).get("name") or "?")
+    except Exception:
+        dev_name = "?"
+    record = {"ts": stamp, "device": dev_name,
+              "mean_accuracy": round(mean_acc, 3), "floor_dbfs": round(floor, 1),
               "gain": float(getattr(config, "AUDIO_INPUT_GAIN", 1.0) or 1.0),
               "rows": rows}
     hist = outdir / "history.jsonl"
@@ -623,7 +649,14 @@ def main() -> None:
                     choices=["channels", "noise", "speech", "spectrum",
                              "distance", "transcribe", "listen", "ab", "score", "all"])
     ap.add_argument("--secs", type=float, default=None, help="override recording length")
+    ap.add_argument("--device", default=None,
+                    help="capture through a different input device (name substring or "
+                         "index) instead of the robot's .env mic — for A/B'ing the "
+                         "ReSpeaker against e.g. the MacBook mic from the same spot")
     args = ap.parse_args()
+
+    global _DEVICE_OVERRIDE
+    _DEVICE_OVERRIDE = args.device
 
     _config_banner()
     try:
