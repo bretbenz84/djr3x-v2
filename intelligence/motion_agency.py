@@ -44,10 +44,14 @@ exact spin (no oscillation).
 
 APPROACH — when the tracked person stays at "public" distance (vision/proxemics:
 face width < 30% of frame) for MOTION_APPROACH_CONFIRM_TICKS ticks AND the base is
-already roughly facing them, issue `come`: the firmware turns to heading 0 and
-advances until the nearest FORWARD ToF obstacle is MOTION_COME_STOP_AT_M away — the
-person's own body is the stop target, and anything in between (furniture, wall) stops
-the base the same way. No cliff sensing needed or used (owner: never upstairs).
+already roughly facing them AND the front ToF confirms genuinely open floor ahead
+(nothing within MOTION_APPROACH_MIN_START_M), issue `come`: the firmware turns to
+heading 0 and advances until the nearest FORWARD ToF obstacle is
+MOTION_APPROACH_STOP_AT_M away — the person's own body is the stop target, and
+anything in between (furniture, wall) stops the base the same way. The ToF gate
+exists because face width lies on a wide-angle lens: a face 3-4 ft away reads under
+the "public" fraction, and Rex drove up on someone already well inside conversation
+range (field 2026-07-31). No cliff sensing needed or used (owner: never upstairs).
 
 Safety layering (all independent of this module):
   - firmware reflex: Z_STOP zone forces ST_BLOCKED regardless of host commands
@@ -959,7 +963,19 @@ def _step_inner(snapshot: dict, profile) -> None:
         return
     centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
     facing_them = frac is None or abs(frac) < centered
-    if person.get("distance_zone") == "public" and facing_them:
+    # Face width lies on a wide-angle lens: a face 3-4 ft away can read under the
+    # "public" fraction, so face size alone said "far" about someone within arm's
+    # reach (field 2026-07-31: drove at the owner from 3-4 ft, got awkwardly close).
+    # The front ToF is the truth — unless it shows genuinely open floor ahead, the
+    # "they're far" vote doesn't count. Fails open only when there is no usable
+    # front reading (the firmware's obstacle stop still guards the drive itself).
+    far_enough = True
+    tele = motion.telemetry()
+    if isinstance(tele, dict) and isinstance(tele.get("tof_mm"), dict):
+        front = _min_valid_m(tele["tof_mm"].get("fl"), tele["tof_mm"].get("fr"))
+        if front is not None and front < _num("MOTION_APPROACH_MIN_START_M", 1.8):
+            far_enough = False
+    if person.get("distance_zone") == "public" and facing_them and far_enough:
         _state["far_hits"] += 1
     else:
         _state["far_hits"] = 0
@@ -967,13 +983,15 @@ def _step_inner(snapshot: dict, profile) -> None:
     cooldown = _num("MOTION_APPROACH_COOLDOWN_SECS", 120.0)
     if (_state["far_hits"] >= confirm
             and (now - _state["last_approach_at"]) >= cooldown):
-        seq = motion_controller.come(0.0)  # firmware stops MOTION_COME_STOP_AT_M short
+        # Spontaneous approaches keep a respectful distance: stop farther out than
+        # the explicit come-here default (nobody asked him to come this time).
+        stop_at = _num("MOTION_APPROACH_STOP_AT_M", 1.0)
+        seq = motion_controller.come(0.0, stop_at=stop_at)
         if seq is not None:
             _log.info(
                 "[motion_agency] approach: person %s at public distance -> come "
                 "(stop_at=%.2fm, ToF-guarded)",
-                person.get("person_db_id") or person.get("id"),
-                _num("MOTION_COME_STOP_AT_M", 0.60),
+                person.get("person_db_id") or person.get("id"), stop_at,
             )
             _state["last_approach_at"] = now
         _reset("far_hits")

@@ -7195,12 +7195,21 @@ MOTION_FACE_TURN_MIN_DEG = 10.0       # smallest worthwhile correction
 MOTION_FACE_TURN_COOLDOWN_SECS = 8.0  # settle time between corrections (no oscillation)
 MOTION_FACE_TURN_INVERT = False       # flip turn direction if field testing disagrees
 # Approach a far person: distance_zone "public" (face < 30% of frame width) held for
-# N ticks while the base already faces them -> `come` (firmware advances until the
-# forward ToF sees anything at MOTION_COME_STOP_AT_M — the person, or furniture first).
+# N ticks while the base already faces them AND the front ToF confirms open floor
+# -> `come` (firmware advances until the forward ToF sees anything at
+# MOTION_APPROACH_STOP_AT_M — the person, or furniture first). The ToF start gate
+# exists because face width lies on a wide-angle lens: a face 3-4 ft away reads
+# under the "public" fraction, and Rex drove up on someone already in conversation
+# range (field 2026-07-31).
 MOTION_APPROACH_ENABLED = True
 MOTION_APPROACH_CONFIRM_TICKS = 4     # ~4 s of sustained "they're far" before moving
 MOTION_APPROACH_COOLDOWN_SECS = 120.0 # at most one spontaneous approach per 2 min
 MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (facing them)
+MOTION_APPROACH_MIN_START_M = 1.8     # front ToF must see at least this much open floor
+                                      # before a spontaneous approach can even arm
+MOTION_APPROACH_STOP_AT_M = 1.0       # spontaneous approach stop distance (an uninvited
+                                      # drive stops farther out than an explicit
+                                      # "come here", which uses MOTION_COME_REQUEST_STOP_AT_M)
 # Flinch: a reflexive back-off when someone crowds Rex from the front — the way an
 # animal edges back when you get in its face. Each front matrix ToF half (fl/fr,
 # floor-rejected) is watched on its OWN adaptive open-distance baseline (tracks a nearer

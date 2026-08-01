@@ -315,6 +315,36 @@ class MotionAgencyTest(unittest.TestCase):
         self._tick(4, zone="public")
         self.come.assert_called_once()
 
+    def test_spontaneous_approach_stops_a_respectful_meter_out(self):
+        # An uninvited drive must not use the explicit come-here's closer stop.
+        self._tick(4, zone="public")
+        self.come.assert_called_once_with(0.0, stop_at=config.MOTION_APPROACH_STOP_AT_M)
+
+    def test_close_front_tof_vetoes_a_public_zone_approach(self):
+        # THE FIELD FAILURE (2026-07-31): on the wide-angle lens a face 3-4 ft away
+        # reads under the 30% "public" width fraction, so face size said "far" about
+        # someone within arm's reach and Rex drove at them. The front ToF saw the
+        # truth the whole time — anything nearer than MOTION_APPROACH_MIN_START_M
+        # means they are NOT far, and the approach must not even arm.
+        with mock.patch.object(MA.motion, "telemetry", return_value={
+                "tof_mm": {"fl": 1100, "fr": 1200, "rl": 4000, "rr": 4000}}):
+            self._tick(8, zone="public")
+        self.come.assert_not_called()
+
+    def test_open_floor_front_tof_allows_the_approach(self):
+        with mock.patch.object(MA.motion, "telemetry", return_value={
+                "tof_mm": {"fl": 3500, "fr": 3500, "rl": 4000, "rr": 4000}}):
+            self._tick(4, zone="public")
+        self.come.assert_called_once()
+
+    def test_missing_front_tof_fails_open(self):
+        # No usable front reading (sensor error): the gate must not silently kill
+        # the behavior — the firmware's own obstacle stop still guards the drive.
+        with mock.patch.object(MA.motion, "telemetry", return_value={
+                "tof_mm": {"fl": -1, "fr": -1, "rl": 4000, "rr": 4000}}):
+            self._tick(4, zone="public")
+        self.come.assert_called_once()
+
     def test_brief_public_distance_does_not(self):
         self._tick(3, zone="public")
         self._tick(1, zone="social")   # counter resets
