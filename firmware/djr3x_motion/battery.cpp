@@ -269,13 +269,21 @@ void battery_tick() {
   // merely because a full charger's taper/cutoff falls near 0 mA — that was letting
   // the wheels wake up while the cable was still attached. Only sustained current
   // flowing OUT of the pack proves the charger is no longer carrying the load.
-  // Hysteresis: ENTER on the high threshold (clearly the charger), but once latched
-  // HOLD down to the lower EXIT floor, so a servo-load voltage sag can't false-release
-  // the drive lockout (field 2026-07-23). See calib.h BATT_CHARGE_EXIT_MV.
   const bool charger_voltage_enter = have_mv && s_mv_ema >= (float)BATT_CHARGE_DETECT_MV;
-  const bool charger_voltage_hold  = have_mv && s_mv_ema >= (float)BATT_CHARGE_EXIT_MV;
+  // EXIT is decided by CURRENT alone. Sustained flow OUT of the pack is physical
+  // proof no charger is carrying the load; nothing else is trustworthy here:
+  //   - voltage floors are dead ends — field 2026-07-31, a freshly-topped pack
+  //     rested at 13.61 V surface charge, 10 mV above the old 13.60 V hold
+  //     floor, keeping the drive locked long after a real unplug (surface
+  //     charge floats there for tens of minutes);
+  //   - taper current near 0 mA looks identical plugged and unplugged-at-rest,
+  //     which is why the release needs positive discharge, not merely "no
+  //     charge current".
+  // A servo sag while plugged is transient and cannot sustain EXIT_TICKS (~8 s)
+  // of apparent discharge, so the debounce still guards the 2026-07-23 flap.
+  const bool discharge_proof = s_ma_ema >= (float)BATT_CHARGE_EXIT_DISCHARGE_MA;
   const bool chg_now = s_charging
-      ? (charger_voltage_hold || s_ma_ema < (float)BATT_CHARGE_EXIT_DISCHARGE_MA)
+      ? !discharge_proof
       : (charger_voltage_enter || s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA);
   if (chg_now != s_charging) {
     s_chg_ticks++;

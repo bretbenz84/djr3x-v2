@@ -428,18 +428,22 @@
 // Debounced on the 1 Hz battery tick; both edges emit a "charging" event.
 #define BATT_CHARGE_DETECT_MA    250   // sustained charge current at/above this = on charger
 #define BATT_CHARGE_DETECT_MV  14000   // ENTER: charger holds ~14.2V (clearly above rest)
-// EXIT uses a LOWER voltage floor than ENTER — a Schmitt hysteresis band. A servo
-// current spike sags the terminal under the ~160 mΩ junction (~0.4-0.5V under load),
-// which was dropping it below the single 14.0V threshold and FALSELY releasing the
-// drive lockout mid-charge (field 2026-07-23). Charger-under-load holds ~13.7-13.8V,
-// an unplugged full pack settles ~13.4V, so 13.6V cleanly separates them. TUNE: watch
-// batt_mv (firmware/tools/sensor_monitor.py) while moving servos plugged in — set this
-// ~0.15V below the LOWEST voltage seen under load, but above the unplugged rest.
-#define BATT_CHARGE_EXIT_MV    13600   // stay locked while voltage holds at/above this
+// EXIT is decided by CURRENT alone (battery.cpp): sustained discharge at/above
+// BATT_CHARGE_EXIT_DISCHARGE_MA proves the pack — not a charger — is carrying the
+// load. The old voltage hold floor (13.60V, "stay locked at/above") is GONE:
+// a freshly-topped pack rests at ~13.61V surface charge for tens of minutes, so
+// the voltage clause kept the drive locked long after a genuine unplug (field
+// 2026-07-31, batt at 13.61V, 10 mV above the floor). Voltage windows can't
+// separate charger-under-load (~13.7-13.8V) from a fresh pack's rest (~13.6V);
+// current can: taper/cutoff sits near 0 mA, an unplugged pack always feeds the
+// electronics. TUNE: with the robot OFF and the charger unplugged, read the idle
+// discharge in the battery menubar — EXIT_DISCHARGE_MA must sit clearly BELOW
+// that idle draw and clearly ABOVE the charger's taper noise (~0±50 mA).
 #define BATT_CHARGE_ENTER_TICKS    3   // ~3 s of charge current before locking out
-#define BATT_CHARGE_EXIT_DISCHARGE_MA 250 // only real pack discharge proves unplugged;
-                                          // charger taper/cutoff near 0 mA stays locked
-#define BATT_CHARGE_EXIT_TICKS     8   // ~8 s below the floor before releasing (was 5) —
+#define BATT_CHARGE_EXIT_DISCHARGE_MA 100 // sustained discharge >= this = unplugged
+                                          // (was 250 — above the ESP32+sensors idle
+                                          // draw, so a resting unplug never released)
+#define BATT_CHARGE_EXIT_TICKS     8   // ~8 s of sustained discharge before releasing —
                                        // rides out a multi-second servo sag transient
 
 // ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
