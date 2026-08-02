@@ -3399,6 +3399,18 @@ AUDIO_AEC_INPUT_CHANNEL = _env_int("AUDIO_AEC_INPUT_CHANNEL", -1, min_value=-1, 
 #   a little extra time-to-first-sound.
 AUDIO_PLAYBACK_BLOCKSIZE = _env_int("AUDIO_PLAYBACK_BLOCKSIZE", 4096, min_value=256, max_value=32768)
 AUDIO_PLAYBACK_LATENCY = os.getenv("AUDIO_PLAYBACK_LATENCY", "high").strip() or "high"
+# BOOT window only (field 2026-08-02: the filler line stuttered again — on macOS
+# the symbolic 'high' preset is only a few tens of ms of host buffer, far less
+# than a model-load GIL burst). While main.py's preload QoS window is armed,
+# playback asks CoreAudio for an EXPLICIT deep buffer: ~1s of latency + a bigger
+# callback block. Costs up to ~1s extra time-to-first-sound, which is invisible
+# behind the boot theatrics; disarmed before conversation starts.
+AUDIO_PLAYBACK_BOOT_LATENCY_SECS = _env_float(
+    "AUDIO_PLAYBACK_BOOT_LATENCY_SECS", 1.0, min_value=0.1, max_value=4.0
+)
+AUDIO_PLAYBACK_BOOT_BLOCKSIZE = _env_int(
+    "AUDIO_PLAYBACK_BOOT_BLOCKSIZE", 8192, min_value=256, max_value=65536
+)
 # During the boot preloads, additionally: (a) shrink the GIL switch interval so pure-
 # Python import storms yield to the audio callback sooner, and (b) take a short breath
 # between preload steps so the audio buffer refills after each load's GIL burst. The
@@ -4757,6 +4769,12 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     "time.query", "date.query", "weather.query",
     "status.capabilities", "status.uptime",
     "vision.describe_scene", "music.options",
+    # system.* added 2026-08-02: "Can you shut down, please?" fell through to
+    # conversation (the deterministic guard rejects "can you..." on purpose to
+    # protect "can you shut down the music") and Rex SAID "Shutting down."
+    # without doing it. The dispatcher still verifies the utterance with
+    # command_parser.is_shutdown_request/is_sleep_request before executing.
+    "system.sleep", "system.shutdown",
 )
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True

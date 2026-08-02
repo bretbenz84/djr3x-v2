@@ -12028,6 +12028,17 @@ def _consume_tool_routed_path() -> Optional[str]:
 _TOOL_ACTION_INTENT_MAP: dict[str, str] = {}
 
 
+def _tool_router_person_name(person_id: Optional[int]) -> Optional[str]:
+    """Best-effort display name for a tool-routed command (None is fine)."""
+    if person_id is None:
+        return None
+    try:
+        person = people_memory.get_person(int(person_id)) or {}
+        return str(person.get("name") or "").strip() or None
+    except Exception:
+        return None
+
+
 def _execute_tool_routed_action(action: str, args: dict, text: str,
                                 person_id: Optional[int]) -> str:
     """Run the existing executor for a live tool call from the reply stream.
@@ -12039,6 +12050,33 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
     intent = _TOOL_ACTION_INTENT_MAP.get(action)
     _log.info("[tool_router] live route: %s args=%s text=%r", action, args, text)
     resp: Optional[str] = None
+    # system.* tools execute via the legacy command executor, not the intent
+    # map. The parser backstop keeps the LLM from powering Rex down on
+    # object-scoped/negated/hypothetical phrasings — but unlike the
+    # deterministic path it ACCEPTS polite requests ("Can you shut down,
+    # please?"), which is exactly the phrasing class this live tool exists for.
+    if action in ("system.shutdown", "system.sleep"):
+        if action == "system.shutdown":
+            key = "shutdown" if command_parser.is_shutdown_request(text) else None
+        else:
+            key = "sleep" if command_parser.is_sleep_request(text) else None
+        if key is None:
+            _log.info("[tool_router] %s rejected by parser backstop text=%r",
+                      action, text)
+        else:
+            try:
+                resp = _execute_command(
+                    command_parser.CommandMatch(key, "tool_router", {}),
+                    person_id,
+                    _tool_router_person_name(person_id),
+                    text,
+                )
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        intent = None
     if intent is not None:
         try:
             resp = _handle_classified_intent(intent, text, person_id)

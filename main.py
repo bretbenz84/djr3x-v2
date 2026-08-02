@@ -243,6 +243,14 @@ def _play_audio_file(
             if speech_animation is None
             else bool(speech_animation)
         )
+        # Never mouth-flap the power-down clip: begin/end_speech_motion would
+        # fight the servo droop, and end_speech_motion returns the visor/arms
+        # to NEUTRAL — if the clip outlives the droop (it races the latch,
+        # which lands only after move_to + settle), the visor pops back OPEN
+        # right after the rest pose is reached (field bug 2026-08-02, the
+        # 4th recurrence of the "visor back up after shutdown" family).
+        if animate_speech and _is_shutdown_state():
+            animate_speech = False
         audio, samplerate = sf.read(path, dtype="float32", always_2d=False)
         if audio.ndim > 1:
             audio = audio.mean(axis=1).astype(np.float32)
@@ -1261,6 +1269,10 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # interval and make the "restore" a no-op).
     _prior_switch_interval = sys.getswitchinterval()
     if bool(getattr(config, "STARTUP_PRELOAD_AUDIO_QOS_ENABLED", True)) and not no_audio:
+        # Deep explicit host buffer for every playback opened during the
+        # preload window (the boot filler line) — 'high' alone is not enough
+        # on CoreAudio to survive a model-load GIL burst.
+        tts.set_boot_deep_buffer(True)
         sys.setswitchinterval(
             float(getattr(config, "STARTUP_PRELOAD_GIL_SWITCH_INTERVAL", 0.002))
         )
@@ -1480,9 +1492,11 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     if bool(getattr(config, "LOCAL_ANIMAL_DETECTION_PRELOAD_ON_STARTUP", True)):
         if not animal_detector.wait_for_preload():
             logger.warning("Object detector preload did not finish cleanly before ready line.")
-    # All CPU-heavy preload work is now complete; restore the normal GIL interval.
+    # All CPU-heavy preload work is now complete; restore the normal GIL interval
+    # and the normal (low time-to-first-sound) playback buffers.
     if _audio_qos:
         sys.setswitchinterval(_prior_switch_interval)
+        tts.set_boot_deep_buffer(False)
     # Preloads may finish before the backgrounded wake-up choreography does —
     # wait for it here so consciousness/face-tracking never fight the animation
     # for the head (boot time is now max(animation, preloads), not their sum).

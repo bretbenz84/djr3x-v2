@@ -290,7 +290,15 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
     ActionSpec(
         "system.sleep",
         "system",
-        "User asks Rex to sleep, wake, quiet down, mute, shut down, or power off.",
+        "User asks Rex to sleep, wake, quiet down, or mute.",
+        executable=True,
+    ),
+    ActionSpec(
+        "system.shutdown",
+        "system",
+        "User asks Rex to fully power down — 'shut down', 'power off', 'turn "
+        "yourself off' — including polite requests ('can you shut down, "
+        "please?'). NOT for shutting down something else (music, a server).",
         executable=True,
     ),
 )

@@ -993,17 +993,20 @@ def shutdown() -> None:
         {3: VISOR_CLOSED, 0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN},
         step_us=50, step_delay=0.012,
     )
-    # Give the head time to physically arrive at FLOOR before LEDs off / serial
-    # close. Don't rely on the shutdown-audio join window (skipped when audio is
-    # disabled), or a correct-speed droop could still be cut short.
-    time.sleep(float(getattr(config, "SHUTDOWN_DROOP_SETTLE_SECS", 0.8)))
-    # Freeze the pose: vision/consciousness teardown is still running and a late
-    # frame grab would re-open the visor / recenter the neck (see servos.
-    # latch_shutdown_pose). From here on, no programmatic write can undo the droop.
+    # Freeze the pose the INSTANT the rest targets are commanded — before the
+    # settle sleep, not after. The Maestro finishes the physical travel on its
+    # own; every quarter-second the latch is delayed is a window where another
+    # thread (a late frame grab, a finishing audio clip's end_speech_motion)
+    # can re-open the visor (field bug 2026-08-02: the shutdown clip ended
+    # 4s before the old post-settle latch and drove the visor to neutral).
     try:
         servos.latch_shutdown_pose()
     except Exception:
         pass
+    # Give the head time to physically arrive at FLOOR before LEDs off / serial
+    # close. Don't rely on the shutdown-audio join window (skipped when audio is
+    # disabled), or a correct-speed droop could still be cut short.
+    time.sleep(float(getattr(config, "SHUTDOWN_DROOP_SETTLE_SECS", 0.8)))
     # Fade the LEDs out (lifelike power-down) rather than snapping them off. _shutdown()
     # already kicked off this fade in lockstep with the audio + droop; FADEOFF is
     # idempotent in firmware, so this is a harmless re-assert (and keeps shutdown()

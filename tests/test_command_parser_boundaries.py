@@ -176,6 +176,40 @@ class ShutdownVsSleepSplitTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertFalse(cp.is_standalone_shutdown_command(text))
 
+    def test_polite_shutdown_requests_accepted_by_tool_router_backstop(self):
+        # Field 2026-08-02: "Can you shut down, please?" — the deterministic
+        # classifier rejects "can you..." on purpose, but the LLM tool-router
+        # path verifies with is_shutdown_request, which accepts polite direct
+        # requests while still rejecting object-scoped/negated forms.
+        from intelligence import command_parser as cp
+
+        for text in (
+            "Can you shut down, please?",
+            "could you power off now",
+            "would you shut down",
+            "Rex, shut down.",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(cp.is_shutdown_request(text))
+
+        for text in (
+            "can you shut down the music",
+            "don't shut down",
+            "why would I shut down",
+            "should I shut down",
+            "can you believe my server shut down",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(cp.is_shutdown_request(text))
+
+    def test_polite_sleep_requests(self):
+        from intelligence import command_parser as cp
+
+        self.assertTrue(cp.is_sleep_request("can you go to sleep, please?"))
+        self.assertTrue(cp.is_sleep_request("go to sleep"))
+        self.assertFalse(cp.is_sleep_request("I could not sleep last night"))
+        self.assertFalse(cp.is_sleep_request("can you play a sleep playlist"))
+
 
 if __name__ == "__main__":
     unittest.main()

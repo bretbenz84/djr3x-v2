@@ -268,6 +268,57 @@ def is_shutdown_wake_confirmation(text: str) -> bool:
     return False
 
 
+# Polite request leaders accepted ONLY on the LLM tool-router path ("Can you
+# shut down, please?"). The deterministic classifiers keep rejecting these
+# (the negation guard's "can you" protects "can you shut down the music"), but
+# when the reply-call LLM has already judged the turn a shutdown/sleep request,
+# this backstop just verifies the utterance really contains the direct phrase.
+_POLITE_REQUEST_LEADER_RE = re.compile(
+    r"^(?:can|could|would|will)\s+you\s+", re.IGNORECASE
+)
+
+
+def is_shutdown_request(text: str) -> bool:
+    """is_standalone_shutdown_command, plus polite direct requests ('can you
+    shut down, please?'). Object-scoped ('can you shut down the music'),
+    negated, and hypothetical clauses are still rejected."""
+    if is_standalone_shutdown_command(text):
+        return True
+    if not text or not text.strip():
+        return False
+    for clause in _SHUTDOWN_CLAUSE_SPLIT_RE.split(text.lower()):
+        clean = _plain(clause)
+        if not clean:
+            continue
+        stripped = _POLITE_REQUEST_LEADER_RE.sub("", clean)
+        if stripped == clean:
+            continue  # no request leader — the standalone check already ruled
+        if _SHUTDOWN_NEGATION_GUARD_RE.search(stripped):
+            continue
+        if _reduce_shutdown_clause(stripped) in _SHUTDOWN_COMMAND_CORES:
+            return True
+    return False
+
+
+def is_sleep_request(text: str) -> bool:
+    """is_standalone_sleep_command, plus polite direct requests ('can you go
+    to sleep, please?')."""
+    if is_standalone_sleep_command(text):
+        return True
+    if not text or not text.strip():
+        return False
+    for clause in _SHUTDOWN_CLAUSE_SPLIT_RE.split(text.lower()):
+        clean = _plain(clause)
+        if not clean:
+            continue
+        stripped = _POLITE_REQUEST_LEADER_RE.sub("", clean)
+        if stripped == clean:
+            continue
+        if is_standalone_sleep_command(stripped):
+            return True
+    return False
+
+
 def is_standalone_shutdown_command(text: str) -> bool:
     """True when any clause of the utterance is a direct full-shutdown command.
 

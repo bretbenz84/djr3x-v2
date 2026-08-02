@@ -128,7 +128,14 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     "motion.come": ("'Come here' — find the speaker and approach them.", {}, []),
     "motion.stop": ("Stop moving RIGHT NOW ('stop', 'halt' while driving).", {}, []),
     "motion.explore": ("An invitation to wander/explore the room.", {}, []),
-    "system.sleep": ("An explicit instruction to shut down / go to sleep.", {}, []),
+    "system.sleep": (
+        "An explicit instruction to go to sleep / quiet mode ('go to sleep', "
+        "'quiet mode') — NOT a full power-down.", {}, []),
+    "system.shutdown": (
+        "An explicit instruction to fully power down ('shut down', 'power off', "
+        "'turn yourself off') — including polite forms like 'can you shut down, "
+        "please?'. Never for shutting down some OTHER thing (music, a server).",
+        {}, []),
 }
 
 
@@ -152,6 +159,7 @@ _DEFAULT_LIVE_ACTIONS = (
     "time.query", "date.query", "weather.query",
     "status.capabilities", "status.uptime",
     "vision.describe_scene", "music.options",
+    "system.sleep", "system.shutdown",
 )
 
 

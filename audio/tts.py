@@ -119,14 +119,42 @@ def prewarm() -> None:
             logger.warning("[tts] prewarm failed (non-fatal): %s", exc)
 
 
+_boot_deep_buffer_active = False
+
+
+def set_boot_deep_buffer(active: bool) -> None:
+    """Arm/disarm the boot-window deep playback buffer. While armed, every
+    playback stream asks PortAudio for an EXPLICIT multi-hundred-ms host buffer
+    instead of the symbolic 'high' preset — on macOS CoreAudio 'high' is only a
+    few tens of ms, which the model-preload GIL bursts blow straight through
+    (field 2026-08-02: startup filler line stuttering again despite blocksize
+    4096 + 'high'). Disarmed after the preloads so conversational replies keep
+    their low time-to-first-sound."""
+    global _boot_deep_buffer_active
+    _boot_deep_buffer_active = bool(active)
+    logger.info("[tts] boot deep-buffer playback %s",
+                "armed" if active else "disarmed")
+
+
 def playback_stream_kwargs() -> dict:
     """Deep-buffer playback params (audio QoS): a bigger blocksize + high host-buffer
     latency lets playback survive GIL stalls from heavy work elsewhere (model preloads
-    at boot) without the mid-sentence stutter. Shared by every sd.play() call site."""
-    return {
-        "blocksize": int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
-        "latency": str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
-    }
+    at boot) without the mid-sentence stutter. Shared by every sd.play() call site.
+    AUDIO_PLAYBACK_LATENCY may be 'low'/'high' or a numeric string of seconds."""
+    latency: "str | float" = str(
+        getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"
+    )
+    try:
+        latency = float(latency)
+    except ValueError:
+        pass
+    blocksize = int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096))
+    if _boot_deep_buffer_active:
+        latency = float(getattr(config, "AUDIO_PLAYBACK_BOOT_LATENCY_SECS", 1.0))
+        blocksize = max(
+            blocksize, int(getattr(config, "AUDIO_PLAYBACK_BOOT_BLOCKSIZE", 8192))
+        )
+    return {"blocksize": blocksize, "latency": latency}
 
 
 def _resolve_voice_settings(
