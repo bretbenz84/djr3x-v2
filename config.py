@@ -7579,7 +7579,14 @@ MOTION_FLINCH_ALLOW_MID_SENTENCE = True  # a reflex fires even while they're tal
 # Host-side charging safety fallback. The as-built charger holds the pack near
 # 14.2 V while an unplugged full LiFePO4 pack settles around 13.4 V. This voltage
 # gate backs up the firmware charging latch, including at 100% when current tapers.
-MOTION_CHARGER_VOLTAGE_LOCKOUT_MV = 14000
+# 13600 (was 14000, field 2026-08-02): plugged-and-tapered readings sit at
+# 14.00-14.26 V and sag a few mV under servo/audio load — right across the old
+# threshold, so once the firmware flag dropped and the sticky grace expired,
+# exploration turned while the cable was attached. Battery-log survey: unplugged
+# operation reads <= ~13.4 V, charging ramps >= ~13.7 V — 13.6 V splits the
+# bands with margin on both sides. (Cost: after a genuine unplug, surface
+# charge can hold the lock for a few extra minutes until it decays.)
+MOTION_CHARGER_VOLTAGE_LOCKOUT_MV = 13600
 # Once charging is seen, keep the drive locked for this long after the LAST positive
 # charging reading. A servo current spike sags the pack voltage (~160 mΩ junction) and
 # briefly flaps the charging signal to "unplugged"; this grace keeps a flap from waking

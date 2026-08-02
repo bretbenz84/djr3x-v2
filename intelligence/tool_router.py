@@ -108,7 +108,10 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     "vision.snapshot": ("An explicit request to take a picture.", {}, []),
     "time.query": ("Asking the current clock time.", {}, []),
     "date.query": ("Asking today's date/day (NOT holiday explanations).", {}, []),
-    "weather.query": ("Asking about the weather.", {}, []),
+    "weather.query": (
+        "Asking about the weather, forecast, or temperature — outdoor OR "
+        "indoor ('what temperature is it inside?' reads the onboard climate "
+        "sensor).", {}, []),
     "status.capabilities": ("Asking what Rex can do.", {}, []),
     "status.uptime": ("Asking how long Rex has been running.", {}, []),
     "motion.turn": (

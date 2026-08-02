@@ -466,6 +466,11 @@ _WEATHER_QUERY_RE = re.compile(
     r"\b(?:what(?:'s| is)|tell me|give me|do you know)\b.{0,35}\b"
     r"(?:weather|temperature|forecast|raining|hot|cold|outside)\b|"
     r"\b(?:weather|temperature)\s+(?:forecast|outside)\b|"
+    # "What temperature is it (inside)?" — 'what' directly followed by
+    # 'temperature' missed the first alternation (field 2026-08-01: the indoor
+    # BME280 branch was never reached; Rex claimed he couldn't read the room).
+    r"\bwhat\s+temperature\b|"
+    r"\bhow\s+(?:hot|cold|warm|humid|muggy)\s+is\s+it\b|"
     r"\bis\s+it\s+(?:raining|hot|cold)\b",
     re.IGNORECASE,
 )
