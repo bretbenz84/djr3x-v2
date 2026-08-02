@@ -84,9 +84,12 @@ scripts/install_supervisor.sh uninstall # stop + remove
 
 The installer substitutes this repo's absolute path into the templates under
 `launchd/` and installs the results to `~/Library/LaunchAgents/`. It installs
-**two** agents: `com.djr3x.supervisor` (the wake-word listener) and
+**four** agents: `com.djr3x.supervisor` (the wake-word listener),
 `com.djr3x.battery` (the menu bar battery meter, below — skipped when
-`MOTION_ESP32_PORT` isn't set in `.env`). `uninstall` removes both.
+`MOTION_ESP32_PORT` isn't set in `.env`), `com.djr3x.servo` (the Servo Control
+console — skipped when `MAESTRO_PORT` isn't set), and `com.djr3x.led` (the LED
+Control console, below — skipped when neither `ARDUINO_HEAD_PORT` nor
+`ARDUINO_CHEST_PORT` is set). `uninstall` removes all of them.
 
 **First run:** macOS will prompt for **Microphone** permission for the venv
 Python. Grant it (System Settings → Privacy & Security → Microphone). The robot's
@@ -170,6 +173,29 @@ venv/bin/python tools/rex_battery_menubar.py --probe
 ```
 
 Its logs are `logs/battery_menubar.out.log` / `.err.log`.
+
+## Menu bar LED console
+
+`tools/rex_led_menubar.py` (LaunchAgent `com.djr3x.led`) puts an **"LED
+Control"** item in the menu bar. The dropdown has two areas — **HEAD** and
+**CHEST** — each with a live status row and one clickable button per animation
+that board's firmware supports (the same newline commands `hardware/leds_head.py`
+and `hardware/leds_chest.py` send): idle, active, every speak emotion, speak
+stop, sleep, fade-off, off, plus chest-only startup, compliment flash,
+next-pattern, and a 50 % battery-meter demo. Use it to audition any animation
+while the robot is off.
+
+Head speak animations are normally driven by a `SPEAK_LEVEL` audio stream from
+`main.py`; the app substitutes a synthetic level wave while a head Speak button
+is active so the mouth equalizer actually dances. Clicking any other head
+button stops the wave.
+
+**Port sharing with the robot** follows the battery/servo pattern: each zone
+polls the single-instance flock ~1×/s, releases its serial port while `main.py`
+is alive (buttons go inert, status shows "Rex is running"), and reopens it when
+Rex shuts down. Opening a port reboots that Arduino, so the app waits ~2 s
+after each (re)open before sending. Its logs are `logs/led_menubar.out.log` /
+`.err.log`.
 
 ## Tunables (environment variables)
 

@@ -13,6 +13,9 @@
 #   com.djr3x.servo — the "Servo Control" menu bar console (tools/
 #     rex_servo_menubar.py): live sliders for all 8 Maestro channels + Restart
 #     Pololu. Only installed when MAESTRO_PORT is set in .env.
+#   com.djr3x.led — the "LED Control" menu bar console (tools/
+#     rex_led_menubar.py): one button per head/chest LED animation. Only
+#     installed when ARDUINO_HEAD_PORT or ARDUINO_CHEST_PORT is set in .env.
 #
 # This script renders each plist template with this repo's absolute path and
 # loads it.
@@ -28,6 +31,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUPERVISOR_LABEL="com.djr3x.supervisor"
 BATTERY_LABEL="com.djr3x.battery"
 SERVO_LABEL="com.djr3x.servo"
+LED_LABEL="com.djr3x.led"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 ACTION="${1:-install}"
 
@@ -84,6 +88,19 @@ maestro_port_configured() {
     [[ -n "$port" ]]
 }
 
+# The LED console is pointless without at least one LED board: only install it
+# when ARDUINO_HEAD_PORT or ARDUINO_CHEST_PORT has a value in .env.
+led_port_configured() {
+    [[ -f "$PROJECT_ROOT/.env" ]] || return 1
+    local key port
+    for key in ARDUINO_HEAD_PORT ARDUINO_CHEST_PORT; do
+        port="$(sed -n "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*//p" \
+                "$PROJECT_ROOT/.env" | tail -1 | tr -d '"'"'" | xargs)"
+        [[ -n "$port" ]] && return 0
+    done
+    return 1
+}
+
 case "$ACTION" in
   install)
     if [[ ! -x "$PROJECT_ROOT/venv/bin/python" ]]; then
@@ -123,13 +140,26 @@ case "$ACTION" in
         echo "Loaded $SERVO_LABEL — 'Servo Control' is in the menu bar."
         echo "Logs: $PROJECT_ROOT/logs/servo_menubar.out.log (and .err.log)"
     fi
+
+    if ! led_port_configured; then
+        echo "Neither ARDUINO_HEAD_PORT nor ARDUINO_CHEST_PORT is set in .env —"
+        echo "skipping the LED Control menu bar console (re-run after configuring)."
+    elif ! "$PROJECT_ROOT/venv/bin/python" -c "import rumps" 2>/dev/null; then
+        echo "WARNING: 'rumps' is not installed in the venv — skipping the LED"
+        echo "Control console. Fix with: venv/bin/pip install rumps  (then re-run)"
+    else
+        install_agent "$LED_LABEL"
+        echo "Loaded $LED_LABEL — 'LED Control' is in the menu bar."
+        echo "Logs: $PROJECT_ROOT/logs/led_menubar.out.log (and .err.log)"
+    fi
     ;;
 
   uninstall|remove)
-    echo "Stopping and removing $SUPERVISOR_LABEL + $BATTERY_LABEL + $SERVO_LABEL ..."
+    echo "Stopping and removing $SUPERVISOR_LABEL + $BATTERY_LABEL + $SERVO_LABEL + $LED_LABEL ..."
     uninstall_agent "$SUPERVISOR_LABEL"
     uninstall_agent "$BATTERY_LABEL"
     uninstall_agent "$SERVO_LABEL"
+    uninstall_agent "$LED_LABEL"
     ;;
 
   status)
@@ -138,6 +168,8 @@ case "$ACTION" in
     status_agent "$BATTERY_LABEL"
     echo
     status_agent "$SERVO_LABEL"
+    echo
+    status_agent "$LED_LABEL"
     ;;
 
   *)

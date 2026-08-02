@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the DJ-R3X menu bar LED console (tools/rex_led_menubar.py).
+
+  This is a TEMPLATE. Do not load it directly — run scripts/install_supervisor.sh,
+  which substitutes __PROJECT_ROOT__ with this repo's absolute path and installs
+  the result to ~/Library/LaunchAgents/com.djr3x.led.plist.
+
+  It runs at login (RunAtLoad) and is kept alive (KeepAlive): an "LED Control"
+  menu bar item with one button per head/chest LED animation. It opens
+  ARDUINO_HEAD_PORT / ARDUINO_CHEST_PORT directly while the robot is off and
+  releases both ports automatically whenever main.py is running (see the module
+  docstring). A user LaunchAgent (not a system daemon) because the menu bar
+  only exists inside a logged-in GUI session.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.djr3x.led</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_ROOT__/venv/bin/python</string>
+        <string>__PROJECT_ROOT__/tools/rex_led_menubar.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_ROOT__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't hammer relaunches if it exits immediately. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_ROOT__/logs/led_menubar.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_ROOT__/logs/led_menubar.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
