@@ -135,5 +135,59 @@ class StandaloneCorrectionTest(unittest.TestCase):
                 self.assertEqual(tr._apply_standalone_corrections(text), text)
 
 
+class ContextBiasTest(unittest.TestCase):
+    """Qwen3-ASR context biasing (field 2026-08-02: Rex said 'Lake Folsom
+    today...' and the reply decoded as 'like falsum' — the trip cancellation
+    never reached memory). Rex's recent lines + static vocab ride the system
+    prompt; the echo guard rejects the decoder copying that context back out
+    on silence (measured: verbatim copy at logprob 0.0)."""
+
+    def setUp(self):
+        with tr._context_lock:
+            self._saved = list(tr._recent_rex_lines)
+            tr._recent_rex_lines.clear()
+
+    def tearDown(self):
+        with tr._context_lock:
+            tr._recent_rex_lines.clear()
+            tr._recent_rex_lines.extend(self._saved)
+
+    def test_context_prompt_includes_vocab_and_rex_lines(self):
+        tr.note_rex_line("Hey Bret, Lake Folsom today.")
+        prompt = tr._asr_context_prompt()
+        self.assertIn("Lake Folsom", prompt)
+        self.assertIn("just said", prompt)
+
+    def test_kill_switch(self):
+        with mock.patch.object(
+            tr.config, "QWEN_ASR_CONTEXT_BIAS_ENABLED", False, create=True
+        ):
+            self.assertIsNone(tr._asr_context_prompt())
+
+    def test_echo_guard_rejects_context_copies_only(self):
+        tr.note_rex_line(
+            "Hey Bret, Lake Folsom today—let's hope your friends bring snacks."
+        )
+        # Verbatim copies of the context are hallucinations...
+        self.assertTrue(tr._context_echo_hallucination(
+            "Hey Bret, Lake Folsom today, let's hope your friends bring snacks"
+        ))
+        # ...but a real reply that merely re-uses an entity passes through.
+        self.assertFalse(tr._context_echo_hallucination(
+            "We're not going to Lake Folsom anymore."
+        ))
+        self.assertFalse(tr._context_echo_hallucination("Yes."))
+
+    def test_falsum_corrections(self):
+        self.assertEqual(
+            tr._apply_corrections("We're not going to like falsum anymore."),
+            "We're not going to Lake Folsom anymore.",
+        )
+        self.assertEqual(
+            tr._apply_corrections("I like Folsom a lot"),
+            "I like Folsom a lot",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

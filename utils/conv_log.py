@@ -152,6 +152,14 @@ def log_rex(text: str, *, to_gui: bool = True) -> None:
         _last_rex_at = now
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         _append_locked(f"{ts} | REX   | {text.strip()}")
+    # Feed the line to the ASR context-biasing window: the user's reply usually
+    # re-uses entities Rex just named ("Lake Folsom" → "like falsum" field bug
+    # 2026-08-02). Lazy import + best-effort so logging never breaks on it.
+    try:
+        from audio import transcription
+        transcription.note_rex_line(text)
+    except Exception:
+        pass
     if to_gui:
         _mirror_to_gui("Rex", text.strip(), "rex")
 

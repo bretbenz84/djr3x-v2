@@ -1,9 +1,11 @@
+import difflib
 import io
 import logging
 import re
+import threading
 import time
 import wave
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +63,83 @@ def _get_qwen_model():
     return _qwen_model
 
 
+# ── Context biasing (Qwen3-ASR) ──────────────────────────────────────────────
+# Qwen3-ASR accepts a system prompt of context text and biases decoding toward
+# vocabulary in it. Rex's own recent lines are the highest-value context: a
+# reply usually re-uses the entities he just named (field 2026-08-02: Rex said
+# "Lake Folsom today ..." and the user's answer "we're not going to Lake
+# Folsom anymore" decoded as "like falsum" — so the trip cancellation never
+# reached the memory layer). Static vocab (names/places) rides along.
+_context_lock = threading.Lock()
+_recent_rex_lines: "deque[str]" = deque(maxlen=4)
+
+
+def note_rex_line(text: str) -> None:
+    """Record a line Rex spoke, for ASR context biasing. Cheap; called from
+    utils.conv_log.log_rex on every spoken line."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return
+    with _context_lock:
+        _recent_rex_lines.append(cleaned)
+
+
+def _asr_context_prompt() -> "str | None":
+    """Build the Qwen3-ASR biasing context, or None when disabled/empty."""
+    if not bool(getattr(config, "QWEN_ASR_CONTEXT_BIAS_ENABLED", True)):
+        return None
+    vocab = [str(v) for v in getattr(config, "QWEN_ASR_CONTEXT_VOCAB", ()) if v]
+    n_lines = int(getattr(config, "QWEN_ASR_CONTEXT_REX_LINES", 2))
+    with _context_lock:
+        lines = list(_recent_rex_lines)[-n_lines:] if n_lines > 0 else []
+    parts = []
+    if vocab:
+        parts.append("Names and places that may occur: " + ", ".join(vocab) + ".")
+    if lines:
+        parts.append(
+            "The audio replies to a droid who just said: " + " ".join(lines)
+        )
+    if not parts:
+        return None
+    prompt = ("This audio is one side of a live spoken conversation. "
+              + " ".join(parts))
+    max_chars = int(getattr(config, "QWEN_ASR_CONTEXT_MAX_CHARS", 600))
+    return prompt[:max_chars]
+
+
+def _norm_for_echo(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", "", (text or "").lower()).strip()
+
+
+def _context_echo_hallucination(text: str) -> bool:
+    """True when a Qwen3-ASR decode is just the biasing context copied back.
+
+    Measured 2026-08-02: on silence/noise the model outputs the context text
+    VERBATIM at full confidence (logprob 0.0) — so a biased decode that is
+    near-identical to a context line or the vocab list is a hallucination,
+    not speech. This also acts as the reference-text guard for the echo
+    capture seam: a transcript that IS Rex's own recent line is his residual,
+    not the user."""
+    norm = _norm_for_echo(text)
+    if not norm:
+        return False
+    candidates = [", ".join(
+        str(v) for v in getattr(config, "QWEN_ASR_CONTEXT_VOCAB", ()) if v)]
+    with _context_lock:
+        candidates.extend(_recent_rex_lines)
+    for cand in candidates:
+        cand_norm = _norm_for_echo(cand)
+        if not cand_norm:
+            continue
+        ratio = difflib.SequenceMatcher(None, norm, cand_norm).ratio()
+        if ratio >= float(getattr(config, "QWEN_ASR_CONTEXT_ECHO_RATIO", 0.85)):
+            logger.info(
+                "[transcription] context-echo hallucination rejected "
+                "(ratio %.2f vs %r): %r", ratio, cand[:60], text)
+            return True
+    return False
+
+
 def _qwen_transcribe(audio_array: np.ndarray) -> "tuple[str, float | None]":
     """Decode with Qwen3-ASR, returning (text, mean per-token logprob).
 
@@ -77,11 +156,13 @@ def _qwen_transcribe(audio_array: np.ndarray) -> "tuple[str, float | None]":
     max_tokens = int(getattr(config, "QWEN_ASR_MAX_TOKENS", 256))
     # MLX_LOCK: same shared-Metal-runtime rule as mlx_whisper below — concurrent
     # evaluation with the local TTS engine is a fatal native crash.
+    context = _asr_context_prompt()
     with MLX_LOCK:
         for token, logprobs in model.stream_generate(
             audio_array,
             language=str(getattr(config, "WHISPER_LANGUAGE", "en") or "en"),
             max_tokens=max_tokens,
+            system_prompt=context,
         ):
             t = int(token)
             tokens.append(t)
@@ -401,6 +482,8 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
         try:
             raw, avg_logprob = _qwen_transcribe(audio_array)
             raw = raw.strip()
+            if raw and _context_echo_hallucination(raw):
+                raw = ""
             backend = "qwen3_asr"
             local_decoded_ok = True
         except Exception as exc:

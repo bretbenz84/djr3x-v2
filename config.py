@@ -2009,7 +2009,31 @@ WHISPER_CORRECTIONS = {
     # session attributed to a phantom person named "Brat" created from one misread).
     "brat":    "Bret",
     "impersivate": "impersonate",   # field 2026-07-23: "Impersivate me" missed the router
+    # "Lake Folsom" family (field 2026-08-02: "we're not going to Lake Folsom
+    # anymore" decoded as "like falsum", so the trip cancellation never reached
+    # memory). "falsum"/"folsum" are not conversational English; the phrase key
+    # is narrow ("to like folsom") so "I like Folsom" is never touched.
+    "falsum": "Folsom",
+    "folsum": "Folsom",
+    "to like folsom": "to Lake Folsom",
 }
+
+# ── Qwen3-ASR context biasing ────────────────────────────────────────────────
+# Qwen3-ASR accepts free-text context in its system prompt and biases decoding
+# toward vocabulary in it. Rex's own last lines are fed in automatically (the
+# user's reply usually re-uses the entities Rex just named), plus this static
+# vocab of names/places the decoder tends to mangle. Kill switch below.
+QWEN_ASR_CONTEXT_BIAS_ENABLED = _env_bool("QWEN_ASR_CONTEXT_BIAS_ENABLED", True)
+QWEN_ASR_CONTEXT_VOCAB = (
+    "Bret", "Rex", "DJ R3X", "Lake Folsom", "Folsom", "Sacramento", "Exudica Royale",
+)
+QWEN_ASR_CONTEXT_REX_LINES = 2     # how many of Rex's recent lines to include
+QWEN_ASR_CONTEXT_MAX_CHARS = 600   # hard cap on the context prompt
+# Echo guard: on silence/noise the biased decoder copies the context back out
+# VERBATIM at full confidence (measured 2026-08-02). A transcript this similar
+# to a context line / the vocab list is rejected as a hallucination. Also
+# catches Rex's own echo-seam residual being transcribed as the user.
+QWEN_ASR_CONTEXT_ECHO_RATIO = 0.85
 
 # Whole-utterance homophone fixes — applied ONLY when the phrase IS the entire
 # utterance (optionally wrapped in "hey rex"/"please"), never inside a longer
