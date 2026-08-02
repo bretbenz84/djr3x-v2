@@ -174,6 +174,7 @@ _DEFAULT_LIVE_ACTIONS = (
     "system.sleep", "system.shutdown", "web.search",
     "event.cancel", "memory.query", "identity.who_is_speaking",
     "music.play", "music.stop", "music.skip", "vision.snapshot",
+    "identity.name_correction", "memory.forget_person",
 )
 
 

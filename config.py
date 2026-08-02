@@ -4845,6 +4845,11 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # speaks the privacy confirmation offer and arms the pending slot; a spoken
     # "yes, remember this scene" captures + captions + stores a scene episode.
     "vision.snapshot",
+    # 2026-08-02 PM: "my name's not Brad, it's JT" and "forget who I am" both
+    # fell to conversation (shadow picked the right tools). name_correction
+    # executes directly; forget_person routes into the existing wipe-
+    # confirmation flow and may only target the CURRENT speaker.
+    "identity.name_correction", "memory.forget_person",
 )
 
 # Seconds the "say yes, remember this scene" confirmation slot stays open.

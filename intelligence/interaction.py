@@ -12262,6 +12262,63 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
             _speak_blocking(full)
         return full or ""
 
+    if action == "identity.name_correction":
+        # Field 2026-08-02 14:06: "My name's not Brad, it's JT" — the shadow
+        # picked this tool with the right arg while the shipped path replied
+        # in prose and Rex SAID he'd updated the name without doing it.
+        try:
+            decision = action_router.ActionDecision(
+                action=action, confidence=1.0, args=dict(args or {}),
+                requires_confirmation=False, reason="tool_router",
+            )
+            resp = _handle_router_identity_name_correction(
+                text, decision, person_id, _tool_router_person_name(person_id),
+            )
+        except Exception as exc:
+            _log.error("[tool_router] executor failed for %s: %s", action, exc)
+            resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+
+    if action == "memory.forget_person":
+        # Route through the existing forget_me flow (arms the confirmation
+        # phrase + same-speaker guard before any deletion). SAFETY: the tool
+        # may only target the CURRENT SPEAKER — a named third party never
+        # gets deleted off an LLM tool call; that stays a spoken exact
+        # command with its own confirmation.
+        target = str((args or {}).get("person_name") or "").strip()
+        speaker_name = _tool_router_person_name(person_id) or ""
+        first = speaker_name.split()[0].lower() if speaker_name else ""
+        if target and first and target.lower() not in (
+            speaker_name.lower(), first
+        ):
+            # Also allow the target being the speaker's CLAIMED name this
+            # turn (they may have just corrected it) — otherwise decline.
+            _log.info(
+                "[tool_router] memory.forget_person target %r != speaker %r — "
+                "declining to third-party delete", target, speaker_name,
+            )
+            resp = None
+        else:
+            try:
+                resp = _execute_command(
+                    command_parser.CommandMatch("forget_me", "tool_router", {}),
+                    person_id,
+                    speaker_name or None,
+                    text,
+                )
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+                resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action == "vision.snapshot":
         # Privacy-gated: never captures directly — speaks the confirmation
         # offer and arms the pending slot; the user's next "yes, remember

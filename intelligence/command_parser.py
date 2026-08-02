@@ -1013,9 +1013,15 @@ def parse(text: str) -> CommandMatch | None:
     if is_standalone_shutdown_command(original):
         return CommandMatch("shutdown", "exact", {})
 
-    # 1. Exact match
+    # 1. Exact match — punctuation-tolerant: ASR finalizes commands with a
+    # trailing period ("Forget me."), and _normalize keeps it, so the exact
+    # lookup missed and the command degraded to fuzzy — which is execution-
+    # disabled (field 2026-08-02 14:07: bare 'Forget me.' was refused).
     if normalized in EXACT_COMMANDS:
         return CommandMatch(EXACT_COMMANDS[normalized], "exact", {})
+    plain = _plain(original)
+    if plain in EXACT_COMMANDS:
+        return CommandMatch(EXACT_COMMANDS[plain], "exact", {})
 
     # Verbal pause → quiet mode ("rex, pause" / "one sec, be right back").
     # After the exact table so "pause music" still routes to dj_stop.
