@@ -12003,6 +12003,50 @@ def _maybe_web_search_reply(
     return answer_text
 
 
+# One-shot holder: set when a live tool call routed the turn, consumed by the
+# caller to stamp final_executed_path="tool_router.<action>" instead of
+# "llm.stream" (the report joins on executed paths).
+_tool_routed_path: "list[str]" = []
+
+
+def _consume_tool_routed_path() -> Optional[str]:
+    return _tool_routed_path.pop() if _tool_routed_path else None
+
+
+# Live tool actions (tool_router Phase 1) all map onto intent-classifier
+# handlers — the reverse of _INTENT_ACTION_MAP.
+_TOOL_ACTION_INTENT_MAP: dict[str, str] = {}
+
+
+def _execute_tool_routed_action(action: str, args: dict, text: str,
+                                person_id: Optional[int]) -> str:
+    """Run the existing executor for a live tool call from the reply stream.
+    Always returns spoken text (falls back to a classic reply so a mapping gap
+    can never leave Rex silent)."""
+    global _TOOL_ACTION_INTENT_MAP
+    if not _TOOL_ACTION_INTENT_MAP:
+        _TOOL_ACTION_INTENT_MAP = {v: k for k, v in _INTENT_ACTION_MAP.items()}
+    intent = _TOOL_ACTION_INTENT_MAP.get(action)
+    _log.info("[tool_router] live route: %s args=%s text=%r", action, args, text)
+    resp: Optional[str] = None
+    if intent is not None:
+        try:
+            resp = _handle_classified_intent(intent, text, person_id)
+        except Exception as exc:
+            _log.error("[tool_router] executor failed for %s: %s", action, exc)
+    else:
+        _log.warning("[tool_router] live action %s has no intent mapping", action)
+    if resp:
+        _tool_routed_path.append(f"tool_router.{action}")
+        return resp
+    # Executor declined/failed: answer as plain conversation so the turn is
+    # never silent (rare — every live action maps to a handler).
+    full = llm.get_response(text, person_id, classic=True)
+    if full and full.strip():
+        _speak_blocking(full)
+    return full or ""
+
+
 def _stream_llm_response(
     text: str,
     person_id: Optional[int],
@@ -12128,28 +12172,33 @@ def _stream_llm_response(
             )
             and not _interrupted.is_set()
         ):
-            spoken = _stream_and_speak_sentences(
-                text,
-                person_id,
-                frame,
-                comedy_mode,
-                agenda_directive,
-                surprise_result,
-                surprise_thread,
-                turn_start,
-                filler_stop,
-                # Full per-sentence streaming (when explicitly enabled) wins; else the
-                # two-chunk middle path: first sentence early, one seam, rest as one
-                # generation while chunk 1 plays.
-                two_chunk=not _full_streaming,
-                lean_turn_directive=lean_callback_directive,
-            )
+            from intelligence import tool_router as _tr
+            try:
+                spoken = _stream_and_speak_sentences(
+                    text,
+                    person_id,
+                    frame,
+                    comedy_mode,
+                    agenda_directive,
+                    surprise_result,
+                    surprise_thread,
+                    turn_start,
+                    filler_stop,
+                    # Full per-sentence streaming (when explicitly enabled) wins; else the
+                    # two-chunk middle path: first sentence early, one seam, rest as one
+                    # generation while chunk 1 plays.
+                    two_chunk=not _full_streaming,
+                    lean_turn_directive=lean_callback_directive,
+                )
+            except _tr.ToolCallRequested as tc:
+                spoken = _execute_tool_routed_action(tc.action, tc.args, text, person_id)
             if cb_claim is not None:
                 cb_settled = True
                 _settle_callback_claim(spoken)
             return spoken
         llm_started = time.monotonic()
         if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
+            from intelligence import tool_router as _tr
             try:
                 from intelligence import lean_brain
                 full_text = lean_brain.respond(
@@ -12158,6 +12207,16 @@ def _stream_llm_response(
                     world=_lean_world(),
                     turn_directive=lean_callback_directive or None,
                 ).get("text") or ""
+            except _tr.ToolCallRequested as tc:
+                # Non-streaming path: same live-tool dispatch as the streaming
+                # branch. Executor already spoke; settle any callback claim so
+                # it can't leak into later turns, and return without the normal
+                # govern/speak tail (nothing left to speak).
+                full_text = _execute_tool_routed_action(tc.action, tc.args, text, person_id)
+                if cb_claim is not None and not cb_settled:
+                    cb_settled = True
+                    _settle_callback_claim(full_text or "")
+                return full_text
             except Exception as exc:
                 _log.error("[lean] non-streaming reply failed, using classic path: %s", exc)
                 full_text = llm.get_response(text, person_id, agenda_directive=agenda_directive, classic=True)
@@ -12791,6 +12850,14 @@ def _stream_and_speak_sentences(
                 else:
                     _consume(sentence)
     except Exception as exc:
+        # Tool-router cutover: the model chose a LIVE tool instead of prose.
+        # Nothing has been spoken (the stream raises only when no content was
+        # yielded) — unwind to _stream_llm_response, which dispatches the
+        # action's existing executor.
+        from intelligence import tool_router as _tr
+        if isinstance(exc, _tr.ToolCallRequested):
+            filler_stop.set()
+            raise
         _log.error("[interaction] streaming LLM error: %s", exc)
     finally:
         filler_stop.set()
@@ -23826,7 +23893,7 @@ def _handle_speech_segment(
                         turn_start=turn_start,
                     )
                     used_agenda_llm = True
-                    final_executed_path = "llm.stream"
+                    final_executed_path = _consume_tool_routed_path() or "llm.stream"
 
         if response_text:
             _log_router_audit(

@@ -74,7 +74,7 @@ def _baseline_action(executed_path: str | None) -> str | None:
     """Catalog key for an executed path, or None when unmappable (hand review)."""
     if not executed_path:
         return None
-    for prefix in ("fast_local_takeover.", "router_takeover."):
+    for prefix in ("fast_local_takeover.", "router_takeover.", "tool_router."):
         if executed_path.startswith(prefix):
             key = executed_path[len(prefix):]
             return key if "." in key else None

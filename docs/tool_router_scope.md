@@ -1,6 +1,19 @@
 # Tool-Calling Router — Scope & Migration Plan
 
-Status: PHASE 0 SHIPPED 2026-08-01 — `intelligence/tool_router.py` (shadow-only,
+Status: PHASE 1 LIVE 2026-08-01 — the seven intent-backed actions (time/date/
+weather/capabilities/uptime/describe-scene/music-options) ride the lean reply
+call as native tools (`TOOL_ROUTER_LIVE_ENABLED`, instant kill switch): the
+model answers in prose or calls a tool, a call raises ToolCallRequested out of
+the stream (before any speech) and dispatches the existing
+_handle_classified_intent executor, stamped as final_executed_path=
+"tool_router.<action>". Deterministic layers still run first — this catches
+only what fell through to conversation. Cutover evidence: 50-turn collection,
+tool ~92% vs shipped ~80%, decoys 0/6 false positives, and verified shipped
+misses ("Stop the game." fumbled by three layers, "kill the music" answered
+with "Systems nominal"). Humor/character deferred (their fast lanes work);
+motion unchanged. Phase 0 record follows:
+
+PHASE 0 SHIPPED 2026-08-01 — `intelligence/tool_router.py` (shadow-only,
 off by default: set `TOOL_ROUTER_SHADOW_ENABLED = True` in user_config.py to
 collect), report via `tools/tool_router_report.py`, contracts pinned in
 `tests/test_tool_router.py`. Live smoke test: 10/10 correct tool choices

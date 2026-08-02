@@ -4676,6 +4676,21 @@ ACTION_ROUTER_SHADOW_ENABLED = False
 TOOL_ROUTER_SHADOW_ENABLED = False
 TOOL_ROUTER_SHADOW_MODEL = ""        # "" = LLM_CONVERSATION_MODEL
 TOOL_ROUTER_SHADOW_TIMEOUT_SECS = 8.0
+# Phase 1 LIVE cutover (2026-08-01, on the collection evidence: tool router
+# ~92% vs shipped ~80%, decoy false-positives 0/6): the actions below ride the
+# lean REPLY call as native tools — the model answers in prose OR calls one,
+# and a call dispatches the same _handle_classified_intent executor the intent
+# classifier uses. Zero extra LLM round-trips. The deterministic layers still
+# run FIRST, so this only catches what used to fall through to conversation
+# (the off-pattern phrasings: "how's the weather looking tomorrow?",
+# "kill the music"-class misses). Kill switch below reverts to pre-cutover
+# behavior instantly.
+TOOL_ROUTER_LIVE_ENABLED = True
+TOOL_ROUTER_LIVE_ACTIONS = (
+    "time.query", "date.query", "weather.query",
+    "status.capabilities", "status.uptime",
+    "vision.describe_scene", "music.options",
+)
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True
 ACTION_ROUTER_EXECUTE_ENABLED = True

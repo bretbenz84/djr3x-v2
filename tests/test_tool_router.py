@@ -112,5 +112,107 @@ class StartShadowTest(unittest.TestCase):
         del real_info  # (kept for clarity that we patched the module logger)
 
 
+class LiveCutoverTest(unittest.TestCase):
+    """Phase 1: the live subset rides the lean reply call as native tools."""
+
+    def test_live_tools_are_the_phase1_subset_only(self):
+        tools = tool_router.live_reply_tools()
+        names = {t["function"]["name"] for t in tools}
+        self.assertEqual(names, {
+            "time_query", "date_query", "weather_query", "status_capabilities",
+            "status_uptime", "vision_describe_scene", "music_options",
+        })
+
+    def test_kill_switch_detaches_all_tools(self):
+        with mock.patch.object(config, "TOOL_ROUTER_LIVE_ENABLED", False, create=True):
+            self.assertIsNone(tool_router.live_reply_tools())
+
+    def test_resolve_refuses_non_live_actions(self):
+        # motion_turn is a valid catalog tool but NOT live — must never execute.
+        self.assertIsNone(tool_router.resolve_tool_call("motion_turn", "{}"))
+        self.assertEqual(
+            tool_router.resolve_tool_call("weather_query", "{}"),
+            ("weather.query", {}),
+        )
+        key, args = tool_router.resolve_tool_call("time_query", "not json")
+        self.assertEqual((key, args), ("time.query", {}))
+
+
+def _stream(deltas):
+    chunks = []
+    for d in deltas:
+        delta = mock.Mock()
+        delta.content = d.get("content")
+        if "tool" in d:
+            fn = mock.Mock()
+            fn.name = d["tool"]
+            fn.arguments = d.get("args", "")
+            tc = mock.Mock()
+            tc.function = fn
+            delta.tool_calls = [tc]
+        else:
+            delta.tool_calls = None
+        chunks.append(mock.Mock(choices=[mock.Mock(delta=delta)]))
+    return chunks
+
+
+class LeanStreamToolTest(unittest.TestCase):
+    def _run(self, deltas):
+        from intelligence import lean_brain
+        with mock.patch.object(lean_brain.llm_compat, "create",
+                               return_value=_stream(deltas)), \
+             mock.patch.object(lean_brain, "_messages", return_value=[]):
+            return list(lean_brain.stream_reply("test utterance", 1))
+
+    def test_tool_only_stream_raises_tool_call_requested(self):
+        from intelligence import lean_brain  # noqa: F401
+        with self.assertRaises(tool_router.ToolCallRequested) as ctx:
+            self._run([{"tool": "weather_query", "args": ""},
+                       {"tool": "", "args": "{}"}])
+        self.assertEqual(ctx.exception.action, "weather.query")
+
+    def test_prose_stream_yields_normally(self):
+        out = self._run([{"content": "Hello "}, {"content": "there."}])
+        self.assertEqual("".join(out), "Hello there.")
+
+    def test_prose_wins_when_both_appear(self):
+        out = self._run([{"content": "Sure thing."},
+                         {"tool": "weather_query", "args": "{}"}])
+        self.assertEqual("".join(out), "Sure thing.")
+
+    def test_non_live_tool_call_degrades_to_hiccup_not_execution(self):
+        out = self._run([{"tool": "motion_turn", "args": '{"direction":"left"}'}])
+        self.assertTrue(out and "circuits" in out[0])
+
+
+class DispatcherTest(unittest.TestCase):
+    def test_live_action_dispatches_to_intent_executor(self):
+        from intelligence import interaction
+        with mock.patch.object(interaction, "_handle_classified_intent",
+                               return_value="It is 3 PM.") as handler:
+            resp = interaction._execute_tool_routed_action(
+                "time.query", {}, "any idea what time it is?", 1)
+        handler.assert_called_once()
+        self.assertEqual(handler.call_args[0][0], "query_time")
+        self.assertEqual(resp, "It is 3 PM.")
+        self.assertEqual(interaction._consume_tool_routed_path(),
+                         "tool_router.time.query")
+        self.assertIsNone(interaction._consume_tool_routed_path())  # one-shot
+
+    def test_executor_decline_falls_back_to_classic_reply(self):
+        from intelligence import interaction
+        with mock.patch.object(interaction, "_handle_classified_intent",
+                               return_value=None), \
+             mock.patch.object(interaction.llm, "get_response",
+                               return_value="fallback words") as classic, \
+             mock.patch.object(interaction, "_speak_blocking") as speak:
+            resp = interaction._execute_tool_routed_action(
+                "weather.query", {}, "how's it looking", 1)
+        classic.assert_called_once()
+        speak.assert_called_once_with("fallback words")
+        self.assertEqual(resp, "fallback words")
+        self.assertIsNone(interaction._consume_tool_routed_path())
+
+
 if __name__ == "__main__":
     unittest.main()

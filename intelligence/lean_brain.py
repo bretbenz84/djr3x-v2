@@ -529,6 +529,20 @@ def stream_reply(
     messages = _messages(
         user_text, person_id, transcript, world, turn_directive=turn_directive
     )
+    # Tool-router cutover (docs/tool_router_scope.md Phase 1): the LIVE action
+    # subset rides THIS call — the model answers in prose OR calls a tool.
+    # Tool-call deltas are accumulated and, when the model chose a tool and
+    # spoke no prose, surfaced as ToolCallRequested AFTER the stream (outside
+    # the except below, which must never swallow it into the hiccup line).
+    tool_extra = None
+    try:
+        from intelligence import tool_router
+        live_tools = tool_router.live_reply_tools()
+        if live_tools:
+            tool_extra = {"tools": live_tools, "tool_choice": "auto"}
+    except Exception as exc:
+        _log.debug("[lean] live tools unavailable: %s", exc)
+    tc_name, tc_args, yielded = "", "", False
     try:
         stream = llm_compat.create(
             llm._client,
@@ -537,17 +551,38 @@ def stream_reply(
             stream=True,
             max_tokens=int(getattr(config, "LEAN_BRAIN_MAX_TOKENS", 120)),
             timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
+            extra=tool_extra,
         )
         for chunk in stream:
             try:
                 delta = chunk.choices[0].delta
             except (AttributeError, IndexError):
                 continue
+            for tc in (getattr(delta, "tool_calls", None) or []):
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    tc_name += str(getattr(fn, "name", None) or "")
+                    tc_args += str(getattr(fn, "arguments", None) or "")
             if getattr(delta, "content", None):
+                yielded = True
                 yield delta.content
     except Exception as exc:
         _log.error("[lean] stream_reply failed (%s): %s", type(exc).__name__, exc)
         yield "...circuits hiccuped. Say that again?"
+        return
+    if tc_name and not yielded:
+        try:
+            from intelligence import tool_router
+            resolved = tool_router.resolve_tool_call(tc_name, tc_args)
+        except Exception as exc:
+            _log.error("[lean] tool-call resolve failed: %s", exc)
+            resolved = None
+        if resolved is not None:
+            raise tool_router.ToolCallRequested(resolved[0], resolved[1])
+        _log.warning("[lean] unresolvable/non-live tool call %r ignored", tc_name)
+        yield "...circuits hiccuped. Say that again?"
+    elif tc_name and yielded:
+        _log.info("[lean] model emitted prose AND tool %r — prose wins", tc_name)
 
 
 def stream_directive(

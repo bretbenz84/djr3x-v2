@@ -131,6 +131,63 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
 }
 
 
+class ToolCallRequested(Exception):
+    """Raised by the lean reply stream when the model chose a LIVE tool instead
+    of prose. Deliberately an exception: it unwinds the streaming/TTS machinery
+    before any text is spoken, and the reply pipeline catches it and dispatches
+    to the existing executor for that action."""
+
+    def __init__(self, action: str, args: dict):
+        super().__init__(action)
+        self.action = str(action)
+        self.args = dict(args or {})
+
+
+# Phase 1 live set (docs/tool_router_scope.md): the intent-backed actions where
+# every measured shipped-miss lived, all served by the existing
+# _handle_classified_intent executor. Humor/character keep their working fast
+# lanes and stay shadow-only for now.
+_DEFAULT_LIVE_ACTIONS = (
+    "time.query", "date.query", "weather.query",
+    "status.capabilities", "status.uptime",
+    "vision.describe_scene", "music.options",
+)
+
+
+def live_actions() -> "set[str]":
+    if not bool(getattr(config, "TOOL_ROUTER_LIVE_ENABLED", True)):
+        return set()
+    return {str(a) for a in getattr(config, "TOOL_ROUTER_LIVE_ACTIONS",
+                                    _DEFAULT_LIVE_ACTIONS)}
+
+
+def live_reply_tools() -> "list[dict] | None":
+    """Tool schemas for the LIVE subset only, or None when cutover is off.
+    Attached to the lean reply call — routing rides the call that already
+    happens, so a live tool costs zero extra LLM round-trips."""
+    live = live_actions()
+    if not live:
+        return None
+    tools = [t for t in tool_schemas()
+             if _NAME_TO_KEY.get(t["function"]["name"]) in live]
+    return tools or None
+
+
+def resolve_tool_call(name: str, arguments: str) -> "tuple[str, dict] | None":
+    """(action_key, args) for an accumulated streamed tool call, or None when the
+    name is unknown or the action isn't live (never execute a non-live tool)."""
+    key = _NAME_TO_KEY.get(str(name or "").strip())
+    if key is None or key not in live_actions():
+        return None
+    try:
+        args = json.loads(arguments or "{}")
+        if not isinstance(args, dict):
+            args = {}
+    except json.JSONDecodeError:
+        args = {}
+    return key, args
+
+
 def _tool_name(key: str) -> str:
     return key.replace(".", "_")
 
