@@ -19727,15 +19727,33 @@ def _handle_classified_intent(
                 "right now. Tell them you can't reach the weather service in one "
                 f"Rex-style line. Do NOT make up a temperature or conditions. {tool_scope}"
             )
-        humid_part = ""
+        # Build the full fact sheet (current + forecast) and let the model
+        # answer the user's ACTUAL question from it. Field 2026-08-02: "what
+        # will the high be for the day?" got the current-conditions line
+        # re-spoken because the prompt only ever carried current temp/desc.
+        facts = [f"current conditions: {temp}°F and {desc}"]
+        if w.get("today_high_f") is not None:
+            today_part = f"today's forecast high: {w['today_high_f']}°F"
+            if w.get("today_low_f") is not None:
+                today_part += f", low: {w['today_low_f']}°F"
+            facts.append(today_part)
+        if "tomorrow" in lowered and w.get("tomorrow_high_f") is not None:
+            tomorrow_part = f"tomorrow: high {w['tomorrow_high_f']}°F"
+            if w.get("tomorrow_low_f") is not None:
+                tomorrow_part += f", low {w['tomorrow_low_f']}°F"
+            if w.get("tomorrow_description"):
+                tomorrow_part += f", {w['tomorrow_description']}"
+            facts.append(tomorrow_part)
         if ("humid" in lowered or "muggy" in lowered) and w.get("humidity") is not None:
-            humid_part = f" Humidity is {w['humidity']} percent — include it."
+            facts.append(f"humidity: {w['humidity']} percent")
+        fact_sheet = "; ".join(facts)
         return _say(
-            f"The real current weather in {location} is exactly {temp}°F and "
-            f"{desc}.{humid_part} Tell the user the weather in one Rex-style line. "
-            f"You MUST state the temperature exactly as given ({temp}°F) and the "
-            f"conditions ({desc}) — do not round, do not invent different numbers, "
-            f"do not substitute different conditions. {tool_scope}"
+            f"The real weather facts for {location}: {fact_sheet}. The user asked: "
+            f"{(raw_text or '').strip()!r} — answer THAT question in one Rex-style "
+            "line using ONLY these facts (if they asked for the high, give the "
+            "forecast high, not the current temperature). You MUST state numbers "
+            "exactly as given — do not round, do not invent numbers or conditions, "
+            f"and do not answer with a fact they didn't ask about. {tool_scope}"
         )
 
     if intent == "query_games":

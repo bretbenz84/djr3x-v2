@@ -223,6 +223,27 @@ def fetch_weather(*, force: bool = False, update_world_state: bool = True) -> di
         description = cc["weatherDesc"][0]["value"]
         condition = _weather_code_to_condition(int(cc["weatherCode"]))
         mood_bias, tone_hint = _weather_mood_bias(condition, temp_f)
+        # Forecast: the same j1 payload carries a per-day forecast array.
+        # Parsed non-fatally — a missing/short array just leaves the fields
+        # None (field 2026-08-02: "what will the high be for the day?" had no
+        # data to answer with, so Rex re-spoke the current conditions).
+        today_high_f = today_low_f = None
+        tomorrow_high_f = tomorrow_low_f = None
+        tomorrow_description = None
+        try:
+            days = data.get("weather") or []
+            if days:
+                today_high_f = int(days[0]["maxtempF"])
+                today_low_f = int(days[0]["mintempF"])
+            if len(days) > 1:
+                tomorrow_high_f = int(days[1]["maxtempF"])
+                tomorrow_low_f = int(days[1]["mintempF"])
+                hourly = days[1].get("hourly") or []
+                if hourly:
+                    midday = hourly[min(4, len(hourly) - 1)]  # ~noon slot
+                    tomorrow_description = midday["weatherDesc"][0]["value"]
+        except Exception as exc:
+            _log.debug("[chronoception] forecast parse failed: %s", exc)
         now = _utc_now_iso()
         result = {
             "location": getattr(config, "WEATHER_LOCATION", None),
@@ -232,6 +253,11 @@ def fetch_weather(*, force: bool = False, update_world_state: bool = True) -> di
             "humidity": humidity,
             "wind_mph": wind_mph,
             "description": description,
+            "today_high_f": today_high_f,
+            "today_low_f": today_low_f,
+            "tomorrow_high_f": tomorrow_high_f,
+            "tomorrow_low_f": tomorrow_low_f,
+            "tomorrow_description": tomorrow_description,
             "available": True,
             "source": "wttr.in",
             "fetched_at": now,

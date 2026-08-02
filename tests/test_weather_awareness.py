@@ -64,6 +64,61 @@ class WeatherAwarenessTest(unittest.TestCase):
                 chronoception._weather_cache = old_cache
                 chronoception._weather_fetched_at = old_fetched_at
 
+    def test_fetch_parses_forecast_highs_and_lows(self):
+        # Field 2026-08-02: "what will the high be for the day?" — the fetch
+        # only read current_condition, so the handler had no forecast to speak.
+        from awareness import chronoception
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "current_condition": [
+                        {
+                            "temp_F": "84",
+                            "FeelsLikeF": "85",
+                            "humidity": "40",
+                            "windspeedMiles": "3",
+                            "weatherCode": "113",
+                            "weatherDesc": [{"value": "Sunny"}],
+                        }
+                    ],
+                    "weather": [
+                        {"maxtempF": "104", "mintempF": "64", "hourly": []},
+                        {
+                            "maxtempF": "99",
+                            "mintempF": "62",
+                            "hourly": [
+                                {"weatherDesc": [{"value": "Cloudy"}]},
+                            ] * 8,
+                        },
+                    ],
+                }
+
+        with chronoception._weather_lock:
+            old_cache = chronoception._weather_cache
+            old_fetched_at = chronoception._weather_fetched_at
+            chronoception._weather_cache = None
+            chronoception._weather_fetched_at = 0.0
+        try:
+            with (
+                mock.patch.object(chronoception, "_REQUESTS_OK", True),
+                mock.patch.object(chronoception, "_requests", create=True) as requests_mod,
+            ):
+                requests_mod.get.return_value = FakeResponse()
+                w = chronoception.fetch_weather(force=True, update_world_state=False)
+            self.assertEqual(w["today_high_f"], 104)
+            self.assertEqual(w["today_low_f"], 64)
+            self.assertEqual(w["tomorrow_high_f"], 99)
+            self.assertEqual(w["tomorrow_low_f"], 62)
+            self.assertEqual(w["tomorrow_description"], "Cloudy")
+        finally:
+            with chronoception._weather_lock:
+                chronoception._weather_cache = old_cache
+                chronoception._weather_fetched_at = old_fetched_at
+
     def test_llm_world_summary_includes_weather_and_mood_rule(self):
         from intelligence import llm
 
