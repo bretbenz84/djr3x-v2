@@ -12416,6 +12416,21 @@ def _stream_llm_response(
             answered_question=answered_question,
         )
         agenda_directive = turn_plan.directive
+        # Cancelled-plan empathy (owner note 2026-08-02: "we're not going
+        # anymore" about paddleboarding got "Good, because paddleboarding was
+        # already doing the most" — the persona roasts whatever it hears).
+        # A called-off plan gets warmth, not a victory lap.
+        try:
+            if events_memory.looks_like_cancellation(text):
+                agenda_directive = (
+                    (agenda_directive + " | " if agenda_directive else "")
+                    + "They just called OFF a plan or event. Do NOT say 'good', "
+                    "celebrate, or roast the plan — be warm: one brief beat of "
+                    "sympathy (it sounded fun / that's a shame), then ONE light "
+                    "question about what they're doing instead."
+                )
+        except Exception as exc:
+            _log.debug("cancellation empathy directive skipped: %s", exc)
         frame = social_frame.build_frame(
             text,
             person_id,
@@ -18513,7 +18528,22 @@ _CANCEL_CONTEXT_STOPWORDS = {
 
 
 def _recent_rex_memory_hint() -> str:
-    """Return the last Rex line when it looks like a memory callback."""
+    """Return Rex's recent memory-callback line, for anchoring a generic
+    cancellation ("we're not going anymore") to the event he just raised.
+
+    The consciousness hint is consulted FIRST and trusted WITHOUT the keyword
+    pattern: it is purpose-tagged at speak time (memory_followup / check-ins),
+    which is ground truth. Field 2026-08-02 13:05: the paddleboarding
+    anticipation line ("today's the day for your little aquatic dignity
+    test...") carried no pattern keyword, the old transcript-first check
+    early-returned "", and the cancellation matched nothing — the plan
+    survived to be re-anticipated next boot."""
+    try:
+        text = consciousness.get_last_memory_hint()
+    except Exception:
+        text = ""
+    if text:
+        return text
     try:
         transcript = conv_memory.get_session_transcript()
     except Exception:
@@ -18525,12 +18555,6 @@ def _recent_rex_memory_hint() -> str:
         if text and _MEMORY_HINT_PAT.search(text):
             return text
         return ""
-    try:
-        text = consciousness.get_last_memory_hint()
-    except Exception:
-        text = ""
-    if text and _MEMORY_HINT_PAT.search(text):
-        return text
     return ""
 
 
@@ -18627,9 +18651,15 @@ def _cancel_stale_event_memory(
 
 
 def _event_cancellation_ack(labels: list[str], person_id: Optional[int]) -> str:
+    """Warm, not smug (owner note 2026-08-02: 'good, because paddleboarding was
+    already doing the most' is the wrong energy for a cancelled fun plan —
+    sympathize, then ask what they're doing instead)."""
     del person_id
     label = labels[0] if labels else "that plan"
-    return f"Got it - {label} is no longer on the flight plan."
+    return (
+        f"Ah, that's a shame — {label} sounded like fun. "
+        "You lining up something else instead?"
+    )
 
 
 # "That was JT speaking" / "that wasn't me, that was JT" — a speaker-attribution

@@ -391,10 +391,13 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
     def test_event_cancellation_ack_is_deterministic(self):
         from intelligence import interaction
 
-        self.assertEqual(
-            interaction._event_cancellation_ack(["astrophotography"], 1),
-            "Got it - astrophotography is no longer on the flight plan.",
-        )
+        # Warm, not smug (owner note 2026-08-02): sympathy + a light
+        # what-instead question, never "good"/celebration.
+        ack = interaction._event_cancellation_ack(["astrophotography"], 1)
+        self.assertIn("astrophotography", ack)
+        self.assertIn("shame", ack)
+        self.assertIn("instead", ack)
+        self.assertNotIn("Good", ack)
 
     def test_router_audit_logs_decision_allowlist_legacy_and_final_path(self):
         from intelligence import action_router, interaction
