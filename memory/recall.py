@@ -536,7 +536,9 @@ def conversation_recall_lines(person_id: Optional[int], utterance: str) -> list[
         + (" (evenly sampled — it ran longer)" if len(turns) > len(sampled) else "")
         + ". Summarize it naturally in your own voice — the topics, the memorable "
         "beats, anything funny — like a friend recalling a chat, NOT a minutes "
-        "reading. Never mention logs, records, or transcripts.",
+        "reading. Answer from THIS conversation ONLY: do not mix in things said "
+        "on other days, and never present a recent or upcoming plan as if it was "
+        "discussed back then. Never mention logs, records, or transcripts.",
         f"The conversation ({label}): {rendered}",
     ]
     # Session summaries for the window add the distilled arc when present.
