@@ -11926,6 +11926,16 @@ def _maybe_web_search_reply(
     if not decision.triggered:
         return None
 
+    try:
+        from intelligence import connectivity
+        if connectivity.is_offline():
+            resp = connectivity.no_internet_reply()
+            _log.info("[web_search] offline — refusing in character")
+            _speak_blocking(resp)
+            return resp
+    except ImportError:
+        pass
+
     _log.info("[web_search] triggered (%s) for: %r", decision.reason, text)
 
     # Stall line — spoken immediately and non-blocking so the search latency overlaps

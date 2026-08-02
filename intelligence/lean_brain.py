@@ -585,6 +585,31 @@ def _messages(
     return msgs
 
 
+def _stream_local(messages: list[dict]) -> Generator[str, None, None]:
+    """OFFLINE MODE: stream the reply from the local Ollama model instead of
+    OpenAI. Same messages, no tools (the tool-router surface is hosted-only).
+    A short capability note keeps the small model from promising weather/news
+    it cannot fetch. Raises on failure — callers decide the fallback."""
+    from intelligence import local_llm
+    msgs = list(messages)
+    if msgs and msgs[0].get("role") == "system":
+        msgs[0] = {
+            "role": "system",
+            "content": str(msgs[0].get("content") or "") + (
+                "\n\nIMPORTANT — OFFLINE MODE: your connection to the galactic "
+                "internet is DOWN. You cannot fetch weather, news, or look anything "
+                "up; if asked for those, say your galactic internet link is out — "
+                "in character, briefly. Everything else (chatting, memory, what you "
+                "see) still works. Keep replies SHORT: 1-2 sentences."
+            ),
+        }
+    yield from local_llm.stream_chat(
+        msgs,
+        max_tokens=int(getattr(config, "OFFLINE_LLM_MAX_TOKENS", 90)),
+        timeout_secs=float(getattr(config, "OFFLINE_LLM_TIMEOUT_SECS", 45.0)),
+    )
+
+
 def stream_reply(
     user_text: str,
     person_id: Optional[int] = None,
@@ -593,10 +618,28 @@ def stream_reply(
     turn_directive: Optional[str] = None,
 ) -> Generator[str, None, None]:
     """Stream raw reply chunks from the one lean call. Reuses the shared OpenAI client +
-    llm_compat param contract (so gpt-5.4-mini gets reasoning-off / max_completion_tokens)."""
+    llm_compat param contract (so gpt-5.4-mini gets reasoning-off / max_completion_tokens).
+
+    OFFLINE MODE: when connectivity says the internet is down, the reply comes from
+    the local model instead — degraded, but alive. A hosted-call failure mid-turn
+    triggers one probe and, if the link is genuinely down, retries THIS turn locally
+    (no more 55-second retry storms ending in a hiccup line)."""
     messages = _messages(
         user_text, person_id, transcript, world, turn_directive=turn_directive
     )
+    try:
+        from intelligence import connectivity
+    except Exception:
+        connectivity = None
+    if connectivity is not None and connectivity.is_offline():
+        try:
+            yield from _stream_local(messages)
+            return
+        except Exception as exc:
+            _log.error("[lean] offline local reply failed (%s): %s",
+                       type(exc).__name__, exc)
+            yield "...even my backup brain is struggling. Give me a moment."
+            return
     # Tool-router cutover (docs/tool_router_scope.md Phase 1): the LIVE action
     # subset rides THIS call — the model answers in prose OR calls a tool.
     # Tool-call deltas are accumulated and, when the model chose a tool and
@@ -636,6 +679,16 @@ def stream_reply(
                 yield delta.content
     except Exception as exc:
         _log.error("[lean] stream_reply failed (%s): %s", type(exc).__name__, exc)
+        # Was that the internet dying? One probe decides; if the link is down,
+        # answer THIS turn locally instead of shrugging (field 2026-08-01: the
+        # outage turn burned 55s of retries and ended in the hiccup line).
+        if not yielded and connectivity is not None \
+                and not connectivity.note_failure("lean.stream_reply"):
+            try:
+                yield from _stream_local(messages)
+                return
+            except Exception as exc2:
+                _log.error("[lean] local fallback also failed: %s", exc2)
         yield "...circuits hiccuped. Say that again?"
         return
     if tc_name and not yielded:
@@ -669,6 +722,16 @@ def stream_directive(
     messages = _messages(
         instruction, person_id, transcript, world, label_current_speaker=False
     )
+    # OFFLINE MODE: directives (greetings, reactions, proactive lines) come from
+    # the local model too — still raises on failure so the caller's fallback runs.
+    try:
+        from intelligence import connectivity
+        offline = connectivity.is_offline()
+    except Exception:
+        offline = False
+    if offline:
+        yield from _stream_local(messages)
+        return
     stream = llm_compat.create(
         llm._client,
         model=_model(),
@@ -1354,21 +1417,32 @@ def consider_initiating(
         messages.append({"role": "user", "content": instruction})
 
         parts: list[str] = []
-        stream = llm_compat.create(
-            llm._client,
-            model=_model(),
-            messages=messages,
-            stream=True,
-            max_tokens=int(getattr(config, "LEAN_IMPULSE_MAX_TOKENS", 60)),
-            timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
-        )
-        for chunk in stream:
-            try:
-                delta = chunk.choices[0].delta
-            except (AttributeError, IndexError):
-                continue
-            if getattr(delta, "content", None):
-                parts.append(delta.content)
+        try:
+            from intelligence import connectivity
+            _offline = connectivity.is_offline()
+        except Exception:
+            _offline = False
+        if _offline:
+            # OFFLINE MODE: impulses run on the local model (a skipped impulse is
+            # also fine — any failure lands in the outer except → "").
+            for chunk in _stream_local(messages):
+                parts.append(chunk)
+        else:
+            stream = llm_compat.create(
+                llm._client,
+                model=_model(),
+                messages=messages,
+                stream=True,
+                max_tokens=int(getattr(config, "LEAN_IMPULSE_MAX_TOKENS", 60)),
+                timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
+            )
+            for chunk in stream:
+                try:
+                    delta = chunk.choices[0].delta
+                except (AttributeError, IndexError):
+                    continue
+                if getattr(delta, "content", None):
+                    parts.append(delta.content)
         text = llm.clean_response_text("".join(parts)).strip().strip('"').strip()
         if not text or text.upper() == "PASS" or text.upper().startswith("PASS"):
             return ""  # he chose to just watch

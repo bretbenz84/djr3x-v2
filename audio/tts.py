@@ -878,8 +878,15 @@ def _use_local_backend() -> bool:
     """True when the local Qwen3-TTS engine should render Rex's OWN voice this
     turn: --local-tts mode is on (or the ElevenLabs circuit breaker is open) and
     the model is installed."""
+    offline = False
+    try:
+        from intelligence import connectivity
+        offline = connectivity.is_offline()
+    except Exception:
+        offline = False
     if not (
         bool(getattr(config, "LOCAL_TTS_MODE", False)) or _api_circuit_open()
+        or offline
     ):
         return False
     try:

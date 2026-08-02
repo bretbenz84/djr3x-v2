@@ -26,7 +26,8 @@ import apikeys
 from openai import OpenAI
 
 _log = logging.getLogger(__name__)
-_client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
+from intelligence import connectivity as _connectivity
+_client = _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "empathy")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

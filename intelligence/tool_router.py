@@ -36,7 +36,8 @@ from intelligence.action_router import ACTION_SPECS
 from openai import OpenAI
 
 _log = logging.getLogger(__name__)
-_client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
+from intelligence import connectivity as _connectivity
+_client = _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "tool_router")
 
 # ── tool definitions: action key → (when-hint, JSON-schema properties, required) ──
 # Keep "when" to ONE sentence — it is appended to the spec description and is the

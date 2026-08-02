@@ -680,6 +680,12 @@ def _episodic_shutdown_summary() -> None:
 def _shutdown() -> None:
     logger.info("=== Shutdown sequence begin ===")
 
+    try:
+        from intelligence import connectivity
+        connectivity.stop()
+    except Exception:
+        pass
+
     # GUI/button shutdown can arrive while a multi-sentence reply is streaming.
     # Flush both the active sentence and queued continuations before the power-down
     # clip claims the speaker; otherwise TTS can continue over the shutdown sound
@@ -1351,6 +1357,32 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Speaker ID encoder preload disabled by config.SPEAKER_ID_PRELOAD_ON_STARTUP")
     _preload_breath()
+
+    # Offline mode: seed the connectivity state and register the in-character
+    # announcer. Detection after this point is failure-driven (guarded clients)
+    # + a recovery monitor while offline — no polling while healthy.
+    try:
+        from intelligence import connectivity
+
+        def _announce_connectivity(online: bool) -> None:
+            if state.get_state() != State.ACTIVE:
+                return
+            try:
+                from audio import speech_queue as _sq
+                line = (connectivity.online_announcement() if online
+                        else connectivity.offline_announcement())
+                _sq.enqueue(line, "concerned" if not online else "excited",
+                            priority=1, log_text=True)
+            except Exception as exc:
+                logger.debug("connectivity announcement failed: %s", exc)
+
+        connectivity.add_listener(_announce_connectivity)
+        if connectivity.check_now():
+            logger.info("Connectivity: online at startup")
+        else:
+            logger.warning("Connectivity: OFFLINE at startup — local models only")
+    except Exception as exc:
+        logger.warning("connectivity init failed: %s", exc)
 
     _abort_startup_if_shutdown("local LLM preload")
     logger.info("Pre-loading local LLM...")

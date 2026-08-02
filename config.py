@@ -1381,6 +1381,24 @@ LEAN_BACKGROUND_BUDGET = 10
 CONVERSATION_LOG_ENABLED = True
 RECALL_CONVO_MAX_TURNS = 40          # max logged turns injected (evenly sampled)
 
+# ── Offline mode (intelligence/connectivity.py) ──────────────────────────────────
+# When the Mac loses internet the program DEGRADES instead of stopping: replies,
+# greetings, and impulses route to the local Ollama model; TTS goes straight to the
+# local voice; weather/news/web-search and background hosted calls fast-skip instead
+# of each paying a 30s timeout; Rex announces in character that his connection to
+# the galactic internet is down (and when it returns). Detection is failure-driven
+# (every guarded OpenAI client reports failures → one rate-limited probe) plus a
+# recovery re-probe while offline. ASR (Qwen3-ASR) and TTS (Qwen3-TTS) are already
+# local; this closes the reply-brain gap with qwen3.5:2b.
+OFFLINE_MODE_ENABLED = True
+OFFLINE_LLM_MODEL = "qwen3.5:2b"     # the offline reply brain (already pulled)
+OFFLINE_LLM_MAX_TOKENS = 90          # short replies — a 2b model rambles past this
+OFFLINE_LLM_TIMEOUT_SECS = 45.0      # generous: degraded-but-alive beats dead
+OFFLINE_LLM_KEEP_ALIVE = "10m"       # don't pin the 2.7GB offline brain forever
+OFFLINE_PROBE_TIMEOUT_SECS = 1.2     # per-endpoint TCP connect timeout
+OFFLINE_PROBE_MIN_INTERVAL_SECS = 5.0  # failure-driven probes rate limit
+OFFLINE_RECHECK_SECS = 20.0          # recovery poll interval while offline
+
 # ── Semantic recall (embedding relevance) — OPT-IN, default OFF ───────────────────
 # When on, the unified retrieval layer scores topic relevance by EMBEDDING cosine
 # (meaning) instead of stemmed keyword overlap — so an "ocean" topic surfaces a "sailing"

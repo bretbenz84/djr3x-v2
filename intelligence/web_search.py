@@ -47,11 +47,12 @@ _log = logging.getLogger(__name__)
 
 # Dedicated client so the search call's longer timeout never bleeds into the
 # realtime reply clients. Reuses the existing OpenAI key — no new secret.
-_client = OpenAI(
+from intelligence import connectivity as _connectivity
+_client = _connectivity.guard_client(OpenAI(
     api_key=apikeys.OPENAI_API_KEY,
     timeout=float(getattr(config, "WEB_SEARCH_TIMEOUT_SECS", 20.0)),
     max_retries=int(getattr(config, "LLM_MAX_RETRIES", 2)),
-)
+), "web_search")
 
 # Last stall line spoken, so the same one never fires back-to-back.
 _last_stall_line: Optional[str] = None

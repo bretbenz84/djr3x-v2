@@ -195,6 +195,20 @@ def fetch_weather(*, force: bool = False, update_world_state: bool = True) -> di
             _write_weather_to_world_state(result)
         return result
 
+    try:
+        from intelligence import connectivity
+        if connectivity.is_offline():
+            _log.info("fetch_weather skipped — offline mode")
+            result = _weather_unavailable()
+            with _weather_lock:
+                _weather_cache = dict(result)
+                _weather_fetched_at = time.monotonic()
+            if update_world_state:
+                _write_weather_to_world_state(result)
+            return result
+    except ImportError:
+        pass
+
     location = config.WEATHER_LOCATION.replace(" ", "+")
     url = f"https://wttr.in/{location}?format=j1"
     try:

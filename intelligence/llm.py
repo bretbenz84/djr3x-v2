@@ -38,11 +38,12 @@ _log = logging.getLogger(__name__)
 # A client-wide default timeout (the SDK default is 600s) so NO OpenAI call can hang
 # the process for minutes; the streaming reply additionally passes a tighter per-read
 # timeout (see stream_response). max_retries keeps a transient blip from surfacing.
-_client = OpenAI(
+from intelligence import connectivity as _connectivity
+_client = _connectivity.guard_client(OpenAI(
     api_key=apikeys.OPENAI_API_KEY,
     timeout=float(getattr(config, "LLM_REQUEST_TIMEOUT_SECS", 30.0)),
     max_retries=int(getattr(config, "LLM_MAX_RETRIES", 2)),
-)
+), "llm")
 
 def _lenient_json_object(raw: str):
     """Parse a JSON object from a model reply, tolerating ```json fences and prose
@@ -1597,6 +1598,15 @@ def stream_response(
                 return
             _log.warning("[lean] one-voice produced no output — using classic prompt")
         # Only reached when nothing was yielded (got is False) → safe to use the classic prompt.
+    # OFFLINE MODE: the classic prompt is hosted-only — don't burn a timeout on it.
+    try:
+        from intelligence import connectivity
+        if connectivity.is_offline():
+            _log.info("[llm] offline — classic prompt path skipped")
+            yield "...my galactic internet link is down, and my backup brain fumbled that one. Try me again."
+            return
+    except ImportError:
+        pass
     system_prompt = assemble_system_prompt(person_id, agenda_directive=agenda_directive)
     try:
         # Routed through llm_compat so a GPT-5-class conversation model gets the right

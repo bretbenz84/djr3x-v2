@@ -110,7 +110,8 @@ def _get_client():
     try:
         import apikeys
         from openai import OpenAI
-        return OpenAI(api_key=apikeys.OPENAI_API_KEY)
+        from intelligence import connectivity as _connectivity
+        return _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "games")
     except ImportError as exc:
         raise ImportError(f"games requires apikeys and openai: {exc}") from exc
 

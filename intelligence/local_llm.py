@@ -193,6 +193,61 @@ def generate(
     return str(data.get("response") or "").strip()
 
 
+def stream_chat(
+    messages: list[dict],
+    *,
+    model: str | None = None,
+    max_tokens: int = 90,
+    temperature: float = 0.7,
+    timeout_secs: float = 45.0,
+):
+    """Stream a LOCAL conversational reply (offline mode) — /api/chat with
+    stream=True, yielding content chunks like the OpenAI path does.
+
+    Unlike generate() (the sub-second sidecar contract), this is for full Rex
+    replies when the internet is down: a bigger model (OFFLINE_LLM_MODEL, e.g.
+    qwen3.5:2b), a generous timeout, and the same messages shape lean_brain
+    already builds. keep_alive=0 so the offline brain does NOT stay pinned in
+    the 16GB budget alongside the sidecar once the reply finishes; thinking
+    stays off (2b + <think> would burn the whole budget before a word).
+    Raises on transport errors so callers can fall back to a canned line.
+    """
+    use_model = (model or str(getattr(config, "OFFLINE_LLM_MODEL", "")).strip()
+                 or _model())
+    if not wait_for_server(timeout_secs=2.0):
+        raise RuntimeError(f"Ollama server not reachable at {_base_url()}")
+    payload: dict[str, Any] = {
+        "model": use_model,
+        "messages": messages,
+        "stream": True,
+        "keep_alive": getattr(config, "OFFLINE_LLM_KEEP_ALIVE", "10m"),
+        "options": {
+            "temperature": float(temperature),
+            "num_predict": int(max_tokens),
+        },
+    }
+    if _is_thinking_model(use_model):
+        payload["think"] = False
+    import json as _json
+    with requests.post(
+        f"{_base_url()}/api/chat", json=payload, stream=True,
+        timeout=max(1.0, float(timeout_secs)),
+    ) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            try:
+                data = _json.loads(line)
+            except ValueError:
+                continue
+            chunk = ((data.get("message") or {}).get("content") or "")
+            if chunk:
+                yield chunk
+            if data.get("done"):
+                return
+
+
 def unload() -> None:
     """Release the model at process shutdown."""
     if not enabled():

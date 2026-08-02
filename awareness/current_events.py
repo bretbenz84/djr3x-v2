@@ -173,6 +173,13 @@ def refresh_if_stale() -> bool:
                       _path(), d.get("date"), d.get("fetched_at"), _today(),
                       len(d.get("stories") or []))
             return False
+        try:
+            from intelligence import connectivity
+            if connectivity.is_offline():
+                _log.info("[current_events] fetch skipped — offline mode")
+                return False
+        except ImportError:
+            pass
         _log.info("[current_events] cache stale (dated=%s today=%s) — fetching.",
                   _load().get("date"), _today())
         try:

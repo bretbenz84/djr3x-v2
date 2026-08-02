@@ -53,7 +53,8 @@ def _get_client():
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError(f"vision/scene.py requires apikeys and openai: {exc}") from exc
-    return OpenAI(api_key=apikeys.OPENAI_API_KEY)
+    from intelligence import connectivity as _connectivity
+    return _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "vision_scene")
 
 
 def _encode_frame(frame) -> Optional[str]:
