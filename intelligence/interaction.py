@@ -2662,6 +2662,14 @@ def _note_rex_spoke_item(item=None) -> None:
     _note_rex_spoke(getattr(item, "text", None))
 
 
+def note_external_tts(text: Optional[str]) -> None:
+    """Register a line spoken OUTSIDE the speech queue (startup boot/ready lines
+    in main.py play via tts.speak directly) so own-echo rejection covers it.
+    Field 2026-08-01 17:00: the startup ready line was never noted here, its
+    echo transcribed as unknown_voice_1, and Rex greeted his own voice."""
+    _note_rex_spoke(text)
+
+
 def _looks_like_own_echo(text: str) -> bool:
     """True when a transcript near-matches something Rex himself just said."""
     if not bool(getattr(config, "OWN_ECHO_REJECT_ENABLED", True)):
@@ -2673,17 +2681,25 @@ def _looks_like_own_echo(text: str) -> bool:
         return False
     window = float(getattr(config, "OWN_ECHO_WINDOW_SECS", 12.0))
     ratio_floor = float(getattr(config, "OWN_ECHO_SIMILARITY", 0.85))
+    # Inside the capture seam right after a line played, the AEC residual garbles
+    # the echo into homophones ("my circuits are hot" → "my tickets are hot"), so
+    # a looser floor applies to freshly spoken lines only.
+    seam_secs = float(getattr(config, "OWN_ECHO_SEAM_SECS", 8.0))
+    seam_floor = float(getattr(config, "OWN_ECHO_SEAM_SIMILARITY", 0.65))
     now = time.monotonic()
     with _recent_rex_lines_lock:
-        recent = [line for line, at in _recent_rex_lines if (now - at) <= window]
-    for line in recent:
+        recent = [
+            (line, now - at) for line, at in _recent_rex_lines if (now - at) <= window
+        ]
+    for line, age in recent:
         if not line:
             continue
         # Verbatim containment (echo captures are often a clean prefix/suffix of
         # the line) or high overall similarity.
         if norm == line or (len(norm) >= 10 and norm in line):
             return True
-        if difflib.SequenceMatcher(None, norm, line).ratio() >= ratio_floor:
+        floor = seam_floor if age <= seam_secs else ratio_floor
+        if difflib.SequenceMatcher(None, norm, line).ratio() >= floor:
             return True
     return False
 

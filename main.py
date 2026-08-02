@@ -953,7 +953,9 @@ def _start_startup_boot_tts_thread(
                 logger.info("Skipping startup boot TTS — shutdown requested mid-boot.")
                 return
             logger.info("Playing startup boot TTS after %.1fs delay: %s", delay_secs, line)
+            interaction.note_external_tts(line)
             tts.speak(line, emotion)
+            interaction.note_external_tts(line)  # refresh timestamp for the post-play seam
             if not _is_shutdown_state():
                 # Fill the remaining model-warmup gap before the ready line. LOOPED,
                 # not one-shot: the clip is ~1.5 s and the wait it covers is many
@@ -1587,8 +1589,13 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
                 # 2026-07-31 21:56) a blocking speak here froze the whole startup
                 # thread — which in turn wedged the GUI shutdown. Startup must
                 # finish even if this line never finishes playing.
+                def _speak_ready_line() -> None:
+                    interaction.note_external_tts(ready_line)
+                    tts.speak(ready_line, emotion)
+                    interaction.note_external_tts(ready_line)  # refresh for the post-play seam
+
                 _ready_t = threading.Thread(
-                    target=lambda: tts.speak(ready_line, emotion),
+                    target=_speak_ready_line,
                     daemon=True, name="startup_ready_line",
                 )
                 _ready_t.start()

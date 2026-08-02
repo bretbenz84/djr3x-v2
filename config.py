@@ -4108,6 +4108,18 @@ OWN_ECHO_REJECT_ENABLED = True
 OWN_ECHO_WINDOW_SECS = 12.0
 OWN_ECHO_MIN_WORDS = 3
 OWN_ECHO_SIMILARITY = 0.85
+# Looser floor for the capture seam right after a line was spoken. The AEC
+# residual distorts hard enough that Whisper garbles the echo into homophones
+# instead of transcribing it verbatim (field 2026-08-01 17:00: the ready line
+# "my circuits are hot, my takes are hotter" came back 6 s later as
+# unknown_voice_1 saying "my tickets are hot, my tickets are hotter" — 0.70
+# similarity, under the 0.85 floor — and Rex greeted his own echo as a mystery
+# voice). Within SEAM_SECS of the line being spoken, a transcript only needs to
+# clear SEAM_SIMILARITY. Time-gating keeps the false-positive risk small: a
+# 65%-similar transcript arriving seconds after Rex said the line is almost
+# surely him.
+OWN_ECHO_SEAM_SECS = 8.0
+OWN_ECHO_SEAM_SIMILARITY = 0.65
 
 # Seconds of sustained silence after speech before the segment is processed.
 # This is the largest "I stopped talking, why is Rex waiting?" knob -- lowering
