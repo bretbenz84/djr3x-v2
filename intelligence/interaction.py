@@ -2756,9 +2756,17 @@ def _looks_like_own_echo(text: str) -> bool:
     # 44-word "utterance" — each single line only ratio-matched ~0.5, under
     # even the seam floor). Strip every recent line out; if the remainder is
     # a small fraction, the transcript was composed of his own lines.
+    # Wider window than the per-line ratio check: a concatenated echo can
+    # splice a 20s-old line onto a fresh one (field 2026-08-02 13:56).
+    coverage_window = float(getattr(config, "OWN_ECHO_COVERAGE_WINDOW_SECS", 45.0))
+    with _recent_rex_lines_lock:
+        coverage_lines = [
+            line for line, at in _recent_rex_lines
+            if (now - at) <= coverage_window
+        ]
     residue = norm
     matched_any = False
-    for line, _age in recent:
+    for line in coverage_lines:
         if line and len(line) >= 12 and line in residue:
             residue = residue.replace(line, " ")
             matched_any = True
@@ -2779,6 +2787,107 @@ def _speak_async(text: str, emotion: str = "neutral") -> None:
     if speech_queue.is_speaking():
         return
     speech_queue.enqueue(text, emotion, priority=0)
+
+
+# ── Pet-directed speech (field 2026-08-02 13:55: "Come here, Max. Max, come
+# here." fired motion_agency.request_come — the robot DROVE at the speaker off
+# a command aimed at the dog; "Lay down. Lay down." got answered as if Rex were
+# being told to lie down). Two shapes:
+#   1. A known pet name + an imperative in the same utterance — the imperative
+#      belongs to the pet, whatever it is.
+#   2. Bare pet-only commands (lay down / sit / stay / fetch...) that make no
+#      sense addressed to a droid with no lie-down pose — always pet/child-
+#      directed. "come here" / "turn around" are NOT in this set (real Rex
+#      commands); they are only gated when a pet name appears alongside.
+_PET_IMPERATIVE_RE = re.compile(
+    r"\b(?:come(?:\s+(?:here|on))?|sit|stay|down|off|no|heel|fetch|drop\s+it|"
+    r"leave\s+it|lay|lie|go(?:\s+(?:lay|lie|home|outside))?|get\s+(?:down|up|off|over)|"
+    r"good\s+(?:boy|girl)|bad\s+(?:boy|girl)|treat|walkies?)\b",
+    re.IGNORECASE,
+)
+_PET_ONLY_COMMAND_RE = re.compile(
+    r"^\s*(?:(?:go\s+)?(?:lay|lie)(?:\s+down)?|sit(?:\s+down)?|stay|heel|fetch|"
+    r"drop\s+it|leave\s+it|roll\s+over|shake|paw|speak|off|get\s+down|get\s+off|"
+    r"go\s+(?:home|outside|potty)|good\s+(?:boy|girl)|bad\s+(?:boy|girl)|"
+    r"no+|uh\s*huh|come\s+on)"
+    r"(?:\s*[.!,]\s*(?:(?:go\s+)?(?:lay|lie)(?:\s+down)?|sit(?:\s+down)?|stay|"
+    r"heel|fetch|drop\s+it|leave\s+it|roll\s+over|off|get\s+down|no+|uh\s*huh|"
+    r"come\s+on|good\s+(?:boy|girl)))*\s*[.!,]?\s*$",
+    re.IGNORECASE,
+)
+
+
+_REX_NAME_ADDRESS_RE = re.compile(r"\b(?:rex|r3x|r3\s*-?\s*x|dj\s*r3x)\b", re.IGNORECASE)
+_SECOND_PERSON_ASK_RE = re.compile(
+    r"\b(?:can|could|would|will|do|did|are|were|have|should)\s+you\b|"
+    r"\bwhat(?:'s| is| are| do)?\s+you\b|\byour\s+(?:thoughts|opinion|take)\b",
+    re.IGNORECASE,
+)
+
+
+def _group_chatter_directed_evidence(text: str) -> Optional[str]:
+    """Why this turn counts as aimed at Rex during group chatter, else None.
+
+    Deterministic on purpose (runs before any LLM work): name/wake mention, a
+    parsed command, an answer Rex is explicitly waiting on, the query shapes
+    the router recognizes (weather/vision/look), or a second-person ask."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    if _REX_NAME_ADDRESS_RE.search(cleaned):
+        return "name_mention"
+    try:
+        if command_parser.parse(cleaned) is not None:
+            return "command"
+    except Exception:
+        pass
+    try:
+        if consciousness.is_waiting_for_response():
+            return "awaiting_answer"
+    except Exception:
+        pass
+    try:
+        if action_router._WEATHER_QUERY_RE.search(cleaned):
+            return "weather_query"
+        if action_router.has_vision_query_evidence(cleaned):
+            return "vision_query"
+        if action_router.has_directed_look_evidence(cleaned):
+            return "directed_look"
+        # Drive commands ("turn to your left", "back up four feet", "come
+        # here") — nobody says these to another human across the room.
+        if (
+            action_router._MOTION_TURN_RE.search(cleaned)
+            or action_router._MOTION_FWD_RE.search(cleaned)
+            or action_router._MOTION_BACK_RE.search(cleaned)
+            or action_router._MOTION_COME_RE.search(cleaned)
+        ):
+            return "motion_command"
+    except Exception:
+        pass
+    if _SECOND_PERSON_ASK_RE.search(cleaned):
+        return "second_person_ask"
+    return None
+
+
+def _pet_directed_speech(text: str) -> Optional[str]:
+    """Return a reason string when the utterance is aimed at a pet, else None."""
+    if not bool(getattr(config, "PET_DIRECTED_SPEECH_GUARD_ENABLED", True)):
+        return None
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    for raw_name in getattr(config, "PET_NAMES", ()) or ():
+        name = str(raw_name).strip().lower()
+        if not name:
+            continue
+        if re.search(rf"\b{re.escape(name)}\b", lowered) and (
+            _PET_IMPERATIVE_RE.search(lowered)
+        ):
+            return f"pet_name:{name}"
+    if _PET_ONLY_COMMAND_RE.match(cleaned):
+        return "pet_only_command"
+    return None
 
 
 def _audio_group_chatter_active() -> bool:
@@ -21387,6 +21496,48 @@ def _handle_speech_segment(
             final_executed_path = "ignored.group_chatter"
             completed = False
             return
+
+        # Pet-directed speech ("Come here, Max" / "Lay down. Lay down.") is not
+        # for Rex — field 2026-08-02 13:55: the robot drove at Brad off a dog
+        # command. Checked before every reply/command/motion path.
+        pet_reason = _pet_directed_speech(text)
+        if pet_reason and not game_conversation_lock:
+            _log.info(
+                "[interaction] ignoring pet-directed speech (%s): %r",
+                pet_reason, text,
+            )
+            final_executed_path = "ignored.pet_directed"
+            completed = False
+            return
+
+        # KNOWN speakers get gated during group chatter too (field 2026-08-02
+        # 13:48: a 3-person room — once Brad was enrolled, Rex answered every
+        # human-to-human exchange, political banter, and literal self-talk).
+        # A recognized person's cross-talk is still cross-talk: with 2+ humans
+        # trading turns, Rex replies only on DIRECTED evidence and otherwise
+        # listens (the lean impulse still interjects on its own governed
+        # cadence, so he participates by choice, not reflex).
+        if (
+            group_chatter_active
+            and person_id is not None
+            and not identity_prompt_active
+            and not game_conversation_lock
+            and bool(getattr(config, "GROUP_CHATTER_KNOWN_SPEAKER_GATE_ENABLED", True))
+        ):
+            directed = _group_chatter_directed_evidence(text)
+            if directed is None:
+                _log.info(
+                    "[interaction] listening (not replying) — group chatter, no "
+                    "directed evidence, speaker=%r text=%r",
+                    person_name, text,
+                )
+                final_executed_path = "ignored.group_chatter_undirected"
+                completed = False
+                return
+            _log.info(
+                "[interaction] group chatter reply allowed (%s) text=%r",
+                directed, text,
+            )
 
         if not text_input:
             try:

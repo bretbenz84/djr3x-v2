@@ -417,6 +417,10 @@ _visit_started_at: dict = {}
 # animal_1/animal_2 IDs returned by the vision prompt.
 _animal_seen_signatures: set[str] = set()
 _animal_reacted_at: dict[str, float] = {}
+# Species-level announce cooldown (owner 2026-08-02: the dog running in and out
+# of frame re-announced "small furry lifeform" repeatedly — the per-signature
+# cooldown keys on species:POSITION, so every new position was a "new" animal).
+_animal_species_reacted_at: dict[str, float] = {}
 _pending_animal_arrivals: dict[str, dict] = {}
 _last_startle_sound_reaction_at: float = 0.0
 
@@ -2098,6 +2102,11 @@ def _stage_animal_arrivals(snapshot: dict) -> None:
         if signature in _pending_animal_arrivals:
             _pending_animal_arrivals[signature]["last_seen_at"] = now
             continue
+        species = (animal.get("species") or "creature").strip().lower()
+        species_cooldown = float(getattr(
+            config, "ANIMAL_SPECIES_REMARK_COOLDOWN_SECS", 300.0))
+        if (now - _animal_species_reacted_at.get(species, 0.0)) < species_cooldown:
+            continue          # same creature roaming in/out of frame — one remark per window
         if signature in prev_animal_signatures:
             continue
         if (now - _animal_reacted_at.get(signature, 0.0)) < animal_cooldown:
@@ -2175,6 +2184,8 @@ def _fire_pending_animal_arrival_reaction() -> bool:
             # reaction — under ENFORCE a losing candidate must not pop the queue.
             _prime_emotion_frame(frame)
             _animal_reacted_at[signature] = now
+            _animal_species_reacted_at[
+                (species or "creature").strip().lower()] = now
             _pending_animal_arrivals.pop(signature, None)
             episodic_hooks.animal(species, position)  # "I saw a dog" → rex.db
             _log.info(
@@ -12746,6 +12757,7 @@ def start() -> None:
     _last_presence_reaction_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()
+    _animal_species_reacted_at.clear()
     _pending_animal_arrivals.clear()
     _update_unknown_streak(False)   # reset unknown-face persistence streak
     _last_startle_sound_reaction_at = 0.0
@@ -12886,6 +12898,7 @@ def stop() -> None:
     _first_sight_seen_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()
+    _animal_species_reacted_at.clear()
     _pending_animal_arrivals.clear()
     _last_startle_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()

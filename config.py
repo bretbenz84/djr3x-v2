@@ -2049,6 +2049,25 @@ ASR_MAX_WORDS_PER_SEC = 6.0
 # same field event): after stripping every recent Rex line from a transcript,
 # a residue below this fraction ⇒ own echo, rejected.
 OWN_ECHO_MAX_RESIDUE_FRAC = 0.2
+# Coverage check looks back FURTHER than the per-line ratio window: a
+# concatenated echo can splice a 20s-old line onto a fresh one (field
+# 2026-08-02 13:56: "On my way. Brad, daringly specific." — 20s + 10s old).
+OWN_ECHO_COVERAGE_WINDOW_SECS = 45.0
+
+# ── Group-room behavior (field 2026-08-02 13:48: 3-person session) ───────────
+# Pet-directed speech guard: "Come here, Max" drove the robot at the speaker;
+# "Lay down" got answered as if Rex were being told to lie down. Names listed
+# here + bare pet-only command shapes are treated as not-for-Rex.
+PET_DIRECTED_SPEECH_GUARD_ENABLED = _env_bool("PET_DIRECTED_SPEECH_GUARD_ENABLED", True)
+PET_NAMES = ("Max",)
+# During group chatter (2+ humans trading turns), KNOWN speakers are gated
+# too: Rex replies only on directed evidence (name mention, parsed command,
+# awaited answer, query shapes, second-person ask) and otherwise listens.
+# The lean impulse still interjects on its governed cadence.
+GROUP_CHATTER_KNOWN_SPEAKER_GATE_ENABLED = _env_bool("GROUP_CHATTER_KNOWN_SPEAKER_GATE_ENABLED", True)
+# One species-level animal announce per window — the per-signature cooldown
+# keys on species:position, so a dog roaming the room re-announced itself.
+ANIMAL_SPECIES_REMARK_COOLDOWN_SECS = _env_float("ANIMAL_SPECIES_REMARK_COOLDOWN_SECS", 300.0, min_value=0.0, max_value=86400.0)
 
 # Whole-utterance homophone fixes — applied ONLY when the phrase IS the entire
 # utterance (optionally wrapped in "hey rex"/"please"), never inside a longer
