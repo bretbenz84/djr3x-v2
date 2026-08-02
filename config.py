@@ -7888,6 +7888,31 @@ CURRENT_EVENTS_TIMEOUT_SECS = _env_float("CURRENT_EVENTS_TIMEOUT_SECS", 45.0, mi
 # shared via CALLBACK_LULL_MIN_SILENCE/ACTIVE_WINDOW). One story per session,
 # long global cooldown, priority just below lull callbacks so banked personal
 # humor wins a tie — news is the B-material.
+# ── Interest-tailored news + interest discovery (2026-08-02) ─────────────────
+# When Rex knows the engaged person's interests (memory/interests.py), their top
+# topics each get ONE web-search news fetch per day (globally cached by topic,
+# budget-capped below) and an unspent interest story beats the generic headline
+# pool in the lull-news cue — "seen the new Strange New Worlds episode?" instead
+# of world news. COST NOTE: adds up to INTEREST_NEWS_MAX_TOPICS_PER_DAY hosted
+# web-search calls/day on top of the existing 1/day general fetch.
+INTEREST_NEWS_ENABLED = _env_bool("INTEREST_NEWS_ENABLED", True)
+INTEREST_NEWS_TOPICS_PER_PERSON = _env_int("INTEREST_NEWS_TOPICS_PER_PERSON", 3, min_value=1, max_value=8)
+INTEREST_NEWS_MAX_TOPICS_PER_DAY = _env_int("INTEREST_NEWS_MAX_TOPICS_PER_DAY", 4, min_value=1, max_value=20)
+INTEREST_NEWS_STORY_COUNT = _env_int("INTEREST_NEWS_STORY_COUNT", 3, min_value=1, max_value=8)
+INTEREST_NEWS_MAX_OUTPUT_TOKENS = _env_int("INTEREST_NEWS_MAX_OUTPUT_TOKENS", 700, min_value=200, max_value=4000)
+# Interest DISCOVERY: in a lull with a known person whose stored interests are
+# still sparse (< MAX_KNOWN), Rex asks what they're into that they haven't
+# shared ("so, is there anything you're into you haven't told me before?").
+# The answer is harvested by the normal interest extractor. Durably marked per
+# person per REASK_DAYS period, so restarts don't re-ask.
+INTEREST_DISCOVERY_ENABLED = _env_bool("INTEREST_DISCOVERY_ENABLED", True)
+INTEREST_DISCOVERY_MAX_KNOWN = _env_int("INTEREST_DISCOVERY_MAX_KNOWN", 5, min_value=1, max_value=20)
+INTEREST_DISCOVERY_REASK_DAYS = _env_int("INTEREST_DISCOVERY_REASK_DAYS", 10, min_value=1, max_value=90)
+# Classic-brain (LEAN_BRAIN_ENABLED=False) fallback step tuning.
+INTEREST_DISCOVERY_COOLDOWN_SECS = _env_float("INTEREST_DISCOVERY_COOLDOWN_SECS", 1800.0, min_value=0.0, max_value=86400.0)
+INTEREST_DISCOVERY_PRIORITY = _env_int("INTEREST_DISCOVERY_PRIORITY", 52, min_value=1, max_value=100)
+INTEREST_DISCOVERY_RESPONSE_WAIT_SECS = _env_float("INTEREST_DISCOVERY_RESPONSE_WAIT_SECS", 20.0, min_value=0.0, max_value=120.0)
+
 NEWS_REMARK_PRIORITY = _env_int("NEWS_REMARK_PRIORITY", 54, min_value=1, max_value=100)
 NEWS_REMARK_SESSION_CAP = _env_int("NEWS_REMARK_SESSION_CAP", 1, min_value=0, max_value=10)
 NEWS_REMARK_COOLDOWN_SECS = _env_float("NEWS_REMARK_COOLDOWN_SECS", 900.0, min_value=0.0, max_value=86400.0)

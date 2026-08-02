@@ -987,6 +987,33 @@ _PLACE_QUESTION_INSTRUCTION = (
 )
 
 
+_INTEREST_NEWS_INSTRUCTION = (
+    "[You remember that {who} loves {interest_topic}, and you read some recent "
+    "news about it. The conversation just hit a lull — the perfect moment to "
+    "bring THEM something on THEIR topic.]\n"
+    "{situation}"
+    "The story: {headline} — {summary} Bring it up in ONE short in-character line "
+    "aimed at {who} PERSONALLY (\"have you seen the new ...\" / \"did you catch "
+    "...\" energy — you remembered their interest and found them something). "
+    "Tease the concrete detail and invite them in; do NOT recite the whole "
+    "summary or turn into a news anchor. Tell THIS story faithfully — do NOT "
+    "substitute a different story, change what happened, or invent details "
+    "beyond the summary. You MUST give the one line; do not reply PASS."
+)
+
+
+_INTEREST_DISCOVERY_INSTRUCTION = (
+    "[You realize you know surprisingly little about what {who} is actually "
+    "into, and the conversation just hit a lull — a natural moment to ask.]\n"
+    "{situation}"
+    "{known_part}In ONE short, warm, in-character line, ask what they're into "
+    "that they haven't told you about yet — hobbies, shows, games, obsessions "
+    "(\"so, is there anything you're into you haven't told me before?\" "
+    "energy). One genuine question; at most two example categories. You MUST "
+    "ask the one question; do not reply PASS."
+)
+
+
 _NEWS_INSTRUCTION = (
     "[You read some news earlier and the conversation just hit a lull — a natural "
     "moment to bring it up, the way anyone mentions something they read.]\n"
@@ -1291,6 +1318,7 @@ def consider_initiating(
     place_question: Optional[dict] = None,
     room_question: Optional[dict] = None,
     weekend_plans: Optional[dict] = None,
+    interest_discovery: Optional[dict] = None,
     news_story: Optional[dict] = None,
     low_energy: bool = False,
     no_questions: bool = False,
@@ -1361,6 +1389,25 @@ def consider_initiating(
                 who=who,
                 situation=situation,
                 weekend_when=str(weekend_plans.get("when") or "coming up"),
+            )
+        elif interest_discovery:
+            known = str(interest_discovery.get("known") or "").strip()
+            known_part = (
+                f"You already know they're into: {known}. Ask about something "
+                "NEW — not those. " if known else ""
+            )
+            instruction = _INTEREST_DISCOVERY_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                known_part=known_part,
+            )
+        elif news_story and news_story.get("interest_topic"):
+            instruction = _INTEREST_NEWS_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                interest_topic=str(news_story.get("interest_topic")),
+                headline=str(news_story.get("headline") or "something in the news"),
+                summary=str(news_story.get("summary") or ""),
             )
         elif news_story:
             instruction = _NEWS_INSTRUCTION.format(

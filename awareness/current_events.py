@@ -245,3 +245,172 @@ def mark_mentioned(story: dict) -> None:
                 break
         if changed:
             _save(data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Interest-tailored news (per-topic daily cache)
+# ─────────────────────────────────────────────────────────────────────────────
+# Rex knows people's interests (memory/interests.py). When a known person is
+# engaged in conversation, their top interests get a per-TOPIC news fetch (one
+# web-search call per topic per day, capped by INTEREST_NEWS_MAX_TOPICS_PER_DAY)
+# so a lull can open with "seen the new Strange New Worlds episode?" instead of
+# generic headlines. Topics are cached globally (not per person) so two people
+# who both love volleyball share one fetch. Stored in the same JSON under
+# "interest_news": {"<topic>": {"date": ..., "fetched_at": ..., "stories": [...]}}.
+
+_interest_fetches_today: dict = {"date": None, "count": 0}
+_interest_refresh_inflight: set = set()
+
+
+def _norm_topic(topic: str) -> str:
+    return re.sub(r"\s+", " ", str(topic or "").strip().lower())[:60]
+
+
+def _fetch_interest_news_via_web_search(topic: str) -> list:
+    """One Responses-API web-search call for recent news about ``topic``."""
+    from intelligence.web_search import _client, _search_model, strip_links
+
+    n = int(getattr(config, "INTEREST_NEWS_STORY_COUNT", 3))
+    today_h = datetime.now().strftime("%B %d, %Y")
+    prompt = (
+        f"Today is {today_h}. Search the web for the most recent, notable news "
+        f"about: {topic}. Return the {n} freshest CONCRETE items — a release, an "
+        "episode, a match result, a discovery, an announcement, an event. Recency "
+        "matters: prefer this week over this month. NEVER describe outlets, "
+        "homepages, or coverage itself. Skip rumors and paywalled minutiae. "
+        "Return STRICT JSON only — an array of objects:\n"
+        '[{"headline": "short headline", "summary": "1-2 plain sentences with '
+        'the concrete facts", "topic": "one-or-two-word category"}]'
+    )
+    model = _search_model() or str(getattr(config, "WEB_SEARCH_FALLBACK_MODEL", "gpt-4o-mini"))
+    resp = _client.responses.create(
+        model=model,
+        input=prompt,
+        tools=[{"type": "web_search"}],
+        max_output_tokens=int(getattr(config, "INTEREST_NEWS_MAX_OUTPUT_TOKENS", 700)),
+        timeout=float(getattr(config, "CURRENT_EVENTS_TIMEOUT_SECS", 45.0)),
+    )
+    text = (getattr(resp, "output_text", None) or "").strip()
+    parsed = _parse_stories(text)
+    for s in parsed:
+        s["summary"] = strip_links(s["summary"])
+        s["headline"] = strip_links(s["headline"])
+    return parsed
+
+
+def _interest_cache_fresh(entry: Optional[dict]) -> bool:
+    return bool(entry) and entry.get("date") == _today()
+
+
+def refresh_interest_news(topics: list) -> None:
+    """Fetch today's news for each stale topic (blocking — call from a
+    background thread). Respects the daily fetch budget; failures keep any
+    previous day's entry (day-old beats none, same rule as the main cache)."""
+    if not bool(getattr(config, "INTEREST_NEWS_ENABLED", True)):
+        return
+    try:
+        from intelligence import connectivity
+        if connectivity.is_offline():
+            return
+    except ImportError:
+        pass
+    budget = int(getattr(config, "INTEREST_NEWS_MAX_TOPICS_PER_DAY", 4))
+    for raw_topic in topics:
+        topic = _norm_topic(raw_topic)
+        if not topic:
+            continue
+        with _lock:
+            if _interest_fetches_today["date"] != _today():
+                _interest_fetches_today.update(date=_today(), count=0)
+            entry = (_load().get("interest_news") or {}).get(topic)
+            if _interest_cache_fresh(entry):
+                continue
+            if _interest_fetches_today["count"] >= budget:
+                _log.info("[interest_news] daily fetch budget (%d) spent — %r waits", budget, topic)
+                return
+            if topic in _interest_refresh_inflight:
+                continue
+            _interest_refresh_inflight.add(topic)
+            _interest_fetches_today["count"] += 1
+        try:
+            fetched = _fetch_interest_news_via_web_search(topic)
+        except Exception as exc:
+            _log.warning("[interest_news] fetch failed for %r (%s) — keeping previous.", topic, exc)
+            fetched = []
+        finally:
+            with _lock:
+                _interest_refresh_inflight.discard(topic)
+        if not fetched:
+            continue
+        with _lock:
+            data = _load()
+            data.setdefault("interest_news", {})[topic] = {
+                "date": _today(),
+                "fetched_at": datetime.now().isoformat(timespec="seconds"),
+                "stories": fetched,
+            }
+            _save(data)
+        for s in fetched:
+            _log.info("[interest_news] %s: %s", topic, s["headline"])
+
+
+def start_interest_refresh(topics: list) -> None:
+    """Fire-and-forget background refresh for a person's interest topics.
+    Cheap no-op when everything is fresh or the budget is spent."""
+    clean = [_norm_topic(t) for t in (topics or []) if _norm_topic(t)]
+    if not clean:
+        return
+    stale = []
+    with _lock:
+        cache = _load().get("interest_news") or {}
+        for t in clean:
+            if not _interest_cache_fresh(cache.get(t)) and t not in _interest_refresh_inflight:
+                stale.append(t)
+    if not stale:
+        return
+    threading.Thread(
+        target=refresh_interest_news, args=(stale,), daemon=True,
+        name="interest-news-refresh",
+    ).start()
+
+
+def pick_interest_story(topics: list) -> Optional[tuple]:
+    """First not-yet-mentioned story across the given topics (today's or
+    yesterday's entry, same freshness bar as pick_story). Returns
+    (topic, story) or None."""
+    d = _load()
+    cache = d.get("interest_news") or {}
+    max_age_h = float(getattr(config, "CURRENT_EVENTS_MAX_AGE_HOURS", 36.0))
+    for raw_topic in topics:
+        topic = _norm_topic(raw_topic)
+        entry = cache.get(topic)
+        if not entry:
+            continue
+        try:
+            fetched = datetime.fromisoformat(str(entry.get("fetched_at") or ""))
+            if (datetime.now() - fetched).total_seconds() / 3600.0 > max_age_h:
+                continue
+        except Exception:
+            continue
+        for s in entry.get("stories") or []:
+            if not s.get("mentioned"):
+                return topic, dict(s)
+    return None
+
+
+def mark_interest_story_mentioned(topic: str, story: dict) -> None:
+    """Persist the spent flag for an interest story (offered at most once)."""
+    if not story:
+        return
+    topic = _norm_topic(topic)
+    with _lock:
+        data = _load()
+        entry = (data.get("interest_news") or {}).get(topic) or {}
+        changed = False
+        for s in entry.get("stories") or []:
+            if s.get("headline") == story.get("headline") and not s.get("mentioned"):
+                s["mentioned"] = True
+                changed = True
+                break
+        if changed:
+            _save(data)

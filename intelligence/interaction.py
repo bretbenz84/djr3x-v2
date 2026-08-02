@@ -4902,9 +4902,31 @@ def _lean_room_question_cue() -> Optional[dict]:
         return None
 
 
-def _lean_news_cue() -> Optional[dict]:
-    """Offer ONE of today's cached stories ("did you hear about ...?"). One per
-    session; each story offered at most once ever (spent on-spoke)."""
+def _person_interest_topics(person_id: Optional[int]) -> list[str]:
+    """The person's top stored interest names for tailored news ([] unknown)."""
+    if person_id is None:
+        return []
+    try:
+        from memory import interests as interests_memory
+        rows = interests_memory.get_interests_for_prompt(
+            int(person_id),
+            limit=int(getattr(config, "INTEREST_NEWS_TOPICS_PER_PERSON", 3)),
+        ) or []
+        return [str(r.get("name") or "").strip() for r in rows
+                if len(str(r.get("name") or "").strip()) >= 3]
+    except Exception as exc:
+        _log.debug("[lean] interest topics lookup failed: %s", exc)
+        return []
+
+
+def _lean_news_cue(person_id: Optional[int] = None) -> Optional[dict]:
+    """Offer ONE cached story ("did you hear about ...?"). One per session;
+    each story offered at most once ever (spent on-spoke).
+
+    Interest-tailored first: when Rex knows the person's interests, their
+    topics get a per-topic daily news fetch (background, budget-capped) and an
+    unspent interest story beats the generic headline pool — "seen the new
+    Strange New Worlds episode?" instead of world news."""
     global _lean_news_mentioned_this_session
     if _lean_news_mentioned_this_session:
         return None
@@ -4912,6 +4934,17 @@ def _lean_news_cue() -> Optional[dict]:
         return None
     try:
         from awareness import current_events
+        if bool(getattr(config, "INTEREST_NEWS_ENABLED", True)):
+            topics = _person_interest_topics(person_id)
+            if topics:
+                current_events.start_interest_refresh(topics)
+                picked = current_events.pick_interest_story(topics)
+                if picked:
+                    topic, story = picked
+                    return {"headline": story["headline"],
+                            "summary": story["summary"],
+                            "topic": story.get("topic") or "",
+                            "interest_topic": topic}
         story = current_events.pick_story()
         if not story:
             return None
@@ -4919,6 +4952,38 @@ def _lean_news_cue() -> Optional[dict]:
                 "topic": story.get("topic") or ""}
     except Exception as exc:
         _log.debug("[lean] news cue lookup failed: %s", exc)
+        return None
+
+
+def _lean_interest_discovery_cue(person_id: Optional[int]) -> Optional[dict]:
+    """Offer the "so, what are you into that you haven't told me?" discovery
+    ask — the catalogue-builder behind interest-tailored news. Fires only for
+    a KNOWN person whose stored interests are still sparse
+    (< INTEREST_DISCOVERY_MAX_KNOWN), at most once per
+    INTEREST_DISCOVERY_REASK_DAYS per person (durable mark, so restarts don't
+    re-ask). The ANSWER is harvested by the normal post-turn interest
+    extractor — this cue only asks."""
+    if person_id is None or not bool(getattr(config, "INTEREST_DISCOVERY_ENABLED", True)):
+        return None
+    try:
+        from memory import interests as interests_memory
+        max_known = int(getattr(config, "INTEREST_DISCOVERY_MAX_KNOWN", 5))
+        known = interests_memory.get_interests_for_prompt(
+            int(person_id), limit=max_known
+        ) or []
+        if len(known) >= max_known:
+            return None
+        from datetime import date as _date
+        period_days = max(1, int(getattr(config, "INTEREST_DISCOVERY_REASK_DAYS", 10)))
+        topic_key = f"interest_discovery:{_date.today().toordinal() // period_days}"
+        if rel_memory.was_proactive_asked(int(person_id), topic_key):
+            return None
+        known_names = ", ".join(
+            str(r.get("name") or "").strip() for r in known if r.get("name")
+        )
+        return {"topic_key": topic_key, "known": known_names}
+    except Exception as exc:
+        _log.debug("[lean] interest-discovery cue lookup failed: %s", exc)
         return None
 
 
@@ -5318,6 +5383,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     place_question = None
     room_question = None
     weekend_plans = None
+    interest_discovery = None
     news_story = None
     world = _lean_world()
     transcript = _lean_recent_transcript("")
@@ -5386,11 +5452,19 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             weekend_plans = _lean_weekend_plans_cue(person_id)
         except Exception as exc:
             _log.debug("weekend-plans Lean cue lookup failed: %s", exc)
+    # Interest discovery ("what are you into that you haven't told me?") is
+    # personal like weekend plans — it beats news, loses to everything richer,
+    # and never fires at a tired user or with the question budget spent.
+    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans and not low_energy and not no_questions:
+        try:
+            interest_discovery = _lean_interest_discovery_cue(person_id)
+        except Exception as exc:
+            _log.debug("[lean] interest-discovery cue failed: %s", exc)
     # News beats the diary musing (fresher material) but loses to everything
     # personal. Its own session cap + spend-once live in the cue/bookkeeping.
-    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans:
-        news_story = _lean_news_cue()
-    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans and not news_story:
+    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery:
+        news_story = _lean_news_cue(person_id)
+    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not news_story:
         try:
             memory_musing = _lean_memory_musing_cue(person_id)
         except Exception as exc:
@@ -5414,6 +5488,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             place_question=place_question,
             room_question=room_question,
             weekend_plans=weekend_plans,
+            interest_discovery=interest_discovery,
             news_story=news_story,
             low_energy=low_energy,
             no_questions=no_questions,
@@ -5589,11 +5664,22 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 rel_memory.mark_proactive_asked(person_id, weekend_plans["topic_key"])
             except Exception as exc:
                 _log.debug("[lean] weekend-plans mark failed: %s", exc)
+        if interest_discovery:
+            # Durable per-period mark so the discovery ask can't repeat across runs.
+            try:
+                rel_memory.mark_proactive_asked(person_id, interest_discovery["topic_key"])
+            except Exception as exc:
+                _log.debug("[lean] interest-discovery mark failed: %s", exc)
         if news_story:
             _lean_news_mentioned_this_session = True
             try:
                 from awareness import current_events
-                current_events.mark_mentioned(news_story)
+                if news_story.get("interest_topic"):
+                    current_events.mark_interest_story_mentioned(
+                        news_story["interest_topic"], news_story
+                    )
+                else:
+                    current_events.mark_mentioned(news_story)
             except Exception as exc:
                 _log.debug("[lean] news spend failed: %s", exc)
         if memory_musing:

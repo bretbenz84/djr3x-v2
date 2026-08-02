@@ -7642,9 +7642,36 @@ def _step_news_remark(snapshot: dict, profile: SituationProfile) -> None:
         if not profile.rapid_exchange:
             return
 
+    # Interest-tailored first: when the engaged person is known and has stored
+    # interests, prefer news about THEIR topics ("seen the new Strange New
+    # Worlds episode?") over the generic headline pool. The per-topic fetch is
+    # kicked in the background here (daily-cached, budget-capped), so the
+    # first lull of a session may still serve general news while it lands.
     try:
         from awareness import current_events
-        story = current_events.pick_story()
+    except Exception as exc:
+        _log.debug("news remark step error: %s", exc)
+        return
+
+    first_name = ""
+    interest_topics: list[str] = []
+    if bool(getattr(config, "INTEREST_NEWS_ENABLED", True)):
+        try:
+            interest_topics, first_name = _engaged_interest_topics(engaged_id)
+            if interest_topics:
+                current_events.start_interest_refresh(interest_topics)
+        except Exception as exc:
+            _log.debug("interest news refresh kick failed: %s", exc)
+
+    story = None
+    interest_topic = None
+    try:
+        if interest_topics:
+            picked = current_events.pick_interest_story(interest_topics)
+            if picked:
+                interest_topic, story = picked
+        if story is None:
+            story = current_events.pick_story()
     except Exception as exc:
         _log.debug("news remark step error: %s", exc)
         return
@@ -7654,26 +7681,166 @@ def _step_news_remark(snapshot: dict, profile: SituationProfile) -> None:
     _last_news_remark_at = now          # armed at submit (anti-resubmit); the
     _news_remarks_this_session += 1     # story itself is spent only on_spoke
 
-    prompt = (
-        "You read some news this morning and a conversational lull just opened. "
-        f"The story: {story['headline']} — {story['summary']} "
-        "Bring it up naturally in ONE short in-character line that INVITES the "
-        "other person into the topic (\"hey, did you hear about ...\" energy — "
-        "a conversation opener, not a news broadcast). Don't recite the whole "
-        "summary; tease the interesting part and let them ask."
-    )
+    if interest_topic:
+        who = first_name or "the person you're with"
+        prompt = (
+            f"You know {who} loves {interest_topic}, and you read some news on it. "
+            f"The story: {story['headline']} — {story['summary']} "
+            "A conversational lull just opened — bring it up naturally in ONE "
+            f"short in-character line aimed at {who} PERSONALLY (\"have you seen/"
+            "heard ...\" energy — you remembered their interest and found them "
+            "something). Tease the concrete detail, invite them in, don't recite "
+            "the summary."
+        )
+        label = f"interest news lull remark ({interest_topic})"
+        on_spoke = (lambda t=interest_topic, s=story:
+                    current_events.mark_interest_story_mentioned(t, s))
+    else:
+        prompt = (
+            "You read some news this morning and a conversational lull just opened. "
+            f"The story: {story['headline']} — {story['summary']} "
+            "Bring it up naturally in ONE short in-character line that INVITES the "
+            "other person into the topic (\"hey, did you hear about ...\" energy — "
+            "a conversation opener, not a news broadcast). Don't recite the whole "
+            "summary; tease the interesting part and let them ask."
+        )
+        label = "news lull remark"
+        on_spoke = lambda s=story: current_events.mark_mentioned(s)
+
     _log.info(
-        "consciousness: news remark candidate after %.1fs quiet (story=%r)",
-        quiet_for, story["headline"],
+        "consciousness: news remark candidate after %.1fs quiet (interest=%s story=%r)",
+        quiet_for, interest_topic or "-", story["headline"],
     )
     _generate_and_speak(
         prompt,
         emotion="amused",
         purpose="news_remark",
         priority=int(getattr(config, "NEWS_REMARK_PRIORITY", 54)),
-        label="news lull remark",
+        label=label,
         metadata={"topic_key": f"news:{story['headline'][:60]}"},
-        on_spoke=lambda: current_events.mark_mentioned(story),
+        on_spoke=on_spoke,
+    )
+
+
+def _engaged_interest_topics(person_db_id: Optional[int]) -> "tuple[list[str], str]":
+    """The engaged person's top interest names (for tailored news) and their
+    first name. ([], "") for unknown people or on any failure."""
+    if person_db_id is None:
+        return [], ""
+    try:
+        from memory import interests as interests_mem
+        from memory import people as people_mem
+        rows = interests_mem.get_interests_for_prompt(
+            int(person_db_id),
+            limit=int(getattr(config, "INTEREST_NEWS_TOPICS_PER_PERSON", 3)),
+        ) or []
+        topics = [str(r.get("name") or "").strip() for r in rows]
+        topics = [t for t in topics if len(t) >= 3]
+        name = ""
+        try:
+            person = people_mem.get_person(int(person_db_id)) or {}
+            name = str(person.get("name") or "").strip().split()[0] if person.get("name") else ""
+        except Exception:
+            name = ""
+        return topics, name
+    except Exception as exc:
+        _log.debug("engaged interest topics lookup failed: %s", exc)
+        return [], ""
+
+
+_last_interest_discovery_at: float = 0.0
+_interest_discovery_sessions_asked: set = set()
+
+
+def _step_interest_discovery(snapshot: dict, profile: SituationProfile) -> None:
+    """Lull question that grows the interest catalogue: when the engaged person
+    has FEW stored interests, ask what they're into that they haven't shared
+    ("so, is there anything you're into you haven't told me before?"). The
+    normal extraction pipeline harvests the answer — this step only asks.
+
+    Same lull envelope as the news remark but rarer: once per person per
+    session, a long cooldown, and it stands down entirely once the catalogue
+    is rich (INTEREST_DISCOVERY_MAX_KNOWN — the point is filling gaps for NEW
+    people, who today are barely asked about themselves)."""
+    global _last_interest_discovery_at
+
+    if not bool(getattr(config, "INTEREST_DISCOVERY_ENABLED", True)):
+        return
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if not profile.conversation_active:
+        return
+    if is_waiting_for_response() or not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    if (now - _last_interest_discovery_at) < float(
+        getattr(config, "INTEREST_DISCOVERY_COOLDOWN_SECS", 1800.0)
+    ):
+        return
+    min_silence = float(getattr(config, "CALLBACK_LULL_MIN_SILENCE_SECS", 12.0))
+    active_window = float(getattr(config, "CALLBACK_LULL_ACTIVE_WINDOW_SECS", 60.0))
+    with _engaged_lock:
+        engaged_id = _engaged_person_id
+        engaged_touch = _engaged_last_touch_at
+    if engaged_id is None or engaged_id in _interest_discovery_sessions_asked:
+        return
+    quiet_for = now - engaged_touch
+    if quiet_for < min_silence or quiet_for > active_window:
+        return
+    try:
+        turn_window = float(getattr(config, "VISUAL_CURIOSITY_TURN_WINDOW_SECS", 45.0))
+        if _situation_assessor.recent_speech_turn_count(turn_window) < 2:
+            return
+    except Exception:
+        if not profile.rapid_exchange:
+            return
+
+    try:
+        from memory import interests as interests_mem
+        known = interests_mem.get_interests_for_prompt(
+            int(engaged_id),
+            limit=int(getattr(config, "INTEREST_DISCOVERY_MAX_KNOWN", 5)),
+        ) or []
+    except Exception as exc:
+        _log.debug("interest discovery lookup failed: %s", exc)
+        return
+    if len(known) >= int(getattr(config, "INTEREST_DISCOVERY_MAX_KNOWN", 5)):
+        return
+
+    _, first_name = _engaged_interest_topics(engaged_id)
+    known_names = ", ".join(
+        str(r.get("name") or "").strip() for r in known if r.get("name")
+    )
+    who = first_name or "them"
+    known_part = (
+        f"You already know they're into: {known_names}. Ask about something NEW — "
+        "not those. " if known_names else
+        "You know almost nothing about what they're into yet. "
+    )
+    prompt = (
+        f"A conversational lull just opened with {who}. {known_part}"
+        "In ONE short, warm, in-character line, ask what they're into that they "
+        "haven't told you about yet — hobbies, shows, obsessions, whatever "
+        "(\"so, is there anything you're into you haven't told me before?\" "
+        "energy). One genuine question, no list of examples longer than two."
+    )
+    _last_interest_discovery_at = now
+    _interest_discovery_sessions_asked.add(engaged_id)
+    _log.info(
+        "consciousness: interest discovery question after %.1fs quiet "
+        "(person_id=%s known=%d)", quiet_for, engaged_id, len(known),
+    )
+    _generate_and_speak(
+        prompt,
+        emotion="curious",
+        purpose="interest_discovery",
+        priority=int(getattr(config, "INTEREST_DISCOVERY_PRIORITY", 52)),
+        label=f"interest discovery question ({who})",
+        metadata={"topic_key": f"interest_discovery:{engaged_id}"},
+        on_spoke=lambda: begin_response_wait(
+            float(getattr(config, "INTEREST_DISCOVERY_RESPONSE_WAIT_SECS", 20.0))
+        ),
     )
 
 
@@ -12439,6 +12606,7 @@ def _loop() -> None:
             if not bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
                 _step_open_thread_followup(snapshot, profile)
                 _step_news_remark(snapshot, profile)
+                _step_interest_discovery(snapshot, profile)
 
             _step_lull_callback(snapshot, profile)
 
