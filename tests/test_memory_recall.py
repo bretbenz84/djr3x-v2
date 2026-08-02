@@ -313,3 +313,54 @@ class DatedMentionsTest(unittest.TestCase):
 
     def test_no_tokens_no_mentions(self):
         self.assertEqual(recall._dated_mentions(1, set()), [])
+
+
+class FieldRun234007Test(unittest.TestCase):
+    """Pins the 2026-08-01 23:40 field failures: cross-sentence date/verb
+    collision starving the memory block, and 'two weeks ago' being unparseable
+    (the model fabricated recent topics as two-week-old history)."""
+
+    def test_correction_sentence_date_does_not_steal_the_memory_question(self):
+        txt = ("No, I didn't go paddleboarding yesterday. I'm asking you, "
+               "what did, when did I tell you about camping this summer?")
+        # 'yesterday' (sentence 1) + 'tell' (sentence 2) must NOT trigger
+        # conversation recall — they're different sentences.
+        self.assertFalse(recall.is_conversation_recall_question(txt))
+        self.assertTrue(recall.is_memory_question(txt))
+        # Same-sentence pairing still triggers.
+        self.assertTrue(recall.is_conversation_recall_question(
+            "What did we talk about yesterday?"))
+
+    def test_n_units_ago_parses_to_window(self):
+        from datetime import date
+        today = date(2026, 8, 1)
+        self.assertEqual(
+            recall.parse_date_expression("what did we talk about two weeks ago?",
+                                         today=today)[:2],
+            ("2026-07-15", "2026-07-21"))
+        self.assertEqual(
+            recall.parse_date_expression("three days ago", today=today)[:2],
+            ("2026-07-28", "2026-07-30"))
+        self.assertEqual(
+            recall.parse_date_expression("a couple of weeks ago", today=today)[:2],
+            ("2026-07-15", "2026-07-21"))
+        self.assertEqual(
+            recall.parse_date_expression("a month ago", today=today)[:2],
+            ("2026-06-25", "2026-07-09"))
+
+    def test_mentions_ranked_by_overlap_not_pure_recency(self):
+        from memory import database as db
+        rows = [
+            {"day": "2026-08-01", "text": "This is the living room"},   # junk-ish
+            {"day": "2026-06-18", "text": "I'm going camping next month"},
+        ]
+        with mock.patch.object(db, "fetchall", return_value=rows):
+            out = recall._dated_mentions(1, {"camp", "summer"})
+        self.assertEqual(len(out), 1)
+        self.assertIn("2026-06-18", out[0])
+
+    def test_function_word_shards_are_not_topic_tokens(self):
+        toks = recall.utterance_tokens(
+            "No, I didn't go paddleboarding yesterday. I'm asking you, "
+            "when did I tell you about camping this summer?")
+        self.assertEqual(toks, {"camp", "paddleboard", "summer"})
