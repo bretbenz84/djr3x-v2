@@ -1360,6 +1360,7 @@ RECALL_RICH_INTEREST_LIMIT = 10      # interests (with notes) in the rich block
 RECALL_RICH_QA_LIMIT = 8             # direct Q&A answers in the rich block
 RECALL_EPISODE_LIMIT = 4             # dated diary episodes matching the utterance
 RECALL_EPISODE_LOOKBACK_DAYS = 120   # how far back query-time episode search reaches
+RECALL_MENTION_LIMIT = 4             # dated own-words mentions from the conversation log
 
 # Query-time episode ranking: mild recency bias (human-memory-like). A half-life
 # decay on a small bonus (max +0.4) — among equal topic matches the fresher memory
