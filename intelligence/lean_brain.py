@@ -82,10 +82,15 @@ def _recent_topics(person_id: Optional[int]) -> list[str]:
         return []
 
 
-def _person_lines(person_id: Optional[int]) -> list[str]:
-    """A handful of REAL things about who Rex is talking to — name/relationship + a few facts
-    and interests. Deliberately small: no callbacks, plans, episodic recall, or nostalgia
-    (those are the old bloat). Fail-safe to [] so a missing DB never breaks a reply."""
+def _person_lines(person_id: Optional[int], user_text: str = "") -> list[str]:
+    """A handful of REAL things about who Rex is talking to — name/relationship + facts
+    and interests, TOPIC-RANKED against what they just said. Deliberately small: no
+    callbacks, plans, or nostalgia (the old bloat). But when the utterance is a direct
+    memory question ("what's my favorite…?", "did I tell you…?"), a RICH recall block
+    is added instead of the thin background list — the permanent-amnesia fix (field
+    2026-08-01: Rex denied knowing the favorite movie, job, dog, and camping trip his
+    own DB had held for weeks, because static top-4 ranking buried them all).
+    Fail-safe to [] so a missing DB never breaks a reply."""
     if person_id is None:
         return []
     out: list[str] = []
@@ -124,24 +129,65 @@ def _person_lines(person_id: Optional[int]) -> list[str]:
             "enjoy the sparring and can take a sharp, SPECIFIC roast, so don't soften your wit to be "
             "polite. (Still: drop it instantly on a genuinely sincere or vulnerable moment.)"
         )
+    # Rich recall on a direct memory question — replaces the thin background list
+    # for this turn (the block carries far more, better-targeted material).
+    rich: list[str] = []
+    try:
+        from memory import recall as _recall
+        rich = _recall.memory_question_lines(int(person_id), user_text)
+    except Exception as exc:
+        _log.debug("[lean] rich recall failed: %s", exc)
+    if rich:
+        out.extend(rich)
+        return out
+
+    # Topic tokens from what they JUST said, so the on-topic fact/interest wins a
+    # slot over a higher-static-score but irrelevant one.
+    topic_tokens = None
+    try:
+        from memory import recall as _recall
+        topic_tokens = _recall.utterance_tokens(user_text) or None
+    except Exception:
+        topic_tokens = None
     background: list[str] = []
     try:
-        from memory import facts as _facts
+        from memory import retrieval as _retrieval
+        bundle = _retrieval.retrieve_person_memory(
+            int(person_id), topic_tokens=topic_tokens,
+            budget=int(getattr(config, "LEAN_BACKGROUND_BUDGET", 10)),
+        )
         background += [
-            str(f.get("value") or f.get("text") or "").strip()
-            for f in (_facts.get_prompt_worthy_facts(int(person_id), limit=4) or [])
+            (str(f.get("key") or "").replace("_", " ") + ": "
+             + str(f.get("value") or "")).strip(": ")
+            for f in (bundle.get("facts") or [])
         ]
-    except Exception as exc:
-        _log.debug("[lean] facts read failed: %s", exc)
-    try:
-        from memory import interests as _interests
         background += [
             str(it.get("name") or "").strip()
-            for it in (_interests.get_interests_for_prompt(int(person_id), limit=4) or [])
+            for it in (bundle.get("interests") or [])
         ]
     except Exception as exc:
-        _log.debug("[lean] interests read failed: %s", exc)
-    background = [b for b in background if b][:7]
+        _log.debug("[lean] unified memory read failed: %s", exc)
+        try:
+            from memory import facts as _facts
+            background += [
+                str(f.get("value") or f.get("text") or "").strip()
+                for f in (_facts.get_prompt_worthy_facts(
+                    int(person_id), limit=4, topic_tokens=topic_tokens) or [])
+            ]
+        except Exception as exc2:
+            _log.debug("[lean] facts read failed: %s", exc2)
+        try:
+            from memory import interests as _interests
+            background += [
+                str(it.get("name") or "").strip()
+                for it in (_interests.get_interests_for_prompt(
+                    int(person_id), limit=4, topic_tokens=topic_tokens) or [])
+            ]
+        except Exception as exc2:
+            _log.debug("[lean] interests read failed: %s", exc2)
+    background = [b for b in background if b][
+        : int(getattr(config, "LEAN_BACKGROUND_BUDGET", 10))
+    ]
     if background:
         # Framed hard as BACKGROUND, not fodder: dredging a stored hobby the person didn't just
         # raise (e.g. opening with "so, shooting any nebulae?") is the exact out-of-nowhere move
@@ -215,10 +261,11 @@ def _system_prompt(
     person_id: Optional[int],
     world: Optional[dict],
     extra_lines: Optional[list[str]] = None,
+    user_text: str = "",
 ) -> str:
     persona = _persona()
     ctx = (
-        _person_lines(person_id)
+        _person_lines(person_id, user_text)
         + _scene_lines(world)
         + _room_belief_lines()
         + list(extra_lines or [])
@@ -504,7 +551,15 @@ def _messages(
         extra_lines = (extra_lines or []) + [turn_directive.strip()]
 
     msgs: list[dict] = [
-        {"role": "system", "content": _system_prompt(person_id, world, extra_lines)}
+        {
+            "role": "system",
+            # Reply path only: a directive's final message is an instruction, not
+            # the human's words — no topic tokens / memory-question detection on it.
+            "content": _system_prompt(
+                person_id, world, extra_lines,
+                user_text=user_text if label_current_speaker else "",
+            ),
+        }
     ]
     for role, raw, text in turns:
         if multi and role == "user":

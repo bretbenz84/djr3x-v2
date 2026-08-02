@@ -1340,6 +1340,31 @@ MEMORY_PROMPT_BUDGET_ITEMS = 16
 # load-bearing in a reply than a known hobby).
 MEMORY_RETRIEVAL_FACT_WEIGHT = 1.0
 MEMORY_RETRIEVAL_INTEREST_WEIGHT = 0.85
+# Fact-quota floor: interests score a flat ~0.85 while facts carry age penalties, so
+# without a floor 15/16 budget slots went to interests and Rex "forgot" the favorite
+# movie / job / hometown / dog mid-conversation (field 2026-08-01). The top-N facts
+# are guaranteed seats, evicting the lowest-scored interests.
+MEMORY_RETRIEVAL_MIN_FACTS = 6
+
+# ── Query-time rich recall (memory/recall.py) ────────────────────────────────────
+# When the person directly asks what Rex remembers ("what's my favorite…?", "did I
+# tell you…?", "what do you know about me?"), the lean reply prompt swaps its thin
+# background list for a RICH block: facts as key:value, interests WITH notes, direct
+# Q&A answers, relationship edges, and dated diary episodes matching the utterance —
+# with an instruction to answer from it and to admit a real blank honestly. This is
+# the permanent-amnesia fix (field 2026-08-01: Rex denied knowing the favorite movie,
+# job, dog, camping, and the movie watched the night before — ALL of it stored).
+RECALL_RICH_ENABLED = True
+RECALL_RICH_FACT_LIMIT = 14          # facts in the rich block (topic-ranked)
+RECALL_RICH_INTEREST_LIMIT = 10      # interests (with notes) in the rich block
+RECALL_RICH_QA_LIMIT = 8             # direct Q&A answers in the rich block
+RECALL_EPISODE_LIMIT = 4             # dated diary episodes matching the utterance
+RECALL_EPISODE_LOOKBACK_DAYS = 120   # how far back query-time episode search reaches
+
+# Ordinary (non-memory-question) replies: combined facts+interests background lines in
+# the lean prompt, topic-ranked against the current utterance via unified retrieval.
+# Was a static, topic-blind top-4 facts + top-4 interests.
+LEAN_BACKGROUND_BUDGET = 10
 
 # ── Semantic recall (embedding relevance) — OPT-IN, default OFF ───────────────────
 # When on, the unified retrieval layer scores topic relevance by EMBEDDING cosine

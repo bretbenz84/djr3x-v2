@@ -220,6 +220,45 @@ def is_rex_misattribution(notes: str) -> str | None:
     return None
 
 
+# ── dangling ASR/extraction fragments ────────────────────────────────────────
+# Field 2026-08-01: the interest silo accumulated 'd the movie', 'for a job',
+# 'lot', and 'your program to improve you' — mid-sentence shards the extractor
+# clipped out of a transcript. They scored 0.95 'explicit high' and crowded real
+# memories out of the prompt budget. Shapes (each conservative on its own):
+#   * leads with a function word that can't start a topic label ('for a job',
+#     'of the house') — articles ('the Odyssey') deliberately excluded;
+#   * leads with a stray single letter that isn't a word ('d the movie');
+#   * IS a bare content-free word ('lot', 'thing');
+#   * second-person shards about Rex himself ('your program to improve you').
+_FRAGMENT_LEAD_WORDS = {
+    "for", "of", "to", "and", "or", "but", "that", "which", "with", "about",
+    "from", "than", "because", "if", "so", "at", "on", "in", "as",
+}
+_BARE_JUNK_WORDS = {
+    "lot", "lots", "thing", "things", "stuff", "it", "that", "this", "them",
+    "one", "some", "more", "much",
+}
+
+
+def is_dangling_fragment(name: str) -> str | None:
+    """REJECT a clipped mid-sentence shard stored as an interest/fact label.
+    Real labels ('the Odyssey', '3D printing', 'people watching') never match."""
+    nm = _norm(name)
+    words = _words(nm)
+    if not words:
+        return None
+    if nm in _BARE_JUNK_WORDS:
+        return "bare_junk_word"
+    lead = words[0]
+    if lead in _FRAGMENT_LEAD_WORDS:
+        return "fragment_lead_word"
+    if len(lead) == 1 and lead not in {"a", "i"}:
+        return "stray_letter_lead"
+    if lead in {"your", "you"}:
+        return "second_person_shard"
+    return None
+
+
 # ── top-level composed gates ─────────────────────────────────────────────────
 # Interest-flavored fact categories where the fiction gate applies.
 _INTEREST_FACT_CATEGORIES = {"interest", "interest_note"}
@@ -236,6 +275,9 @@ def reject_fact(category: str, key: str, value: str,
         return r
     if _norm(category) in _INTEREST_FACT_CATEGORIES:
         r = is_fiction_scene(value)
+        if r:
+            return r
+        r = is_dangling_fragment(value)
         if r:
             return r
     r = is_verbatim_question(value)
@@ -256,6 +298,9 @@ def reject_interest(name: str, notes: str = "") -> str | None:
     a junk note is KEPT, not dropped.)"""
     nm = (name or "").strip()
     r = is_fiction_scene(nm)
+    if r:
+        return r
+    r = is_dangling_fragment(nm)
     if r:
         return r
     if len(_words(nm)) > 8:            # a plot line, not a hobby label; generous cap

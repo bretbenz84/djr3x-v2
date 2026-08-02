@@ -150,7 +150,28 @@ def retrieve_person_memory(
         items.append(MemoryItem("interest", _interest_base(it) * iw + boost * rel, rel, it))
 
     items.sort(key=lambda m: m.score, reverse=True)
-    chosen = items[: max(0, int(budget))]
+    budget = max(0, int(budget))
+    chosen = items[:budget]
+
+    # Fact-quota floor (field 2026-08-01: interests score a flat ~0.85 while facts
+    # carry age penalties, so 15 of 16 slots went to interests and Rex "forgot" the
+    # person's favorite movie, job, hometown, and pet mid-conversation). Guarantee
+    # the top-N facts a seat: evict the LOWEST-scored chosen interests to make room.
+    # Topic-RELEVANT interests are never evicted — the floor exists to stop
+    # GENERIC interests crowding facts out, not to override live relevance.
+    min_facts = int(_cfg("MEMORY_RETRIEVAL_MIN_FACTS", 6))
+    fact_items = [m for m in items if m.kind == "fact"]
+    want = min(min_facts, len(fact_items), budget)
+    have = sum(1 for m in chosen if m.kind == "fact")
+    if have < want:
+        chosen_set = {id(m) for m in chosen}
+        missing = [m for m in fact_items if id(m) not in chosen_set][: want - have]
+        evictable = [m for m in chosen if m.kind == "interest" and m.overlap <= 0.0]
+        evict = {id(m) for m in evictable[len(evictable) - len(missing):]}
+        missing = missing[: len(evict)]
+        chosen = [m for m in chosen if id(m) not in evict] + missing
+        chosen.sort(key=lambda m: m.score, reverse=True)
+
     return {
         "facts": [m.row for m in chosen if m.kind == "fact"],
         "interests": [m.row for m in chosen if m.kind == "interest"],
