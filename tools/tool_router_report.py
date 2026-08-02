@@ -74,9 +74,12 @@ def _baseline_action(executed_path: str | None) -> str | None:
     """Catalog key for an executed path, or None when unmappable (hand review)."""
     if not executed_path:
         return None
-    if executed_path.startswith("fast_local_takeover."):
-        key = executed_path.split(".", 1)[1]
-        return key if "." in key else None
+    for prefix in ("fast_local_takeover.", "router_takeover."):
+        if executed_path.startswith(prefix):
+            key = executed_path[len(prefix):]
+            return key if "." in key else None
+    if executed_path == "legacy.conversation_boundary":
+        return "emotional.boundary"
     return _PATH_TO_ACTION.get(executed_path)
 
 
