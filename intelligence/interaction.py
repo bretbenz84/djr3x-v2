@@ -1981,15 +1981,18 @@ def _voice_primary_face_decision(
             return "voice_agrees"            # the voice stands on its own
         if vis is not None and vis == ws:
             return "voice_agrees"            # camera positively confirms they're talking
-        if visual_mouth_still:
+        if visual_mouth_still and not score_genuine_band:
             # POSITIVE mouth-still evidence: the active-speaker detector was
             # running and nobody visible articulated near end-of-turn — the
-            # visible face was NOT the talker, whatever the marginal score
-            # says (field 2026-08-02 12:37: JT at ~20ft scored 0.455 on
-            # Bret's print; Bret was silently on camera with voice
-            # continuity from his own earlier turn, and got the credit).
-            # Neither continuity nor the ECAPA band may override a camera
-            # that watched the mouth not move.
+            # visible face was NOT the talker (field 2026-08-02 12:37: JT at
+            # ~20ft scored 0.455 on Bret's print; Bret was silently on camera
+            # with voice continuity from his own earlier turn, and got the
+            # credit). SCOPE (recalibrated 2026-08-02 13:04 after the veto
+            # challenged genuine Bret at 0.660 and 0.742 in one session —
+            # the detector misses real jaw motion on short utterances at
+            # room distance): the veto only overrules SUB-genuine-band
+            # scores, where ECAPA impostor cross-matches live. A band-level
+            # score plus the face is stronger evidence than an empty latch.
             return "challenge_identity"
         if voice_continuity:
             return "voice_agrees_no_refresh"  # marginal but consistent with recent confident voice
@@ -2057,8 +2060,9 @@ def _voice_primary_face_decision(
         # hasn't formed yet, and without this the person can never be attributed,
         # so engagement NEVER forms — live-logged 2026-07-06-21-15, Bret (face
         # recognized, all voice prints stale) stayed Guest 1 all session.
-        if visual_mouth_still:
-            return "off_screen_unknown"
+        # No mouth-still veto here (recalibrated 2026-08-02 13:04): with NO
+        # voice pointing anywhere else, engagement continuity outweighs an
+        # empty detector latch — the detector misses short real utterances.
         return "face_only_continuity"
     if (
         short_utterance

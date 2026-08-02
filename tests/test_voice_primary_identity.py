@@ -573,11 +573,20 @@ class MouthStillVetoTest(unittest.TestCase):
             "challenge_identity",
         )
 
-    def test_genuine_band_also_vetoed(self):
+    def test_genuine_band_is_exempt(self):
+        # Recalibrated 2026-08-02 13:04: the veto challenged genuine Bret at
+        # 0.660 and 0.742 in one session (the detector misses real jaw motion
+        # on short utterances at room distance). A genuine-band score plus the
+        # face outweighs an empty latch — only sub-band scores get vetoed.
         self.assertEqual(
-            self._decide(person_id=1, raw_best_id=1, speaker_score=0.55,
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.660,
                          score_genuine_band=True, visual_mouth_still=True),
-            "challenge_identity",
+            "voice_agrees_no_refresh",
+        )
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.742,
+                         score_genuine_band=True, visual_mouth_still=True),
+            "voice_agrees_no_refresh",
         )
 
     def test_confident_voice_is_exempt(self):
