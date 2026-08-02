@@ -646,6 +646,9 @@ _pending_intro_voice_capture: Optional[dict] = None
 # person is saved as their voice-clone reference before the parody performs.
 #   keys: person_id, name, ref_text (the line to repeat), is_self, asked_at
 _pending_impersonation_capture: Optional[dict] = None
+# Scene-snapshot confirmation slot ("say yes, remember this scene") — see
+# _offer_scene_snapshot / _handle_scene_snapshot_confirmation.
+_pending_scene_snapshot: Optional[dict] = None
 
 # "Tell me about someone" pre-briefing flow ("I'd like to tell you about my
 # coworker Daniel"). The subject is NOT present; Rex collects gossip/facts and
@@ -1370,15 +1373,15 @@ def _router_audit_note_execute_disabled(audit: Optional[_RouterDecisionAudit]) -
 def _router_blocked_confirmation_response(
     decision: Optional[action_router.ActionDecision],
     block_reason: Optional[str],
+    person_id: Optional[int] = None,
 ) -> Optional[str]:
-    """Return a short spoken response for blocked actions that need consent."""
+    """Return a short spoken response for blocked actions that need consent.
+    For vision.snapshot this also ARMS the pending confirmation slot, so the
+    user's "yes, remember this scene" actually completes the capture."""
     if decision is None or block_reason != "requires_confirmation":
         return None
     if decision.action == "vision.snapshot":
-        return (
-            "I can take a look, but I won't store a scene memory without explicit "
-            "confirmation. Say yes, remember this scene if you want that."
-        )
+        return _offer_scene_snapshot(person_id)
     return None
 
 
@@ -12083,6 +12086,16 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
             _speak_blocking(full)
         return full or ""
 
+    if action == "vision.snapshot":
+        # Privacy-gated: never captures directly — speaks the confirmation
+        # offer and arms the pending slot; the user's next "yes, remember
+        # this scene" completes the capture (see _handle_scene_snapshot_
+        # confirmation in the speech-segment pending-slot ladder).
+        resp = _offer_scene_snapshot(person_id)
+        _speak_blocking(resp)
+        _tool_routed_path.append(f"tool_router.{action}")
+        return resp
+
     if action in ("music.stop", "music.skip"):
         key = "dj_stop" if action == "music.stop" else "dj_skip"
         try:
@@ -16934,6 +16947,129 @@ def _handle_impersonation_capture(
     return (parody, True)
 
 
+# ── Scene snapshot ("take a picture / remember this scene") ──────────────────
+# vision.snapshot is privacy-gated: storing a scene memory always requires an
+# explicit spoken confirmation. The offer arms a short-lived pending slot
+# (mirroring the impersonation capture slot); the next user turn resolves it —
+# yes → capture + caption + episodic record, no → nothing saved, anything
+# else → the slot drops silently and the turn proceeds as normal conversation.
+
+_SCENE_SNAPSHOT_YES_RE = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|sure|okay|ok|please|absolutely|"
+    r"do it|go ahead|go for it)\b|"
+    r"\b(?:remember|save|store|keep)\s+(?:this|that|the)\s+"
+    r"(?:scene|view|room|picture|image|moment)\b",
+    re.IGNORECASE,
+)
+_SCENE_SNAPSHOT_NO_RE = re.compile(
+    r"^\s*(?:no|nope|nah|naw|never\s*mind|nevermind|don'?t|do\s+not|"
+    r"cancel|skip|forget)\b",
+    re.IGNORECASE,
+)
+
+
+def _scene_snapshot_confirm_timeout() -> float:
+    return float(getattr(config, "SCENE_SNAPSHOT_CONFIRM_TIMEOUT_SECS", 30.0))
+
+
+def _offer_scene_snapshot(person_id: Optional[int]) -> str:
+    """Arm the pending confirmation slot and return the spoken offer line."""
+    global _pending_scene_snapshot
+    _pending_scene_snapshot = {
+        "person_id": person_id,
+        "asked_at": time.monotonic(),
+    }
+    try:
+        consciousness.begin_response_wait(_scene_snapshot_confirm_timeout())
+    except Exception:
+        pass
+    _log.info("[scene_snapshot] confirmation offered (person_id=%s)", person_id)
+    return (
+        "I can take a look, but I won't store a scene memory without explicit "
+        "confirmation. Say yes, remember this scene if you want that."
+    )
+
+
+def _execute_scene_snapshot(person_id: Optional[int]) -> str:
+    """Capture the current view, caption it, store it as a scene episode.
+    Always returns a spoken line; failures are honest, never silent."""
+    frame = None
+    try:
+        from vision import camera
+        frame = camera.capture_current_gaze()
+        if frame is None:
+            frame = camera.get_frame()
+    except Exception as exc:
+        _log.debug("[scene_snapshot] frame capture failed: %s", exc)
+    if frame is None:
+        return "My camera's giving me static right now — no scene saved."
+
+    known: list[str] = []
+    try:
+        from vision import face
+        known = face.visible_known_names()
+    except Exception:
+        known = []
+
+    caption = ""
+    try:
+        from vision import scene as scene_mod
+        caption = scene_mod.quick_caption(frame, known_people=known)
+    except Exception as exc:
+        _log.warning("[scene_snapshot] caption failed: %s", exc)
+    if not caption:
+        return (
+            "I looked, but my vision processor came back empty-handed — "
+            "nothing saved. Try me again in a beat."
+        )
+
+    person_name = _tool_router_person_name(person_id)
+    try:
+        from memory import episodes
+        episodes.record_scene(
+            f"I was asked to remember this scene: {caption}",
+            detail={"source": "scene_snapshot", "caption": caption},
+            person_id=person_id,
+            person_name=person_name,
+        )
+    except Exception as exc:
+        _log.error("[scene_snapshot] episodic save failed: %s", exc)
+        return "I saw it, but my memory banks fumbled the save. Run that by me again."
+    _log.info(
+        "[scene_snapshot] saved (person=%s): %r", person_name or "none", caption
+    )
+    return f"Locked in. For the record: {caption}"
+
+
+def _handle_scene_snapshot_confirmation(
+    text: str, person_id: Optional[int]
+) -> Optional[str]:
+    """Consume a pending scene-snapshot confirmation. Returns the line to speak,
+    or None when no fresh slot exists / the turn isn't about the offer (the
+    slot drops and the turn falls through as normal conversation)."""
+    global _pending_scene_snapshot
+    ctx = _pending_scene_snapshot
+    if ctx is None:
+        return None
+    if (time.monotonic() - float(ctx.get("asked_at") or 0.0)
+            > _scene_snapshot_confirm_timeout()):
+        _pending_scene_snapshot = None
+        return None
+    cleaned = (text or "").strip()
+    if _SCENE_SNAPSHOT_NO_RE.match(cleaned):
+        _pending_scene_snapshot = None
+        _log.info("[scene_snapshot] declined: %r", text)
+        return "No worries — nothing saved."
+    if _SCENE_SNAPSHOT_YES_RE.search(cleaned):
+        _pending_scene_snapshot = None
+        pid = person_id if person_id is not None else ctx.get("person_id")
+        return _execute_scene_snapshot(pid)
+    # They said something unrelated — the offer lapses quietly.
+    _pending_scene_snapshot = None
+    _log.info("[scene_snapshot] offer lapsed (unrelated turn): %r", text)
+    return None
+
+
 def _settle_response_wait_after_action() -> None:
     """Turn-epilogue response-wait handling for executed actions.
 
@@ -16949,6 +17085,10 @@ def _settle_response_wait_after_action() -> None:
             consciousness.begin_response_wait(
                 float(getattr(config, "IMPERSONATION_CAPTURE_TIMEOUT_SECS", 45.0))
             )
+        elif _pending_scene_snapshot is not None:
+            # Rex just asked "say yes, remember this scene" — hold proactive
+            # beats for the confirmation window, same rule as the capture slot.
+            consciousness.begin_response_wait(_scene_snapshot_confirm_timeout())
         else:
             consciousness.clear_response_wait()
     except Exception:
@@ -21743,6 +21883,20 @@ def _handle_speech_segment(
             _register_rex_utterance(intro_voice_response)
             return
 
+        scene_confirm_line = _handle_scene_snapshot_confirmation(text, person_id)
+        if scene_confirm_line is not None:
+            _record_heard_turn_once()
+            _speak_blocking(scene_confirm_line, emotion="neutral")
+            conv_memory.add_to_transcript("Rex", scene_confirm_line)
+            conv_log.log_rex(scene_confirm_line)
+            _session_exchange_count += 1
+            _register_rex_utterance(scene_confirm_line)
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            return
+
         impersonation_capture = _handle_impersonation_capture(
             text,
             audio_array,
@@ -22785,6 +22939,7 @@ def _handle_speech_segment(
         blocked_router_response = _router_blocked_confirmation_response(
             router_decision,
             router_block_reason,
+            person_id=person_id,
         )
         if blocked_router_response:
             completed = _speak_blocking(blocked_router_response, emotion="neutral")

@@ -4826,7 +4826,14 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # as its guard. vision.snapshot deliberately NOT live — it has no executor.
     "event.cancel", "memory.query", "identity.who_is_speaking",
     "music.play", "music.stop", "music.skip",
+    # vision.snapshot (2026-08-02): live now that the feature EXISTS — the tool
+    # speaks the privacy confirmation offer and arms the pending slot; a spoken
+    # "yes, remember this scene" captures + captions + stores a scene episode.
+    "vision.snapshot",
 )
+
+# Seconds the "say yes, remember this scene" confirmation slot stays open.
+SCENE_SNAPSHOT_CONFIRM_TIMEOUT_SECS = 30.0
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True
 ACTION_ROUTER_EXECUTE_ENABLED = True

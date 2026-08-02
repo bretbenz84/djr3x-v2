@@ -173,7 +173,7 @@ _DEFAULT_LIVE_ACTIONS = (
     "vision.describe_scene", "music.options",
     "system.sleep", "system.shutdown", "web.search",
     "event.cancel", "memory.query", "identity.who_is_speaking",
-    "music.play", "music.stop", "music.skip",
+    "music.play", "music.stop", "music.skip", "vision.snapshot",
 )
 
 
