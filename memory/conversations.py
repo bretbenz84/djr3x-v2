@@ -94,6 +94,7 @@ def add_to_transcript(speaker: str, text: str, *, learnable: bool = True) -> Non
     re-extracted as a permanent fact at teardown.
     """
     _transcript.append({"speaker": speaker, "text": text, "learnable": bool(learnable)})
+    _log_turn(speaker, text)
 
 
 def mark_last_human_turn_unlearnable() -> bool:
@@ -127,6 +128,85 @@ def relabel_prior_turn(old_speaker: str, new_speaker: str, *, skip_text: str = "
         entry["learnable"] = False
         return True
     return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Persisted per-turn conversation log (owner idea 2026-08-01): every spoken turn
+# is also written through to the conversation_log table, so date-targeted recall
+# ("what did we talk about on July 12?" / "earlier today?") can read the actual
+# words back later. The in-memory buffer above stays authoritative for the live
+# session; this is the durable copy. Fail-safe: a DB hiccup never breaks a turn.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_session_id: Optional[str] = None
+_person_id_cache: dict = {}
+
+
+def _log_turn(speaker: str, text: str) -> None:
+    global _session_id
+    try:
+        import config
+        if not bool(getattr(config, "CONVERSATION_LOG_ENABLED", True)):
+            return
+        speaker_s = str(speaker or "").strip()
+        text_s = str(text or "").strip()
+        if not speaker_s or not text_s:
+            return
+        local = datetime.now()
+        if _session_id is None:
+            _session_id = local.strftime("session-%Y-%m-%d-%H-%M-%S")
+        person_id = None
+        if speaker_s.lower() not in _REX_SPEAKERS \
+                and not speaker_s.lower().startswith("unknown_voice"):
+            if speaker_s in _person_id_cache:
+                person_id = _person_id_cache[speaker_s]
+            else:
+                try:
+                    from memory import people
+                    row = people.find_person_by_name(speaker_s)
+                    person_id = int(row["id"]) if row else None
+                except Exception:
+                    person_id = None
+                _person_id_cache[speaker_s] = person_id
+        db.execute(
+            """INSERT OR IGNORE INTO conversation_log
+               (ts, day, session_id, speaker, person_id, text)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (local.strftime("%Y-%m-%d %H:%M:%S"), local.strftime("%Y-%m-%d"),
+             _session_id, speaker_s, person_id, text_s),
+        )
+    except Exception as exc:
+        _log.debug("conversation_log write skipped: %s", exc)
+
+
+def get_logged_turns(
+    day_start: str, day_end: Optional[str] = None, *, limit: int = 400
+) -> list[dict]:
+    """Turns whose LOCAL calendar day is in [day_start, day_end] (inclusive,
+    'YYYY-MM-DD'; day_end defaults to day_start), oldest first."""
+    try:
+        rows = db.fetchall(
+            """SELECT * FROM conversation_log
+               WHERE day >= ? AND day <= ?
+               ORDER BY ts ASC LIMIT ?""",
+            (day_start, day_end or day_start, int(limit)),
+        )
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        _log.debug("conversation_log read failed: %s", exc)
+        return []
+
+
+def last_logged_day_before(day: str) -> Optional[str]:
+    """The most recent day strictly before `day` that has logged turns, or None."""
+    try:
+        row = db.fetchone(
+            "SELECT MAX(day) AS d FROM conversation_log WHERE day < ?", (day,)
+        )
+        return row["d"] if row and row["d"] else None
+    except Exception as exc:
+        _log.debug("conversation_log day lookup failed: %s", exc)
+        return None
 
 
 def get_session_transcript() -> list[dict]:

@@ -224,6 +224,26 @@ _MIGRATIONS = [
         PRIMARY KEY (person_id, topic_key)
     )
     """,
+    # Persisted per-turn conversation log (owner idea 2026-08-01): the verbatim
+    # transcript used to live only in memory and die at shutdown, so "what did we
+    # talk about on July 12?" had nothing to read. One row per spoken turn; `day`
+    # is the LOCAL calendar date for natural-language date queries; person_id is
+    # best-effort speaker resolution (NULL for Rex/unknowns). Backfillable from
+    # logs/conversation-*.log via tools/backfill_conversation_log.py.
+    """
+    CREATE TABLE IF NOT EXISTS conversation_log (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts          DATETIME NOT NULL,
+        day         TEXT NOT NULL,
+        session_id  TEXT,
+        speaker     TEXT NOT NULL,
+        person_id   INTEGER,
+        text        TEXT NOT NULL,
+        UNIQUE(ts, speaker, text)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_convlog_day ON conversation_log(day)",
+    "CREATE INDEX IF NOT EXISTS idx_convlog_person ON conversation_log(person_id)",
 ]
 
 
@@ -396,6 +416,7 @@ _ORPHAN_PERSON_TABLES = (
     "person_callback_material",
     "voice_signatures",
     "proactive_topics_asked",
+    "conversation_log",
 )
 
 

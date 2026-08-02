@@ -129,6 +129,19 @@ def _person_lines(person_id: Optional[int], user_text: str = "") -> list[str]:
             "enjoy the sparring and can take a sharp, SPECIFIC roast, so don't soften your wit to be "
             "polite. (Still: drop it instantly on a genuinely sincere or vulnerable moment.)"
         )
+    # Dated-conversation recall ("what did we talk about on July 12 / yesterday /
+    # earlier today?") — the persisted conversation_log turns from that window,
+    # summarized by THIS reply call. Checked first: it's the more specific ask.
+    try:
+        from memory import recall as _recall
+        convo = _recall.conversation_recall_lines(int(person_id), user_text)
+    except Exception as exc:
+        _log.debug("[lean] conversation recall failed: %s", exc)
+        convo = []
+    if convo:
+        out.extend(convo)
+        return out
+
     # Rich recall on a direct memory question — replaces the thin background list
     # for this turn (the block carries far more, better-targeted material).
     rich: list[str] = []

@@ -214,3 +214,72 @@ class LeanInjectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DateExpressionTest(unittest.TestCase):
+    from datetime import date as _date
+    _TODAY = _date(2026, 8, 1)
+
+    def _parse(self, text):
+        return recall.parse_date_expression(text, today=self._TODAY)
+
+    def test_explicit_month_day_year(self):
+        self.assertEqual(self._parse("what did we talk about on July 12 2026?")[:2],
+                         ("2026-07-12", "2026-07-12"))
+
+    def test_bare_month_day_resolves_to_past(self):
+        # December 25 hasn't happened yet in 2026 → last year's.
+        self.assertEqual(self._parse("december 25")[0], "2025-12-25")
+        self.assertEqual(self._parse("july 12")[0], "2026-07-12")
+
+    def test_relative_expressions(self):
+        self.assertEqual(self._parse("earlier today")[:2], ("2026-08-01", "2026-08-01"))
+        self.assertEqual(self._parse("yesterday")[:2], ("2026-07-31", "2026-07-31"))
+        self.assertEqual(self._parse("last week")[:2], ("2026-07-25", "2026-07-31"))
+        self.assertEqual(self._parse("last time")[0], "LAST_SESSION")
+
+    def test_no_date_returns_none(self):
+        self.assertIsNone(self._parse("what are my hobbies?"))
+        self.assertIsNone(self._parse("we should talk about July sometime"))
+
+
+class ConversationRecallTest(unittest.TestCase):
+    _TURNS = [
+        {"speaker": "Rex", "text": "Please wait while I finish loading.", "ts": "2026-07-20 20:00:00"},
+        {"speaker": "Rex", "text": "Boot successful.", "ts": "2026-07-20 20:00:10"},
+        {"speaker": "Bret Benziger", "text": "I finished your motor system today.", "ts": "2026-07-20 20:01:00"},
+        {"speaker": "Rex", "text": "Finally — wheels I can complain about.", "ts": "2026-07-20 20:01:05"},
+    ]
+
+    def test_dated_question_injects_actual_turns(self):
+        from memory import conversations as conv_db
+        with mock.patch.object(conv_db, "get_logged_turns", return_value=list(self._TURNS)), \
+             mock.patch.object(conv_db, "get_conversation_history", return_value=[]):
+            lines = recall.conversation_recall_lines(1, "What did we talk about on July 20 2026?")
+        joined = " ".join(lines)
+        self.assertIn("CONVERSATION RECALL", joined)
+        self.assertIn("motor system", joined)
+        # Leading Rex-only boot lines are trimmed.
+        self.assertNotIn("finish loading", joined)
+        self.assertIn("never mention logs, records, or transcripts".lower(),
+                      joined.lower())
+
+    def test_empty_window_yields_honest_blank(self):
+        from memory import conversations as conv_db
+        with mock.patch.object(conv_db, "get_logged_turns", return_value=[]):
+            lines = recall.conversation_recall_lines(1, "What did we talk about on July 19 2026?")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("NOTHING", lines[0])
+        self.assertIn("do not invent", lines[0])
+
+    def test_undated_or_verbless_asks_no_block(self):
+        self.assertEqual(recall.conversation_recall_lines(1, "What are my hobbies?"), [])
+        self.assertEqual(recall.conversation_recall_lines(1, "Yesterday was fun."), [])
+
+    def test_over_long_day_is_evenly_sampled(self):
+        turns = [{"speaker": "Bret Benziger", "text": f"line {i}", "ts": "t"}
+                 for i in range(200)]
+        sampled = recall._sample_turns(turns, 40)
+        self.assertEqual(len(sampled), 40)
+        self.assertEqual(sampled[0]["text"], "line 0")
+        self.assertGreater(int(sampled[-1]["text"].split()[1]), 150)

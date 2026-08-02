@@ -146,7 +146,20 @@ def search_episodes(
                 salience = float(row.get("salience") or 0.5)
             except (TypeError, ValueError):
                 salience = 0.5
-            scored.append((overlap + person_bonus + 0.25 * salience, row))
+            # Mild recency bias (like human memory): a half-life decay on a small
+            # bonus, so among equal topic matches the FRESHER memory wins, but
+            # recency can never outrank a stronger topic match (max +0.4 < 1 overlap).
+            recency = 0.0
+            try:
+                ts = str(row.get("created_at") or "")[:19]
+                age_days = max(0.0, (datetime.now(timezone.utc)
+                                     - datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                                     .replace(tzinfo=timezone.utc)).total_seconds() / 86400.0)
+                halflife = float(_cfg("RECALL_EPISODE_RECENCY_HALFLIFE_DAYS", 21.0))
+                recency = 0.4 * (0.5 ** (age_days / max(1.0, halflife)))
+            except Exception:
+                recency = 0.0
+            scored.append((overlap + person_bonus + 0.25 * salience + recency, row))
         scored.sort(key=lambda pair: pair[0], reverse=True)
         # Collapse near-identical repeats (three 'I did an impersonation of Bret'
         # rows are ONE memory).
@@ -285,4 +298,160 @@ def memory_question_lines(person_id: Optional[int], utterance: str) -> list[str]
             "From your diary — dated things that actually happened (today is "
             "relative to these dates): " + " | ".join(episodes) + "."
         )
+    return lines
+
+
+# ── Date-targeted conversation recall ───────────────────────────────────────────
+# Owner idea 2026-08-01: every spoken turn is persisted to conversation_log, so
+# "what did we talk about on July 12?" / "earlier today?" can read the ACTUAL
+# words back and let the one lean reply call summarize them in Rex's voice — no
+# extra LLM call, no extra latency.
+
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+_MONTH_DAY_RE = re.compile(
+    r"\b(january|february|march|april|may|june|july|august|september|october|"
+    r"november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?\b",
+    re.IGNORECASE,
+)
+# Verbs/nouns that make a dated utterance a CONVERSATION-recall ask.
+_CONVO_VERB_RE = re.compile(
+    r"\b(talk(?:ed|ing)?|discuss(?:ed)?|chat(?:ted)?|conversation|"
+    r"say(?:ing)?|said|tell|told|mention(?:ed)?|cover(?:ed)?)\b",
+    re.IGNORECASE,
+)
+
+
+def parse_date_expression(text: str, today=None) -> Optional[tuple]:
+    """Extract a (day_start, day_end, human_label) LOCAL date window from natural
+    phrasing: 'on July 12 2026', 'yesterday', 'earlier today', 'last night',
+    'this morning', 'last week', 'the other day', 'last time'. None when absent.
+    A bare month-day resolves to the most recent PAST occurrence."""
+    from datetime import date, timedelta
+    t = " ".join(str(text or "").lower().split())
+    if not t:
+        return None
+    today = today or date.today()
+
+    m = _MONTH_DAY_RE.search(t)
+    if m:
+        month = _MONTHS[m.group(1).lower()]
+        try:
+            dom = int(m.group(2))
+            year = int(m.group(3)) if m.group(3) else today.year
+            d = date(year, month, dom)
+        except ValueError:
+            return None
+        if not m.group(3) and d > today:
+            d = date(today.year - 1, month, dom)   # bare "July 12" is never future
+        iso = d.isoformat()
+        return (iso, iso, d.strftime("%B %-d, %Y"))
+
+    if re.search(r"\b(earlier today|today|this morning|this afternoon|this evening)\b", t):
+        iso = today.isoformat()
+        return (iso, iso, "earlier today")
+    if re.search(r"\b(yesterday|last night)\b", t):
+        iso = (today - timedelta(days=1)).isoformat()
+        return (iso, iso, "yesterday")
+    if re.search(r"\blast week\b", t):
+        return ((today - timedelta(days=7)).isoformat(),
+                (today - timedelta(days=1)).isoformat(), "last week")
+    if re.search(r"\bthe other day\b", t):
+        return ((today - timedelta(days=4)).isoformat(),
+                (today - timedelta(days=1)).isoformat(), "the other day")
+    if re.search(r"\blast time\b", t):
+        return ("LAST_SESSION", "LAST_SESSION", "last time")
+    return None
+
+
+def is_conversation_recall_question(text: str) -> bool:
+    """True when the utterance asks what was talked about in a DATED window —
+    a conversation verb plus a parseable date expression."""
+    t = str(text or "")
+    return bool(_CONVO_VERB_RE.search(t)) and parse_date_expression(t) is not None
+
+
+def _sample_turns(turns: list[dict], cap: int) -> list[dict]:
+    """Evenly sample an over-long day down to `cap` turns so the block covers the
+    WHOLE conversation, not just its tail."""
+    if len(turns) <= cap:
+        return turns
+    step = len(turns) / float(cap)
+    return [turns[int(i * step)] for i in range(cap)]
+
+
+def conversation_recall_lines(person_id: Optional[int], utterance: str) -> list[str]:
+    """The dated-conversation recall block: the actual logged turns from the asked-
+    about window (plus any saved session summaries), with an instruction for the
+    reply model to summarize them naturally. [] when the utterance isn't a dated
+    conversation question, when logging is off, or when nothing was logged then."""
+    if not bool(_cfg("CONVERSATION_LOG_ENABLED", True)):
+        return []
+    parsed = parse_date_expression(utterance)
+    if parsed is None or not _CONVO_VERB_RE.search(str(utterance or "")):
+        return []
+    day_start, day_end, label = parsed
+    try:
+        from datetime import date
+        from memory import conversations as conv_db
+        if day_start == "LAST_SESSION":
+            prev = conv_db.last_logged_day_before(date.today().isoformat())
+            if not prev:
+                return []
+            day_start = day_end = prev
+            label = f"last time ({prev})"
+        turns = conv_db.get_logged_turns(day_start, day_end)
+    except Exception as exc:
+        _log.debug("[recall] conversation log read failed: %s", exc)
+        return []
+    if not turns:
+        return [
+            f"They're asking what you two talked about {label} — your log has "
+            f"NOTHING from then. Say so honestly (maybe you weren't running, or "
+            f"it was before your time); do not invent a conversation."
+        ]
+    # Trim leading Rex-only boot/filler lines — the conversation starts at the
+    # first human turn (keeps "Please wait while I finish loading" out of every
+    # recall).
+    first_human = next(
+        (i for i, t in enumerate(turns)
+         if str(t.get("speaker") or "").strip().lower() not in ("rex", "dj-r3x", "djr3x")),
+        None,
+    )
+    if first_human:
+        turns = turns[first_human:]
+    sampled = _sample_turns(turns, int(_cfg("RECALL_CONVO_MAX_TURNS", 40)))
+    rendered = " | ".join(
+        f"{str(t.get('speaker') or '?').split()[0]}: "
+        + " ".join(str(t.get("text") or "").split())[:160]
+        for t in sampled
+    )
+    lines = [
+        f"CONVERSATION RECALL: they're asking what you two talked about {label}. "
+        f"Below is the ACTUAL logged conversation from then"
+        + (" (evenly sampled — it ran longer)" if len(turns) > len(sampled) else "")
+        + ". Summarize it naturally in your own voice — the topics, the memorable "
+        "beats, anything funny — like a friend recalling a chat, NOT a minutes "
+        "reading. Never mention logs, records, or transcripts.",
+        f"The conversation ({label}): {rendered}",
+    ]
+    # Session summaries for the window add the distilled arc when present.
+    try:
+        from memory import conversations as conv_db
+        if person_id is not None:
+            sums = [
+                s for s in conv_db.get_conversation_history(int(person_id), limit=10)
+                if day_start <= str(s.get("session_date") or "")[:10] <= day_end
+                and str(s.get("summary") or "").strip()
+            ]
+            if sums:
+                lines.append(
+                    "Your own summaries of those session(s): "
+                    + " | ".join(str(s["summary"]).strip() for s in sums[:3])
+                )
+    except Exception:
+        pass
     return lines

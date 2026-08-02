@@ -1361,10 +1361,24 @@ RECALL_RICH_QA_LIMIT = 8             # direct Q&A answers in the rich block
 RECALL_EPISODE_LIMIT = 4             # dated diary episodes matching the utterance
 RECALL_EPISODE_LOOKBACK_DAYS = 120   # how far back query-time episode search reaches
 
+# Query-time episode ranking: mild recency bias (human-memory-like). A half-life
+# decay on a small bonus (max +0.4) — among equal topic matches the fresher memory
+# wins, but recency can never outrank a stronger topic match.
+RECALL_EPISODE_RECENCY_HALFLIFE_DAYS = 21.0
+
 # Ordinary (non-memory-question) replies: combined facts+interests background lines in
 # the lean prompt, topic-ranked against the current utterance via unified retrieval.
 # Was a static, topic-blind top-4 facts + top-4 interests.
 LEAN_BACKGROUND_BUDGET = 10
+
+# ── Persisted conversation log + dated recall ────────────────────────────────────
+# Owner idea 2026-08-01: every spoken turn is written through to conversation_log
+# (people.db) so "what did we talk about on July 12?" / "earlier today?" / "last
+# time?" reads the ACTUAL words back and the lean reply call summarizes them in
+# Rex's voice — no extra LLM call. Backfill history from logs/conversation-*.log
+# with tools/backfill_conversation_log.py.
+CONVERSATION_LOG_ENABLED = True
+RECALL_CONVO_MAX_TURNS = 40          # max logged turns injected (evenly sampled)
 
 # ── Semantic recall (embedding relevance) — OPT-IN, default OFF ───────────────────
 # When on, the unified retrieval layer scores topic relevance by EMBEDDING cosine
