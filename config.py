@@ -7760,6 +7760,13 @@ EXPLORE_ENCOURAGE_ACK_LINES = [
 # motion_agency stops volunteering approaches while critical.
 BATTERY_AWARENESS_ENABLED = _env_bool("BATTERY_AWARENESS_ENABLED", True)
 BATTERY_TIER_HYSTERESIS_MV = 100
+# Load-aware tiering (field 2026-08-01): pack draw above this is drive load, and
+# the sagging voltage reading (IR drop through the ~160-280 mΩ measured source
+# resistance) may not DOWNGRADE the battery tier — a turn dipped a coulomb-85%
+# pack to 12.7 V and Rex announced "one-fifth left". Idle draw measures
+# ~1.25-1.45 A, drive ~2.4-2.6 A; 1.8 A sits between the bands. batt_ma is
+# +discharge; without a shunt (0) the gate never engages.
+BATTERY_TIER_REST_MAX_MA = 1800
 BATTERY_ANNOUNCE_MIN_GAP_SECS = 300.0
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPASS (QMC5883L on the motion base — hardware/compass.py)

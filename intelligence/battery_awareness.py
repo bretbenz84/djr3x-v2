@@ -63,6 +63,33 @@ def current_mv() -> int:
         return -1
 
 
+def current_ma() -> "int | None":
+    """Latest pack current in mA (+ = discharging, protocol §6.1), or None
+    when unknown / no shunt fitted (firmware reports 0 without a shunt)."""
+    try:
+        from hardware import motion
+        snap = motion.telemetry() or {}
+        ma = snap.get("batt_ma")
+        return int(ma) if ma is not None else None
+    except Exception:
+        return None
+
+
+def _under_drive_load() -> bool:
+    """True when pack draw is well above the idle floor, so the voltage reading
+    is sagging through source resistance (~160-280 mΩ measured — the known bad
+    junction) and must NOT be classified as a lower state-of-charge tier.
+
+    Field 2026-08-01: an autonomous turn sagged a coulomb-85% pack from 13.07 V
+    to 12.7 V — straight through the 'low' tier floor — and Rex announced
+    "around one-fifth left". Idle draw measures ~1.25-1.45 A, drive ~2.4-2.6 A;
+    the threshold sits between the bands. No shunt (ma=0/None) → never gates."""
+    ma = current_ma()
+    if ma is None:
+        return False
+    return ma > int(getattr(config, "BATTERY_TIER_REST_MAX_MA", 1800))
+
+
 def tier_for_mv(mv: int, *, previous: Optional[str] = None) -> Optional[str]:
     """Map millivolts to a tier with 100mV hysteresis against the previous tier
     (a pack sagging under drive load must not flap low<->nominal)."""
@@ -84,9 +111,16 @@ def tier_for_mv(mv: int, *, previous: Optional[str] = None) -> Optional[str]:
 
 def battery_critical() -> bool:
     """True when the pack is in the critical band — motion_agency stops
-    volunteering drives. False when unknown (no sensor = no opinion)."""
+    volunteering drives. False when unknown (no sensor = no opinion).
+
+    Under drive load the instantaneous voltage is sag, not charge state
+    (see _under_drive_load) — defer to the last at-rest tier instead, so a
+    mid-turn dip can't misreport critical while a truly empty pack (whose
+    REST readings are critical) still reports honestly."""
     if not bool(getattr(config, "BATTERY_AWARENESS_ENABLED", True)):
         return False
+    if _under_drive_load():
+        return _last_tier == "critical"
     return tier_for_mv(current_mv()) == "critical"
 
 
@@ -187,6 +221,17 @@ def step(snapshot: dict, profile) -> None:
         if tier != _last_tier:
             order = [name for name, _f in _TIERS]
             downward = order.index(tier) > order.index(_last_tier)
+            # A sagging under-load reading may never DOWNGRADE the tier — the
+            # dip is IR drop, not charge state. The next at-rest reading (idle
+            # between drives) re-classifies honestly, so a genuinely low pack
+            # is still caught within seconds of the wheels stopping.
+            if downward and _under_drive_load():
+                _log.debug(
+                    "[battery] tier downgrade %s -> %s skipped (%.2fV under "
+                    "drive load, %s mA)", _last_tier, tier, mv / 1000.0,
+                    current_ma(),
+                )
+                return
             _log.info(
                 "[battery] tier %s -> %s (%.2fV)", _last_tier, tier, mv / 1000.0
             )

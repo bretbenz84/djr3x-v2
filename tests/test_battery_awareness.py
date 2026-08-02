@@ -178,5 +178,45 @@ class MotionGateTest(unittest.TestCase):
         self.assertEqual(MA._state["far_hits"], 0)   # counter reset, not deferred
 
 
+class LoadAwareTierTest(unittest.TestCase):
+    """Field 2026-08-01: an autonomous turn sagged a coulomb-85% pack from
+    13.07V to 12.7V (IR drop through the ~160-280 mΩ source resistance) and
+    Rex announced 'one-fifth left'. Under drive load a voltage reading may
+    not downgrade the tier or report critical; at-rest readings still do."""
+
+    def setUp(self):
+        import intelligence.battery_awareness as ba
+        self.ba = ba
+        self._saved_tier = ba._last_tier
+
+    def tearDown(self):
+        self.ba._last_tier = self._saved_tier
+
+    def _tel(self, mv, ma):
+        return mock.patch("hardware.motion.telemetry",
+                          return_value={"batt_mv": mv, "batt_ma": ma})
+
+    def test_drive_load_detection(self):
+        with self._tel(12700, 2500):
+            self.assertTrue(self.ba._under_drive_load())
+        with self._tel(13070, 1300):   # idle draw
+            self.assertFalse(self.ba._under_drive_load())
+        with self._tel(12700, 0):      # no shunt fitted — never gates
+            self.assertFalse(self.ba._under_drive_load())
+
+    def test_critical_not_reported_on_load_sag(self):
+        self.ba._last_tier = "nominal"
+        with self._tel(12300, 2500):
+            self.assertFalse(self.ba.battery_critical())
+
+    def test_critical_still_reported_at_rest_or_when_latched(self):
+        self.ba._last_tier = None
+        with self._tel(12300, 1200):
+            self.assertTrue(self.ba.battery_critical())
+        self.ba._last_tier = "critical"
+        with self._tel(12300, 2500):   # rest already said critical — stays true
+            self.assertTrue(self.ba.battery_critical())
+
+
 if __name__ == "__main__":
     unittest.main()
