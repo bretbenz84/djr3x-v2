@@ -238,6 +238,43 @@ def _relationship_lines(person_id: int) -> list[str]:
     return out
 
 
+def _dated_mentions(person_id: int, topic_tokens, limit: int = 4) -> list[str]:
+    """The person's OWN dated words on the asked-about topic, from the persisted
+    conversation_log — what makes "when did I mention going camping?" answerable
+    with an actual date ('[2026-06-18] "I'm going camping next month"') instead
+    of a vague 'this summer'. One line per day, newest first. [] on any failure."""
+    if not topic_tokens:
+        return []
+    try:
+        from memory import database as db, text_match
+        rows = db.fetchall(
+            """SELECT day, text FROM conversation_log
+               WHERE person_id = ? ORDER BY ts DESC LIMIT 2000""",
+            (int(person_id),),
+        )
+        out: list[str] = []
+        seen_days: set = set()
+        for r in rows:
+            row = dict(r)
+            raw = str(row.get("text") or "").strip()
+            if raw.endswith("?"):
+                continue   # their QUESTION about the topic isn't a mention of it
+            if text_match.overlap_count(raw, topic_tokens) <= 0:
+                continue
+            day = str(row.get("day") or "")
+            if day in seen_days:
+                continue
+            seen_days.add(day)
+            text = " ".join(str(row.get("text") or "").split())[:140]
+            out.append(f'[{day}] they said: "{text}"')
+            if len(out) >= max(0, int(limit)):
+                break
+        return out
+    except Exception as exc:
+        _log.debug("[recall] dated mentions failed: %s", exc)
+        return []
+
+
 def memory_question_lines(person_id: Optional[int], utterance: str) -> list[str]:
     """The rich recall block for a direct memory question — [] when it isn't one,
     when there's no known person, or when recall is disabled. Each element is one
@@ -275,7 +312,9 @@ def memory_question_lines(person_id: Optional[int], utterance: str) -> list[str]
         for r in search_episodes(tokens, person_id=int(person_id),
                                  limit=int(_cfg("RECALL_EPISODE_LIMIT", 4)))
     ]
-    if not (facts or interests or qa or rels or episodes):
+    mentions = _dated_mentions(int(person_id), tokens,
+                               limit=int(_cfg("RECALL_MENTION_LIMIT", 4)))
+    if not (facts or interests or qa or rels or episodes or mentions):
         return []
     lines.append(
         "MEMORY QUESTION: they are asking what you REMEMBER. Everything below is "
@@ -293,6 +332,11 @@ def memory_question_lines(person_id: Optional[int], utterance: str) -> list[str]
                      + " | ".join(interests) + ".")
     if qa:
         lines.append("Things they've told you directly: " + " | ".join(qa) + ".")
+    if mentions:
+        lines.append(
+            "Their own dated words on this topic (use these DATES when they ask "
+            "when something was said): " + " | ".join(mentions) + "."
+        )
     if episodes:
         lines.append(
             "From your diary — dated things that actually happened (today is "

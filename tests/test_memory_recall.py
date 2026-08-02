@@ -283,3 +283,33 @@ class ConversationRecallTest(unittest.TestCase):
         self.assertEqual(len(sampled), 40)
         self.assertEqual(sampled[0]["text"], "line 0")
         self.assertGreater(int(sampled[-1]["text"].split()[1]), 150)
+
+
+class DatedMentionsTest(unittest.TestCase):
+    _ROWS = [
+        {"day": "2026-08-01", "text": "Do you know when I went camping?"},
+        {"day": "2026-07-11", "text": "Camping was fine"},
+        {"day": "2026-07-11", "text": "We set up camp by the river"},
+        {"day": "2026-06-18", "text": "I said I'm going camping next month"},
+        {"day": "2026-07-20", "text": "I finished your motor system"},
+    ]
+
+    def _mentions(self, tokens):
+        from memory import database as db
+        with mock.patch.object(db, "fetchall", return_value=list(self._ROWS)):
+            return recall._dated_mentions(1, tokens)
+
+    def test_dated_mentions_found_questions_excluded(self):
+        out = self._mentions({"camp"})
+        joined = " ".join(out)
+        self.assertIn("[2026-07-11]", joined)
+        self.assertIn("[2026-06-18]", joined)
+        self.assertNotIn("Do you know when", joined)   # their question isn't a mention
+        self.assertNotIn("motor system", joined)       # off-topic excluded
+
+    def test_one_line_per_day(self):
+        out = self._mentions({"camp"})
+        self.assertEqual(sum(1 for l in out if "[2026-07-11]" in l), 1)
+
+    def test_no_tokens_no_mentions(self):
+        self.assertEqual(recall._dated_mentions(1, set()), [])
