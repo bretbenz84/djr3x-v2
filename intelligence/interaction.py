@@ -12083,6 +12083,65 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
             _speak_blocking(full)
         return full or ""
 
+    if action in ("music.stop", "music.skip"):
+        key = "dj_stop" if action == "music.stop" else "dj_skip"
+        try:
+            resp = _execute_command(
+                command_parser.CommandMatch(key, "tool_router", {}),
+                person_id,
+                _tool_router_person_name(person_id),
+                text,
+            )
+        except Exception as exc:
+            _log.error("[tool_router] executor failed for %s: %s", action, exc)
+            resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+
+    if action == "event.cancel":
+        # Off-pattern cancellations ("we're not going to Lake Folsom anymore",
+        # field 2026-08-02) — mirror the router's event.cancel branch: cancel
+        # matching stored events (events_memory.looks_like_cancellation stays
+        # as the write guard), resolve open commitments, ack in character.
+        resp = None
+        try:
+            hint = str((args or {}).get("event_hint") or "").strip()
+            cancel_pid = person_id
+            if cancel_pid is None:
+                try:
+                    cancel_pid = consciousness.get_last_memory_hint_target()
+                except Exception:
+                    cancel_pid = None
+            labels = _cancel_stale_event_memory(
+                cancel_pid, text,
+                event_hint={"event_name": hint} if hint else None,
+            )
+            if not labels:
+                events_memory.postpone_matching_events(cancel_pid, text)
+            try:
+                events_memory.resolve_matching_commitments(cancel_pid, text)
+            except Exception as commit_exc:
+                _log.debug("[tool_router] commitments resolve failed: %s", commit_exc)
+            if not labels and hint and events_memory.looks_like_cancellation(text):
+                # LLM-confirmed cancel with no stored row — still acknowledge
+                # so the user hears the plan is off (matches router behavior).
+                labels = [hint]
+            if labels:
+                resp = _event_cancellation_ack(labels, cancel_pid)
+                _speak_blocking(resp)
+        except Exception as exc:
+            _log.error("[tool_router] event.cancel failed: %s", exc)
+            resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        # Nothing matched — treat as conversation (the reply LLM handles it).
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action in ("system.shutdown", "system.sleep"):
         if action == "system.shutdown":
             key = "shutdown" if command_parser.is_shutdown_request(text) else None

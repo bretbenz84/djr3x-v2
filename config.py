@@ -4818,6 +4818,14 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # of "this needs live data"; the search itself stays grounded (citations,
     # link/markdown stripping, offline refusal).
     "web.search",
+    # Phase 2 live batch (2026-08-02, user-approved): off-pattern phrasings for
+    # actions with existing executors. event.cancel ("we're not going to Lake
+    # Folsom anymore"), memory.query, identity.who_is_speaking, and the music
+    # controls ("kill the music"-class misses). All keep their deterministic
+    # fast lanes; the write-path (event.cancel) keeps looks_like_cancellation
+    # as its guard. vision.snapshot deliberately NOT live — it has no executor.
+    "event.cancel", "memory.query", "identity.who_is_speaking",
+    "music.play", "music.stop", "music.skip",
 )
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True

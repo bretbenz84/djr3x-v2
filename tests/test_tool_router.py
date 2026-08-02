@@ -122,6 +122,8 @@ class LiveCutoverTest(unittest.TestCase):
             "time_query", "date_query", "weather_query", "status_capabilities",
             "status_uptime", "vision_describe_scene", "music_options",
             "system_sleep", "system_shutdown", "web_search",
+            "event_cancel", "memory_query", "identity_who_is_speaking",
+            "music_play", "music_stop", "music_skip",
         })
 
     def test_kill_switch_detaches_all_tools(self):
