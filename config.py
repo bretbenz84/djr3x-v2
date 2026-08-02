@@ -1668,6 +1668,15 @@ IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0     # pending capture slot expiry
 # junk voiceprint twin and skipped; the slot silently expired).
 IMPERSONATION_CAPTURE_MATCH_RATIO = 0.6
 IMPERSONATION_CAPTURE_END_PAD_SECS = 0.5      # min trailing silence on the saved clip
+# Anti-stutter (field 2026-08-01: a long parody line synthesized slower than
+# real time and streamed playback starved repeatedly). The whole take is now
+# prewarmed in the background — intro line + thinking-sfx loop cover the wait —
+# and played from a buffer; the script is hard-capped so the wait stays short.
+IMPERSONATION_SCRIPT_MAX_WORDS = 45           # sentence-boundary cap on the parody script
+IMPERSONATION_PREWARM_TIMEOUT_SECS = 90.0     # max thinking-loop wait for the take
+LOCAL_TTS_CLONE_FULL_BUFFER = True            # cloned (non-rex) voices always play fully
+                                              # buffered even without a prewarm — Rex's own
+                                              # short lines keep the low-latency stream
                                               # (topped up, so the clone isn't clipped)
 # Lines Rex asks the person to repeat (fixed, so the reference transcript is known
 # exactly). Each is ~2 short sentences — enough audio to condition the clone.

@@ -5,6 +5,7 @@ script prompt, the spoken performance's voice_ref threading, and the router evid
 gate. The local TTS engine and the LLM are mocked — no model loads, no audio.
 """
 
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -233,8 +234,11 @@ class PerformThreadingTest(unittest.TestCase):
             calls.append({"text": text, "voice_ref": kw.get("voice_ref"), "log_text": kw.get("log_text")})
             return _Done()
 
+        done = threading.Event()
+        done.set()   # prewarm "already finished" — unit tests must never touch the real model
         with mock.patch("audio.speech_queue.enqueue", side_effect=fake_enqueue), \
              mock.patch.object(impersonation, "build_parody_script", return_value="I am Bret and I am always late."), \
+             mock.patch.object(impersonation.local_tts, "prewarm_take", return_value=done), \
              mock.patch("memory.episodes.record_episode") as rec, \
              mock.patch.object(config, "IMPERSONATION_OUTRO_ENABLED", True):
             result = impersonation.perform(ref, "Bret", 3, is_self=False)
@@ -255,8 +259,10 @@ class PerformThreadingTest(unittest.TestCase):
             def wait(self, timeout=None):
                 return True
 
+        done2 = threading.Event(); done2.set()
         with mock.patch("audio.speech_queue.enqueue", return_value=_Done()) as enq, \
              mock.patch.object(impersonation, "build_parody_script", return_value=None), \
+             mock.patch.object(impersonation.local_tts, "prewarm_take", return_value=done2), \
              mock.patch("memory.episodes.record_episode") as rec:
             result = impersonation.perform(ref, "Bret", 3)
 

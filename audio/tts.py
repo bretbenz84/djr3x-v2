@@ -954,6 +954,44 @@ def _speak_local(
                 )
                 return True
 
+    # Fully-buffered takes play like a cache hit — no streaming, no underrun.
+    # Two sources: a take prewarmed in the background (impersonation kicks
+    # synthesis off behind the intro line + thinking-sfx loop), or an on-the-spot
+    # full synthesis for any CLONED voice (LOCAL_TTS_CLONE_FULL_BUFFER). Cloned
+    # parody lines are the longest text the local engine gets, and streamed
+    # playback stuttered whenever generation ran slower than real time (field
+    # 2026-08-01) — 0.25s of preroll can't carry a 12s line. Rex's own voice
+    # keeps the streaming path: his lines are short and latency matters.
+    prebuffered = local_tts.pop_prewarmed(clean_text, voice_ref)
+    if (
+        prebuffered is None
+        and getattr(voice_ref, "label", "") != "rex"
+        and bool(getattr(config, "LOCAL_TTS_CLONE_FULL_BUFFER", True))
+    ):
+        try:
+            full_audio, full_sr = local_tts.synthesize(clean_text, voice_ref)
+        except Exception as exc:
+            logger.warning("[tts] clone full-buffer synthesis failed (%s) — streaming", exc)
+            full_audio, full_sr = None, sr
+        if full_audio is not None and len(full_audio):
+            prebuffered = (full_audio, full_sr)
+    if prebuffered is not None:
+        pre_audio, pre_sr = prebuffered
+        logger.info("[tts] local buffered take: %.1fs audio (voice=%s)",
+                    len(pre_audio) / float(pre_sr), getattr(voice_ref, "label", "?"))
+        if log_text:
+            try:
+                conv_log.log_rex(clean_text)
+            except Exception as exc:
+                logger.debug("[tts] conversation log write failed: %s", exc)
+        _play(
+            pre_audio, pre_sr, emotion,
+            on_playback_start=on_playback_start,
+            post_playback_tail_secs=post_playback_tail_secs,
+            flush_on_playback_stop=flush_on_playback_stop,
+        )
+        return True
+
     front_pad = np.zeros(
         int(sr * float(getattr(config, "LOCAL_TTS_FRONT_PAD_MS", 150)) / 1000.0),
         dtype=np.float32,

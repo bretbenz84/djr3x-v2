@@ -414,10 +414,33 @@ def build_parody_script(
             max_tokens=180,
         )
         text = (resp.choices[0].message.content or "").strip()
-        return llm.clean_response_text(text) or None
+        return _cap_script_words(llm.clean_response_text(text)) or None
     except Exception as exc:
         logger.warning("[impersonation] script generation failed: %s", exc)
         return None
+
+
+def _cap_script_words(text: Optional[str]) -> Optional[str]:
+    """Hard cap the parody length at sentence boundaries. The prompt asks for
+    2-3 short sentences but the model sometimes runs long, and every extra word
+    is more local-synthesis time the room spends listening to the thinking loop
+    (and was more stutter, before takes were prewarmed)."""
+    if not text:
+        return text
+    max_words = int(getattr(config, "IMPERSONATION_SCRIPT_MAX_WORDS", 45))
+    words_so_far = 0
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?…])\s+", text.strip()):
+        n = len(sentence.split())
+        if kept and words_so_far + n > max_words:
+            break
+        kept.append(sentence)
+        words_so_far += n
+    capped = " ".join(kept).strip()
+    if capped != text.strip():
+        logger.info("[impersonation] script capped %d -> %d words",
+                    len(text.split()), words_so_far)
+    return capped or text
 
 
 # ── Performance ───────────────────────────────────────────────────────────────
@@ -449,15 +472,56 @@ def perform(
         except Exception as exc:
             logger.debug("[impersonation] enqueue failed: %s", exc)
 
-    # 1. Stall/setup line in Rex's own voice (also covers cold model-load latency).
+    # 1. Script FIRST, so the full take can synthesize in the background while
+    #    Rex's intro line plays. Streamed clone synthesis stuttered live
+    #    (2026-08-01): generation ran slower than real time on the longest text
+    #    the local engine ever gets. Now the WHOLE take is prewarmed and played
+    #    from a buffer; any leftover wait is covered by the thinking-sfx loop
+    #    (owner's suggestion — same effect as the startup loading loop).
+    script = build_parody_script(subject_name, person_id, is_self=is_self, stranger=stranger)
+
+    prewarm_done = None
+    if script:
+        # In --local-tts mode the INTRO also needs the engine, and synthesis is
+        # serialized — prewarming first would block the intro. Order around it.
+        prewarm_before_intro = not bool(getattr(config, "LOCAL_TTS_MODE", False))
+        if prewarm_before_intro:
+            try:
+                prewarm_done = local_tts.prewarm_take(script, ref)
+            except Exception as exc:
+                logger.debug("[impersonation] prewarm launch failed: %s", exc)
+
+    # 2. Stall/setup line in Rex's own voice (covers model load + synthesis).
     _say(intro_line(), "excited", log_text=True)
 
-    # 2. The parody in the cloned voice.
-    script = build_parody_script(subject_name, person_id, is_self=is_self, stranger=stranger)
     if not script:
         cover = "...huh. My impression module just blew a fuse. We'll try that again later."
         _say(cover, "sheepish", log_text=False)
         return cover
+
+    if prewarm_done is None:
+        try:
+            prewarm_done = local_tts.prewarm_take(script, ref)
+        except Exception as exc:
+            logger.debug("[impersonation] prewarm launch failed: %s", exc)
+
+    # 3. Synthesis still running when the intro ends → loop the processing chirp
+    #    (never dead air, never a stuttering take).
+    if prewarm_done is not None and not prewarm_done.is_set():
+        loop_handle = None
+        try:
+            from audio import sound_effects
+            loop_handle = sound_effects.start_loop("thinking")
+        except Exception as exc:
+            logger.debug("[impersonation] thinking loop failed: %s", exc)
+        prewarm_done.wait(timeout=float(getattr(config, "IMPERSONATION_PREWARM_TIMEOUT_SECS", 90.0)))
+        try:
+            from audio import sound_effects
+            sound_effects.stop_loop(loop_handle)
+        except Exception:
+            pass
+
+    # 4. The parody in the cloned voice — plays the prewarmed buffer.
     _say(script, "excited", voice_ref=ref, log_text=False)
 
     # 3. Optional Rex-voice button.

@@ -336,3 +336,53 @@ def synthesize(text: str, voice_ref: VoiceRef) -> tuple[Optional[np.ndarray], in
     if not chunks:
         return None, sr
     return np.concatenate(chunks), sr
+
+
+# ── Prewarmed takes (impersonation stutter fix, 2026-08-01) ──────────────────
+# A cloned-voice parody line is the LONGEST text the local engine ever gets, and
+# streamed playback stuttered whenever generation ran slower than real-time
+# (0.25s preroll was no match for a 12s line). The impersonation flow now
+# synthesizes the WHOLE take in a background thread (covered by Rex's intro line
+# + the thinking-sfx loop) and playback pops the finished array — no streaming,
+# no possible underrun. One-shot storage: popped on first use, never cached.
+
+_prewarmed: "dict[tuple[str, str], tuple[np.ndarray, int]]" = {}
+_prewarm_lock = threading.Lock()
+
+
+def _prewarm_key(text: str, voice_ref: VoiceRef) -> "tuple[str, str]":
+    return ((text or "").strip(), getattr(voice_ref, "label", "") or "")
+
+
+def prewarm_take(text: str, voice_ref: VoiceRef) -> threading.Event:
+    """Kick a full background synthesis of (text, voice). Returns an Event set
+    when the take is ready (or failed — check pop_prewarmed for the result).
+    NOTE: shares _generate_lock with live synthesis, so in --local-tts mode
+    start it only when nothing else needs the engine (the impersonation flow
+    orders around this)."""
+    done = threading.Event()
+
+    def _run() -> None:
+        try:
+            audio, sr = synthesize(text, voice_ref)
+            if audio is not None and len(audio):
+                with _prewarm_lock:
+                    _prewarmed[_prewarm_key(text, voice_ref)] = (audio, sr)
+                logger.info("[local_tts] prewarmed take ready (%.1fs audio, voice=%s)",
+                          len(audio) / float(sr), getattr(voice_ref, "label", "?"))
+            else:
+                logger.warning("[local_tts] prewarm produced no audio (voice=%s)",
+                             getattr(voice_ref, "label", "?"))
+        except Exception as exc:
+            logger.warning("[local_tts] prewarm failed: %s", exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, daemon=True, name="local-tts-prewarm").start()
+    return done
+
+
+def pop_prewarmed(text: str, voice_ref: VoiceRef) -> "tuple[np.ndarray, int] | None":
+    """One-shot retrieval of a prewarmed take, or None."""
+    with _prewarm_lock:
+        return _prewarmed.pop(_prewarm_key(text, voice_ref), None)
