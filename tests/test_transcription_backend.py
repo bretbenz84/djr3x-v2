@@ -109,5 +109,31 @@ class WhisperBackendUnchangedTest(unittest.TestCase):
         self.assertTrue(tr._is_confident(-0.02, None, "qwen3_asr"))
 
 
+class StandaloneCorrectionTest(unittest.TestCase):
+    """Whole-utterance homophone guard (field 2026-08-02: qwen3 heard the bare
+    command "roast me" as "Roast meat." — not common English, so the decoder
+    snapped to the nearby real phrase). Fires ONLY on the standalone phrase."""
+
+    def test_bare_roast_meat_becomes_roast_me(self):
+        self.assertEqual(tr._apply_standalone_corrections("Roast meat."), "Roast me.")
+        self.assertEqual(tr._apply_standalone_corrections("roast meet"), "roast me")
+        self.assertEqual(
+            tr._apply_standalone_corrections("Rex, roast meat."), "Rex, roast me."
+        )
+        self.assertEqual(
+            tr._apply_standalone_corrections("roast meat please"), "roast me please"
+        )
+
+    def test_real_sentences_about_roasting_meat_untouched(self):
+        for text in (
+            "I like to roast meat on Sundays.",
+            "We should roast meat tonight",
+            "how do you roast meat",
+            "roast meatballs",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(tr._apply_standalone_corrections(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()

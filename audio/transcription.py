@@ -175,6 +175,45 @@ def _apply_corrections(text: str) -> str:
     return text
 
 
+# Optional address/politeness wrappers allowed around a standalone-corrected
+# phrase — "Rex, roast meat." / "please roast meat" are still the bare command.
+_STANDALONE_LEAD_RE = (
+    r"^(?P<lead>(?:(?:hey|ok|okay)\s+)?(?:rex\s*[,!]?\s*)?(?:please\s+)?)"
+)
+_STANDALONE_TAIL_RE = r"(?P<tail>(?:\s*,?\s*please)?[\s.!?]*)$"
+
+
+def _apply_standalone_corrections(text: str) -> str:
+    """Whole-utterance homophone fixes (config.WHISPER_STANDALONE_CORRECTIONS).
+
+    Unlike WHISPER_CORRECTIONS these NEVER rewrite the phrase inside a longer
+    sentence — "roast meat" is a perfectly real thing to talk about; only a
+    bare "Roast meat." (optionally wrapped in an address/'please') is the ASR
+    mangling the command "roast me" (field 2026-08-02, qwen3 backend)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return text
+    for phrase, replacement in getattr(
+        config, "WHISPER_STANDALONE_CORRECTIONS", {}
+    ).items():
+        pattern = re.compile(
+            _STANDALONE_LEAD_RE + re.escape(phrase) + _STANDALONE_TAIL_RE,
+            re.IGNORECASE,
+        )
+        m = pattern.match(stripped)
+        if m:
+            fix = replacement
+            # Preserve sentence-initial capitalization ("Roast meat." → "Roast me.")
+            if not m.group("lead") and stripped[:1].isupper() and fix:
+                fix = fix[0].upper() + fix[1:]
+            fixed = (m.group("lead") + fix + m.group("tail")).strip()
+            logger.info(
+                "[transcription] standalone correction: %r -> %r", stripped, fixed
+            )
+            return fixed
+    return text
+
+
 # Whisper hallucinates subtitle/credit boilerplate on silence or noise
 # ("Subs by www.zeoranger.co.uk", "Thanks for watching", "Amara.org"). These
 # phrases / URLs never occur in real speech to Rex, so a substring match here is
@@ -459,7 +498,7 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
         )
         return Transcript("", backend=backend)
 
-    cleaned = _apply_corrections(raw)
+    cleaned = _apply_standalone_corrections(_apply_corrections(raw))
     confident = _is_confident(avg_logprob, no_speech_prob, backend)
     logger.info(
         "[transcription] backend=%s | raw=%r | cleaned=%r | avg_logprob=%s "

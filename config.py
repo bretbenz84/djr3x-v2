@@ -2011,6 +2011,18 @@ WHISPER_CORRECTIONS = {
     "impersivate": "impersonate",   # field 2026-07-23: "Impersivate me" missed the router
 }
 
+# Whole-utterance homophone fixes — applied ONLY when the phrase IS the entire
+# utterance (optionally wrapped in "hey rex"/"please"), never inside a longer
+# sentence. Use for command phrases that aren't common English, where the ASR
+# "corrects" them to a nearby real phrase: a bare "Roast meat." is someone
+# saying "roast me" (field 2026-08-02, qwen3), but "I'm going to roast meat
+# tonight" must pass through untouched.
+WHISPER_STANDALONE_CORRECTIONS = {
+    "roast meat": "roast me",
+    "roast meet": "roast me",
+    "roast mead": "roast me",
+}
+
 # Repetition filter: flag a transcript as a loop artifact only when one word both
 # exceeds this count AND dominates the utterance (see WHISPER_REPETITION_DOMINANCE),
 # so a real Whisper loop ("you you you you") is caught but natural repetition
