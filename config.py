@@ -4811,6 +4811,13 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # without doing it. The dispatcher still verifies the utterance with
     # command_parser.is_shutdown_request/is_sleep_request before executing.
     "system.sleep", "system.shutdown",
+    # web.search added 2026-08-02: "What's going on with the Iran War?" hit the
+    # deterministic conversational skip (no trigger phrase, autonomous gate
+    # silent) and Rex refused from stale knowledge — while the whole web_search
+    # feature sat unused one module over. The reply-call LLM is the right judge
+    # of "this needs live data"; the search itself stays grounded (citations,
+    # link/markdown stripping, offline refusal).
+    "web.search",
 )
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True

@@ -131,6 +131,15 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     "motion.come": ("'Come here' — find the speaker and approach them.", {}, []),
     "motion.stop": ("Stop moving RIGHT NOW ('stop', 'halt' while driving).", {}, []),
     "motion.explore": ("An invitation to wander/explore the room.", {}, []),
+    "web.search": (
+        "The user asks about news, current events, or anything that needs LIVE "
+        "up-to-date information Rex cannot know — wars, elections, scores, "
+        "prices, product launches, 'what's going on with X', follow-up "
+        "questions about a news story Rex mentioned. Runs a real web search "
+        "and answers from the results. NOT for things Rex already knows or "
+        "can sense (weather, time, what he sees).",
+        {"query": {**_STR, "description":
+                   "what to search for — the topic, not the full sentence"}}, []),
     "system.sleep": (
         "An explicit instruction to go to sleep / quiet mode ('go to sleep', "
         "'quiet mode') — NOT a full power-down.", {}, []),
@@ -162,7 +171,7 @@ _DEFAULT_LIVE_ACTIONS = (
     "time.query", "date.query", "weather.query",
     "status.capabilities", "status.uptime",
     "vision.describe_scene", "music.options",
-    "system.sleep", "system.shutdown",
+    "system.sleep", "system.shutdown", "web.search",
 )
 
 

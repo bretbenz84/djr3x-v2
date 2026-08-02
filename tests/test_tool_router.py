@@ -121,7 +121,7 @@ class LiveCutoverTest(unittest.TestCase):
         self.assertEqual(names, {
             "time_query", "date_query", "weather_query", "status_capabilities",
             "status_uptime", "vision_describe_scene", "music_options",
-            "system_sleep", "system_shutdown",
+            "system_sleep", "system_shutdown", "web_search",
         })
 
     def test_kill_switch_detaches_all_tools(self):

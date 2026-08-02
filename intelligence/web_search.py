@@ -361,6 +361,25 @@ _CITE_MARK_RE = re.compile(r"\s*\[\d+\]")                     # footnote markers
 _EMPTY_BRACKET_RE = re.compile(r"[\(\[]\s*[\)\]]")            # leftover () or []
 
 
+_MD_PATTERNS = (
+    (re.compile(r"\*\*\*([^*]+)\*\*\*"), r"\1"),
+    (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),
+    (re.compile(r"(?<!\w)\*([^*\n]+)\*(?!\w)"), r"\1"),
+    (re.compile(r"__([^_]+)__"), r"\1"),
+    (re.compile(r"(?<!\w)_([^_\n]+)_(?!\w)"), r"\1"),
+    (re.compile(r"`([^`\n]*)`"), r"\1"),
+    (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),
+    (re.compile(r"^\s*[-*•]\s+", re.MULTILINE), ""),
+)
+
+
+def strip_markdown(text: str) -> str:
+    """Flatten chat-markdown emphasis/headers/bullets to plain speakable prose."""
+    for pattern, repl in _MD_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def strip_links(text: str) -> str:
     """Remove anything URL-shaped from a spoken answer — full URLs, markdown links
     (keeps the label, drops the address), bare domains, "(source: …)" citations, and
@@ -479,6 +498,10 @@ def answer(text: str, person_id: Optional[int] = None, forced: bool = False) -> 
     # Strip URLs/links — Rex speaks his replies, so a read-aloud web address is noise.
     if getattr(config, "WEB_SEARCH_STRIP_LINKS", True):
         answer_text = strip_links(answer_text)
+    # The hosted search models answer in chat markdown; Rex SPEAKS this text,
+    # so "**ChatGPT for small business**" reads as junk (field 2026-08-01) and
+    # the transcript shows literal asterisks. Flatten to plain prose.
+    answer_text = strip_markdown(answer_text)
 
     try:
         from intelligence import llm

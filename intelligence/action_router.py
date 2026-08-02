@@ -288,6 +288,14 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "web.search",
+        "web",
+        "User asks about news, current events, or anything needing live "
+        "up-to-date information — wars, elections, scores, prices, launches, "
+        "'what's going on with X', follow-ups on a news story Rex raised.",
+        executable=True,
+    ),
+    ActionSpec(
         "system.sleep",
         "system",
         "User asks Rex to sleep, wake, quiet down, or mute.",

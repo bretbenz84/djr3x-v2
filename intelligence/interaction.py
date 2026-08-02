@@ -11901,6 +11901,7 @@ def _maybe_web_search_reply(
     text: str,
     person_id: Optional[int],
     turn_start: Optional[float] = None,
+    force: bool = False,
 ) -> Optional[str]:
     """If this turn needs CURRENT info, run a web search and speak Rex's answer.
 
@@ -11919,7 +11920,13 @@ def _maybe_web_search_reply(
         return None
     try:
         from intelligence import web_search
-        decision = web_search.should_search(text)
+        if force:
+            # Live tool-router dispatch: the reply-call LLM already judged this
+            # turn needs current data (it beat the phrase triggers AND the
+            # autonomous gate to it) — treat like an explicit user request.
+            decision = web_search.SearchDecision(True, True, "tool_router")
+        else:
+            decision = web_search.should_search(text)
     except Exception as exc:
         _log.debug("[web_search] trigger detection failed: %s", exc)
         return None
@@ -12055,6 +12062,27 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
     # object-scoped/negated/hypothetical phrasings — but unlike the
     # deterministic path it ACCEPTS polite requests ("Can you shut down,
     # please?"), which is exactly the phrasing class this live tool exists for.
+    if action == "web.search":
+        # The LLM judged this turn needs live data (field 2026-08-01: "What's
+        # going on with the Iran War?" fell to conversation and Rex refused
+        # from stale knowledge while the web_search feature sat unused).
+        # Search on the user's own words — they carry the follow-up context —
+        # and note the extracted topic only in the log.
+        _log.info("[tool_router] web.search query=%r", (args or {}).get("query"))
+        try:
+            resp = _maybe_web_search_reply(text, person_id, force=True)
+        except Exception as exc:
+            _log.error("[tool_router] web.search failed: %s", exc)
+            resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        # Search declined/empty — answer from knowledge so the turn isn't silent.
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action in ("system.shutdown", "system.sleep"):
         if action == "system.shutdown":
             key = "shutdown" if command_parser.is_shutdown_request(text) else None
