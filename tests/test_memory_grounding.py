@@ -171,6 +171,24 @@ class DenialClosesThreadTest(unittest.TestCase):
             self.llm._filtered_open_threads(["whether the dentist appointment happened"], clean),
             ["whether the dentist appointment happened"])
 
+    def test_model_curiosity_threads_are_dropped(self):
+        # Field 2026-08-02: "Bret told me his partner's name is JT" produced
+        # three curiosity questions filed as threads, later spoken as "you
+        # mentioned what you and JT like doing together" — a false memory.
+        transcript = [
+            {"speaker": "Rex", "text": "Who's this JT you keep texting?"},
+            {"speaker": "Bret Benziger", "text": "My partner's name is JT."},
+            {"speaker": "Bret Benziger",
+             "text": "I have a dentist appointment tomorrow."},
+        ]
+        raw = ["how Bret and JT met",
+               "what activities Bret and JT enjoy together",
+               "if Bret has any plans with JT this weekend",
+               "whether the dentist appointment happened"]
+        self.assertEqual(
+            self.llm._filtered_open_threads(raw, transcript),
+            ["whether the dentist appointment happened"])
+
     def test_threads_are_still_capped(self):
         clean = [{"speaker": "Bret", "text": "Lots happened today."}]
         self.assertEqual(len(self.llm._filtered_open_threads(list("abcdef"), clean)), 3)

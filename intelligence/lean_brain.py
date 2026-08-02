@@ -957,8 +957,12 @@ _OPEN_THREAD_INSTRUCTION = (
     "when it came up, conversationally (\"the other day you mentioned X — did that "
     "happen?\"). Without the anchor a days-old thread lands as a non-sequitur (field "
     "2026-07-31: \"did you go with 'sick' hair?\" out of nowhere — the human had no "
-    "idea what Rex meant). \"You mentioned\" / \"you were saying\" phrasing is natural "
-    "and ALLOWED; do NOT say 'I remember' / 'according to my records', and do not "
+    "idea what Rex meant). Anchor with \"X came up the other day\" / \"we were talking "
+    "about X\" phrasing; only say \"you mentioned\" if the thread clearly records "
+    "something THEY stated — never claim they told you something they didn't "
+    "(field 2026-08-02: 'you mentioned what you and JT like doing together' was a "
+    "false memory; they had only shared JT's name). "
+    "Do NOT say 'I remember' / 'according to my records', and do not "
     "mention memory banks or that you were waiting for a quiet moment. If the thread "
     "is too vague to anchor in one plain sentence, reply PASS instead of guessing."
 )
@@ -1237,6 +1241,29 @@ def _time_context_line() -> str:
             f"({bucket}). Fit your energy and topics to the hour.")
 
 
+def _day_shape_line() -> str:
+    """An ACTIONABLE day-shape nudge for the proactive path (owner 2026-08-02:
+    ~1pm on a Sunday should feel like 'the day is still young — got plans for
+    the rest of it?'). Empty string when no shape applies — most hours don't."""
+    from datetime import datetime as _dt
+    now = _dt.now()
+    h, wd = now.hour, now.weekday()
+    weekend = wd >= 5
+    if weekend and 9 <= h < 15:
+        return ("It's a weekend and the day is still young — asking what they've "
+                "got planned for the rest of it is a natural, time-aware move.")
+    if wd == 4 and 16 <= h < 21:
+        return ("It's Friday heading into the weekend — asking what they've got "
+                "going this weekend fits the moment.")
+    if wd == 6 and 17 <= h < 22:
+        return ("It's Sunday evening — the weekend is wrapping up; asking how it "
+                "went or what the week ahead looks like fits the moment.")
+    if not weekend and 17 <= h < 21:
+        return ("It's a weekday evening — asking how the day treated them is a "
+                "natural, time-aware move.")
+    return ""
+
+
 def _situation_block(person_id: Optional[int], world: Optional[dict],
                      quiet_secs: float, mood: Optional[str]) -> str:
     """The impulse's PRESENT-focused situation: who he's with + what he SEES/HEARS this moment +
@@ -1246,6 +1273,9 @@ def _situation_block(person_id: Optional[int], world: Optional[dict],
     lines: list[str] = []
     try:
         lines.append(_time_context_line())
+        shape = _day_shape_line()
+        if shape:
+            lines.append(shape)
     except Exception:
         pass
     if person_id is not None:

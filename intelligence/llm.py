@@ -1948,6 +1948,40 @@ def _content_words(text: str) -> set:
             if w not in _THREAD_STOPWORDS}
 
 
+# Short function words the 2+-char tokenizer must ignore (entities like
+# "JT"/"Max" are why it goes below 4 chars at all).
+_SHORT_STOPWORDS = {
+    "is", "in", "it", "he", "as", "at", "an", "or", "be", "by", "do", "of",
+    "on", "to", "up", "we", "me", "my", "no", "so", "us", "am", "if", "did",
+    "the", "and", "for", "his", "her", "had", "has", "have", "was", "were",
+    "any", "this", "that", "will", "not", "yet", "she", "they", "them", "got",
+    "get", "out", "its", "are", "you", "your", "our", "who", "how", "what",
+    "when", "where", "whether", "with",
+}
+
+
+def _thread_tokens(text: str) -> set:
+    """Content tokens INCLUDING short entities ('JT', 'Max') — for grounding
+    open threads against what the human actually said."""
+    return {w for w in re.findall(r"[a-z']{2,}", (text or "").lower())
+            if w not in _THREAD_STOPWORDS and w not in _SHORT_STOPWORDS}
+
+
+# Getting-to-know-you curiosity shapes — the model files these as "threads"
+# after any personal revelation, but they are QUESTIONS REX WANTS TO ASK, not
+# things the person left unresolved. Spoken later as "you mentioned X", they
+# become false memories (field 2026-08-02 13:03).
+_CURIOSITY_THREAD_RE = re.compile(
+    r"\bhow\b[^,;.]*\bmet\b|"
+    r"\bwhat\b[^,;.]*\b(?:enjoy|like)s?\b[^,;.]*\btogether\b|"
+    r"\bwhat\b[^,;.]*\bdo(?:es)?\s+together\b|"
+    r"\bwhat activities\b|"
+    r"\bif\b[^,;.]*\bhas (?:any )?plans\b|"
+    r"\bwhere\b[^,;.]*\b(?:is |are )?from\b",
+    re.IGNORECASE,
+)
+
+
 def _filtered_open_threads(raw, transcript: list[dict]) -> list:
     """Prompt rules are guidance; this is the guarantee.
 
@@ -1974,6 +2008,43 @@ def _filtered_open_threads(raw, transcript: list[dict]) -> list:
             if str(prev.get("speaker", "")).strip().lower() in _REX_SPEAKER_LABELS:
                 denied |= _content_words(str(prev.get("text") or ""))
                 break
+    # Grounding guarantee (field 2026-08-02: 'Bret told me his partner's name
+    # is JT' produced the threads 'how Bret and JT met' / 'what activities
+    # Bret and JT enjoy together' / 'if Bret has any plans with JT this
+    # weekend' — pure model curiosity, which the lull path then spoke as
+    # 'you mentioned what you and JT like doing together', a false memory).
+    # Two rules:
+    #   1. Getting-to-know-you curiosity SHAPES are never threads, grounded
+    #      or not — nobody 'leaves unresolved' how they met their partner.
+    #   2. A thread must share a token (entities like 'Max'/'JT' count) with
+    #      something a HUMAN actually said. Undecidable threads (no usable
+    #      tokens) pass through — the shape blocklist is their guard.
+    human_tokens: set = set()
+    speaker_names: set = set()
+    for entry in turns:
+        speaker = str(entry.get("speaker", "")).strip()
+        for part in re.split(r"\s+", speaker):
+            if part:
+                speaker_names.add(part.lower())
+        if speaker.lower() in _REX_SPEAKER_LABELS:
+            continue
+        human_tokens |= _thread_tokens(str(entry.get("text") or ""))
+    grounded = []
+    for thread in threads:
+        if _CURIOSITY_THREAD_RE.search(thread):
+            _log.info("[diary] dropping open thread %r — getting-to-know-you "
+                      "curiosity shape, not something the human left "
+                      "unresolved", thread)
+            continue
+        anchor = _thread_tokens(thread) - speaker_names
+        if anchor and human_tokens and not (anchor & human_tokens):
+            _log.info("[diary] dropping open thread %r — shares nothing with "
+                      "anything the human said (model curiosity, not a real "
+                      "thread)", thread)
+            continue
+        grounded.append(thread)
+    threads = grounded
+
     if not denied:
         return threads[:3]
     kept = []
