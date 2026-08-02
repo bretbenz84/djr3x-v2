@@ -178,6 +178,31 @@ class ContextBiasTest(unittest.TestCase):
         ))
         self.assertFalse(tr._context_echo_hallucination("Yes."))
 
+    def test_echo_guard_rejects_multi_line_concatenation(self):
+        # Field 2026-08-02 12:36: a 1.9s echo capture decoded as BOTH startup
+        # lines concatenated — each single line only ratio-matched ~0.5, so
+        # the per-candidate check waved it through. Coverage catches it.
+        l1 = ("Loading. If you're waiting for a hologram of a princess, wrong "
+              "droid. If you're waiting for questionable piloting advice — "
+              "almost there.")
+        l2 = ("Online. Talk slowly — I've been awake for three seconds and I "
+              "already have regrets.")
+        tr.note_rex_line(l1)
+        tr.note_rex_line(l2)
+        self.assertTrue(tr._context_echo_hallucination(l1 + " " + l2))
+        # A real turn that QUOTES one line inside longer speech still passes.
+        self.assertFalse(tr._context_echo_hallucination(
+            "Hey Rex, I heard you say " + l2 + " and also I want to talk "
+            "about my telescope and the camping trip and other things"
+        ))
+
+    def test_impossible_speaking_rate_guard(self):
+        text = " ".join(["word"] * 44)
+        self.assertTrue(tr._impossible_speaking_rate(text, 1.89))
+        self.assertFalse(tr._impossible_speaking_rate(
+            "one two three four five six seven eight nine ten", 3.0))
+        self.assertFalse(tr._impossible_speaking_rate("yes", 0.3))
+
     def test_falsum_corrections(self):
         self.assertEqual(
             tr._apply_corrections("We're not going to like falsum anymore."),

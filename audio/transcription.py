@@ -119,14 +119,22 @@ def _context_echo_hallucination(text: str) -> bool:
     near-identical to a context line or the vocab list is a hallucination,
     not speech. This also acts as the reference-text guard for the echo
     capture seam: a transcript that IS Rex's own recent line is his residual,
-    not the user."""
+    not the user.
+
+    Two checks: (1) per-candidate similarity, and (2) COVERAGE — field
+    2026-08-02 12:36: a 1.9s echo capture decoded as BOTH startup lines
+    concatenated (44 words), so each single line only matched ~0.5 and the
+    ratio check waved it through. Stripping every known line out of the
+    transcript and rejecting when almost nothing remains catches multi-line
+    echo verbatim."""
     norm = _norm_for_echo(text)
     if not norm:
         return False
     candidates = [", ".join(
         str(v) for v in getattr(config, "QWEN_ASR_CONTEXT_VOCAB", ()) if v)]
     with _context_lock:
-        candidates.extend(_recent_rex_lines)
+        rex_lines = list(_recent_rex_lines)
+    candidates.extend(rex_lines)
     for cand in candidates:
         cand_norm = _norm_for_echo(cand)
         if not cand_norm:
@@ -137,6 +145,44 @@ def _context_echo_hallucination(text: str) -> bool:
                 "[transcription] context-echo hallucination rejected "
                 "(ratio %.2f vs %r): %r", ratio, cand[:60], text)
             return True
+    # Coverage: remove every recent Rex line from the transcript; if what's
+    # left is a small fraction, the "utterance" is composed of his own lines.
+    residue = norm
+    matched_any = False
+    for cand in rex_lines:
+        cand_norm = _norm_for_echo(cand)
+        if cand_norm and len(cand_norm) >= 12 and cand_norm in residue:
+            residue = residue.replace(cand_norm, " ")
+            matched_any = True
+    if matched_any:
+        residue = re.sub(r"\s+", " ", residue).strip()
+        max_residue = float(getattr(config, "QWEN_ASR_ECHO_MAX_RESIDUE_FRAC", 0.2))
+        if len(residue) <= max(12, int(len(norm) * max_residue)):
+            logger.info(
+                "[transcription] context-echo hallucination rejected "
+                "(coverage; residue %r): %r", residue[:40], text)
+            return True
+    return False
+
+
+def _impossible_speaking_rate(text: str, duration_secs: float) -> bool:
+    """True when the decode packs more words than the audio could physically
+    hold (field 2026-08-02 12:36: 44 words 'heard' in a 1.89s echo capture —
+    the biased decoder completed Rex's startup lines from faint residual at
+    logprob 0.0). Human speech tops out ~4-5 words/sec; the default cap of 6
+    only rejects the physically impossible."""
+    if duration_secs <= 0.5:
+        return False
+    words = len((text or "").split())
+    if words < 8:
+        return False
+    max_wps = float(getattr(config, "ASR_MAX_WORDS_PER_SEC", 6.0))
+    if words / duration_secs > max_wps:
+        logger.info(
+            "[transcription] impossible speaking rate rejected "
+            "(%d words in %.2fs = %.1f wps): %r",
+            words, duration_secs, words / duration_secs, (text or "")[:80])
+        return True
     return False
 
 
@@ -483,6 +529,10 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
             raw, avg_logprob = _qwen_transcribe(audio_array)
             raw = raw.strip()
             if raw and _context_echo_hallucination(raw):
+                raw = ""
+            if raw and _impossible_speaking_rate(
+                raw, len(audio_array) / float(getattr(config, "AUDIO_SAMPLE_RATE", 16000))
+            ):
                 raw = ""
             backend = "qwen3_asr"
             local_decoded_ok = True

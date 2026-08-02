@@ -2034,6 +2034,17 @@ QWEN_ASR_CONTEXT_MAX_CHARS = 600   # hard cap on the context prompt
 # to a context line / the vocab list is rejected as a hallucination. Also
 # catches Rex's own echo-seam residual being transcribed as the user.
 QWEN_ASR_CONTEXT_ECHO_RATIO = 0.85
+# Coverage variant of the echo guard (field 2026-08-02 12:36: a 1.9s echo
+# capture decoded as BOTH startup lines concatenated — each single line only
+# ratio-matched ~0.5). After stripping every recent Rex line from the
+# transcript, a residue below this fraction ⇒ the "utterance" was composed of
+# his own lines ⇒ rejected.
+QWEN_ASR_ECHO_MAX_RESIDUE_FRAC = 0.2
+# Physical ceiling on decode density: a transcript packing more words/sec than
+# this cannot be real speech (same field event: 44 words in 1.89s = 23 wps at
+# logprob 0.0 — the biased decoder completing context from faint residual).
+# Human speech tops out ~4-5 wps; 6 rejects only the impossible.
+ASR_MAX_WORDS_PER_SEC = 6.0
 
 # Whole-utterance homophone fixes — applied ONLY when the phrase IS the entire
 # utterance (optionally wrapped in "hey rex"/"please"), never inside a longer
