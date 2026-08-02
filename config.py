@@ -2045,6 +2045,10 @@ QWEN_ASR_ECHO_MAX_RESIDUE_FRAC = 0.2
 # logprob 0.0 — the biased decoder completing context from faint residual).
 # Human speech tops out ~4-5 wps; 6 rejects only the impossible.
 ASR_MAX_WORDS_PER_SEC = 6.0
+# Interaction-layer own-echo coverage guard (same concatenation flaw as above,
+# same field event): after stripping every recent Rex line from a transcript,
+# a residue below this fraction ⇒ own echo, rejected.
+OWN_ECHO_MAX_RESIDUE_FRAC = 0.2
 
 # Whole-utterance homophone fixes — applied ONLY when the phrase IS the entire
 # utterance (optionally wrapped in "hey rex"/"please"), never inside a longer

@@ -2729,6 +2729,22 @@ def _looks_like_own_echo(text: str) -> bool:
         floor = seam_floor if age <= seam_secs else ratio_floor
         if difflib.SequenceMatcher(None, norm, line).ratio() >= floor:
             return True
+    # Coverage: an echo transcript can CONCATENATE several of Rex's lines
+    # (field 2026-08-02 12:36: boot filler + ready line came back as one
+    # 44-word "utterance" — each single line only ratio-matched ~0.5, under
+    # even the seam floor). Strip every recent line out; if the remainder is
+    # a small fraction, the transcript was composed of his own lines.
+    residue = norm
+    matched_any = False
+    for line, _age in recent:
+        if line and len(line) >= 12 and line in residue:
+            residue = residue.replace(line, " ")
+            matched_any = True
+    if matched_any:
+        residue = re.sub(r"\s+", " ", residue).strip()
+        max_frac = float(getattr(config, "OWN_ECHO_MAX_RESIDUE_FRAC", 0.2))
+        if len(residue) <= max(12, int(len(norm) * max_frac)):
+            return True
     return False
 
 

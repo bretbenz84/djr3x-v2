@@ -123,6 +123,25 @@ class OwnEchoRejectionTest(unittest.TestCase):
         self.assertFalse(self.I._looks_like_own_echo("what do you see in my hand"))
         self.assertFalse(self.I._looks_like_own_echo("turn right and move forward five feet"))
 
+    def test_concatenated_multi_line_echo_rejected(self):
+        # Field 2026-08-02 12:36: the boot filler AND ready line came back as
+        # ONE transcript — each single line only ratio-matched ~0.5, under
+        # even the seam floor, so the per-line check waved it through. The
+        # coverage check strips all known lines and rejects the tiny residue.
+        l1 = ("Loading. If you're waiting for a hologram of a princess, wrong "
+              "droid. If you're waiting for questionable piloting advice — "
+              "almost there.")
+        l2 = ("Online. Talk slowly — I've been awake for three seconds and I "
+              "already have regrets.")
+        self.I._note_rex_spoke(l1)
+        self.I._note_rex_spoke(l2)
+        self.assertTrue(self.I._looks_like_own_echo(l1 + " " + l2))
+        # A human turn that QUOTES one line inside longer speech still passes.
+        self.assertFalse(self.I._looks_like_own_echo(
+            "You literally just said " + l2 + " which was pretty funny but "
+            "let me ask you about something else entirely now my friend"
+        ))
+
     def test_stale_lines_expire(self):
         norm = self.I._normalize_echo_text("Something's in my way — that's as far as I get.")
         self.I._recent_rex_lines.append((norm, time.monotonic() - 60.0))
