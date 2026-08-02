@@ -5602,6 +5602,15 @@ SPEAKER_ID_CONTINUITY_WINDOW_SECS = _env_float("SPEAKER_ID_CONTINUITY_WINDOW_SEC
 # keeps a slightly higher floor (no visual prior). ONLY applied while the active
 # embedder is ecapa — the Resemblyzer fallback keeps the strict 2026-07-05 guards.
 SPEAKER_ID_ECAPA_TRUST_ENABLED = _env_bool("SPEAKER_ID_ECAPA_TRUST_ENABLED", True)
+# Mouth-still veto (field 2026-08-02 12:37: JT spoke from ~20ft, cross-matched
+# Bret's print at 0.455, and silently-on-camera Bret got the credit via voice
+# continuity). When the visual active-speaker detector is running and its latch
+# is EMPTY at turn resolution — nobody visible articulated — the visible face's
+# mouth demonstrably wasn't moving, and a MARGINAL (<confident) voice match may
+# not ride the face: Rex challenges ("who's speaking?") or leaves the voice
+# off-screen instead. Confident voice matches and short one-word turns are
+# exempt (a brief "Yep" can slip between the detector's 0.25s samples).
+SPEAKER_ID_MOUTH_STILL_VETO_ENABLED = _env_bool("SPEAKER_ID_MOUTH_STILL_VETO_ENABLED", True)
 SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE = _env_float("SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE", 0.50, min_value=0.0, max_value=1.0)
 SPEAKER_ID_ECAPA_TRUST_FLOOR_VOICE_ONLY = _env_float("SPEAKER_ID_ECAPA_TRUST_FLOOR_VOICE_ONLY", 0.55, min_value=0.0, max_value=1.0)
 # A person-linked voice signature resolves the speaker outright at the strict cold bar

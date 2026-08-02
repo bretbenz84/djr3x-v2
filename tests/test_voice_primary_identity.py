@@ -542,3 +542,80 @@ class VisualCorroborationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MouthStillVetoTest(unittest.TestCase):
+    """Field 2026-08-02 12:37: JT spoke from ~20ft, cross-matched Bret's print
+    at 0.455 (marginal), and silently-on-camera Bret got the credit via voice
+    continuity. The active-speaker latch was EMPTY — Bret's mouth demonstrably
+    wasn't moving — and that positive absence must veto the marginal accept."""
+
+    def _decide(self, **kw):
+        base = dict(
+            person_id=None,
+            raw_best_id=None,
+            speaker_score=0.0,
+            ws_pid=1,
+            single_visible=True,
+            engaged_is_visible=True,
+            unknown_visible=False,
+            other_known_recently=False,
+        )
+        base.update(kw)
+        return I._voice_primary_face_decision(**base)
+
+    def test_field_case_continuity_overridden_by_still_mouth(self):
+        # JT at 0.455 on Bret's print, Bret visible + voice continuity active,
+        # camera watched the mouth stay still → challenge, not attribute.
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.455,
+                         voice_continuity=True, visual_mouth_still=True),
+            "challenge_identity",
+        )
+
+    def test_genuine_band_also_vetoed(self):
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.55,
+                         score_genuine_band=True, visual_mouth_still=True),
+            "challenge_identity",
+        )
+
+    def test_confident_voice_is_exempt(self):
+        # A confident voice stands on its own — a missed jaw sample must not
+        # override a 0.8 match.
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.80,
+                         visual_mouth_still=True),
+            "voice_agrees",
+        )
+
+    def test_no_veto_without_positive_absence(self):
+        # Detector disabled/expired (visual_mouth_still=False): behavior unchanged.
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.455,
+                         voice_continuity=True),
+            "voice_agrees_no_refresh",
+        )
+
+    def test_corroborate_becomes_challenge(self):
+        # Weak lean toward the visible face would refresh the print — with a
+        # still mouth that's how a stranger's audio poisons it. Ask instead.
+        self.assertEqual(
+            self._decide(raw_best_id=1, speaker_score=0.52,
+                         visual_mouth_still=True),
+            "challenge_identity",
+        )
+
+    def test_short_turn_exempt_from_veto(self):
+        # One-word turns can slip between the detector's samples — the
+        # short_face_wins protection stays even with an empty latch.
+        self.assertEqual(
+            self._decide(raw_best_id=None, speaker_score=0.30,
+                         short_utterance=True, visual_mouth_still=True,
+                         engaged_is_visible=False),
+            "short_face_wins",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

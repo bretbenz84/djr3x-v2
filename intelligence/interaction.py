@@ -1912,6 +1912,7 @@ def _voice_primary_face_decision(
     unknown_visible: bool,
     other_known_recently: bool,
     visual_speaker_pid: Optional[int] = None,
+    visual_mouth_still: bool = False,
     voice_continuity: bool = False,
     score_genuine_band: bool = False,
     short_utterance: bool = False,
@@ -1962,6 +1963,16 @@ def _voice_primary_face_decision(
             return "voice_agrees"            # the voice stands on its own
         if vis is not None and vis == ws:
             return "voice_agrees"            # camera positively confirms they're talking
+        if visual_mouth_still:
+            # POSITIVE mouth-still evidence: the active-speaker detector was
+            # running and nobody visible articulated near end-of-turn — the
+            # visible face was NOT the talker, whatever the marginal score
+            # says (field 2026-08-02 12:37: JT at ~20ft scored 0.455 on
+            # Bret's print; Bret was silently on camera with voice
+            # continuity from his own earlier turn, and got the credit).
+            # Neither continuity nor the ECAPA band may override a camera
+            # that watched the mouth not move.
+            return "challenge_identity"
         if voice_continuity:
             return "voice_agrees_no_refresh"  # marginal but consistent with recent confident voice
         if score_genuine_band:
@@ -1988,6 +1999,10 @@ def _voice_primary_face_decision(
         # usable speaker signal (disabled / empty / expired latch → vis is None).
         # The present known face anchors identity; the near-neighbor match is most
         # likely an absent/poor-print artifact, not a genuine off-camera speaker.
+        # ...unless the camera POSITIVELY watched that face's mouth stay still —
+        # then the face may not absorb the voice: leave it off-screen unknown.
+        if visual_mouth_still:
+            return "off_screen_unknown"
         return "voice_weak_face_wins"
     # person_id is None — the voice was uninformative (below the known floor or
     # ambiguous). Corroborate, don't override.
@@ -2004,6 +2019,11 @@ def _voice_primary_face_decision(
         )
     )
     if voice_leans_visible and single_visible and not other_known_recently:
+        if visual_mouth_still:
+            # Weak lean toward a face whose mouth demonstrably wasn't moving:
+            # never corroborate (a corroborate REFRESHES the print — exactly how
+            # a distant stranger's audio would poison it). Ask instead.
+            return "challenge_identity"
         return "corroborate"
     if (
         raw_id is None
@@ -2019,6 +2039,8 @@ def _voice_primary_face_decision(
         # hasn't formed yet, and without this the person can never be attributed,
         # so engagement NEVER forms — live-logged 2026-07-06-21-15, Bret (face
         # recognized, all voice prints stale) stayed Guest 1 all session.
+        if visual_mouth_still:
+            return "off_screen_unknown"
         return "face_only_continuity"
     if (
         short_utterance
@@ -2034,6 +2056,9 @@ def _voice_primary_face_decision(
         # face (or there is no candidate) and the camera doesn't contradict it.
         # Field 2026-07-18: Bret's "Yep" at 0.332, face locked, became
         # unknown_voice_1 and de-personed the whole session.
+        # Deliberately NO mouth-still veto here: a one-word turn can slip
+        # between the detector's 0.25s samples, and de-personing genuine
+        # short replies is the exact regression this branch exists to stop.
         return "short_face_wins"
     return "off_screen_unknown"
 
@@ -20848,9 +20873,20 @@ def _handle_speech_segment(
             # only to let the camera VETO a marginal off-camera voice match against
             # the visible face, or confirm the visible face is not the talker.
             _voice_dec_visual_pid = None
+            _voice_dec_mouth_still = False
             try:
                 from vision import active_speaker as _asp
                 _voice_dec_visual_pid = (_asp.recent_visual_speaker() or {}).get("person_db_id")
+                # POSITIVE absence: the detector is running and its latch is
+                # empty — nobody visible articulated near end-of-turn, so the
+                # visible face's mouth was still while the voice arrived
+                # (field 2026-08-02 12:37: JT spoke from ~20ft, scored 0.455
+                # on Bret's print, silently-on-camera Bret got the credit).
+                _voice_dec_mouth_still = (
+                    bool(getattr(config, "SPEAKER_ID_MOUTH_STILL_VETO_ENABLED", True))
+                    and _asp.enabled()
+                    and _voice_dec_visual_pid is None
+                )
             except Exception as exc:
                 _log.debug("active-speaker recent lookup (single-visible) failed: %s", exc)
             decision = _voice_primary_face_decision(
@@ -20866,6 +20902,7 @@ def _handle_speech_segment(
                 unknown_visible=_has_unknown_visible_or_recent(),
                 other_known_recently=_other_known_visible_recently(ws_pid),
                 visual_speaker_pid=_voice_dec_visual_pid,
+                visual_mouth_still=_voice_dec_mouth_still,
                 voice_continuity=_voice_continuity_active(person_id),
                 score_genuine_band=_ecapa_genuine_band(
                     speaker_score,
