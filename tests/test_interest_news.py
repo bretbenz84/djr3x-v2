@@ -177,5 +177,35 @@ class LeanInterestCueTest(unittest.TestCase):
         self.assertIsNone(self.I._lean_interest_discovery_cue(None))
 
 
+class LeanCueDropCooldownTest(unittest.TestCase):
+    """Field 2026-08-02 12:38: one open-thread cue won every lull consult, every
+    generated line was rejected as a re-ask of a recent question, and the
+    unspent cue starved all lower cues — no lull line played all session. A
+    dropped cue kind now sits out LEAN_CUE_DROP_COOLDOWN_SECS."""
+
+    def setUp(self):
+        import intelligence.interaction as I
+        self.I = I
+        I._lean_cue_cooldowns.clear()
+
+    def tearDown(self):
+        self.I._lean_cue_cooldowns.clear()
+
+    def test_strike_benches_the_kind(self):
+        self.assertFalse(self.I._lean_cue_blocked("open_thread"))
+        self.I._strike_lean_cue("open_thread")
+        self.assertTrue(self.I._lean_cue_blocked("open_thread"))
+        self.assertFalse(self.I._lean_cue_blocked("news_story"))
+
+    def test_strike_none_is_noop(self):
+        self.I._strike_lean_cue(None)
+        self.assertEqual(self.I._lean_cue_cooldowns, {})
+
+    def test_cooldown_expires(self):
+        self.I._strike_lean_cue("open_thread")
+        self.I._lean_cue_cooldowns["open_thread"] -= 9999.0
+        self.assertFalse(self.I._lean_cue_blocked("open_thread"))
+
+
 if __name__ == "__main__":
     unittest.main()

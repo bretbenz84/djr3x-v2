@@ -7936,6 +7936,12 @@ INTEREST_DISCOVERY_REASK_DAYS = _env_int("INTEREST_DISCOVERY_REASK_DAYS", 10, mi
 INTEREST_DISCOVERY_COOLDOWN_SECS = _env_float("INTEREST_DISCOVERY_COOLDOWN_SECS", 1800.0, min_value=0.0, max_value=86400.0)
 INTEREST_DISCOVERY_PRIORITY = _env_int("INTEREST_DISCOVERY_PRIORITY", 52, min_value=1, max_value=100)
 INTEREST_DISCOVERY_RESPONSE_WAIT_SECS = _env_float("INTEREST_DISCOVERY_RESPONSE_WAIT_SECS", 20.0, min_value=0.0, max_value=120.0)
+# When a lean lull cue's GENERATED line is dropped (re-asks a recent question,
+# holiday non-question, low-energy question), that cue KIND sits out this long
+# so lower cues get consulted (field 2026-08-02 12:38: an open-thread cue about
+# "what you and JT do together" won every consult, every line was rejected as a
+# re-ask, and no lull line played all session — news/interest cues starved).
+LEAN_CUE_DROP_COOLDOWN_SECS = _env_float("LEAN_CUE_DROP_COOLDOWN_SECS", 600.0, min_value=30.0, max_value=7200.0)
 
 NEWS_REMARK_PRIORITY = _env_int("NEWS_REMARK_PRIORITY", 54, min_value=1, max_value=100)
 NEWS_REMARK_SESSION_CAP = _env_int("NEWS_REMARK_SESSION_CAP", 1, min_value=0, max_value=10)

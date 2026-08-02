@@ -302,6 +302,24 @@ _last_lean_impulse_at: float = 0.0   # cooldown anchor for the lean agentic impu
 # into the void. Reset the instant the user speaks (_begin_user_turn) — a fresh lull gets a fresh run.
 _consecutive_lean_impulses: int = 0
 _lean_news_mentioned_this_session: bool = False   # one story per session, like the musing
+# Cue-kind cooldowns after a DROPPED generated line (field 2026-08-02 12:38: the
+# open-thread cue about "what you and JT do together" won the ladder five times
+# in a row, every line was rejected as a re-ask of a recent question, and the
+# unspent cue starved news/interest cues for the whole session — no lull line
+# ever played). A dropped cue kind sits out LEAN_CUE_DROP_COOLDOWN_SECS.
+_lean_cue_cooldowns: dict = {}
+
+
+def _lean_cue_blocked(kind: str) -> bool:
+    return time.monotonic() < float(_lean_cue_cooldowns.get(kind, 0.0))
+
+
+def _strike_lean_cue(kind: "Optional[str]") -> None:
+    if not kind:
+        return
+    cooldown = float(getattr(config, "LEAN_CUE_DROP_COOLDOWN_SECS", 600.0))
+    _lean_cue_cooldowns[kind] = time.monotonic() + cooldown
+    _log.info("[lean] cue %r benched for %.0fs after a dropped line", kind, cooldown)
 _lean_impulse_spoken_times: list[float] = []      # rolling-window rate cap (Phase B)
 # Disengagement probe (owner 2026-07-18: treat no-reply-while-visible as a gauge of
 # interest). After the unanswered run maxes out, the first re-engage swing becomes a
@@ -5434,6 +5452,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # session gate so it never stacks on a console.
     try:
         celebration = _lean_celebration_cue(person_id)
+        if celebration and _lean_cue_blocked("celebration"):
+            celebration = None
     except Exception as exc:
         _log.debug("celebration Lean cue lookup failed: %s", exc)
     if celebration:
@@ -5451,6 +5471,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             # speaker. The helper owns per-person/per-date de-dupe shared with the
             # classic consciousness fallback.
             holiday_plan = consciousness._next_holiday_plan_for_person(person_id)
+            if holiday_plan and _lean_cue_blocked("holiday_plan"):
+                holiday_plan = None
         except Exception as exc:
             _log.debug("holiday-plan Lean cue lookup failed: %s", exc)
     # A remembered plan that has come due ("how did the interview go?") beats a callback
@@ -5459,16 +5481,22 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     if not celebration and not holiday_plan:
         try:
             event_followup = _lean_event_followup_cue(person_id)
+            if event_followup and _lean_cue_blocked("event_followup"):
+                event_followup = None
         except Exception as exc:
             _log.debug("event-followup Lean cue lookup failed: %s", exc)
     # Diary open threads sit right after event follow-ups: same "friend who
     # remembered" register, sourced from the session-summary extractor.
     if not celebration and not holiday_plan and not event_followup:
         open_thread = _lean_open_thread_cue(person_id)
+        if open_thread and _lean_cue_blocked("open_thread"):
+            open_thread = None
     if not celebration and not holiday_plan and not event_followup and not open_thread:
         callback_premise = _lean_callback_lull_cue(
             person_id, transcript, long_silence=long_silence
         )
+        if callback_premise and _lean_cue_blocked("callback_premise"):
+            callback_premise = None
     _no_higher = not (celebration or holiday_plan or event_followup or open_thread
                       or callback_premise)
     # Not recognizing the ROOM outranks object curiosity — knowing where he is comes
@@ -5538,17 +5566,33 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.debug("[lean] impulse generation failed: %s", exc)
         return False
     _mode = "reengage" if long_silence else "lull"
+    # Which cue fed the instruction (mirrors lean_brain's dispatch priority) —
+    # a dropped line benches ITS cue so the next consult reaches lower cues
+    # instead of regenerating the same doomed line forever.
+    _winning_kind = next(
+        (kind for kind, cue in (
+            ("celebration", celebration), ("holiday_plan", holiday_plan),
+            ("event_followup", event_followup), ("open_thread", open_thread),
+            ("callback_premise", callback_premise), ("place_question", place_question),
+            ("room_question", room_question), ("visual_riff", visual_riff),
+            ("weekend_plans", weekend_plans), ("interest_discovery", interest_discovery),
+            ("news_story", news_story), ("memory_musing", memory_musing),
+        ) if cue),
+        None,
+    )
     if not line:
         _log.info("[lean] impulse — watched (person_id=%s, quiet=%.0fs, mode=%s)", person_id, quiet, _mode)
         return False                            # Rex chose to just watch
     if holiday_plan and not _assistant_asked_question(line):
         _log.info("[lean] holiday cue dropped — generated line was not a question: %r", line)
+        _strike_lean_cue(_winning_kind)
         return False
     # Content-based anti-repeat (NOT the first-word opener guard — that killed every 'What…?'
     # question, so Rex generated lines and spoke none, and the conversation died). This only
     # drops a near-duplicate of a recent question, so distinct curious questions still get through.
     if _line_duplicates_recent_question(line):
         _log.info("[lean] impulse dropped — re-asks a recent question: %r", line)
+        _strike_lean_cue(_winning_kind)
         return False
 
     # Enforcement backstop: a low-energy or budget-exhausted impulse that still
@@ -5556,6 +5600,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     if (low_energy or no_questions) and _assistant_asked_question(line):
         _log.info("[lean] impulse dropped — question while %s: %r",
                   "low-energy" if low_energy else "budget-exhausted", line)
+        _strike_lean_cue(_winning_kind)
         return False
 
     completed = _speak_proactive(
