@@ -807,6 +807,18 @@ POSE_FACE_GUARD_ENABLED = _env_bool("POSE_FACE_GUARD_ENABLED", True)
 POSE_FACE_GUARD_MAX_DIST_MULT = _env_float(
     "POSE_FACE_GUARD_MAX_DIST_MULT", 1.5, min_value=0.5, max_value=10.0,
 )
+# Pose ticks ~1 Hz and misses beats; on a miss tick the guard used to stand
+# down entirely, and that gap is exactly when a busy wall's phantom faces
+# leaked through (field 2026-08-03: the head snapped up/down chasing wall
+# faces and Rex waved at the wall). The last non-empty anchors are cached for
+# this long and used on miss ticks — with a WIDER accept radius, because the
+# anchors are pixel-space and the head may have panned since capture.
+POSE_FACE_GUARD_ANCHOR_TTL_SECS = _env_float(
+    "POSE_FACE_GUARD_ANCHOR_TTL_SECS", 2.5, min_value=0.0, max_value=30.0,
+)
+POSE_FACE_GUARD_CACHED_DIST_MULT = _env_float(
+    "POSE_FACE_GUARD_CACHED_DIST_MULT", 3.0, min_value=0.5, max_value=15.0,
+)
 # How many people MediaPipe Pose tracks at once (PoseLandmarker num_poses). >1 enables
 # a per-person body skeleton AND lets the face guard keep multiple real people. Each pose
 # adds inference cost, so keep this small.
@@ -5369,6 +5381,15 @@ LEAN_IMPULSE_MAX_PER_WINDOW = _env_int("LEAN_IMPULSE_MAX_PER_WINDOW", 5, min_val
 # Low-energy (tired / disengaged / question-averse) impulse gap — and impulses
 # become statement-or-pass, never questions.
 LEAN_IMPULSE_LOW_ENERGY_GAP_SECS = _env_float("LEAN_IMPULSE_LOW_ENERGY_GAP_SECS", 120.0, min_value=10.0, max_value=3600.0)
+# Facing override for the low-energy read (owner 2026-08-03: he sat looking
+# straight at Rex for a minute deliberately waiting for conversation; a terse
+# reply had flipped the energy read to quiet and Rex mirrored the silence).
+# A fresh face-tracking lock on the person means their face is turned toward
+# Rex — someone facing you during a lull is waiting, not withdrawing — so the
+# low-energy suppression stands down and the normal cadence plus the
+# unanswered-run engagement probe judge disengagement from ACTUAL ignores.
+LEAN_LOW_ENERGY_FACING_OVERRIDE_ENABLED = _env_bool("LEAN_LOW_ENERGY_FACING_OVERRIDE_ENABLED", True)
+LEAN_LOW_ENERGY_FACING_OVERRIDE_SECS = _env_float("LEAN_LOW_ENERGY_FACING_OVERRIDE_SECS", 6.0, min_value=1.0, max_value=120.0)
 
 # ── Bit ledger: per-person comedy-bit cooldown across DAYS (2026-08-02) ───────
 # Session anti-repeat can't see yesterday: the haircut observation ran Jul 31

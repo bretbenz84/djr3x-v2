@@ -171,10 +171,19 @@ def _classify(
         engagement_score += 0.5
         signals.append("longer/deeper reply")
     elif word_count <= 3 and not is_question:
-        mode = "quiet" if mode == "neutral" else mode
-        engagement_score -= 0.35
-        arousal_score -= 0.1
-        signals.append("short reply")
+        if answered_question:
+            # A terse DIRECT ANSWER to a question Rex just asked is responsive,
+            # not withdrawal — "It's a Delorean." (field 2026-08-03) flipped the
+            # energy read to quiet, the lean brain mirrored the silence, and the
+            # owner sat facing Rex for a minute waiting for him to say anything.
+            # Answering the question that was asked must never count against
+            # engagement; only unprompted terseness reads as low energy.
+            signals.append("terse but direct answer to Rex's question")
+        else:
+            mode = "quiet" if mode == "neutral" else mode
+            engagement_score -= 0.35
+            arousal_score -= 0.1
+            signals.append("short reply")
 
     if prosody_features:
         prosody_arousal = float(prosody_features.get("arousal") or 0.0)

@@ -3980,6 +3980,17 @@ def _apply_solo_switch_hysteresis(
     return {"id": prev_id, "name": prev_name}
 
 
+# Last non-empty pose head anchors + capture time. The pose pipeline ticks at
+# ~1 Hz and misses beats; on a miss tick the guard used to no-op, and that gap
+# is exactly when wall phantoms leaked into world_state (field 2026-08-03: a
+# busy workshop wall kept minting faces — the head snapped up/down chasing them
+# and Rex waved at the wall). Anchors are in PIXEL space and the head can pan,
+# so the cache lives only POSE_FACE_GUARD_ANCHOR_TTL_SECS and is judged with a
+# wider radius (POSE_FACE_GUARD_CACHED_DIST_MULT) than live anchors.
+_pose_anchor_cache: list = []
+_pose_anchor_cache_at: float = 0.0
+
+
 def _reject_faces_off_body(detected: list, frame_w: int, frame_h: int) -> list:
     """Drop detected faces that are far from EVERY pose head (phantom dlib faces).
 
@@ -3988,7 +3999,9 @@ def _reject_faces_off_body(detected: list, frame_w: int, frame_h: int) -> list:
     head-widths of ANY tracked body is kept, and only a face far from every body is
     treated as a phantom. Multi-person aware: with POSE_MAX_PEOPLE>1 a second real person
     has their OWN pose head, so their face survives (the prior single-head version dropped
-    it). No pose heads this tick → no-op (face detection stands on its own)."""
+    it). No pose heads this tick → fall back to RECENTLY-cached anchors (wider radius);
+    only with no live and no fresh cached anchors does face detection stand on its own."""
+    global _pose_anchor_cache, _pose_anchor_cache_at
     if not detected or not bool(getattr(config, "POSE_FACE_GUARD_ENABLED", True)):
         return detected
     try:
@@ -3997,10 +4010,25 @@ def _reject_faces_off_body(detected: list, frame_w: int, frame_h: int) -> list:
     except Exception as exc:
         _log.debug("[pose_face_guard] head anchor lookup failed: %s", exc)
         anchors = []
-    if not anchors:
-        return detected  # no pose heads this tick — can't guard, trust face detection
+    now = time.monotonic()
+    cached = False
+    if anchors:
+        _pose_anchor_cache = list(anchors)
+        _pose_anchor_cache_at = now
+    else:
+        ttl = float(getattr(config, "POSE_FACE_GUARD_ANCHOR_TTL_SECS", 2.5))
+        if _pose_anchor_cache and (now - _pose_anchor_cache_at) <= ttl:
+            anchors = _pose_anchor_cache
+            cached = True
+        else:
+            return detected  # no live or fresh cached pose heads — can't guard
 
     mult = float(getattr(config, "POSE_FACE_GUARD_MAX_DIST_MULT", 1.5))
+    if cached:
+        # The head may have panned since capture — widen the accept radius so a
+        # stale anchor can't drop the real face, while a wall phantom (far from
+        # any body) still dies.
+        mult = float(getattr(config, "POSE_FACE_GUARD_CACHED_DIST_MULT", 3.0))
     kept = []
     for face in detected:
         box = face.get("bounding_box") if isinstance(face, dict) else None
@@ -4018,7 +4046,8 @@ def _reject_faces_off_body(detected: list, frame_w: int, frame_h: int) -> list:
         else:
             _log.info(
                 "[pose_face_guard] dropped phantom face center=(%.0f,%.0f) — far from all "
-                "%d pose head(s)", fx, fy, len(anchors),
+                "%d%s pose head(s)", fx, fy, len(anchors),
+                " cached" if cached else "",
             )
     return kept
 
@@ -8058,6 +8087,29 @@ def _face_tracking_recently_held_person(person_db_id: Optional[int], now: float)
         float(getattr(config, "PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS", 12.0) or 0.0),
     )
     return (now - last_seen) <= grace
+
+
+def person_visibly_facing(
+    person_id: Optional[int], max_age_secs: float = 6.0
+) -> bool:
+    """True when face-tracking has held a lock on this person's FACE within
+    ``max_age_secs`` — i.e. they are present and oriented toward Rex.
+
+    A detected, tracked face is inherently a mostly-frontal face (the
+    wide-angle lens rarely detects profiles), so a live face lock is honest
+    "they're facing me" evidence with no iris/gaze estimation needed. Used by
+    the lean impulse gate: someone who stays turned toward Rex during a lull
+    is WAITING, not withdrawing (owner 2026-08-03: he sat looking straight at
+    Rex for a minute while the low-energy read kept Rex silent)."""
+    if person_id is None:
+        return False
+    try:
+        if int(_face_tracking_lock.get("person_id")) != int(person_id):
+            return False
+        last_seen = float(_face_tracking_lock.get("last_seen_at") or 0.0)
+    except Exception:
+        return False
+    return last_seen > 0 and (time.monotonic() - last_seen) <= float(max_age_secs)
 
 
 def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> None:

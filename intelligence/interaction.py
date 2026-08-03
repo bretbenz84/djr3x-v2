@@ -5538,6 +5538,31 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         )
     except Exception:
         pass
+    # Present-and-FACING overrides the text-derived low-energy read (owner
+    # 2026-08-03: he sat looking straight at Rex for a minute deliberately
+    # waiting for him to strike up conversation; a terse reply had flipped the
+    # energy read to quiet and Rex mirrored the silence). Someone whose face
+    # stays turned toward Rex during a lull is WAITING, not withdrawing — keep
+    # normal cadence and let the unanswered-run discipline (engagement probe)
+    # judge disengagement from actual ignores, escalating only when it's
+    # obvious they're not engaged.
+    if low_energy and bool(
+        getattr(config, "LEAN_LOW_ENERGY_FACING_OVERRIDE_ENABLED", True)
+    ):
+        try:
+            if consciousness.person_visibly_facing(
+                person_id,
+                max_age_secs=float(
+                    getattr(config, "LEAN_LOW_ENERGY_FACING_OVERRIDE_SECS", 6.0)
+                ),
+            ):
+                _log.info(
+                    "[lean] low-energy read overridden — person is facing Rex "
+                    "(fresh face lock); treating them as engaged"
+                )
+                low_energy = False
+        except Exception as exc:
+            _log.debug("[lean] facing override check failed: %s", exc)
     if low_energy:
         if long_silence:
             return False                        # no re-engage pestering when tired
