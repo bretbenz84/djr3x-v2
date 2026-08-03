@@ -1497,11 +1497,15 @@ def warmup() -> bool:
     TLS / HTTP setup. Fires one tiny throwaway completion; errors are swallowed.
     """
     try:
+        # max_tokens=16, not 1: GPT-5-family models 400 on a cap they cannot
+        # finish within instead of truncating like gpt-4o-mini — with 1 this
+        # warmup failed on every boot since the gpt-5.4-mini flip (the 400 still
+        # opened the connection pool, so it half-worked by accident).
         llm_compat.create(
             _client,
             model=llm_compat.conversation_model(),
             messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
+            max_tokens=16,
         )
         _log.info("[llm] OpenAI connection warmed")
         return True
