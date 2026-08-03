@@ -11811,9 +11811,15 @@ def _maybe_onboarding_timeout() -> bool:
 
 def _process_audio(
     audio_array: np.ndarray,
+    pretranscribed: Optional[str] = None,
 ) -> tuple[str, Optional[int], Optional[str], float, float, float]:
     """
     Run transcription and speaker ID simultaneously in two threads.
+
+    pretranscribed: a transcript already decoded from this same segment (eager
+    motion endpointing) — skips the ASR decode but still runs speaker ID, so
+    attribution and enrollment behave identically. Passed through as-is (it may
+    be a Transcript carrying .confident).
 
     Returns (transcribed_text, raw_best_id, raw_best_name, raw_best_score,
     raw_best_margin, required_margin). The speaker values are the RAW top
@@ -11830,7 +11836,10 @@ def _process_audio(
     speaker_box: list = [None, None, 0.0, 0.0, default_margin]
 
     def _transcribe() -> None:
-        text_box[0] = transcription.transcribe(audio_array)
+        if pretranscribed is not None:
+            text_box[0] = pretranscribed
+        else:
+            text_box[0] = transcription.transcribe(audio_array)
 
     def _identify() -> None:
         ranked = speaker_id.rank_speakers(audio_array)
@@ -12095,6 +12104,83 @@ def _maybe_recover_post_question_answer() -> Optional[float]:
     return scan_start
 
 
+# Eager-endpoint handoff: the transcript decoded by a successful motion probe,
+# consumed by the caller and passed into _handle_speech_segment so the segment
+# is not decoded twice. Set and popped on the interaction thread only.
+_eager_endpoint_transcript: Optional[str] = None
+
+# A trailing connective promises another clause ("turn left and ..."): never
+# eager-cut it — the person is mid-route.
+_EAGER_TRAILING_CONNECTIVE_RE = re.compile(r"\b(?:and|then)[\s.,]*$", re.IGNORECASE)
+
+
+def _pop_eager_transcript() -> Optional[str]:
+    global _eager_endpoint_transcript
+    text = _eager_endpoint_transcript
+    _eager_endpoint_transcript = None
+    return text
+
+
+def _eager_motion_endpoint_enabled() -> bool:
+    if not bool(getattr(config, "MOTION_EAGER_ENDPOINT_ENABLED", True)):
+        return False
+    if not motion_controller.available():
+        return False
+    if bool(getattr(config, "MOTION_EAGER_ENDPOINT_REQUIRE_AEC", True)):
+        # Endpointing behavior is tuned per-platform: robot only (hardware AEC
+        # present); dev-Mac sessions keep stock segmentation.
+        try:
+            from audio import hardware_aec
+            if not hardware_aec.is_active():
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _eager_motion_transcript_matches(text: str) -> bool:
+    """True when the probe transcript is a COMPLETE explicit drive command."""
+    cleaned = text.strip()
+    if not cleaned or _EAGER_TRAILING_CONNECTIVE_RE.search(cleaned):
+        return False
+    try:
+        if action_router.classify_explicit_motion(cleaned) is not None:
+            return True
+        sequence = action_router.classify_explicit_motion_sequence(
+            cleaned, max_steps=int(getattr(config, "MOTION_SEQUENCE_MAX_STEPS", 8))
+        )
+        if sequence:
+            return True
+        # Bare "stop" while the base is moving — the one case where faster
+        # endpointing is a safety improvement, not just comfort.
+        if _BARE_MOTION_STOP_RE.match(cleaned) and motion_controller.is_moving():
+            return True
+    except Exception as exc:
+        _log.debug("[eager_endpoint] match check failed: %s", exc)
+    return False
+
+
+def _start_eager_motion_probe(speech_start_mono: float) -> dict:
+    """Transcribe the segment-so-far in the background; box carries the result."""
+    box: dict = {"matched": False, "transcript": None}
+
+    def _run() -> None:
+        try:
+            capture_secs = _speech_capture_secs(speech_start_mono)
+            audio = stream.get_audio_chunk(capture_secs)
+            if len(audio) == 0:
+                return
+            text = transcription.transcribe(audio)
+            if str(text or "").strip() and _eager_motion_transcript_matches(str(text)):
+                box["transcript"] = text
+                box["matched"] = True
+        except Exception as exc:
+            _log.debug("[eager_endpoint] probe failed: %s", exc)
+
+    threading.Thread(target=_run, daemon=True, name="eager-motion-probe").start()
+    return box
+
+
 def _accumulate_speech(
     speech_start_mono: float,
     *,
@@ -12114,8 +12200,18 @@ def _accumulate_speech(
     segment after the first chunk; the ReSpeaker's HARDWARE AEC (a
     prerequisite of that listener) has already removed the music.
     """
+    global _eager_endpoint_transcript
     silence_timeout = config.SILENCE_TIMEOUT_SECS
     silence_elapsed = 0.0
+    # Eager motion endpointing: only on the real conversation paths (ACTIVE,
+    # normal VAD) — never the during-DJ command ear or the sleep-wake scan.
+    eager_enabled = (
+        not raw_vad
+        and allowed_states == (State.ACTIVE,)
+        and _eager_motion_endpoint_enabled()
+    )
+    eager_silence = float(getattr(config, "MOTION_EAGER_ENDPOINT_SILENCE_SECS", 0.35))
+    eager_probe: Optional[dict] = None
 
     while not _stop_event.is_set():
         if state_module.get_state() not in allowed_states:
@@ -12130,12 +12226,28 @@ def _accumulate_speech(
         _situation_assessor.set_vad_active(is_speech)
         if is_speech:
             silence_elapsed = 0.0
+            # Speech resumed — whatever the in-flight probe decodes is stale.
+            eager_probe = None
         else:
             silence_elapsed += _CHUNK_SECS
             elapsed = time.monotonic() - speech_start_mono
             min_duration = getattr(config, "MIN_SPEECH_DURATION_SECS", 0.0)
             if silence_elapsed >= silence_timeout and elapsed >= min_duration:
                 break
+            if eager_enabled and elapsed >= min_duration and silence_elapsed >= eager_silence:
+                if eager_probe is None:
+                    # One probe per silence run; a non-match simply waits out
+                    # the normal timeout.
+                    eager_probe = _start_eager_motion_probe(speech_start_mono)
+                elif eager_probe.get("matched"):
+                    _eager_endpoint_transcript = eager_probe["transcript"]
+                    _log.info(
+                        "[eager_endpoint] complete motion command at %.2fs silence "
+                        "(vs %.2fs timeout) — ending turn early: %r",
+                        silence_elapsed, silence_timeout,
+                        str(eager_probe["transcript"]),
+                    )
+                    break
 
         _stop_event.wait(_CHUNK_SECS)
 
@@ -20661,6 +20773,7 @@ def _handle_speech_segment(
     raw_best_name_override: Optional[str] = None,
     speaker_score_override: float = 0.0,
     text_input: bool = False,
+    eager_transcript: Optional[str] = None,
 ) -> None:
     """Full processing pipeline for one detected speech segment in ACTIVE state."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
@@ -20734,7 +20847,7 @@ def _handle_speech_segment(
             _latency_log(turn_start, "text_input", process_started)
         else:
             (text, raw_best_id, raw_best_name, speaker_score, speaker_margin,
-             required_margin) = _process_audio(audio_array)
+             required_margin) = _process_audio(audio_array, pretranscribed=eager_transcript)
             transcript_trusted = bool(getattr(text, "confident", True))
             _transcript_trusted.set(transcript_trusted)
             if not transcript_trusted:
@@ -25016,11 +25129,15 @@ def _loop() -> None:
             _dj_restore_volume = _duck_dj_for_speech()
             try:
                 audio_segment = _accumulate_speech(speech_start)
+                eager_text = _pop_eager_transcript()
                 if audio_segment is None or len(audio_segment) == 0:
                     continue
 
                 _last_speech_at = time.monotonic()
-                _handle_speech_segment(audio_segment, from_idle_activation=True)
+                _handle_speech_segment(
+                    audio_segment, from_idle_activation=True,
+                    eager_transcript=eager_text,
+                )
             finally:
                 _restore_dj_volume(_dj_restore_volume)
                 _end_user_turn()
@@ -25269,11 +25386,12 @@ def _loop() -> None:
         try:
             # Accumulate the full utterance
             audio_segment = _accumulate_speech(speech_start)
+            eager_text = _pop_eager_transcript()
             if audio_segment is None or len(audio_segment) == 0:
                 continue
 
             _last_speech_at = time.monotonic()
-            _handle_speech_segment(audio_segment)
+            _handle_speech_segment(audio_segment, eager_transcript=eager_text)
         finally:
             _restore_dj_volume(_dj_restore_volume)
             _end_user_turn()

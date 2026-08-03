@@ -4279,6 +4279,21 @@ OWN_ECHO_SEAM_SIMILARITY = 0.65
 # off mid-thought). Raise further if it still ends turns too early.
 SILENCE_TIMEOUT_SECS = 0.85
 
+# Eager endpointing for explicit motion commands. At MOTION_EAGER_ENDPOINT_SILENCE_SECS
+# of silence (well before SILENCE_TIMEOUT_SECS) a background probe transcribes the
+# segment-so-far; if it decodes to a COMPLETE drive command ("turn left", "back up two
+# feet", bare "stop" while moving) the turn ends immediately and the probe transcript is
+# reused, so the wheels get the command ~0.6-0.9s sooner. Anything else — normal chat,
+# an utterance still in progress, a trailing "and"/"then" that promises another clause —
+# leaves the normal 0.85s hold untouched, and speech resuming mid-probe discards it.
+# Worst case (person continues after a real pause, e.g. "turn left ... then back up") the
+# split halves both still execute via the motion-continuation context. Requires the drive
+# base; MOTION_EAGER_ENDPOINT_REQUIRE_AEC keeps it robot-only (hardware AEC present) so
+# dev-Mac sessions keep stock endpointing.
+MOTION_EAGER_ENDPOINT_ENABLED = _env_bool("MOTION_EAGER_ENDPOINT_ENABLED", True)
+MOTION_EAGER_ENDPOINT_SILENCE_SECS = 0.35
+MOTION_EAGER_ENDPOINT_REQUIRE_AEC = True
+
 # Minimum seconds of accumulated audio before silence can end a recording.
 # Prevents single-word transcriptions when the person is still talking.
 MIN_SPEECH_DURATION_SECS = 0.45
