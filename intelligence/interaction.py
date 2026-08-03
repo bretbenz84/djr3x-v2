@@ -20698,13 +20698,15 @@ def _handle_speech_segment(
     if _shutdown_requested():
         return
 
-    # Randomised pre-response pause — prevents Rex from feeling instant/robotic
-    delay_started = time.monotonic()
+    # Randomised pre-response pause — prevents Rex from feeling instant/robotic.
+    # Absorbed by transcription: ASR (~0.6-0.9s) dwarfs the 0-80ms pause, so
+    # sleeping it serially BEFORE processing was pure added latency on every
+    # audio turn. Only the remainder (if any) is slept once the transcript is
+    # ready — which still paces the GUI text path, where there is no ASR.
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
-    time.sleep(delay_ms / 1000.0)
+    delay_deadline = time.monotonic() + delay_ms / 1000.0
     if _shutdown_requested():
         return
-    _latency_log(turn_start, "reaction_delay", delay_started)
 
     # Once Rex starts speaking in response, hold AEC suppression open across any
     # related output as one continuous window. Do not start it before
@@ -20745,6 +20747,14 @@ def _handle_speech_segment(
                           "learning from this turn: %r", str(text))
             transcript_ready_at = time.monotonic()
             _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
+
+        # Residual reaction pause — normally 0.000s (ASR outlasts the deadline);
+        # only the no-ASR GUI text path sleeps a meaningful remainder.
+        delay_started = time.monotonic()
+        remaining = delay_deadline - delay_started
+        if remaining > 0:
+            time.sleep(remaining)
+        _latency_log(turn_start, "reaction_delay", delay_started)
 
         if _shutdown_requested():
             final_executed_path = "ignored.shutdown"
