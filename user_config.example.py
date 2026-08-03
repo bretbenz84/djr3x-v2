@@ -211,7 +211,7 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # CONVERSATION_IDLE_TIMEOUT_SECS = 45.0
 
 # Seconds of silence that close a single spoken turn before it is processed.
-# SILENCE_TIMEOUT_SECS = 0.6
+# SILENCE_TIMEOUT_SECS = 0.65
 
 # Four-phase empty-room flow (env-backed): look/comment, get bored, complain he
 # was left activated, then resign and sleep. Phase 3 starts 60% of the way from

@@ -4289,11 +4289,13 @@ OWN_ECHO_SEAM_SIMILARITY = 0.65
 # Seconds of sustained silence after speech before the segment is processed.
 # This is the largest "I stopped talking, why is Rex waiting?" knob -- lowering
 # it shaves dead time off the start of every turn. Tradeoff: too low and a
-# person who pauses mid-sentence can get cut off. 0.85 (was 0.6): the owner has
-# more thought coming after a brief pause, so give a longer grace before Rex
-# decides the turn is done (small added latency, in exchange for not cutting him
-# off mid-thought). Raise further if it still ends turns too early.
-SILENCE_TIMEOUT_SECS = 0.85
+# person who pauses mid-sentence can get cut off. History: 0.6 -> 0.85
+# (2026-07: owner was getting cut off mid-thought) -> 0.65 (2026-08-02: with
+# every other stage tuned, the hold was the single largest fixed cost left;
+# owner chose to trade back most of the grace for snappier replies). If
+# mid-sentence cutoffs return, the turn-completion repair prompt is the
+# backstop — and 0.85 is the known-good fallback.
+SILENCE_TIMEOUT_SECS = 0.65
 
 # Eager endpointing for explicit motion commands. At MOTION_EAGER_ENDPOINT_SILENCE_SECS
 # of silence (well before SILENCE_TIMEOUT_SECS) a background probe transcribes the
