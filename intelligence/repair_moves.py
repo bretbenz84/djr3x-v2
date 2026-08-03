@@ -148,7 +148,15 @@ _REPEAT_PAT = re.compile(
 )
 _CLARIFY_PAT = re.compile(
     r"\b(what do you mean|what are you talking about|huh|i don'?t get it|"
-    r"i do not get it|explain that|clarify)\b",
+    r"i do not get it|explain that|clarify|"
+    # Softened confusion after a Rex-initiated line (field 2026-08-03 00:01:
+    # "I'm not sure what you mean." fell to conversation and got a DISMISSAL —
+    # "Fair, I was reaching for old static" — instead of the explanation; the
+    # owner had to push back a second time to get it).
+    r"(?:i'?m |i am )?not sure what you(?:'re| are)? (?:mean|saying|"
+    r"talking about|referring to)|"
+    r"(?:i )?(?:don'?t|do not) know what you(?:'re| are| were)? talking about|"
+    r"tell me what you (?:were gonna|were going to|meant to) say)\b",
     re.IGNORECASE,
 )
 _BARE_NEGATION_PAT = re.compile(r"^\s*(no|nope|nah|wrong|incorrect)\s*[.!]?\s*$", re.I)

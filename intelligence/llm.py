@@ -1986,21 +1986,12 @@ _CURIOSITY_THREAD_RE = re.compile(
 )
 
 # Bookkeeping shapes — maintenance of Rex's own records (name corrections,
-# mishearings, forget requests, complaints about his hearing/memory). Filing
-# these as threads produces surreal callbacks: a wrong-name fix became "we were
-# talking about JT's name change — did that settle in okay?" (field 2026-08-02
-# 21:39), a label update discussed like a life event.
-_BOOKKEEPING_THREAD_RE = re.compile(
-    r"\bname\s+(?:change|correction|update|swap|mix-?up|situation)\b|"
-    r"\b(?:right|real|correct|wrong|new)\s+name\b|"
-    r"\bwhat\s+to\s+call\s+(?:him|her|them|me)\b|"
-    r"\bmis(?:heard|hearing|hears?)\b|\bmis-?transcri|"
-    r"\b(?:asked?|wants?)\s+(?:rex\s+|you\s+|me\s+)?to\s+forget\b|"
-    r"\bforget\s+(?:him|her|them|me|his|their)\b|"
-    r"\b(?:rex|your|my)\s+(?:memory\s+banks?|hearing|transcription|audio|"
-    r"circuits?|systems?|program(?:ming)?)\b",
-    re.IGNORECASE,
-)
+# mishearings, forget/privacy requests). Filing these as threads produces
+# surreal callbacks: a wrong-name fix became "we were talking about JT's name
+# change — did that settle in okay?" (field 2026-08-02 21:39). The canonical
+# pattern lives in intelligence.open_threads (the consumer also filters at
+# read time, killing threads stored before this guard shipped).
+from intelligence.open_threads import BOOKKEEPING_RE as _BOOKKEEPING_THREAD_RE
 
 
 def _filtered_open_threads(raw, transcript: list[dict]) -> list:

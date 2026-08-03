@@ -244,6 +244,13 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "status.battery",
+        "status",
+        "User asks about Rex's OWN battery / charge level / state of charge / "
+        "whether he's charging. Not for other devices' batteries.",
+        executable=True,
+    ),
+    ActionSpec(
         "motion.turn",
         "motion",
         "User asks Rex to physically rotate the drive base in place — turn/spin/pivot left or right, or turn around. Not for head/look gestures.",
@@ -2043,6 +2050,9 @@ def missing_required_evidence_reason(
         return None if _CAPABILITIES_QUERY_RE.search(cleaned) else "missing_capabilities_query_evidence"
     if action == "status.uptime":
         return None if _UPTIME_QUERY_RE.search(cleaned) else "missing_uptime_query_evidence"
+    if action == "status.battery":
+        from intelligence.intent_classifier import _BATTERY_QUERY_RE
+        return None if _BATTERY_QUERY_RE.search(cleaned) else "missing_battery_query_evidence"
     if action == "vision.describe_scene":
         return None if has_vision_query_evidence(cleaned) else "missing_vision_query_evidence"
     if action == "vision.directed_look":
@@ -2393,6 +2403,7 @@ _SELF_QUERY_SKIP_INTENTS = {
     "query_date": "date.query",
     "query_weather": "weather.query",
     "query_uptime": "status.uptime",
+    "query_battery": "status.battery",
     "query_capabilities": "status.capabilities",
     "query_games": None,
     "query_who_is_speaking": "identity.who_is_speaking",
@@ -2459,6 +2470,26 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
         return ActionDecision(reason="empty utterance")
 
     context = context or {}
+    # Direct shutdown/sleep requests route deterministically — the LLM router
+    # scored "I will talk to you later, and I would like you to shut down." as
+    # conversation (0.20), the closure-cue agenda took over, and the reply model
+    # generated "Powering down." as a FAREWELL QUIP without powering down
+    # (field 2026-08-03 00:05). command_parser owns the safety guards
+    # (negation, object-scoped "shut down the music", hypotheticals).
+    try:
+        from intelligence import command_parser as _cp
+        if _cp.is_shutdown_request(text):
+            return _apply_context_overrides(
+                ActionDecision(
+                    action="system.shutdown",
+                    confidence=0.95,
+                    reason="deterministic: direct shutdown request",
+                ),
+                text,
+                context,
+            )
+    except Exception as exc:
+        _log.debug("[action_router] shutdown pre-pass failed: %s", exc)
     explicit_control = classify_explicit_control(text)
     if explicit_control is not None:
         return _apply_context_overrides(explicit_control, text, context)

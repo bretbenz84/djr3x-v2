@@ -120,8 +120,8 @@ class LiveCutoverTest(unittest.TestCase):
         names = {t["function"]["name"] for t in tools}
         self.assertEqual(names, {
             "time_query", "date_query", "weather_query", "status_capabilities",
-            "status_uptime", "vision_describe_scene", "music_options",
-            "system_sleep", "system_shutdown", "web_search",
+            "status_uptime", "status_battery", "vision_describe_scene",
+            "music_options", "system_sleep", "system_shutdown", "web_search",
             "event_cancel", "memory_query", "identity_who_is_speaking",
             "music_play", "music_stop", "music_skip", "vision_snapshot",
             "identity_name_correction", "memory_forget_person",

@@ -4884,7 +4884,7 @@ TOOL_ROUTER_SHADOW_TIMEOUT_SECS = 8.0
 TOOL_ROUTER_LIVE_ENABLED = True
 TOOL_ROUTER_LIVE_ACTIONS = (
     "time.query", "date.query", "weather.query",
-    "status.capabilities", "status.uptime",
+    "status.capabilities", "status.uptime", "status.battery",
     "vision.describe_scene", "music.options",
     # system.* added 2026-08-02: "Can you shut down, please?" fell through to
     # conversation (the deterministic guard rejects "can you..." on purpose to
@@ -4960,7 +4960,16 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "date.query",
     "weather.query",
     "status.uptime",
+    "status.battery",
     "status.capabilities",
+    # system.shutdown added 2026-08-03: "I will talk to you later, and I would
+    # like you to shut down" routed to conversation and Rex spoke "Powering
+    # down." as a farewell quip without powering down. The router now
+    # pre-routes verified shutdown requests deterministically, and the
+    # dispatch branch re-verifies with command_parser.is_shutdown_request
+    # (negation / object-scoped / hypothetical guards) before executing — an
+    # unverified LLM shutdown decision still dies at dispatch.
+    "system.shutdown",
 }
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 # Decoupled from LLM_MODEL 2026-08-02: gpt-4o-mini's ~1.08s median TTFT was the

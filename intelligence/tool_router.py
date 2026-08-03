@@ -114,6 +114,10 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
         "sensor).", {}, []),
     "status.capabilities": ("Asking what Rex can do.", {}, []),
     "status.uptime": ("Asking how long Rex has been running.", {}, []),
+    "status.battery": (
+        "Asking about Rex's OWN battery, charge level, or state of charge.",
+        {}, [],
+    ),
     "motion.turn": (
         "Turn the drive base in place.",
         {"direction": {"type": "string", "enum": ["left", "right", "around"]},
@@ -169,7 +173,7 @@ class ToolCallRequested(Exception):
 # lanes and stay shadow-only for now.
 _DEFAULT_LIVE_ACTIONS = (
     "time.query", "date.query", "weather.query",
-    "status.capabilities", "status.uptime",
+    "status.capabilities", "status.uptime", "status.battery",
     "vision.describe_scene", "music.options",
     "system.sleep", "system.shutdown", "web.search",
     "event.cancel", "memory.query", "identity.who_is_speaking",

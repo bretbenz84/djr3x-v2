@@ -268,13 +268,20 @@ def is_shutdown_wake_confirmation(text: str) -> bool:
     return False
 
 
-# Polite request leaders accepted ONLY on the LLM tool-router path ("Can you
-# shut down, please?"). The deterministic classifiers keep rejecting these
-# (the negation guard's "can you" protects "can you shut down the music"), but
-# when the reply-call LLM has already judged the turn a shutdown/sleep request,
-# this backstop just verifies the utterance really contains the direct phrase.
+# Polite request leaders accepted ONLY on the request paths ("Can you shut
+# down, please?"). The deterministic standalone classifiers keep rejecting
+# these (the negation guard's "can you" protects "can you shut down the
+# music"); this just verifies the utterance really contains the direct phrase.
+# Desire-form directives added 2026-08-03: "I will talk to you later, and I
+# would like you to shut down." — the clause's own "would" tripped the negation
+# guard, the leader regex didn't cover "I would like you to", and Rex answered
+# "Powering down." as a FAREWELL QUIP without powering down. "I want/need you
+# to <core>" is as direct as an imperative; only the surface is polite.
 _POLITE_REQUEST_LEADER_RE = re.compile(
-    r"^(?:can|could|would|will)\s+you\s+", re.IGNORECASE
+    r"^(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"|^i\s+(?:would\s+like|'?d\s+like|want|need)\s+(?:for\s+)?you\s+to\s+"
+    r"|^i'?d\s+like\s+you\s+to\s+",
+    re.IGNORECASE,
 )
 
 

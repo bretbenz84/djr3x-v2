@@ -1578,6 +1578,7 @@ _INTENT_ACTION_MAP: dict[str, str] = {
     "query_weather": "weather.query",
     "query_capabilities": "status.capabilities",
     "query_uptime": "status.uptime",
+    "query_battery": "status.battery",
     "query_what_do_you_see": "vision.describe_scene",
     "query_who_is_speaking": "identity.who_is_speaking",
     "query_memory": "memory.query",
@@ -18558,10 +18559,24 @@ def _handle_router_takeover_action(
         )
         return _handle_classified_intent("query_uptime", text, person_id)
 
+    if action == "status.battery":
+        _log.info(
+            "[action_router] executing status.battery person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent("query_battery", text, person_id)
+
     if action == "system.shutdown":
-        if not command_parser.is_standalone_shutdown_command(text):
+        # is_shutdown_request (not the standalone form): the parser still owns
+        # the safety guards (negation, object-scoped, hypothetical), but a
+        # polite/desire-form directive ("Can you shut down, please?", "I would
+        # like you to shut down") embedded in a farewell must execute — field
+        # 2026-08-03 00:05: the standalone guard bounced the compound farewell
+        # and Rex spoke "Powering down." without powering down.
+        if not command_parser.is_shutdown_request(text):
             _log.info(
-                "[action_router] ignored non-standalone system.shutdown candidate person_id=%s text=%r",
+                "[action_router] ignored unverified system.shutdown candidate person_id=%s text=%r",
                 person_id,
                 text,
             )
@@ -20546,6 +20561,7 @@ def _handle_classified_intent(
             "play games (Trivia, Jeopardy, I Spy, 20 Questions, Word Association); "
             "DJ music with skip / stop / volume control; "
             "tell time, date, and weather; "
+            "report your own battery state; "
             "track your own mood, anger, and uptime"
         )
         return _say(
@@ -20564,6 +20580,37 @@ def _handle_classified_intent(
         return _say(
             f"Tell the user your uptime is exactly {hours} hours and {minutes} minutes "
             f"in Rex character. Be brief. {tool_scope}"
+        )
+
+    if intent == "query_battery":
+        # Real pack telemetry from the drive base (battery_awareness). LiFePO4's
+        # flat curve can't give an honest percentage, so Rex reports what the
+        # voltage actually supports: the band, plus the number itself.
+        from intelligence import battery_awareness
+        mv = battery_awareness.current_mv()
+        if mv <= 0:
+            return _say(
+                "The user asked about your battery / state of charge. You have "
+                "no battery telemetry right now — the battery sensor rides on "
+                "your drive base, which isn't connected. Say exactly that in one "
+                f"honest Rex-style line; do NOT invent a number or claim you "
+                f"lack a battery meter in general. {tool_scope}"
+            )
+        tier = battery_awareness.tier_for_mv(mv) or "unknown"
+        volts = mv / 1000.0
+        tier_desc = {
+            "charging": "on or fresh off the charger — effectively full",
+            "nominal": "the long healthy plateau (LiFePO4 sits flat from "
+                       "roughly 90% down to 25%)",
+            "low": "the knee of the curve — roughly 10-25% left",
+            "critical": "nearly empty; the BMS cutoff is not far away",
+        }.get(tier, "an unknown band")
+        return _say(
+            f"The user asked about your battery. Real telemetry: pack voltage "
+            f"{volts:.2f} volts, band '{tier}' ({tier_desc}). Your chemistry "
+            f"cannot honestly give a precise percentage — report the voltage "
+            f"and the band in one Rex-style line, numbers exactly as given. "
+            f"{tool_scope}"
         )
 
     if intent == "query_what_do_you_see":

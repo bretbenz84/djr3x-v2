@@ -31,6 +31,7 @@ _VALID_INTENTS = {
     "query_games",
     "query_capabilities",
     "query_uptime",
+    "query_battery",
     "query_what_do_you_see",
     "query_who_is_speaking",
     "query_memory",
@@ -165,6 +166,19 @@ _CAPABILITIES_QUERY_RE = re.compile(
 _UPTIME_QUERY_RE = re.compile(
     r"\b(how long have you been|how long are you|uptime|been running|"
     r"been awake|when did you start)\b",
+    re.IGNORECASE,
+)
+# Rex's own battery / state of charge (field 2026-08-03 00:04: "What's your
+# state of charge?" routed to capabilities and "how are your batteries?" got a
+# capability LIE — "I don't have a battery meter" — while battery_awareness
+# reads real pack telemetry). Anchored on second-person/battery-question shapes
+# so "my phone battery died" stays conversation.
+_BATTERY_QUERY_RE = re.compile(
+    r"\byour\b.{0,24}\b(?:batter(?:y|ies)|charge|power level|state of charge)"
+    r"|\b(?:state of charge|charge level|battery level|battery status)\b"
+    r"|\bhow (?:are|is|'s) (?:your|the) batter"
+    r"|\bhow much (?:battery|charge|juice|power)\b.{0,16}\b(?:you|left)\b"
+    r"|\bare you (?:charged|charging|low on (?:power|battery|charge|juice))\b",
     re.IGNORECASE,
 )
 # Keep in sync with action_router._VISION_DESCRIBE_RE (the central evidence
@@ -312,6 +326,8 @@ def _deterministic_label(text: str) -> str:
         return "query_memory"
     if _WHO_QUERY_RE.search(cleaned):
         return "query_who_is_speaking"
+    if _BATTERY_QUERY_RE.search(cleaned):
+        return "query_battery"
     if _UPTIME_QUERY_RE.search(cleaned):
         return "query_uptime"
     if _CAPABILITIES_QUERY_RE.search(cleaned):
@@ -347,8 +363,12 @@ def _deterministic_label(text: str) -> str:
 _PROMPT_TEMPLATE = (
     'Classify this input into exactly one category. Reply with only the '
     'category name. Categories: query_time, query_date, query_weather, query_games, '
-    'query_capabilities, query_uptime, query_what_do_you_see, '
+    'query_capabilities, query_uptime, query_battery, query_what_do_you_see, '
     'query_who_is_speaking, query_memory, play_music, query_music_options, general. '
+    'Note: query_battery covers questions about Rex\'s OWN battery or power '
+    'state — "what\'s your state of charge?", "how are your batteries?", '
+    '"are you charging?", "what\'s your charge level?". Someone else\'s '
+    'battery (a phone, a car) is general. '
     'Note: query_time covers clock-time questions like "what time is it?" '
     'or "tell me the time". query_date covers current date/day questions like '
     '"what day is it?", "what is today?", "tell me today\'s date". '
