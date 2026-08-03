@@ -2524,7 +2524,12 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     prompt = _compact_json(user_payload, max_chars=max_context_chars)
 
     try:
-        resp = _client.chat.completions.create(
+        # llm_compat translates the GPT-5-family param contract (max_completion_tokens,
+        # temperature dropped, reasoning_effort) — a no-op for classic models like
+        # gpt-4o-mini, so rollback via ACTION_ROUTER_MODEL alone stays valid.
+        from intelligence import llm_compat
+        resp = llm_compat.create(
+            _client,
             model=getattr(config, "ACTION_ROUTER_MODEL", config.LLM_MODEL),
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -2532,6 +2537,7 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
             ],
             temperature=0,
             max_tokens=240,
+            reasoning_effort=str(getattr(config, "ACTION_ROUTER_REASONING_EFFORT", "none")),
         )
         raw = resp.choices[0].message.content or ""
         payload = json.loads(_strip_code_fence(raw))
@@ -2546,10 +2552,16 @@ def warmup() -> bool:
     llm._client) so the first ambiguous turn doesn't pay cold TLS / HTTP setup.
     """
     try:
-        _client.chat.completions.create(
+        from intelligence import llm_compat
+        # max_tokens=16, not 1: GPT-5-family models 400 on a cap they cannot
+        # finish within ("Could not finish the message...") instead of
+        # truncating like gpt-4o-mini does.
+        llm_compat.create(
+            _client,
             model=getattr(config, "ACTION_ROUTER_MODEL", config.LLM_MODEL),
             messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
+            max_tokens=16,
+            reasoning_effort=str(getattr(config, "ACTION_ROUTER_REASONING_EFFORT", "none")),
         )
         _log.info("[action_router] OpenAI connection warmed")
         return True

@@ -4931,7 +4931,13 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "status.capabilities",
 }
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
-ACTION_ROUTER_MODEL = LLM_MODEL
+# Decoupled from LLM_MODEL 2026-08-02: gpt-4o-mini's ~1.08s median TTFT was the
+# whole cost of the blocking routing call; gpt-5.4-nano benchmarks at ~0.63s and
+# is priced/positioned for classification+routing. Calls go through llm_compat
+# (GPT-5 param contract) with reasoning effort "none" to keep TTFT low.
+# ROLLBACK = set this back to "gpt-4o-mini" (or LLM_MODEL) in user_config.py.
+ACTION_ROUTER_MODEL = "gpt-5.4-nano"
+ACTION_ROUTER_REASONING_EFFORT = "none"
 ACTION_ROUTER_MAX_CONTEXT_CHARS = 5000
 
 # Full people-memory wipes require an access code in the spoken confirmation.
@@ -8322,9 +8328,10 @@ except ImportError:
 
 # Re-derive values that were computed from a base the user may have overridden in
 # user_config.py. These aliases were evaluated at definition time (far above),
-# BEFORE the import, so without this an override of e.g. LLM_MODEL would never
+# BEFORE the import, so without this an override of e.g. NO_AUDIO_MODE would never
 # reach them. (AUDIO_OUTPUT_SUPPRESSED ← NO_AUDIO_MODE and
 # COMMON_FIRST_NAME_LAST_NAME_MIN_PERSON_TURNS ← LONG_CONVERSATION_MIN_EXCHANGES
 # track bases that are intentionally NOT exposed in user_config, so they stay.)
-ACTION_ROUTER_MODEL = LLM_MODEL
+# ACTION_ROUTER_MODEL no longer follows LLM_MODEL (decoupled 2026-08-02, see its
+# definition above) — override it directly in user_config.py if needed.
 STARTUP_BOOT_TTS_LINE = STARTUP_BOOT_TTS_LINES[0]
