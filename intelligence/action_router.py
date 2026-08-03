@@ -2376,6 +2376,62 @@ _ACTION_CUE_RE = re.compile(
 )
 
 
+# Deterministic self-knowledge intents that the intent classifier answers from
+# real local data (clock, wttr cache, uptime, capability list, biometric speaker
+# ID). For these the LLM router can only ever agree ("What day is it?" burned a
+# 0.91s routing call to return conversation.reply at 0.00 and was discarded,
+# live-logged 2026-08-02 13:03). Excluded on purpose: play_music /
+# query_music_options (router owns args + pending favorite_music override),
+# query_memory (forget/boundary disambiguation), query_what_do_you_see (vision
+# evidence + consent rules).
+# Maps each skippable intent to its stable action key so the router's own
+# evidence regexes can vet the claim (keep in sync with the same entries in
+# interaction._INTENT_ACTION_MAP). query_games has no action mapping and no
+# evidence rule — its deterministic regex is the whole claim.
+_SELF_QUERY_SKIP_INTENTS = {
+    "query_time": "time.query",
+    "query_date": "date.query",
+    "query_weather": "weather.query",
+    "query_uptime": "status.uptime",
+    "query_capabilities": "status.capabilities",
+    "query_games": None,
+    "query_who_is_speaking": "identity.who_is_speaking",
+}
+
+
+def _deterministic_self_query_intent(text: str, context: dict[str, Any]) -> str | None:
+    """Return the deterministic self-knowledge intent claiming this turn, if any.
+
+    Active games keep full routing: Jeopardy answers are phrased "what is ..."
+    and could regex-match a query (game.answer must win those turns). The claim
+    must also pass the router's evidence regexes — the intent classifier's
+    patterns are looser ("something about the weather maybe" classifies as
+    query_weather but is not a weather question), and the downstream execution
+    gate would block exactly the same way.
+    """
+    if not bool(getattr(config, "ACTION_ROUTER_SELF_QUERY_SKIP_ENABLED", True)):
+        return None
+    if context.get("active_game"):
+        return None
+    try:
+        from intelligence import intent_classifier
+        intent = intent_classifier.classify_deterministic(text)
+    except Exception:
+        return None
+    if intent not in _SELF_QUERY_SKIP_INTENTS:
+        return None
+    action = _SELF_QUERY_SKIP_INTENTS[intent]
+    if action is not None:
+        evidence_reason = missing_required_evidence_reason(
+            text,
+            ActionDecision(action=action, confidence=0.94),
+            context=context,
+        )
+        if evidence_reason:
+            return None
+    return intent
+
+
 def _clearly_conversational(text: str, context: dict[str, Any]) -> bool:
     """True when this turn is deterministically plain conversation -- safe to skip the
     LLM routing call (~0.8s, the single largest fixed cost on chat turns, measured
@@ -2415,6 +2471,27 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     explicit_character_preference = classify_explicit_character_preference(text)
     if explicit_character_preference is not None:
         return _apply_context_overrides(explicit_character_preference, text, context)
+
+    self_query_intent = _deterministic_self_query_intent(text, context)
+    if self_query_intent is not None:
+        _log.info(
+            "[action_router] deterministic self-query skip -- intent=%s, "
+            "LLM routing call saved",
+            self_query_intent,
+        )
+        # conversation.reply falls through to the intent classifier, which
+        # executes the same handler the router's executable action would have —
+        # identical final path (intent_classifier.<intent>), minus the LLM call.
+        return _apply_context_overrides(
+            ActionDecision(
+                action="conversation.reply",
+                confidence=0.6,
+                reason=f"deterministic: self-query {self_query_intent}; "
+                       "intent classifier owns it",
+            ),
+            text,
+            context,
+        )
 
     if _clearly_conversational(text, context):
         _log.info(

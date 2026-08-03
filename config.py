@@ -4881,6 +4881,13 @@ ACTION_ROUTER_EXECUTE_ENABLED = True
 # per chat turn (2026-07-06 latency work); canonical commands still hit the explicit
 # regex classifiers, and any cue word keeps the LLM router in the loop.
 ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED = _env_bool("ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED", True)
+# Mirror-image skip for the opposite case: the deterministic intent classifier
+# ALREADY claims the turn as a self-knowledge query answered from local data
+# (time/date/weather/uptime/capabilities/games/who-is-speaking). The LLM router
+# can only agree, so skip its call and let the intent classifier execute as it
+# would have anyway (~0.9s saved per basic query, measured 2026-08-02). Music,
+# memory, and vision intents deliberately still route through the LLM.
+ACTION_ROUTER_SELF_QUERY_SKIP_ENABLED = _env_bool("ACTION_ROUTER_SELF_QUERY_SKIP_ENABLED", True)
 ACTION_ROUTER_EXECUTE_ACTIONS = {
     "conversation.repair",
     "humor.tell_joke",
