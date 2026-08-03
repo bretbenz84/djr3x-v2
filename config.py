@@ -2028,7 +2028,12 @@ QWEN_ASR_CONTEXT_VOCAB = (
     "Bret", "Rex", "DJ R3X", "Lake Folsom", "Folsom", "Sacramento", "Exudica Royale",
 )
 QWEN_ASR_CONTEXT_REX_LINES = 2     # how many of Rex's recent lines to include
-QWEN_ASR_CONTEXT_MAX_CHARS = 600   # hard cap on the context prompt
+# Hard cap on the context prompt. Decode prefill is LINEAR in prompt length —
+# measured 2026-08-02 (A/B, 3 clips x 4 reps): 0ch=0.60s, 154ch=0.69s,
+# 363ch=0.78s (~0.5ms/char) with identical transcripts. 400 (was 600) bounds
+# the worst-case added latency at ~+0.2s; Rex lines are joined newest-first so
+# the cap truncates the stalest text, never the line the user is replying to.
+QWEN_ASR_CONTEXT_MAX_CHARS = 400
 # Echo guard: on silence/noise the biased decoder copies the context back out
 # VERBATIM at full confidence (measured 2026-08-02). A transcript this similar
 # to a context line / the vocab list is rejected as a hallucination. Also

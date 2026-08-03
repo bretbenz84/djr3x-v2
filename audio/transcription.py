@@ -96,14 +96,21 @@ def _asr_context_prompt() -> "str | None":
     if vocab:
         parts.append("Names and places that may occur: " + ", ".join(vocab) + ".")
     if lines:
+        # NEWEST line first: the user's reply usually re-uses the entities from
+        # the line Rex JUST spoke, and the max_chars cap truncates from the end
+        # — so the freshest context must never be the part that gets cut.
         parts.append(
-            "The audio replies to a droid who just said: " + " ".join(lines)
+            "The audio replies to a droid who just said: "
+            + " ".join(reversed(lines))
         )
     if not parts:
         return None
     prompt = ("This audio is one side of a live spoken conversation. "
               + " ".join(parts))
-    max_chars = int(getattr(config, "QWEN_ASR_CONTEXT_MAX_CHARS", 600))
+    # Prefill cost is linear in prompt length (~0.5ms/char measured 2026-08-02:
+    # 363ch of live context = +0.18s per decode) — the cap bounds worst-case
+    # added latency, not just token count.
+    max_chars = int(getattr(config, "QWEN_ASR_CONTEXT_MAX_CHARS", 400))
     return prompt[:max_chars]
 
 
