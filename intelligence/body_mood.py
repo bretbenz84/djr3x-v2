@@ -57,7 +57,9 @@ _MOOD_POSE: dict[str, tuple[int, int, Optional[int]]] = {
     "giddy":      (650, -120, 6976),   # bouncy, visor wide open
     "amused":     (520, -110, 6850),
     "happy":      (450,  -90, 6700),
-    "surprised":  (900, -260, 6976),   # head pops up, visor max
+    "surprised":  (900, 0, 6976),      # head pops up, visor max — headtilt stays
+                                       # parked (heavy head on the 8 mm tilt rod;
+                                       # lift + visor carry the surprise)
     "curious":    (160, 200, 6500),    # slight lift, chin down, eyes a touch narrowed
     "thinking":   (120, 260, 6450),
     "suspicious": (90,  170, 6400),    # narrowed side-eye

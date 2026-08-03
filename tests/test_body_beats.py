@@ -178,7 +178,9 @@ class BodyBeatAnimationTest(unittest.TestCase):
 
         first_move = moves[0]
         self.assertEqual(first_move[1], animations.HEADLIFT_HIGH)
-        self.assertEqual(first_move[2], animations.HEADTILT_UP)
+        # The heavy head must NOT be whipped on the tilt rod for surprise — the
+        # pop is expressed by full lift + full visor with the headtilt parked.
+        self.assertNotIn(2, first_move)
         self.assertEqual(first_move[3], animations.VISOR_OPEN)
 
     def test_wake_word_ack_wave_moves_hand_and_elbow_together(self):
@@ -404,7 +406,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
         snap = moves[1]                                            # then: SNAP back
         self.assertEqual(snap[0], animations.NECK_CENTER)
         self.assertEqual(snap[3], animations.VISOR_OPEN)          # visor pop
-        self.assertEqual(snap[1], animations.HEADLIFT_UP)
+        self.assertEqual(snap[1], animations.HEADLIFT_HIGH)
+        self.assertNotIn(2, snap)  # headtilt parked — no whip on the tilt rod
 
     def test_mic_drop_presents_then_drops_the_hero_arm(self):
         from sequences import animations
@@ -419,6 +422,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
         first = self._play_and_capture("spit_take")[0]
         self.assertEqual(first[1], animations.HEADLIFT_HIGH)  # sharp recoil up-and-back
         self.assertEqual(first[3], animations.VISOR_OPEN)     # eyes wide (visor)
+        self.assertNotIn(2, first)  # headtilt parked — no whip on the tilt rod
 
     def test_spontaneous_beat_frequency_cooldown(self):
         from sequences import animations

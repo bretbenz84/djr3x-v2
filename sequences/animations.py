@@ -414,18 +414,20 @@ def _beat_tiny_victory_dance(snapshot: dict[int, int]) -> None:
 
 def _beat_surprise_pop(snapshot: dict[int, int]) -> None:
     # Eyebrow equivalent: visor snaps fully open while the head pops up.
+    # The headtilt stays parked: the ~5 lb head pivots on an 8 mm rod, and
+    # snapping it (especially forward/down on recovery) is too violent — the
+    # surprise reads from full visor + full headlift instead.
     _move_body(
         {
             0: NECK_CENTER,
             1: HEADLIFT_HIGH,
-            2: HEADTILT_UP,
             3: VISOR_OPEN,
         },
         step_us=150,
         step_delay=0.004,
     )
     time.sleep(0.20)
-    _move_body({1: HEADLIFT_UP, 2: HEADTILT_NEUTRAL}, step_us=90, step_delay=0.006)
+    _move_body({1: HEADLIFT_UP}, step_us=90, step_delay=0.006)
     time.sleep(0.08)
     _restore_body_pose(snapshot)
 
@@ -496,10 +498,11 @@ def _beat_happy_bounce(snapshot: dict[int, int]) -> None:
 
 
 def _beat_giddy_wiggle(snapshot: dict[int, int]) -> None:
+    # Headtilt stays parked (heavy head, 8 mm rod) — the giddiness is all
+    # visor-wide, headlift bounce, and neck/arm wiggle.
     _move_body(
         {
             1: HEADLIFT_UP,
-            2: HEADTILT_SLIGHT_UP,
             3: VISOR_OPEN,
             4: ELBOW_UP,
             5: HAND_RIGHT,
@@ -611,8 +614,10 @@ def _beat_double_take(snapshot: dict[int, int]) -> None:
         step_delay=0.005,
     )
     time.sleep(0.16)
+    # The snap-back keeps the headtilt parked (too much mass to whip on the
+    # tilt rod) — the "WHAT" is sold by the visor pop and the full head lift.
     _move_body(
-        {0: NECK_CENTER, 3: VISOR_OPEN, 1: HEADLIFT_UP, 2: HEADTILT_UP},
+        {0: NECK_CENTER, 3: VISOR_OPEN, 1: HEADLIFT_HIGH},
         step_us=230,
         step_delay=0.002,
     )
@@ -645,8 +650,10 @@ def _beat_spit_take(snapshot: dict[int, int]) -> None:
     # quick neck flinch, then a small settle. The "you said WHAT" reaction: fast
     # and jerky where the eye-roll is slow.
     side = random.choice([-1, 1])
+    # No headtilt in the recoil — this is the fastest move in the file, and the
+    # heavy head can't take a full-range tilt whip. Lift + visor carry the shock.
     _move_body(
-        {1: HEADLIFT_HIGH, 2: HEADTILT_UP, 3: VISOR_OPEN, 0: NECK_CENTER + side * 360},
+        {1: HEADLIFT_HIGH, 3: VISOR_OPEN, 0: NECK_CENTER + side * 360},
         step_us=255,
         step_delay=0.002,
     )
@@ -1231,10 +1238,11 @@ def speech_start(emotion: str = "neutral") -> None:
     leds_head.set_eye_emotion(led_emotion)
     servos.set_breathing_emotion(led_emotion)
 
-    if frame.affect in {"excited", "giddy"}:
-        servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP})
-    elif frame.affect == "surprised":
-        servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_HIGH, 2: HEADTILT_UP})
+    if frame.affect in {"excited", "giddy", "surprised"}:
+        # No headtilt command here: set_servos is an instant target jump, and the
+        # heavy head on its 8 mm tilt rod can't take that snap. Excitement and
+        # surprise read from the visor at max + headlift at max instead.
+        servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_HIGH})
     elif frame.affect in {"sad", "sleepy"}:
         servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_DOWN, 2: HEADTILT_SLIGHT_DOWN})
     elif frame.affect == "angry":
@@ -1737,7 +1745,7 @@ def excited_burst() -> None:
     leds_chest.speak("excited")
     leds_head.speak("excited")
     leds_head.set_eye_emotion("excited")
-    servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_UP, 7: HEROARM_FORWARD, 4: ELBOW_UP})
+    servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_HIGH, 7: HEROARM_FORWARD, 4: ELBOW_UP})
     time.sleep(0.25)
     servos.set_servo(1, HEADLIFT_NEUTRAL)
     time.sleep(0.15)
