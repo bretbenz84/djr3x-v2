@@ -1985,6 +1985,23 @@ _CURIOSITY_THREAD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Bookkeeping shapes — maintenance of Rex's own records (name corrections,
+# mishearings, forget requests, complaints about his hearing/memory). Filing
+# these as threads produces surreal callbacks: a wrong-name fix became "we were
+# talking about JT's name change — did that settle in okay?" (field 2026-08-02
+# 21:39), a label update discussed like a life event.
+_BOOKKEEPING_THREAD_RE = re.compile(
+    r"\bname\s+(?:change|correction|update|swap|mix-?up|situation)\b|"
+    r"\b(?:right|real|correct|wrong|new)\s+name\b|"
+    r"\bwhat\s+to\s+call\s+(?:him|her|them|me)\b|"
+    r"\bmis(?:heard|hearing|hears?)\b|\bmis-?transcri|"
+    r"\b(?:asked?|wants?)\s+(?:rex\s+|you\s+|me\s+)?to\s+forget\b|"
+    r"\bforget\s+(?:him|her|them|me|his|their)\b|"
+    r"\b(?:rex|your|my)\s+(?:memory\s+banks?|hearing|transcription|audio|"
+    r"circuits?|systems?|program(?:ming)?)\b",
+    re.IGNORECASE,
+)
+
 
 def _filtered_open_threads(raw, transcript: list[dict]) -> list:
     """Prompt rules are guidance; this is the guarantee.
@@ -2039,6 +2056,11 @@ def _filtered_open_threads(raw, transcript: list[dict]) -> list:
             _log.info("[diary] dropping open thread %r — getting-to-know-you "
                       "curiosity shape, not something the human left "
                       "unresolved", thread)
+            continue
+        if _BOOKKEEPING_THREAD_RE.search(thread):
+            _log.info("[diary] dropping open thread %r — bookkeeping about "
+                      "Rex's own records (name fix / mishear / forget "
+                      "request), not a life event", thread)
             continue
         anchor = _thread_tokens(thread) - speaker_names
         if anchor and human_tokens and not (anchor & human_tokens):
@@ -2119,7 +2141,11 @@ def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None
         "committed to. NEVER open one on a topic they denied, corrected, or said they "
         "knew nothing about — if they told you something did not happen, that thread "
         "is CLOSED, not reopened, and 'whether they will do it after all' is not a "
-        "thread. Never open one on something only you brought up.\n\n"
+        "thread. Never open one on something only you brought up. Bookkeeping is not "
+        "a thread either: a name correction ('call me X, not Y'), fixing something "
+        "you misheard, a request to forget something, or complaints about your "
+        "hearing/memory are maintenance of YOUR records — resolved the moment they "
+        "happen, never something to ask about later.\n\n"
         + denial_note +
         f"Who was here: {who}\n\nTranscript:\n{_format_transcript_attributed(transcript)}"
     )
@@ -2940,7 +2966,11 @@ def extract_events(
         "Return a JSON array. Each element MUST have exactly these keys:\n"
         '  "event_name": short concrete phrase, lowercase where natural (e.g. "hiking trip", "dentist appointment")\n'
         '  "event_date": "YYYY-MM-DD" or null\n'
-        '  "event_notes": one short sentence of context from the transcript, or empty string\n\n'
+        '  "event_notes": one short sentence of context from the transcript, or empty string\n'
+        '  "hedged": true when the speaker was TENTATIVE — "might", "maybe", "thinking '
+        'about", "we\'ll see", "if I get time" — false when they stated it as settled. '
+        "Preserve the hedge faithfully: a maybe stored as a commitment gets asserted "
+        "back at them later as a thing that is definitely happening.\n\n"
         f"Transcript:\n{_format_transcript(transcript)}\n\n"
         "Return only the JSON array. No explanation."
     )
@@ -2977,6 +3007,7 @@ def extract_events(
                 "event_name": name,
                 "event_date": ev_date,
                 "event_notes": (item.get("event_notes") or "").strip(),
+                "hedged": bool(item.get("hedged")),
             })
         return cleaned
     except Exception as exc:

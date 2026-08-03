@@ -209,6 +209,20 @@ WHISPER_TEMPERATURE = 0.0              # Deterministic decode avoids slow retry 
 WHISPER_TRUST_MIN_AVG_LOGPROB = -0.85   # mean per-token logprob; lower = guessing
 WHISPER_TRUST_MAX_NO_SPEECH_PROB = 0.5  # higher = Whisper thinks it was silence
 WHISPER_CONDITION_ON_PREVIOUS_TEXT = False
+
+# ── Low-trust reprompt: handle a garbled decode the way a human would ─────────
+# When the decode falls below the trust floor AND carries real content (3+
+# words), replying to the guess reads as bluffing — field 2026-08-01: "I'm not
+# a cat." (logprob -1.88) got a quip about mystery voices, "You kill everybody."
+# (-0.62) got a line about ethics. A person who half-hears a sentence says
+# "sorry, what?" and gets the real one. So: ask to repeat, once — if the repeat
+# is ALSO low-trust, engage best-effort rather than looping "what?" at them.
+# Short backchannels ("Okay.", "Yeah.") skip this — a reprompt there is worse
+# than a nod — and explicit motion/stop commands always execute rather than
+# stall on a clarifying question.
+LOW_TRUST_REPROMPT_ENABLED = True
+LOW_TRUST_REPROMPT_MIN_WORDS = 3        # fewer words = backchannel, just answer
+LOW_TRUST_REPROMPT_COOLDOWN_SECS = 120.0  # one "sorry, what?" per exchange, max
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 
@@ -5346,6 +5360,22 @@ LEAN_IMPULSE_MAX_PER_WINDOW = _env_int("LEAN_IMPULSE_MAX_PER_WINDOW", 5, min_val
 # Low-energy (tired / disengaged / question-averse) impulse gap — and impulses
 # become statement-or-pass, never questions.
 LEAN_IMPULSE_LOW_ENERGY_GAP_SECS = _env_float("LEAN_IMPULSE_LOW_ENERGY_GAP_SECS", 120.0, min_value=10.0, max_value=3600.0)
+
+# ── Bit ledger: per-person comedy-bit cooldown across DAYS (2026-08-02) ───────
+# Session anti-repeat can't see yesterday: the haircut observation ran Jul 31
+# AND Aug 2, "I made you" got re-roasted twice the next day, and the hydration
+# bit played on both ends of the weekend. Spoken lean impulses are recorded in
+# rex.db (intelligence/bit_ledger.py); a regenerated line that re-runs one of
+# them inside the cooldown is dropped, and the recent angles are fed into the
+# lean prompt as an exclusion list. Follow-up cues (event/open-thread/
+# celebration...) are exempt — "how did the interview go?" is not a bit.
+BIT_LEDGER_ENABLED = _env_bool("BIT_LEDGER_ENABLED", True)
+BIT_LEDGER_COOLDOWN_DAYS = _env_float("BIT_LEDGER_COOLDOWN_DAYS", 5.0, min_value=0.5, max_value=60.0)
+BIT_LEDGER_MIN_OVERLAP = _env_int("BIT_LEDGER_MIN_OVERLAP", 2, min_value=1, max_value=6)
+# A single shared word this long ("hydration", "paddleboard") marks the same
+# angle even when the joke re-words everything else around it.
+BIT_LEDGER_DISTINCTIVE_LEN = _env_int("BIT_LEDGER_DISTINCTIVE_LEN", 7, min_value=4, max_value=20)
+BIT_LEDGER_PROMPT_ITEMS = _env_int("BIT_LEDGER_PROMPT_ITEMS", 6, min_value=1, max_value=20)
 # A dated event more than this many days past its date is stale — asking about
 # it reads as surveillance, not attentiveness (expired lazily at the source).
 FOLLOWUP_DATED_MAX_AGE_DAYS = _env_float("FOLLOWUP_DATED_MAX_AGE_DAYS", 5.0, min_value=0.5, max_value=90.0)

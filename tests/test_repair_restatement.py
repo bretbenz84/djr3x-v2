@@ -13,15 +13,25 @@ from intelligence import repair_moves as r
 
 
 class RecoveryLineDedupTest(unittest.TestCase):
+    # The 2026-06-30 field string ("We'll get there — recalibrating.") left the pool in
+    # the 2026-08-02 deflection purge; the apostrophe-folding dedup is exercised against
+    # a line still in rotation.
     def test_curly_apostrophe_recovery_line_is_recognized(self):
-        # The exact field string used a curly apostrophe; the dedup must still catch it.
-        self.assertTrue(r._contains_recovery_line("We’ll get there — recalibrating."))
+        self.assertTrue(r._contains_recovery_line("That one’s on my wiring, not you."))
 
     def test_straight_apostrophe_still_recognized(self):
-        self.assertTrue(r._contains_recovery_line("We'll get there — recalibrating."))
+        self.assertTrue(r._contains_recovery_line("That one's on my wiring, not you."))
 
     def test_unrelated_text_not_flagged(self):
         self.assertFalse(r._contains_recovery_line("Tell me about the festival."))
+
+    def test_deflection_lines_removed_from_pool(self):
+        """The topic-closing deflectors must never come back: they sound like
+        acknowledgment while refusing the repair (field 2026-07-31: 'What do you
+        mean?' → 'Consider it logged. Onward.')."""
+        pool = " | ".join(r._RECOVERY_LINES).lower()
+        for banned in ("recalibrating", "route around", "consider it logged"):
+            self.assertNotIn(banned, pool)
 
 
 class ConfusionComplaintTest(unittest.TestCase):

@@ -5073,6 +5073,19 @@ def _build_anticipation_prompt(
         except (ValueError, TypeError):
             pass
     notes_clause = f" Context they gave: {notes}." if notes else ""
+    # A HEDGED plan ("might", "thinking about") must never be asserted as a
+    # scheduled fact — "I might move the couch this weekend" opened the next
+    # boot as "the couch move is today" (field 2026-08-01). Ask, don't declare.
+    if bool(event.get("hedged")):
+        return (
+            f"You see '{first_name}', someone you know — {situation}. "
+            f"You remember they said they MIGHT do '{event_name}'{when_clause} — "
+            f"it was tentative, NOT a commitment.{notes_clause} "
+            f"Open with a short in-character Rex line that asks whether it's "
+            f"still the plan / whether they're actually going to do it. Do NOT "
+            f"state that it is happening or treat it as scheduled. Warm but dry. "
+            f"Address {first_name} by name. One line only."
+        )
     return (
         f"You see '{first_name}', someone you know — {situation}. "
         f"You remember they have '{event_name}'{when_clause}.{notes_clause} "
@@ -6762,7 +6775,8 @@ def _do_small_talk_question(snapshot: dict) -> None:
                     _pending_followups_lock_remove(target_db_id, ev.get("id"))
                     plan_clause = (
                         f" You remember they told you they had this coming up: "
-                        f"'{ev_name}'. Specifically ask how it went."
+                        f"'{ev_name}'. Specifically ask whether it ended up "
+                        f"happening and how it went — don't assert that it did."
                     )
             if not plan_clause:
                 upcoming = events_mod.get_upcoming_events(target_db_id) or []
@@ -8632,9 +8646,11 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 f"{context_sentence} "
                                 f"You remember they told you they had this on their schedule: "
                                 f"'{ev_name}' — and the date has now passed. Greet them and "
-                                f"ask specifically how '{ev_name}' went, in two short Rex-style "
-                                f"sentences. Address {first_name} by name. The second sentence "
-                                f"must end in a question mark."
+                                f"ask whether '{ev_name}' ended up happening and how it went, "
+                                f"in two short Rex-style sentences. A plan is not a fact — do "
+                                f"NOT assert that it happened; if it fell through, your "
+                                f"question should still land naturally. Address {first_name} "
+                                f"by name. The second sentence must end in a question mark."
                             )
                             label = f"startup followup ({ev_name}) for {person_name}"
                             emotion = "curious"
@@ -8662,14 +8678,21 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             when_label = events_mod.mentioned_when_label(ev.get("mentioned_at"))
                             followup_to_remove = (person_db_id, ev.get("id"))
                             followup_event_name = ev_name
+                            # when_label is when they MENTIONED it, not when the
+                            # event happens — the old phrasing conflated the two
+                            # (field 2026-08-01 18:08: a trip planned for TOMORROW,
+                            # mentioned earlier today, was greeted with "How'd Lake
+                            # Folsom go earlier today?").
                             prompt = (
                                 f"{context_sentence} "
-                                f"{when_label.capitalize()} they mentioned this and you never "
-                                f"heard how it turned out: '{ev_name}'. Greet {first_name} by "
-                                f"name, warm not roasty, then pick the thread back up — ask "
-                                f"specifically how '{ev_name}' went, referencing that it was "
-                                f"{when_label}. Two short Rex-style sentences; the second must "
-                                f"end in a question mark."
+                                f"{when_label.capitalize()} they MENTIONED this and you never "
+                                f"heard how it turned out: '{ev_name}'. You do not know when — "
+                                f"or whether — it actually happened; {when_label} is only when "
+                                f"they told you about it. Greet {first_name} by name, warm not "
+                                f"roasty, then pick the thread back up — ask whether "
+                                f"'{ev_name}' ended up happening / how it turned out. Never "
+                                f"state that the event itself was {when_label}. Two short "
+                                f"Rex-style sentences; the second must end in a question mark."
                             )
                             label = f"startup continuity ({ev_name}) for {person_name}"
                             emotion = "curious"
@@ -9999,8 +10022,10 @@ def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
                 prompt = (
                     f"You're mid-conversation with '{first_name}'. It's Monday and "
                     f"you remember they told you they were going to do this over the "
-                    f"weekend: '{ref_name}'. Ask how it went, in one short Rex-style "
-                    f"line ending with a question. Reference '{ref_name}' specifically."
+                    f"weekend: '{ref_name}'. Ask whether it ended up happening and "
+                    f"how it went, in one short Rex-style line ending with a "
+                    f"question. Reference '{ref_name}' specifically; don't assert "
+                    f"that it happened."
                 )
             else:
                 prompt = (

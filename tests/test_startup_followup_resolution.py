@@ -43,8 +43,13 @@ class StartupFollowupResolutionTest(unittest.TestCase):
 
     def _make_passed_event(self) -> int:
         from memory import events
-        # A dated plan whose date has already passed → get_pending_followups returns it.
-        return int(events.add_event(1, "festival", "2026-06-01", "going to a festival"))
+        from datetime import date, timedelta
+        # A dated plan whose date has JUST passed → get_pending_followups returns
+        # it. Relative to today: a hardcoded date rotted past the
+        # FOLLOWUP_DATED_MAX_AGE_DAYS staleness horizon and got lazily expired,
+        # silently breaking these tests months after they were written.
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        return int(events.add_event(1, "festival", yesterday, "going to a festival"))
 
     def test_event_is_pending_before(self):
         from memory import events

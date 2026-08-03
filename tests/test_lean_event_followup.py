@@ -420,23 +420,26 @@ class UndatedEventClauseTest(unittest.TestCase):
     def setUp(self):
         reset_impulse_state(self)
 
-    def test_dated_event_asserts_it_happened(self):
+    def test_dated_event_asks_without_assuming_completion(self):
+        # Owner feedback 2026-08-02: "ask if I ended up doing it" — the date
+        # passing makes the follow-up timely, not the outcome certain.
         clause = lean_brain._event_followup_clause(
             {"event_name": "job interview", "dated": True}
         )
-        self.assertIn("almost certainly happened", clause)
+        self.assertIn("whether it ended up happening", clause)
         self.assertIn("how it went", clause)
+        self.assertNotIn("almost certainly", clause)
 
     def test_undated_event_does_not_assert_completion(self):
         clause = lean_brain._event_followup_clause(
             {"event_name": "redo the kitchen", "dated": False}
         )
-        self.assertNotIn("almost certainly happened", clause)
+        self.assertNotIn("almost certainly", clause)
         self.assertIn("if they ever got to it", clause)
 
     def test_defaults_to_dated_wording_when_flag_absent(self):
         clause = lean_brain._event_followup_clause({"event_name": "the trip"})
-        self.assertIn("almost certainly happened", clause)
+        self.assertIn("whether it ended up happening", clause)
 
     def test_holiday_cue_takes_priority_over_event(self):
         I = interaction

@@ -274,7 +274,8 @@ CREATE TABLE IF NOT EXISTS person_events (
     status          TEXT DEFAULT 'planned',
     canceled_at     DATETIME,
     updated_at      DATETIME,
-    anticipated_at  DATETIME
+    anticipated_at  DATETIME,
+    hedged          INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS personality_settings (
@@ -1107,6 +1108,7 @@ def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
         ("canceled_at", "DATETIME"),
         ("updated_at", "DATETIME"),
         ("anticipated_at", "DATETIME"),
+        ("hedged", "INTEGER DEFAULT 0"),
     ):
         if _ensure_column(conn, "person_events", column, definition):
             applied.append(f"person_events.{column}")
@@ -1203,6 +1205,18 @@ CREATE TABLE IF NOT EXISTS room_objects (
     last_seen       TEXT    NOT NULL,
     sighting_count  INTEGER NOT NULL DEFAULT 1
 );
+
+-- Per-person comedy-bit cooldown (intelligence/bit_ledger.py).
+CREATE TABLE IF NOT EXISTS bit_ledger (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id   INTEGER,
+    topic       TEXT    NOT NULL,
+    quoted      TEXT,
+    tokens      TEXT,
+    source      TEXT,
+    spoken_at   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bit_ledger_person ON bit_ledger(person_id);
 """
 
 

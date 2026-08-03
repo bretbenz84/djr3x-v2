@@ -40,6 +40,12 @@ _SCALARS = {
 
 # Mutable containers must be restored IN PLACE — other modules hold references.
 _CONTAINERS = ("_lean_impulse_spoken_times",)
+# Dict-shaped state, also restored in place. `_lean_cue_cooldowns` joined the
+# globals with the cue-drop-cooldown feature (2026-08-02): a test that drops a
+# generated line benches its cue for 600s of MOCKED time, which silently
+# starved the same cue in every later test (2 wiring tests broke module-wide
+# while passing in isolation — the exact leak this helper exists to stop).
+_DICTS = ("_lean_cue_cooldowns",)
 
 
 def reset_impulse_state(testcase) -> None:
@@ -62,3 +68,15 @@ def reset_impulse_state(testcase) -> None:
             lambda c=container, v=saved_items: c.__setitem__(slice(None), v)
         )
         container[:] = []
+
+    def _restore_dict(d, items):
+        d.clear()
+        d.update(items)
+
+    for name in _DICTS:
+        mapping = getattr(I, name, None)
+        if mapping is None:
+            continue
+        saved_map = dict(mapping)
+        testcase.addCleanup(lambda d=mapping, v=saved_map: _restore_dict(d, v))
+        mapping.clear()

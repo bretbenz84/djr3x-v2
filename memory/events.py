@@ -122,6 +122,28 @@ def _tokens(text: str) -> set[str]:
     }
 
 
+# A NEBULOUS plan ("I might move the couch this weekend") stored as a confident
+# scheduled event produced greetings that asserted it as fact ("the couch move is
+# today" — field 2026-08-01). The extractor flags hedges; this regex is the
+# deterministic backstop run over the notes/source text at storage time.
+_HEDGED_PLAN_PAT = re.compile(
+    r"\b("
+    r"might|maybe|possibly|probably|perhaps|"
+    r"thinking (?:about|of)|toying with|debating|considering|"
+    r"i may\b|we may\b|could (?:go|do|try)|"
+    r"not sure (?:if|whether|yet)|haven'?t decided|"
+    r"we'?ll see|if i (?:get|have|find)|tentativ|"
+    r"(?:would|might) be (?:nice|fun|cool) to"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_hedged_plan(text: str) -> bool:
+    """True when the plan statement was tentative, not committed."""
+    return bool(_HEDGED_PLAN_PAT.search(text or ""))
+
+
 def _event_tokens(event: dict) -> set[str]:
     return _tokens(
         " ".join([
@@ -136,14 +158,22 @@ def add_event(
     event_name: str,
     event_date: Optional[str],
     event_notes: str,
+    hedged: Optional[bool] = None,
 ) -> Optional[int]:
     """Store an upcoming event. event_date may be None if no specific date was given.
 
     A planned event that matches an existing OPEN one (same/paraphrased name, via
     memory.dedup) refreshes that row instead of inserting a duplicate — so mentioning
     "the camping trip" across several turns doesn't leave four rows Rex re-asks about.
+
+    ``hedged`` marks a tentative plan ("might", "thinking about") so the anticipation
+    and follow-up prompts ask whether it's (still) happening instead of asserting it.
+    None → detect from the notes text. A refresh only ever CLEARS the flag (a firm
+    restatement upgrades a hedge; a later hedge never downgrades a firm plan).
     """
     now = _now()
+    if hedged is None:
+        hedged = looks_like_hedged_plan(event_notes or "")
     try:
         from memory import dedup
         open_events = get_open_events(int(person_id))
@@ -155,17 +185,19 @@ def add_event(
             """UPDATE person_events
                SET event_date = COALESCE(?, event_date),
                    event_notes = COALESCE(NULLIF(?, ''), event_notes),
+                   hedged = MIN(COALESCE(hedged, 0), ?),
                    mentioned_at = ?, updated_at = ?
                WHERE id = ?""",
-            (event_date, (event_notes or "").strip(), now, now, int(match["id"])),
+            (event_date, (event_notes or "").strip(), 1 if hedged else 0,
+             now, now, int(match["id"])),
         )
         return int(match["id"])
     return db.execute(
         """INSERT INTO person_events
-           (person_id, event_name, event_date, event_notes, mentioned_at,
+           (person_id, event_name, event_date, event_notes, hedged, mentioned_at,
             followed_up, status, updated_at)
-           VALUES (?, ?, ?, ?, ?, FALSE, 'planned', ?)""",
-        (person_id, event_name, event_date, event_notes, now, now),
+           VALUES (?, ?, ?, ?, ?, ?, FALSE, 'planned', ?)""",
+        (person_id, event_name, event_date, event_notes, 1 if hedged else 0, now, now),
     )
 
 

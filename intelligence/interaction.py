@@ -320,6 +320,26 @@ def _strike_lean_cue(kind: "Optional[str]") -> None:
     cooldown = float(getattr(config, "LEAN_CUE_DROP_COOLDOWN_SECS", 600.0))
     _lean_cue_cooldowns[kind] = time.monotonic() + cooldown
     _log.info("[lean] cue %r benched for %.0fs after a dropped line", kind, cooldown)
+
+
+# Cross-day bit cooldown (intelligence/bit_ledger.py). Follow-up-shaped cues are
+# exempt from ENFORCEMENT — a remembered "how did the interview go?" is
+# attentiveness, not a bit — but everything spoken still gets RECORDED.
+_BIT_LEDGER_EXEMPT_CUES = {
+    "celebration", "holiday_plan", "event_followup", "open_thread",
+    "place_question", "room_question",
+}
+
+
+def _bit_ledger_blocks(person_id: "Optional[int]", line: str) -> bool:
+    try:
+        from intelligence import bit_ledger
+        return bit_ledger.is_repeat(person_id, line)
+    except Exception as exc:
+        _log.debug("[lean] bit ledger check failed: %s", exc)
+        return False
+
+
 _lean_impulse_spoken_times: list[float] = []      # rolling-window rate cap (Phase B)
 # Disengagement probe (owner 2026-07-18: treat no-reply-while-visible as a gauge of
 # interest). After the unanswered run maxes out, the first re-engage swing becomes a
@@ -5708,6 +5728,14 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _strike_lean_cue(_winning_kind)
         return False
 
+    # Cross-DAY bit cooldown: session anti-repeat can't see yesterday (the
+    # haircut bit ran Jul 31 AND Aug 2). Follow-up-shaped cues are exempt — a
+    # remembered "how did it go?" is attentiveness, not a bit.
+    if _winning_kind not in _BIT_LEDGER_EXEMPT_CUES and _bit_ledger_blocks(person_id, line):
+        _log.info("[lean] impulse dropped — repeats a recent bit: %r", line)
+        _strike_lean_cue(_winning_kind)
+        return False
+
     # Enforcement backstop: a low-energy or budget-exhausted impulse that still
     # came back as a question gets dropped, not spoken.
     if (low_energy or no_questions) and _assistant_asked_question(line):
@@ -5729,6 +5757,14 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _consecutive_lean_impulses += 1   # count it against the into-the-void run (reset when the user speaks)
         conv_memory.add_to_transcript("Rex", line)
         conv_log.log_rex(line)
+        # File the spoken bit in the cross-day ledger (ALL cues record — a
+        # follow-up about paddleboarding also blocks a later freeform
+        # paddleboarding bit; only ENFORCEMENT exempts the follow-up cues).
+        try:
+            from intelligence import bit_ledger
+            bit_ledger.record(person_id, line, source=_winning_kind or "impulse")
+        except Exception as exc:
+            _log.debug("[lean] bit ledger record failed: %s", exc)
         if celebration:
             # A celebration line carries the celebration_checkin FRAME so the person's reply
             # ("it's going great") binds as a status update, not a stray command. dialogue_act
@@ -15561,7 +15597,9 @@ def _post_response(
                 event_name = event.get("event_name", "that thing you mentioned")
                 resp = llm.get_response(
                     f"You're following up on something this person mentioned before: "
-                    f"'{event_name}'. Ask how it went in one short Rex-style line.",
+                    f"'{event_name}'. Ask whether it ended up happening and how it "
+                    f"went, in one short Rex-style line — a plan is not a fact, so "
+                    f"do not assert that it happened.",
                     person_id,
                 )
                 if resp:
@@ -15849,6 +15887,7 @@ def _post_response(
                             ev["event_name"],
                             ev.get("event_date"),
                             ev.get("event_notes", ""),
+                            hedged=bool(ev.get("hedged")) or None,
                         )
                         existing_keys.add(key)
                         saved_events += 1
@@ -16119,6 +16158,7 @@ def _store_consolidated_events(
             name,
             event_date,
             str(item.get("event_notes") or item.get("rationale") or "").strip(),
+            hedged=bool(item.get("hedged")) or None,
         )
         existing_keys.add(key)
         counts["stored"] += 1
@@ -18884,6 +18924,30 @@ def _cancel_stale_event_memory(
         _log.debug("event cancellation matching failed: %s", exc)
         canceled = []
 
+    # Token matching found nothing but Rex JUST raised an event — a garbled
+    # decode of the event name defeats exact-token overlap (field 2026-08-02
+    # 10:53: "We're not going to like falsum anymore" right after the Lake
+    # Folsom greeting shared no token with the stored plan, so it survived to
+    # be re-anticipated at 13:05). The cancellation almost certainly targets
+    # the thing Rex brought up seconds ago; retry with that line as the hint.
+    if not canceled and effective_event_hint is None:
+        hint = _recent_rex_memory_hint()
+        if hint:
+            event_hint_name = hint
+            try:
+                canceled = events_memory.cancel_matching_events(
+                    int(person_id),
+                    text,
+                    event_hint={"event_name": hint},
+                )
+                if canceled:
+                    _log.info(
+                        "[events] cancellation matched via recent Rex memory "
+                        "hint (garbled/no token overlap): %r", hint,
+                    )
+            except Exception as exc:
+                _log.debug("hint-fallback cancellation matching failed: %s", exc)
+
     if canceled:
         try:
             ids = {int(ev["id"]) for ev in canceled if ev.get("id") is not None}
@@ -20761,6 +20825,89 @@ def _looks_like_third_party_crosstalk(text: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Low-trust reprompt — handle a garbled decode the way a human would
+# ─────────────────────────────────────────────────────────────────────────────
+# When ASR trust is below the floor and the utterance carries real content,
+# replying to the guess is bluffing (field 2026-08-01: "I'm not a cat." at
+# logprob -1.88 got a quip about mystery voices; "You kill everybody." got a
+# line about ethics). A person who half-hears a sentence says "sorry, what?"
+# and gets the real one. Plain human phrasings on purpose — a save-face circuit
+# joke here would bury the actual request to repeat.
+
+_LOW_TRUST_REPROMPT_LINES = [
+    "Sorry — what was that?",
+    "I didn't catch that. Say it again?",
+    "What was that?",
+    "Sorry, one more time?",
+    "Hm? Run that by me again.",
+    "I only caught about half of that — say it again?",
+]
+_last_low_trust_reprompt_at: float = 0.0
+_last_low_trust_reprompt_line: str = ""
+
+
+def _low_trust_reprompt_line() -> str:
+    """A reprompt line differing from the previous one (anti-repeat)."""
+    global _last_low_trust_reprompt_line
+    choices = [
+        line for line in _LOW_TRUST_REPROMPT_LINES
+        if line != _last_low_trust_reprompt_line
+    ] or list(_LOW_TRUST_REPROMPT_LINES)
+    line = random.choice(choices)
+    _last_low_trust_reprompt_line = line
+    return line
+
+
+def _arm_low_trust_reprompt_cooldown() -> None:
+    global _last_low_trust_reprompt_at
+    _last_low_trust_reprompt_at = time.monotonic()
+
+
+def _should_reprompt_low_trust(text: str, *, trusted: bool, text_input: bool) -> bool:
+    """True when the human move for THIS turn is asking to repeat, not replying.
+
+    Gates, in order of intent:
+      * only genuine low-trust AUDIO turns (typed text is never garbled);
+      * 3+ words — short backchannels ("Okay.", "Yeah.") routinely score under
+        the floor and a reprompt there is worse than a nod;
+      * once per exchange — if the repeat ALSO scores low, engage best-effort
+        rather than looping "what?" at them (memory learning stays suppressed);
+      * never during a game (the game flow owns its own answer handling);
+      * never on an explicit drive/stop command — acting on a probable "stop"
+        beats asking a clarifying question about it.
+    """
+    if trusted or text_input:
+        return False
+    if not bool(getattr(config, "LOW_TRUST_REPROMPT_ENABLED", True)):
+        return False
+    words = re.findall(r"[A-Za-z0-9']+", text or "")
+    if len(words) < int(getattr(config, "LOW_TRUST_REPROMPT_MIN_WORDS", 3)):
+        return False
+    cooldown = float(getattr(config, "LOW_TRUST_REPROMPT_COOLDOWN_SECS", 120.0))
+    if (time.monotonic() - _last_low_trust_reprompt_at) < cooldown:
+        return False
+    try:
+        if _game_suppresses_conversation():
+            return False
+    except Exception:
+        pass
+    try:
+        cleaned = (text or "").strip()
+        # Any short utterance carrying a stop-word skips the reprompt — the field
+        # shape is repeated ("Stop moving. Stop moving."), which the bare-stop
+        # regex (single token only) and the drive classifier both miss.
+        if len(words) <= 5 and re.search(
+            r"\b(?:stop|halt|freeze|whoa)\b", cleaned, re.IGNORECASE
+        ):
+            return False
+        if _BARE_MOTION_STOP_RE.match(cleaned) or _eager_motion_transcript_matches(cleaned):
+            return False
+    except Exception:
+        pass
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Speech segment processing
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -20996,6 +21143,29 @@ def _handle_speech_segment(
                 turn_completion.clear_stale_prompted()
             except Exception:
                 pass
+
+        # Low-trust human-style reprompt: the decode fell below the trust floor
+        # and carries real content — ask them to say it again instead of replying
+        # to a guess. Runs AFTER turn-completion so held fragments still merge
+        # (the merged turn re-checks with its combined trust). One re-ask per
+        # exchange; the repeat gets engaged best-effort even if it's also low.
+        if _should_reprompt_low_trust(
+            text, trusted=transcript_trusted, text_input=text_input
+        ) and not _impersonation_capture_fresh(_pending_impersonation_capture):
+            line = _low_trust_reprompt_line()
+            _log.info(
+                "[interaction] low-trust transcript %r — asking to repeat "
+                "instead of replying to a guess", str(text),
+            )
+            _speak_blocking(line, emotion="curious")
+            _arm_low_trust_reprompt_cooldown()
+            try:
+                consciousness.begin_response_wait(10.0)
+            except Exception:
+                pass
+            final_executed_path = "repair.low_trust_reprompt"
+            completed = True
+            return
 
         if character_trace is not None:
             character_trace.utterance = str(text or "")

@@ -57,6 +57,41 @@ class GroundingCorrectionDetectTest(unittest.TestCase):
             p = rm.build_prompt({"kind": kind, "user_text": "x"}).lower()
             self.assertIn("re-explain", p)
 
+    def test_clarify_prompt_demands_explanation_and_carries_no_recovery_line(self):
+        """Field 2026-07-31: 'What do you mean?' got 'Consider it logged. Onward.'
+        — the dangling recovery-line instruction leaked into clarify repairs, and
+        the rule never demanded an actual explanation."""
+        repair = {"kind": "clarify", "user_text": "What do you mean?",
+                  "last_assistant_text": "So, did you go with sick hair?"}
+        prompt = rm.build_prompt(repair)
+        low = prompt.lower()
+        self.assertIn("actually explain it", low)
+        self.assertNotIn("recovery line", low)
+        self.assertIsNone(repair.get("recovery_line"))
+
+    def test_misheard_prompt_still_carries_recovery_line(self):
+        repair = {"kind": "misheard", "user_text": "that's not what I said"}
+        prompt = rm.build_prompt(repair)
+        self.assertIn("recovery line", prompt.lower())
+        self.assertIn(repair["recovery_line"], prompt)
+
+    def test_prompt_requires_answering_embedded_question(self):
+        """Field 2026-08-01 18:23: a weather correction that also asked the indoor
+        temperature got the correction acknowledged and the question eaten."""
+        prompt = rm.build_prompt({
+            "kind": "factual",
+            "user_text": "That's not true. Can you tell me the temperature inside?",
+        })
+        self.assertIn("answer it", prompt.lower())
+
+    def test_clarify_fallback_replays_the_line_instead_of_promising(self):
+        out = rm.fallback_response({
+            "kind": "clarify", "last_assistant_text": "The bit about the hair.",
+        })
+        self.assertIn("The bit about the hair.", out)
+        bare = rm.fallback_response({"kind": "clarify"})
+        self.assertNotIn("simplify", bare.lower())
+
 
 class RecoveryLineVariationTest(unittest.TestCase):
     def setUp(self):

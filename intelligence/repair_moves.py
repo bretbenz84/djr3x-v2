@@ -210,13 +210,18 @@ _last_tone_repair_at: float = 0.0
 # genuine droid optimism instead of the reply's tone). Tags are sanitized/stripped
 # by audio.tts (whitelist on v3, removed entirely on v2/turbo or when disabled) and
 # never reach the transcript/GUI/memory.
+# Field 2026-07-31→08-02: the old pool also held pure deflectors ("We'll get
+# there — recalibrating.", "Noted. I'll route around that one.", "Consider it
+# logged. Onward."). They SOUND like acknowledgment while refusing the repair —
+# the owner asked "what do you mean?" and got "Consider it logged. Onward." as
+# the whole reply, and a weather correction that also asked a question got
+# "Noted. I'll route around that one." with the question eaten. Every tag here
+# must OWN the miss; none may close the topic or dodge the human's turn.
 _RECOVERY_LINES = [
     "[excited] I'm sure we'll have better luck next time!",
-    "We'll get there — recalibrating.",
-    "Noted. I'll route around that one.",
     "Fair enough — let me reset and try that again.",
-    "Consider it logged. Onward.",
     "My circuits and I will do better on the next pass.",
+    "That one's on my wiring, not you.",
 ]
 BETTER_LUCK_NEXT_TIME = strip_audio_tags(_RECOVERY_LINES[0])  # back-compat alias (clean form)
 _last_recovery_line: str = ""
@@ -534,8 +539,15 @@ def build_prompt(repair: dict) -> str:
             "briefly and more plainly. Do not add anything new."
         ),
         "clarify": (
-            "The human needs Rex to clarify. Explain the previous line plainly, "
-            "without adding a new topic or another question."
+            "The human did not understand Rex's last line and is asking what it "
+            "meant. ACTUALLY EXPLAIN IT: restate the point in plain words, "
+            "including what you were referring to — the remembered detail, the "
+            "thing you saw, the news item, whatever prompted it. If you brought "
+            "something up and genuinely cannot reconstruct why, say that "
+            "honestly in one beat and drop the thread. The one forbidden move "
+            "is a stock acknowledgment that skips the explanation ('consider it "
+            "logged', 'we'll get there', 'noted') or a subject change — "
+            "refusing to explain and moving on is worse than any admission."
         ),
         "bare_negation": (
             "The human rejected the previous move. Acknowledge it and make a "
@@ -555,9 +567,19 @@ def build_prompt(repair: dict) -> str:
     )
     # Pick the recovery tag once and stash it on the repair so the post-generation
     # add_better_luck_line() appends the SAME line the prompt asked for (no mismatch,
-    # no double tag), while consecutive repairs still vary.
-    recovery_line = repair.get("recovery_line") or pick_recovery_line()
-    repair["recovery_line"] = recovery_line
+    # no double tag), while consecutive repairs still vary. ONLY the kinds that
+    # actually append a tag get one in the prompt — a dangling "include this exact
+    # recovery line" instruction made clarify repairs parrot the tag AS the whole
+    # reply (field 2026-07-31: "What do you mean?" → "Consider it logged. Onward.").
+    recovery_clause = ""
+    if should_use_better_luck_line(repair):
+        recovery_line = repair.get("recovery_line") or pick_recovery_line()
+        repair["recovery_line"] = recovery_line
+        recovery_clause = (
+            f" Include this exact recovery line: {recovery_line!r}"
+            " (if the line starts with a bracketed [tag], keep it exactly as"
+            " written — it is a voice-delivery cue, not spoken text)."
+        )
     return (
         "The human is correcting or repairing the conversation with Rex.\n"
         f"Repair type: {kind}.\n"
@@ -569,15 +591,14 @@ def build_prompt(repair: dict) -> str:
         "Write ONE short in-character Rex reply. Requirements: acknowledge the "
         "miss without groveling, do not roast the human, do not add a new topic, "
         "do not punish the human for correcting you, and do not ask a question "
-        "unless the repair cannot continue without a single clarification. Never "
-        "re-state or justify the reasoning behind the thing you got wrong — "
-        "acknowledging the miss and dropping it is the entire move. If a "
-        "correction was supplied, accept it. Do not begin with 'Rex:' or any "
-        "speaker label. For misheard, misunderstood, wrong-person, pronoun, "
-        "factual, or bare-negation repairs, include this exact recovery line: "
-        f"{recovery_line!r}"
-        " (if the line starts with a bracketed [tag], keep it exactly as written —"
-        " it is a voice-delivery cue, not spoken text)."
+        "unless the repair cannot continue without a single clarification. If "
+        "the human's turn ALSO contained a direct question or request, answer it "
+        "after the one-beat acknowledgement — their question is part of the "
+        "repair, not a new topic, and swallowing it forces them to ask again. "
+        "Never re-state or justify the reasoning behind the thing you got "
+        "wrong — acknowledging the miss and dropping it is the entire move. If "
+        "a correction was supplied, accept it. Do not begin with 'Rex:' or any "
+        f"speaker label.{recovery_clause}"
     )
 
 
@@ -602,7 +623,13 @@ def fallback_response(repair: dict) -> str:
             return f"I said: {last}"
         return "I missed my own playback there. Nothing vital, mercifully."
     if kind == "clarify":
-        return "Fair. I made that murkier than needed; let me simplify."
+        # No LLM available to rephrase — the honest floor is repeating the line
+        # plainly (it at least re-delivers the content), never announcing a
+        # simplification that doesn't come.
+        last = repair.get("last_assistant_text") or ""
+        if last:
+            return f"Let me run that back plainly: {last}"
+        return "Honestly? I lost my own thread there. Ignore that one."
     if correction:
         return f"Got it. I heard that wrong: {correction}."
     return "Got it. I missed that one; let me reset."

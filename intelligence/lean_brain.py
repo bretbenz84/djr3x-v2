@@ -1301,6 +1301,21 @@ def _situation_block(person_id: Optional[int], world: Optional[dict],
             "run' problem. Do NOT reference, re-ask, or open with any of them; pick a genuinely "
             "DIFFERENT subject: " + "; ".join(topics)
         )
+    # Cross-DAY bit exclusion (intelligence/bit_ledger.py): angles Rex already
+    # riffed on with this person in recent days. A bit repeated on day two reads
+    # as a broken record (field: the haircut observation ran Jul 31 AND Aug 2).
+    try:
+        from intelligence import bit_ledger
+        used_bits = bit_ledger.recent_topics(
+            person_id, limit=int(getattr(config, "BIT_LEDGER_PROMPT_ITEMS", 6)))
+        if used_bits:
+            lines.append(
+                "Bits/observations you ALREADY made with this person in the last few days — "
+                "the joke is spent, do NOT redo these angles, find something genuinely new: "
+                + "; ".join(used_bits)
+            )
+    except Exception:
+        pass
     if quiet_secs and quiet_secs > 0:
         lines.append(f"It's been quiet ~{int(quiet_secs)}s.")
     if mood and str(mood).strip() and str(mood).strip().lower() != "neutral":
@@ -1321,9 +1336,12 @@ def _event_followup_clause(cue: Optional[dict]) -> str:
     name = str((cue or {}).get("event_name") or "").strip() or "that thing they had going on"
     dated = bool((cue or {}).get("dated", True))
     if dated:
+        # The date passing makes the follow-up TIMELY, not the outcome certain —
+        # plans get canceled, rained out, and rescheduled (owner feedback
+        # 2026-08-02: "ask if I ended up doing it", never assert that it happened).
         return (
-            f'They mentioned a while back that they had "{name}" coming up, and enough time has '
-            f"passed that it has almost certainly happened by now. Ask how it went."
+            f'They mentioned a while back that they had "{name}" coming up, and its date has '
+            f"passed. Ask whether it ended up happening and how it went — do not assume it did."
         )
     return (
         f'A while back they mentioned wanting to do "{name}" someday — you never heard whether '

@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS room_objects (
     last_seen       TEXT    NOT NULL,
     sighting_count  INTEGER NOT NULL DEFAULT 1
 );
+
+-- Per-person comedy-bit cooldown (intelligence/bit_ledger.py): one row per spoken
+-- proactive bit. Session anti-repeat can't see yesterday — this can (field: the
+-- haircut observation ran on Jul 31 AND Aug 2; "I made you" was re-roasted twice).
+CREATE TABLE IF NOT EXISTS bit_ledger (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id   INTEGER,
+    topic       TEXT    NOT NULL,                  -- short display key for prompt exclusion lists
+    quoted      TEXT,                              -- JSON list of quoted phrases in the bit
+    tokens      TEXT,                              -- JSON list of content words
+    source      TEXT,                              -- which cue produced it (visual_riff, impulse, ...)
+    spoken_at   TEXT    NOT NULL                   -- ISO 'YYYY-MM-DD HH:MM:SS' local
+);
+CREATE INDEX IF NOT EXISTS idx_bit_ledger_person ON bit_ledger(person_id);
 """
 
 # Learn-by-asking columns (2026-07-17, curiosity Phase 1) — added via ALTER so an

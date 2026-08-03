@@ -339,6 +339,12 @@ def _run_migrations() -> None:
                 # the river float mentioned at 1 AM was still inside the 20h
                 # cooldown at 9 PM, so Rex never brought it up).
                 ("anticipated_at", "DATETIME"),
+                # Tentative plan ("might", "thinking about") — the anticipation
+                # and follow-up prompts ask whether it's (still) happening
+                # instead of asserting it as scheduled fact (field 2026-08-01:
+                # "I might move the couch this weekend" opened the next boot as
+                # "the couch move is today").
+                ("hedged", "INTEGER DEFAULT 0"),
             ):
                 _ensure_column(
                     conn,
