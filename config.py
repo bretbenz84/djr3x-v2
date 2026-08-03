@@ -649,12 +649,23 @@ VISION_DETAIL = {
     "face_enrollment":        "high",  # accurate appearance capture at first meeting
     "appearance_observation": "auto",  # return-visit attribute comparison
     "animal_detection":       "low",   # species identification
-    "active_conversation":    "auto",  # general vision queries mid-conversation
+    "active_conversation":    "auto",  # held-object vision queries mid-conversation
+    "directed_room_look":     "low",   # room-level "what do you see?" (no target hint)
     "mood_analysis":          "low",   # mood read of the engaged person's face
     "presence_scan":          "low",   # is-anyone-there + where-in-frame startup fallback
     "roast":                  "auto",  # "roast me" — look at the consenting speaker + room
     "explore":                "low",   # room-exploration appraisal (multi-image, cost-capped)
 }
+
+# Vision upload hygiene (2026-08-02: a "what do you see" turn took 17s — full
+# 1920x1080 frame at auto detail, racing the periodic scan, with no timeout).
+# Frames are downscaled to this longest-side before upload for every vision call
+# EXCEPT face enrollment (which needs full facial detail). Cuts upload ~4x and
+# the API's tiling cost with it; 0/None disables the downscale.
+VISION_UPLOAD_MAX_DIM = 1024
+# Bounded wait for any single vision API call; on timeout the caller falls back
+# (e.g. the cached scene description) instead of holding the turn hostage.
+VISION_REQUEST_TIMEOUT_SECS = 12.0
 
 # "Roast me" → roast what Rex SEES. When the speaker asks to be roasted (a CONSENT
 # self-roast: "roast me", "give me a roast", "roast the room"), Rex takes a cheap

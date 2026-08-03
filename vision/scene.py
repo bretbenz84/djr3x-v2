@@ -42,6 +42,10 @@ _CROWD_CHANGE_DELTA = 2
 
 _scan_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
+# True while a user-initiated directed look (analyze_directed_attention) is in
+# flight — the periodic environment scan defers so the two full-frame vision
+# calls never race each other on the uplink and the API.
+_directed_look_active = False
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -57,9 +61,9 @@ def _get_client():
     return _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "vision_scene")
 
 
-def _encode_frame(frame) -> Optional[str]:
+def _encode_frame(frame, max_dim: Optional[int] = None) -> Optional[str]:
     """JPEG-encode a BGR frame and return base64, or None on failure."""
-    encoded = encode_jpeg_base64(frame, quality=85)
+    encoded = encode_jpeg_base64(frame, quality=85, max_dim=max_dim)
     if encoded is None:
         _log.error("_encode_frame: JPEG encode failed")
         return None
@@ -126,7 +130,15 @@ def _call_gpt4o(
     Send frame + prompt to GPT-4o vision. Returns the raw response string or None.
     detail_key is looked up in config.VISION_DETAIL for the image detail level.
     """
-    b64 = _encode_frame(frame)
+    # Downscale before upload: a raw 1920x1080 frame is a ~300-600KB JPEG the
+    # API tiles at high token cost (field 2026-08-02 21:43: a "what do you see"
+    # turn spent ~14s inside this call). Face enrollment keeps full resolution —
+    # its accuracy depends on facial detail the thumbnail would soften.
+    max_dim = (
+        None if detail_key == "face_enrollment"
+        else int(getattr(config, "VISION_UPLOAD_MAX_DIM", 1024) or 0) or None
+    )
+    b64 = _encode_frame(frame, max_dim=max_dim)
     if b64 is None:
         return None
 
@@ -155,6 +167,10 @@ def _call_gpt4o(
                 ],
             }],
             max_tokens=max_tokens,
+            # Bounded wait: callers all handle None with a graceful fallback
+            # (e.g. the cached scene description) — an unbounded slow call held
+            # a user turn hostage for 17s on 2026-08-02.
+            timeout=float(getattr(config, "VISION_REQUEST_TIMEOUT_SECS", 12.0)),
         )
     except Exception as exc:
         _log.error("_call_gpt4o [%s]: API error: %s", detail_key, exc)
@@ -1149,6 +1165,31 @@ def analyze_directed_attention(
     if frame is None:
         return {}
 
+    # Mark a user-initiated look in flight so the periodic scan defers instead
+    # of racing it with a second full-frame vision upload (2026-08-02 21:43:
+    # the 180s scan fired mid-"what do you see" and both calls crawled).
+    global _directed_look_active
+    _directed_look_active = True
+    try:
+        return _analyze_directed_attention_locked(
+            frame,
+            direction=direction,
+            utterance=utterance,
+            target_hint=target_hint,
+            known_names=known_names,
+        )
+    finally:
+        _directed_look_active = False
+
+
+def _analyze_directed_attention_locked(
+    frame,
+    *,
+    direction: str,
+    utterance: str,
+    target_hint: str,
+    known_names,
+) -> dict:
     names = _resolve_known_names(known_names)
     identity_rule = (
         "You MAY name these specific people, whom you already recognize: "
@@ -1207,10 +1248,16 @@ def analyze_directed_attention(
         "no preamble."
     )
 
+    # Room-level looks ("what do you see?") read fine at low detail — the API
+    # resizes to ~512px server-side, which is plenty for posters and clutter and
+    # far faster/cheaper than auto's multi-tile pass on a big frame. A concrete
+    # target hint ("what am I holding?") keeps auto detail: small held objects
+    # genuinely need the resolution.
+    detail_key = "active_conversation" if target_hint else "directed_room_look"
     raw = _call_gpt4o(
         frame,
         prompt,
-        "active_conversation",
+        detail_key,
         max_tokens=650,
     )
     if raw is None:
@@ -1408,7 +1455,12 @@ def _scan_loop(interval_secs: float) -> None:
             else:
                 _log.debug("_scan_loop: no frame available — skipping startle scan")
 
-        if time_elapsed or crowd_jumped:
+        if (time_elapsed or crowd_jumped) and _directed_look_active:
+            # A user vision query is mid-flight — let it own the uplink and the
+            # API. last_scan_time stays stale, so the scan fires on the next
+            # loop tick after the query finishes.
+            _log.debug("_scan_loop: deferring environment scan — directed look in flight")
+        elif time_elapsed or crowd_jumped:
             if crowd_jumped:
                 _log.debug(
                     "_scan_loop: crowd %d → %d — triggering rescan",
