@@ -13,19 +13,22 @@ model AND the reference clip. This bench separates them: a bigger model, and a
 reference you control the length and quality of.
 
     python tools/higgs_clone_test.py                     # record, clone, roast
-    python tools/higgs_clone_test.py --ref-secs 0        # feed the WHOLE take
-    python tools/higgs_clone_test.py --ref-secs 15       # short reference
+    python tools/higgs_clone_test.py --ref-secs 12       # probe a shorter reference
     python tools/higgs_clone_test.py --rate 16000        # mimic the robot's mic
     python tools/higgs_clone_test.py --ref assets/voices/people/1.wav
                                                          # reuse an existing clip
     python tools/higgs_clone_test.py --repeat 3          # 3 takes, timing spread
     python tools/higgs_clone_test.py --list-devices
 
-REFERENCE LENGTH IS THE VARIABLE TO PLAY WITH. Longer is not automatically
-better: the reference is encoded at 25 frames/sec into an 8192-token context, so
-a 90 s clip both crowds the context and slows every generation. Default is a
-30 s window taken from the middle of your recording (the steadiest part — you've
-settled in, and you haven't hit the trailing "am I done?" mumble).
+The read-back is ~20 seconds, and that is deliberately near the floor. Higgs is
+a zero-shot cloner: the clip is a conditioning signal, not training data, so it
+does NOT want the 1-2 minutes ElevenLabs asks for. The reference is encoded at
+25 frames/sec into an 8192-token context, so a long clip crowds the context and
+slows every generation for no gain.
+
+--ref-secs trims from the middle of the take, to find where quality breaks down.
+The shipped engine fails at 8 s; if 12 s clones you cleanly, the real feature
+needs to bank far less audio per person than originally assumed.
 
 Standalone: needs config + a mic + the model. No Rex stack, no LEDs, no servos.
 """
@@ -60,37 +63,19 @@ DEFAULT_MODEL_DIR = "assets/models/higgs_tts/4b-bf16"
 MODEL_REPO = "bosonai/higgs-audio-v3-tts-4b"
 
 # ── The passage ──────────────────────────────────────────────────────────────
-# ~240 words ≈ 90 s at a normal reading pace. Deliberately varied: statements,
-# questions, an exclamation, numbers, and a spread of vowels and plosives — a
-# clone conditioned on flat monotone reference audio produces flat monotone
-# speech, so the passage has to make you move.
+# ~55 words ≈ 20-25 s at a normal reading pace. Zero-shot cloners condition on
+# the clip, they don't build a voice profile from it, so this is already inside
+# the useful range — an earlier 90 s version of this passage was cargo-culted
+# from ElevenLabs' Instant-Voice-Clone guidance, which does not apply here.
+# Kept deliberately varied: statement, imperative, question, exclamation, and a
+# spread of vowels and plosives. A clone conditioned on flat monotone reference
+# audio produces flat monotone speech, so the passage has to make you move.
 
 PASSAGE = """\
-Okay, let's get this over with. My name is on the build log, the soldering iron
-is still warm, and somewhere under this workbench there is a screw I will never
-find again.
-
-Here is the thing about droids. They do not care how late it is. They do not
-care that you said "one more test" four hours ago. You point a camera at the
-world, you give the thing a voice, and suddenly it has opinions about you.
-
-How did I get here? Honestly? I wanted a robot that could say hello. That was
-the whole plan. Hello. Two syllables. Now there are twelve thousand lines of
-code, six microphones, a neck that moves in three directions, and a face
-recognition model that keeps insisting the houseplant is my cousin.
-
-Was it worth it? Ask me tomorrow, when the servos stop buzzing.
-
-But listen — when it works, it really works. You walk into the room, and it
-turns to look at you. Not at the wall. Not at the lamp. At you. It knows your
-name, it remembers what you told it last Tuesday, and it makes a joke about it
-before you've finished taking your coat off.
-
-That is the part nobody warns you about. You build a machine to be useful, and
-somewhere along the way it becomes company.
-
-Anyway. That's enough talking. Let's hear how badly this thing mangles my
-voice."""
+Okay — one take, let's go. My name is on the build log and the soldering iron is
+still warm. How did I get here? I wanted a robot that could say hello. Two
+syllables! Now there's a neck that moves three ways and a camera that keeps
+insisting my houseplant is family. Worth it? Ask me tomorrow."""
 
 # ── The roast ────────────────────────────────────────────────────────────────
 # First person, as the speaker — same shape as features/impersonation.py's
@@ -277,13 +262,14 @@ def transcribe_ref(audio: np.ndarray, rate: int) -> "str | None":
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--secs", type=float, default=180.0,
-                    help="hard cap on recording length (default 180)")
+    ap.add_argument("--secs", type=float, default=60.0,
+                    help="hard cap on recording length (default 60)")
     ap.add_argument("--rate", type=int, default=48000,
                     help="capture sample rate (default 48000; use 16000 to mimic the robot)")
-    ap.add_argument("--ref-secs", type=float, default=30.0,
-                    help="seconds of reference fed to the model, from the middle "
-                         "of the take. 0 = use everything (default 30)")
+    ap.add_argument("--ref-secs", type=float, default=0.0,
+                    help="trim the reference to N seconds from the middle of the take. "
+                         "0 = use the whole thing (default). Set this to probe the "
+                         "floor: --ref-secs 10 / 15 / 20")
     ap.add_argument("--ref", type=str, default=None,
                     help="skip recording; clone from this WAV instead")
     ap.add_argument("--ref-text", type=str, default=None,
@@ -339,7 +325,7 @@ def main() -> None:
         print("-" * 72)
         print(PASSAGE)
         print("-" * 72)
-        print("\nAim for at least 60 seconds. Press Enter when you're ready to start,")
+        print("\nIt's about 20 seconds. Press Enter when you're ready to start,")
         print("then Enter again when you've finished reading.")
         try:
             input()
@@ -349,8 +335,8 @@ def main() -> None:
         audio = record_interactive(args.rate, args.secs)
         rate = args.rate
         describe(audio, rate, "captured")
-        if audio.size / rate < 20:
-            print("    ⚠ that's a short take — clone quality will suffer")
+        if audio.size / rate < 10:
+            print("    ⚠ under 10s — that's the length that already failed to clone you")
 
         ref_text = None
         if args.transcribe:
@@ -457,8 +443,9 @@ def main() -> None:
     print(f"  conversion (~4.7 GB) before this ships.")
     print()
     print(f"  Reference used: {audio.size / rate:.1f}s @ {rate} Hz")
-    print(f"  Re-run with --ref-secs 60 / --ref-secs 15 to find where quality plateaus,")
-    print(f"  and --rate 16000 to see what the robot's mic actually costs you.")
+    print(f"  Re-run with --ref-secs 15 / 12 / 10 to find the floor — that number is")
+    print(f"  how much audio the real feature has to bank per person. Then --rate 16000")
+    print(f"  to see what the robot's mic costs you on top.")
     print()
 
 
