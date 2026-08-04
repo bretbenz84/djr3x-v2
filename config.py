@@ -1404,6 +1404,36 @@ RECALL_MENTION_LIMIT = 4             # dated own-words mentions from the convers
 # wins, but recency can never outrank a stronger topic match.
 RECALL_EPISODE_RECENCY_HALFLIFE_DAYS = 21.0
 
+# Statement-time known-context recall: when what the person just SAID (not asked)
+# strongly matches a stored plan/event, diary episode, or prior-session summary, the
+# lean reply prompt gets a "you already know this — connect, don't re-learn" block.
+# Field 2026-08-03 18:53: "I got all the new interns set up" → "How many interns were
+# there?", while the intern-training plan sat unread in person_events. Conservative
+# matching (text_match.strong_overlap): 2 shared stems, or one distinctive ≥6-char
+# stem — a wrong "you already know this" is worse than a missed connection.
+KNOWN_CONTEXT_RECALL_ENABLED = True
+KNOWN_CONTEXT_MIN_WORDS = 3            # utterances shorter than this never trigger it
+KNOWN_CONTEXT_EVENT_LOOKBACK_DAYS = 45 # how far back matched events/plans may reach
+KNOWN_CONTEXT_MAX_ITEMS = 3            # memory items in the block (events claim first)
+
+# When the person spontaneously reports the OUTCOME of a stored open plan ("the
+# orientation went well", "I got the interns set up"), resolve the event right then —
+# followed_up + outcome — so Rex never later asks "so did that happen?" about a thing
+# they already told him about. Matching mirrors the known-context threshold; there is
+# deliberately NO single-open-event fallback (unlike cancellation): a generic "that
+# went well" must never close an unrelated plan.
+EVENT_COMPLETION_RESOLUTION_ENABLED = True
+
+# People.db session persistence at SHUTDOWN. _end_session (summary row, visit/
+# familiarity/warmth) only ever fired on the idle timeout — but every real session
+# ends in a spoken/GUI shutdown, so the conversations table sat EMPTY for weeks:
+# "last time you talked", nostalgia callbacks, and cross-session trends had zero
+# rows to read. The shutdown path now runs the same persistence (minus the
+# consolidation LLM chain — rolling extraction already ran per-exchange), bounded.
+SESSION_SUMMARY_ON_SHUTDOWN_ENABLED = True
+SESSION_SUMMARY_MIN_HUMAN_TURNS = 2        # tiny command-only visits earn no summary row
+SESSION_SUMMARY_SHUTDOWN_TIMEOUT_SECS = 10.0
+
 # Ordinary (non-memory-question) replies: combined facts+interests background lines in
 # the lean prompt, topic-ranked against the current utterance via unified retrieval.
 # Was a static, topic-blind top-4 facts + top-4 interests.

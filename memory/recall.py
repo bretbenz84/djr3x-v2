@@ -558,3 +558,144 @@ def conversation_recall_lines(person_id: Optional[int], utterance: str) -> list[
     except Exception:
         pass
     return lines
+
+
+# ── Statement-time known-context recall ─────────────────────────────────────────
+# The inverse failure of memory_question_lines: rich recall fires when the person
+# ASKS what Rex remembers, but when they STATE something he already holds a memory
+# about, nothing was retrieved at all — so Rex heard about his own memories as news.
+# Field 2026-08-03 18:53: Bret reported "I got all the new interns set up". The
+# intern-training plan was person_event #13 (stored the night before; Rex even asked
+# about it at 23:56) and a diary episode — yet the reply was "How many interns were
+# there?", a stranger's question. A human spends what they know about the topic AT
+# HAND; this block hands the reply model exactly that, with the one instruction that
+# matters: connect, don't re-learn.
+
+def _known_event_line(ev: dict) -> str:
+    """One event rendered by lifecycle state, so the model knows whether it's reacting
+    to an open plan (outcome unknown — maybe being reported RIGHT NOW), a done thing
+    with a known outcome, or a canceled one it must not resurrect."""
+    from memory import events as _events
+    name = " ".join(str(ev.get("event_name") or "").split())
+    when_told = _events.mentioned_when_label(ev.get("mentioned_at"))
+    date_str = str(ev.get("event_date") or "").strip()[:10]
+    dated = f" (was set for {date_str})" if date_str else ""
+    outcome = " ".join(str(ev.get("outcome") or "").split())[:160]
+    status = str(ev.get("status") or "planned").strip().lower()
+    if status == "canceled":
+        return (f"'{name}'{dated} — they CALLED IT OFF"
+                + (f": \"{outcome}\"" if outcome else "") + ". Don't revive it.")
+    if ev.get("followed_up") or status == "completed":
+        return (f"'{name}'{dated} already happened; the outcome you were told: "
+                + (f"\"{outcome}\"" if outcome else "(none recorded)") + ".")
+    if status == "promised":
+        return (f"something they promised to do ({when_told}): '{name}' — still open "
+                f"as far as you know.")
+    hedge = " It was tentative when they said it." if ev.get("hedged") else ""
+    return (f"a plan they told you about {when_told}: '{name}'{dated}. STILL OPEN — "
+            f"you have NOT heard how it went; if they're telling you now, react to "
+            f"the outcome.{hedge}")
+
+
+def known_context_lines(person_id: Optional[int], utterance: str) -> list[str]:
+    """The known-context block: stored plans/events, diary episodes, and prior-session
+    summaries that STRONGLY match what the person just SAID (not asked). [] when
+    disabled, no known person, the utterance is too thin, it's a memory question
+    (memory_question_lines owns those), or nothing matches. Conservative on purpose:
+    a wrong 'you already know this' is worse than a missed connection, so matching
+    uses text_match.strong_overlap, and there is no fuzzy fallback."""
+    if person_id is None or not bool(_cfg("KNOWN_CONTEXT_RECALL_ENABLED", True)):
+        return []
+    text = " ".join(str(utterance or "").split())
+    if len(text.split()) < int(_cfg("KNOWN_CONTEXT_MIN_WORDS", 3)):
+        return []
+    if is_memory_question(text):
+        return []
+    tokens = utterance_tokens(text)
+    if not tokens:
+        return []
+    max_items = max(1, int(_cfg("KNOWN_CONTEXT_MAX_ITEMS", 3)))
+    from memory import text_match
+
+    items: list[str] = []
+
+    # 1) Stored events/plans — the highest-value connection (they have lifecycle
+    #    state the model must respect), so they claim slots first.
+    try:
+        from datetime import datetime, timedelta, timezone
+        from memory import database as db
+        lookback = int(_cfg("KNOWN_CONTEXT_EVENT_LOOKBACK_DAYS", 45))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback)).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+        date_cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback)).strftime(
+            "%Y-%m-%d"
+        )
+        rows = db.fetchall(
+            """SELECT * FROM person_events
+               WHERE person_id = ?
+                 AND (mentioned_at >= ? OR (event_date IS NOT NULL AND event_date >= ?))
+               ORDER BY mentioned_at DESC LIMIT 40""",
+            (int(person_id), cutoff, date_cutoff),
+        )
+        seen_names: set = set()
+        for r in rows:
+            ev = dict(r)
+            ev_text = " ".join([
+                str(ev.get("event_name") or ""),
+                str(ev.get("event_notes") or ""),
+                str(ev.get("outcome") or ""),
+            ])
+            if not text_match.strong_overlap(tokens, ev_text):
+                continue
+            name_key = " ".join(str(ev.get("event_name") or "").lower().split())
+            if not name_key or name_key in seen_names:
+                continue
+            seen_names.add(name_key)
+            items.append(_known_event_line(ev))
+            if len(items) >= max_items:
+                break
+    except Exception as exc:
+        _log.debug("[recall] known-context events failed: %s", exc)
+
+    # 2) Diary episodes — shared history in Rex's own words, dated.
+    if len(items) < max_items:
+        try:
+            for row in search_episodes(tokens, person_id=int(person_id), limit=4):
+                ep_text = f"{row.get('summary') or ''} {row.get('detail') or ''}"
+                if not text_match.strong_overlap(tokens, ep_text):
+                    continue
+                items.append("from your own diary: " + _episode_line(row))
+                if len(items) >= max_items:
+                    break
+        except Exception as exc:
+            _log.debug("[recall] known-context episodes failed: %s", exc)
+
+    # 3) Prior-session summaries — the distilled arc of past chats.
+    if len(items) < max_items:
+        try:
+            from memory import conversations as conv_db
+            for s in conv_db.get_conversation_history(int(person_id), limit=8):
+                s_text = f"{s.get('summary') or ''} {s.get('topics') or ''}"
+                if not text_match.strong_overlap(tokens, s_text):
+                    continue
+                date = str(s.get("session_date") or "")[:10]
+                summary = " ".join(str(s.get("summary") or "").split())[:200]
+                items.append(f"[{date}] a past chat of yours covered: {summary}")
+                break   # one summary is plenty — events/episodes carry the specifics
+        except Exception as exc:
+            _log.debug("[recall] known-context summaries failed: %s", exc)
+
+    if not items:
+        return []
+    lines = [
+        "KNOWN CONTEXT — what they just said touches things you ALREADY know (below). "
+        "React like someone who REMEMBERS: connect their words to the specifics you "
+        "hold, and let any follow-up BUILD on them (they mention the race you knew "
+        "they were training for → \"so did the knee hold up?\", never \"you ran a "
+        "race?\"). Do NOT ask for anything already stated below, and do NOT react as "
+        "if you're hearing about the topic for the first time. Never mention memory, "
+        "records, or databases — you just remember."
+    ]
+    lines.extend("You know " + item for item in items)
+    return lines

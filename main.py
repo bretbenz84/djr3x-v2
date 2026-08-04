@@ -752,6 +752,18 @@ def _shutdown() -> None:
     # clears the transcript. Timeout-bounded so it can't hang shutdown.
     _episodic_shutdown_summary()
 
+    # People.db session persistence: the conversation-summary row plus visit/
+    # familiarity/warmth updates. The idle-timeout path has _end_session, but every
+    # real session ends in a spoken/GUI shutdown — which historically skipped ALL of
+    # it (the conversations table stayed EMPTY, starving "last time you talked",
+    # nostalgia callbacks, and trends). Runs AFTER the diary summary above because
+    # it clears the session transcript when done. Timeout-bounded internally.
+    try:
+        from intelligence import interaction as _interaction
+        _interaction.persist_session_memories_at_shutdown()
+    except Exception as exc:
+        logger.debug("people.db session persistence at shutdown failed: %s", exc)
+
     # Consolidation sweep: per-kind diary retention (person_seen dedup/age-out,
     # visit ageing, stale pending room questions) — pure SQL, includes the scene
     # prune below via episodic_recall.prune().

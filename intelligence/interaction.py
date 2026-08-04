@@ -15826,6 +15826,17 @@ def _post_response(
                     events_memory.add_commitment(person_id, user_text)
             except Exception as exc:
                 _log.debug("[commitments] capture failed: %s", exc)
+        # Spontaneous outcome report → resolve the matching open plan right now
+        # ("I got all the new interns set up" closes the stored intern-training
+        # plan with their words as the outcome), so Rex never later asks "so did
+        # that happen?" about a thing they already told him. Deterministic
+        # (regex + stemmed strong-overlap, no LLM); a non-matching report is a
+        # silent no-op.
+        try:
+            if not events_memory.looks_like_cancellation(user_text):
+                events_memory.complete_matching_events(person_id, user_text)
+        except Exception as exc:
+            _log.debug("[events] spontaneous completion resolve failed: %s", exc)
         try:
             transcript = conv_memory.get_session_transcript()
             recent = transcript[-10:] if len(transcript) >= 10 else transcript
@@ -16559,10 +16570,16 @@ def _consolidate_session_memories(
 # Session teardown
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _end_session() -> None:
+def _end_session(*, include_consolidation: bool = True) -> None:
     """
     Called on ACTIVE → IDLE transition. Generates and persists a session summary,
     updates visit records and familiarity, then clears in-memory session state.
+
+    include_consolidation=False is the SHUTDOWN profile (see
+    persist_session_memories_at_shutdown): the summary row and visit/warmth updates
+    still land, but the session-end consolidation + extraction fallbacks are skipped —
+    the rolling per-exchange extractors already ran all session, and power-off must
+    not wait on a chain of LLM calls.
     """
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _idle_outro_spoken, _lean_memory_mused_this_session
@@ -16712,7 +16729,7 @@ def _end_session() -> None:
                 t for t in person_transcript if t.get("learnable", True)
             ]
             consolidation_completed = False
-            if learnable_transcript:
+            if learnable_transcript and include_consolidation:
                 consolidation_completed = _consolidate_session_memories(
                     person_id,
                     person_name,
@@ -16723,7 +16740,7 @@ def _end_session() -> None:
             # Full-transcript extraction fallback — catches facts the
             # per-exchange rolling window may have missed when consolidation is
             # disabled, below threshold, or times out/fails before writing.
-            if learnable_transcript and not consolidation_completed:
+            if learnable_transcript and include_consolidation and not consolidation_completed:
                 try:
                     end_facts = llm.extract_facts(person_id, learnable_transcript, person_name=person_name)
                     saved = 0
@@ -16946,6 +16963,59 @@ def _end_session() -> None:
     except Exception:
         pass
     _log.info("[interaction] session ended — summary saved, transcript cleared")
+
+
+def persist_session_memories_at_shutdown() -> None:
+    """Run the people.db session-end persistence for the SHUTDOWN path.
+
+    _end_session only ever fires on the idle timeout — but every real session ends
+    in a spoken/GUI shutdown, so after five weeks of daily use the conversations
+    table had ZERO rows: "last time you talked", nostalgia callbacks, and
+    cross-session trends were all reading from an empty table. This wrapper runs
+    _end_session in its shutdown profile (summary row + visit/familiarity/warmth;
+    no consolidation — the rolling extractors already ran per-exchange) on a worker
+    thread joined with a timeout, so a slow summary call can never stall power-off.
+
+    Substance gate: a session needs SESSION_SUMMARY_MIN_HUMAN_TURNS human turns
+    before it earns a summary row — a lone "hey Rex, shut down" visit should not
+    burn an LLM call or leave a junk recap. Call BEFORE the transcript is needed
+    by nothing else (it clears session state); in main._shutdown it runs after the
+    diary summary, which reads the same transcript. No-op if the idle timeout
+    already ended the session. Never raises.
+    """
+    if not bool(getattr(config, "SESSION_SUMMARY_ON_SHUTDOWN_ENABLED", True)):
+        return
+    try:
+        transcript = conv_memory.get_session_transcript() or []
+    except Exception:
+        return
+    if not transcript or not _session_person_ids:
+        return
+    rex_labels = {"rex", "dj-r3x", "djr3x", "dj r3x", "r3x", "dj-rex", "assistant"}
+    human_turns = sum(
+        1 for t in transcript
+        if str(t.get("speaker") or "").strip().lower() not in rex_labels
+    )
+    min_turns = int(getattr(config, "SESSION_SUMMARY_MIN_HUMAN_TURNS", 2))
+    if human_turns < min_turns:
+        _log.info(
+            "[interaction] shutdown session below substance gate (%d/%d human turns) "
+            "— no summary row", human_turns, min_turns,
+        )
+        return
+    timeout = float(getattr(config, "SESSION_SUMMARY_SHUTDOWN_TIMEOUT_SECS", 10.0))
+    worker = threading.Thread(
+        target=lambda: _end_session(include_consolidation=False),
+        daemon=True,
+        name="session-persist-shutdown",
+    )
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        _log.warning(
+            "[interaction] shutdown session persistence still running after %.1fs — "
+            "continuing teardown", timeout,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

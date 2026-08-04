@@ -598,6 +598,83 @@ def looks_like_completion(text: str) -> bool:
     return bool(_DONE_PAT.search(text or ""))
 
 
+# Outcome-report shapes that _DONE_PAT (built for retiring PROMISES) doesn't cover:
+# "the orientation went well", "I got all the new interns set up", "we survived the
+# move". These gate complete_matching_events — the spontaneous "here's how it went"
+# that should resolve a stored open plan without Rex ever having to ask.
+_EVENT_DONE_PAT = re.compile(
+    r"\bwent\s+(?:really\s+|pretty\s+|very\s+|super\s+)?"
+    r"(?:well|great|good|fine|okay|ok|smooth(?:ly)?|bad(?:ly)?|terribl[ye]|rough)\b"
+    r"|\b(?:i|we)\s+(?:just\s+|finally\s+|already\s+)?got\s+"
+    r"(?:it|that|them|everything|all\b.{0,40}?|the\b.{0,40}?|my\b.{0,40}?|our\b.{0,40}?)\s*"
+    r"(?:set\s+up|done|sorted|finished|handled|squared\s+away|taken\s+care\s+of|"
+    r"up\s+and\s+running|installed|online)\b"
+    r"|\b(?:i|we)\s+(?:just\s+|finally\s+)?(?:survived|wrapped(?:\s+up)?|"
+    r"got\s+through|made\s+it\s+through|knocked\s+out|pulled\s+off)\b"
+    r"|\b(?:is|was|it'?s|that'?s)\s+(?:all\s+)?"
+    r"(?:done|finished|wrapped(?:\s+up)?|sorted|handled|over\s+with)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_event_completion(text: str) -> bool:
+    """True when text READS as a report that something already happened / got done —
+    the write guard for complete_matching_events. Questions never qualify."""
+    t = text or ""
+    if t.rstrip().endswith("?"):
+        return False
+    return bool(_DONE_PAT.search(t) or _EVENT_DONE_PAT.search(t))
+
+
+def complete_matching_events(person_id: Optional[int], text: str) -> list[dict]:
+    """Resolve open PLANNED events whose outcome the person just reported on their own
+    ("I got all the new interns set up" — event #13 'work and train new interns' was
+    still open days later because resolution only ever happened when REX asked and the
+    human answered; a spontaneous report changed nothing, so the same plan came back
+    as 'so did that happen?'). mark_followed_up stores their words as the outcome, so
+    later recall says what actually happened.
+
+    Matching is DELIBERATELY stricter than cancel_matching_events:
+      * stemmed strong-overlap (2 shared stems, or one distinctive ≥6-char stem) via
+        text_match — "the intern orientation went well" must reach the stored
+        'train new interns' plan across the inflection gap;
+      * NO single-open-event fallback — a generic "that went well" about something
+        Rex never stored must not close an unrelated plan;
+      * future-dated plans are skipped — by its own date it hasn't happened yet."""
+    if person_id is None or not looks_like_event_completion(text):
+        return []
+    try:
+        import config
+        if not bool(getattr(config, "EVENT_COMPLETION_RESOLUTION_ENABLED", True)):
+            return []
+    except Exception:
+        pass
+    from memory import recall as _recall
+    from memory import text_match
+    tokens = _recall.utterance_tokens(text)
+    if not tokens:
+        return []
+    today = _today_local()
+    completed: list[dict] = []
+    for ev in get_open_events(person_id):
+        date_str = str(ev.get("event_date") or "").strip()[:10]
+        if date_str and date_str > today:
+            continue
+        ev_text = " ".join([
+            str(ev.get("event_name") or ""),
+            str(ev.get("event_notes") or ""),
+        ])
+        if not text_match.strong_overlap(tokens, ev_text):
+            continue
+        mark_followed_up(int(ev["id"]), (text or "").strip()[:500])
+        completed.append(ev)
+        _log.info(
+            "[events] open plan #%s %r resolved by spontaneous outcome report: %r",
+            ev["id"], ev.get("event_name"), (text or "")[:120],
+        )
+    return completed
+
+
 def _commitment_action(text: str) -> str:
     """The action phrase from a commitment utterance, for a clean needle:
     'yeah I'll finally fix the sensor this weekend' -> 'fix the sensor this weekend'.

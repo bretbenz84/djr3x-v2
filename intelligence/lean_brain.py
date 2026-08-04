@@ -154,6 +154,19 @@ def _person_lines(person_id: Optional[int], user_text: str = "") -> list[str]:
         out.extend(rich)
         return out
 
+    # Known-context recall on a STATEMENT: when what they just said strongly matches
+    # a stored plan/event, diary episode, or prior-session summary, hand the reply the
+    # memory + the connect-don't-re-learn instruction. This is what makes "I got all
+    # the new interns set up" land as the plan Rex heard yesterday instead of news
+    # (field 2026-08-03 18:53: he asked "How many interns were there?" while the
+    # intern-training plan sat unread in person_events). Additive — the background
+    # facts below still ride along.
+    try:
+        from memory import recall as _recall
+        out.extend(_recall.known_context_lines(int(person_id), user_text))
+    except Exception as exc:
+        _log.debug("[lean] known-context recall failed: %s", exc)
+
     # Topic tokens from what they JUST said, so the on-topic fact/interest wins a
     # slot over a higher-static-score but irrelevant one.
     topic_tokens = None

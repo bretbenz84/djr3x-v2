@@ -49,3 +49,20 @@ def overlap_count(text: str, topic_tokens) -> int:
         return 0
     topic = {stem(t) for t in topic_tokens if t}
     return len(stems(text) & topic)
+
+
+def strong_overlap(topic_tokens, text, *, min_shared: int = 2, distinctive_len: int = 6) -> bool:
+    """A CONSERVATIVE match: the text shares ≥ min_shared stems with the topic tokens,
+    OR a single stem long enough to be distinctive on its own ("intern" ties an utterance
+    to the stored intern-training plan; "new" alone must not tie it to anything).
+
+    This is the write/inject threshold for statement-time recall — where a false positive
+    injects a wrong "you already know this" or resolves the wrong plan — as opposed to
+    overlap_count's permissive any-overlap ranking, which only reorders candidates."""
+    if not topic_tokens:
+        return False
+    topic = {stem(t) for t in topic_tokens if t}
+    shared = stems(text) & topic
+    if len(shared) >= max(1, int(min_shared)):
+        return True
+    return any(len(s) >= int(distinctive_len) for s in shared)
