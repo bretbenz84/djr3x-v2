@@ -1471,6 +1471,31 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     if bool(getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)) and bool(
         getattr(config, "LOCAL_ANIMAL_DETECTION_PRELOAD_ON_STARTUP", True)
     ):
+        # The RF-DETR torch load + first-inference warmup is the boot's single
+        # heaviest GIL/Metal burst (~4s) and it landed exactly under the TAIL of
+        # the boot filler line — the "stuttering toward the end of the first
+        # playback" regression (field 2026-08-03; the deep buffer rides out the
+        # other preloads but not this one). Wait for the filler to drain first;
+        # the load then overlaps the startup-animation join below, so total
+        # boot time is typically unchanged.
+        if _audio_qos:
+            _drain_deadline = time.monotonic() + float(
+                getattr(config, "STARTUP_HEAVY_PRELOAD_DRAIN_MAX_SECS", 12.0)
+            )
+            _drained = False
+            while time.monotonic() < _drain_deadline:
+                try:
+                    if not (output_gate.is_busy() or speech_queue.is_speaking()
+                            or tts.is_speaking()):
+                        _drained = True
+                        break
+                except Exception:
+                    break
+                time.sleep(0.1)
+            if _drained:
+                logger.info("Boot speech drained — safe to run the heavy vision preload.")
+            else:
+                logger.info("Boot speech still going after drain window — loading anyway.")
         logger.info("Pre-loading local animal detector...")
         if not animal_detector.preload():
             logger.warning(

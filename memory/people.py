@@ -552,19 +552,48 @@ def rename_person(person_id: int, name: str) -> bool:
         add_alias(int(person_id), old_name, source="previous_name")
     add_alias(int(person_id), clean, source="canonical_name")
     _propagate_rename_to_episodes(int(person_id), old_name, clean)
+    _propagate_rename_to_people_text(int(person_id), old_name, clean)
     return True
 
 
+def _rename_text_pattern(old_first: str):
+    """Whole-word pattern for a first name that will NOT touch a different
+    person's full name: 'Brad' matches in "Brad's project" and "with Brad and
+    JT" but not in "Brad Pitt" (first name followed by another capitalized
+    word = almost certainly someone else)."""
+    import re as _re
+    return _re.compile(r"\b" + _re.escape(old_first) + r"\b(?!\s+[A-Z])")
+
+
+def _rename_collides_with_other_person(person_id: int, old_first: str) -> bool:
+    """True when ANOTHER person's first name matches — a global text sweep
+    would corrupt their memories, so it must stay scoped."""
+    try:
+        rows = db.fetchall(
+            "SELECT id, name FROM people WHERE id != ?", (int(person_id),)
+        )
+        return any(
+            str(r["name"] or "").strip().split()[0].lower() == old_first.lower()
+            for r in rows
+            if str(r["name"] or "").strip()
+        )
+    except Exception:
+        return True  # can't verify — do the safe (scoped) thing
+
+
 def _propagate_rename_to_episodes(person_id: int, old_name: str, new_name: str) -> None:
-    """Rewrite the old name inside this person's rex.db episodes (diary
-    summaries + open-thread texts + the person_name snapshot).
+    """Rewrite the old name inside rex.db episodes (diary summaries +
+    open-thread texts + the person_name snapshot).
 
     The diary freezes names into free text at write time, so a rename alone
     left every stored thread speaking the DEAD name — field 2026-08-03: 'Brad'
     corrected himself to JT on Aug 2, and the next day the lull callback still
-    opened with "Brad's 'maintaining his freedom' thing". Whole-word,
-    first-name-aware replace (Brad / Brad's), scoped to the renamed person's
-    own episodes; best-effort and never raises."""
+    opened with "Brad's 'maintaining his freedom' thing". Crucially those
+    mentions lived in the OWNER'S episodes (the diary files a session under
+    the primary person present), so the sweep covers ALL episodes mentioning
+    the old first name — unless another person still carries that first name,
+    in which case it stays scoped to the renamed person's own rows.
+    Best-effort and never raises."""
     old_first = (old_name or "").strip().split()[0] if (old_name or "").strip() else ""
     new_first = (new_name or "").strip().split()[0] if (new_name or "").strip() else ""
     if not old_first or not new_first or old_first.lower() == new_first.lower():
@@ -572,7 +601,6 @@ def _propagate_rename_to_episodes(person_id: int, old_name: str, new_name: str) 
         old_first = ""
     try:
         import json as _json
-        import re as _re
         from memory import rex_db
         rex_db.execute(
             "UPDATE rex_episodes SET person_name = ? WHERE person_id = ?",
@@ -580,11 +608,22 @@ def _propagate_rename_to_episodes(person_id: int, old_name: str, new_name: str) 
         )
         if not old_first:
             return
-        name_re = _re.compile(r"\b" + _re.escape(old_first) + r"\b")
-        rows = rex_db.fetchall(
-            "SELECT id, summary, detail FROM rex_episodes WHERE person_id = ?",
-            (person_id,),
-        )
+        name_re = _rename_text_pattern(old_first)
+        if _rename_collides_with_other_person(person_id, old_first):
+            _log.info(
+                "[people] rename sweep scoped to own episodes — another person "
+                "is also named %r", old_first,
+            )
+            rows = rex_db.fetchall(
+                "SELECT id, summary, detail FROM rex_episodes WHERE person_id = ?",
+                (person_id,),
+            )
+        else:
+            rows = rex_db.fetchall(
+                "SELECT id, summary, detail FROM rex_episodes "
+                "WHERE summary LIKE ? OR detail LIKE ?",
+                (f"%{old_first}%", f"%{old_first}%"),
+            )
         for row in rows:
             summary = str(row["summary"] or "")
             detail_raw = str(row["detail"] or "")
@@ -599,6 +638,10 @@ def _propagate_rename_to_episodes(person_id: int, old_name: str, new_name: str) 
                         rewritten = [name_re.sub(new_first, str(t)) for t in threads]
                         if rewritten != threads:
                             detail["open_threads"] = rewritten
+                            changed = True
+                    for p in detail.get("people") or []:
+                        if isinstance(p, dict) and str(p.get("name") or "") == old_first:
+                            p["name"] = new_first
                             changed = True
                     if changed:
                         new_detail = _json.dumps(detail, ensure_ascii=False)
@@ -615,6 +658,66 @@ def _propagate_rename_to_episodes(person_id: int, old_name: str, new_name: str) 
         )
     except Exception as exc:
         _log.debug("rename episode propagation failed: %s", exc)
+
+
+# Speakable free-text columns in people.db that freeze names at write time.
+# Rows keyed by person_id always render the CURRENT name; these columns are
+# the ones that could still say the dead name out loud later (conversation
+# recall, event follow-ups, interest stories, relationship lines).
+_RENAME_TEXT_COLUMNS = (
+    ("conversations", ("summary", "topics")),
+    ("person_events", ("event_name", "event_notes")),
+    ("person_facts", ("value",)),
+    ("person_interests", ("name", "notes", "associated_people", "associated_stories")),
+    ("person_qa", ("question_text", "answer_text")),
+    ("person_relationships", ("relationship",)),
+)
+
+
+def _propagate_rename_to_people_text(person_id: int, old_name: str, new_name: str) -> None:
+    """Rewrite the old first name in people.db free-text columns (all rows,
+    with the same other-person collision guard as the episode sweep — when a
+    different person still carries the old first name, nothing is touched:
+    their memories must not be corrupted). Best-effort and never raises."""
+    old_first = (old_name or "").strip().split()[0] if (old_name or "").strip() else ""
+    new_first = (new_name or "").strip().split()[0] if (new_name or "").strip() else ""
+    if not old_first or not new_first or old_first.lower() == new_first.lower():
+        return
+    try:
+        if _rename_collides_with_other_person(person_id, old_first):
+            _log.info(
+                "[people] people.db rename text sweep skipped — another person "
+                "is also named %r", old_first,
+            )
+            return
+        name_re = _rename_text_pattern(old_first)
+        rewritten = 0
+        for table, columns in _RENAME_TEXT_COLUMNS:
+            for column in columns:
+                try:
+                    rows = db.fetchall(
+                        f"SELECT id, {column} AS v FROM {table} "
+                        f"WHERE {column} LIKE ?",
+                        (f"%{old_first}%",),
+                    )
+                except Exception:
+                    continue
+                for row in rows:
+                    old_val = str(row["v"] or "")
+                    new_val = name_re.sub(new_first, old_val)
+                    if new_val != old_val:
+                        db.execute(
+                            f"UPDATE {table} SET {column} = ? WHERE id = ?",
+                            (new_val, int(row["id"])),
+                        )
+                        rewritten += 1
+        if rewritten:
+            _log.info(
+                "[people] rename propagated to %d people.db text value(s) %r -> %r",
+                rewritten, old_first, new_first,
+            )
+    except Exception as exc:
+        _log.debug("rename people.db text propagation failed: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

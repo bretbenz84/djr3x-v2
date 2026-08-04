@@ -150,6 +150,80 @@ class RenamePropagationTest(unittest.TestCase):
         threads = json.loads(row["detail"])["open_threads"]
         self.assertEqual(threads, ["whether JT's freedom project is going well"])
 
+    def test_rename_rewrites_other_peoples_episodes_too(self):
+        """The field case: the Brad mentions lived in BRET's diary rows (the
+        diary files a session under the primary person present)."""
+        from memory import people
+        with sqlite3.connect(db._DB_FILE) as conn:
+            conn.execute("INSERT INTO people (id, name) VALUES (1, 'Bret Benziger')")
+        self.rex_db.execute(
+            "INSERT INTO rex_episodes (created_at, kind, summary, person_id, "
+            "person_name, detail) VALUES ('2026-08-02 13:55:00', "
+            "'conversation_summary', 'Bret told me about Brad''s job offer.', "
+            "1, 'Bret Benziger', ?)",
+            (json.dumps({"people": [{"person_id": 5, "name": "Brad"}]}),),
+        )
+        self.assertTrue(people.rename_person(5, "JT"))
+        row = self.rex_db.fetchone(
+            "SELECT summary, detail FROM rex_episodes WHERE person_id = 1"
+        )
+        self.assertIn("JT's job offer", row["summary"])
+        self.assertEqual(
+            json.loads(row["detail"])["people"], [{"person_id": 5, "name": "JT"}]
+        )
+
+    def test_rename_rewrites_people_db_free_text(self):
+        from memory import people
+        with sqlite3.connect(db._DB_FILE) as conn:
+            conn.execute("INSERT INTO people (id, name) VALUES (1, 'Bret Benziger')")
+            conn.execute(
+                "INSERT INTO person_events (person_id, event_name, event_notes, "
+                "mentioned_at) VALUES (1, 'lake trip with Brad', "
+                "'Brad said he might come', '2026-08-02')"
+            )
+            conn.execute(
+                "INSERT INTO conversations (person_id, summary) VALUES "
+                "(1, 'Talked about Brad and his new job.')"
+            )
+        self.assertTrue(people.rename_person(5, "JT"))
+        with sqlite3.connect(db._DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            ev = conn.execute("SELECT event_name, event_notes FROM person_events").fetchone()
+            self.assertEqual(ev["event_name"], "lake trip with JT")
+            self.assertEqual(ev["event_notes"], "JT said he might come")
+            conv = conn.execute("SELECT summary FROM conversations").fetchone()
+            self.assertEqual(conv["summary"], "Talked about JT and his new job.")
+
+    def test_collision_with_another_person_keeps_sweep_scoped(self):
+        """A different person genuinely named Brad must not have their
+        memories rewritten."""
+        from memory import people
+        with sqlite3.connect(db._DB_FILE) as conn:
+            conn.execute("INSERT INTO people (id, name) VALUES (7, 'Brad Foster')")
+            conn.execute(
+                "INSERT INTO conversations (person_id, summary) VALUES "
+                "(7, 'Brad talked about his boat.')"
+            )
+        self.assertTrue(people.rename_person(5, "JT"))
+        with sqlite3.connect(db._DB_FILE) as conn:
+            conv = conn.execute("SELECT summary FROM conversations").fetchone()
+            self.assertEqual(conv[0], "Brad talked about his boat.")
+
+    def test_different_full_name_not_rewritten(self):
+        """'Brad Pitt' in a fact value is someone else — the first-name-
+        followed-by-capital guard must leave it alone."""
+        from memory import people
+        with sqlite3.connect(db._DB_FILE) as conn:
+            conn.execute("INSERT INTO people (id, name) VALUES (1, 'Bret Benziger')")
+            conn.execute(
+                "INSERT INTO person_facts (person_id, category, key, value) VALUES "
+                "(1, 'taste', 'favorite_actor', 'loves Brad Pitt movies')"
+            )
+        self.assertTrue(people.rename_person(5, "JT"))
+        with sqlite3.connect(db._DB_FILE) as conn:
+            val = conn.execute("SELECT value FROM person_facts").fetchone()[0]
+            self.assertEqual(val, "loves Brad Pitt movies")
+
 
 class CorrectionFallthroughTest(unittest.TestCase):
     def test_story_elaboration_gets_real_reply_not_canned_line(self):

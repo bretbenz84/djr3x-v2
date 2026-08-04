@@ -3517,8 +3517,11 @@ AUDIO_PLAYBACK_LATENCY = os.getenv("AUDIO_PLAYBACK_LATENCY", "high").strip() or 
 # playback asks CoreAudio for an EXPLICIT deep buffer: ~1s of latency + a bigger
 # callback block. Costs up to ~1s extra time-to-first-sound, which is invisible
 # behind the boot theatrics; disarmed before conversation starts.
+# 1.0 -> 2.5 (2026-08-03): the filler still stuttered at the END of the clip —
+# the RF-DETR torch load + first-inference warmup is a multi-second burst that
+# blew through a 1s host buffer. Boot-only, so conversation latency is untouched.
 AUDIO_PLAYBACK_BOOT_LATENCY_SECS = _env_float(
-    "AUDIO_PLAYBACK_BOOT_LATENCY_SECS", 1.0, min_value=0.1, max_value=4.0
+    "AUDIO_PLAYBACK_BOOT_LATENCY_SECS", 2.5, min_value=0.1, max_value=6.0
 )
 AUDIO_PLAYBACK_BOOT_BLOCKSIZE = _env_int(
     "AUDIO_PLAYBACK_BOOT_BLOCKSIZE", 8192, min_value=256, max_value=65536
@@ -3530,6 +3533,13 @@ AUDIO_PLAYBACK_BOOT_BLOCKSIZE = _env_int(
 # smooth. Breaths only fire while startup audio is actually playing.
 STARTUP_PRELOAD_AUDIO_QOS_ENABLED = _env_bool("STARTUP_PRELOAD_AUDIO_QOS_ENABLED", True)
 STARTUP_PRELOAD_BREATH_SECS = _env_float("STARTUP_PRELOAD_BREATH_SECS", 0.25, min_value=0.0, max_value=2.0)
+# Max wait for boot speech to finish before the HEAVIEST preload (RF-DETR torch
+# warmup, ~4s of sustained GIL/Metal bursts) is allowed to run — its burst under
+# the tail of the filler line was the recurring end-of-clip stutter. The load
+# then overlaps the startup-animation join, so boot time is typically unchanged.
+STARTUP_HEAVY_PRELOAD_DRAIN_MAX_SECS = _env_float(
+    "STARTUP_HEAVY_PRELOAD_DRAIN_MAX_SECS", 12.0, min_value=0.0, max_value=60.0
+)
 STARTUP_PRELOAD_GIL_SWITCH_INTERVAL = _env_float(
     "STARTUP_PRELOAD_GIL_SWITCH_INTERVAL", 0.002, min_value=0.0005, max_value=0.05
 )
