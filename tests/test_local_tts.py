@@ -354,7 +354,9 @@ class SpeakLocalPlaybackTest(unittest.TestCase):
             play.assert_not_called()
 
     def test_impersonation_take_not_cached(self):
-        with mock.patch.object(local_tts, "generate_stream", _fake_gen_factory()):
+        # A cloned voice runs the sentence pipeline, not the chunk stream.
+        with mock.patch.object(local_tts, "_synthesize_unit",
+                               return_value=np.full(3600, 0.1, dtype=np.float32)):
             handled = tts._speak_local("i am carter", IMPERSONATION_REF, "neutral", log_text=False)
         self.assertTrue(handled)
         imp_wav = tts._cache_path(

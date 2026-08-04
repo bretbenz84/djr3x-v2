@@ -33,6 +33,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import queue
 import re
 import threading
 import time
@@ -267,65 +268,76 @@ def _split_line(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def _segment_chunks(
+    model, seg: str, voice_ref: VoiceRef, interval: float
+) -> Iterator[np.ndarray]:
+    """Yield the streamed audio chunks for ONE segment. Caller must already hold
+    ``_generate_lock``.
+
+    Locking discipline (this is what prevents the fatal MLX GIL crash observed
+    live 2026-07-19): the process-wide MLX_LOCK is held around EACH compute step
+    (one streamed chunk, ~0.3 s) — and released between chunks, where the caller
+    is busy writing audio to the device — so an mlx_whisper transcription on
+    another thread interleaves between chunks instead of colliding with a
+    concurrent MLX evaluation (native crash) or stalling for a whole utterance.
+    """
+    from utils.mlx_lock import MLX_LOCK
+
+    with MLX_LOCK:   # generator construction may already run MLX setup
+        gen = model.generate(
+            text=seg,
+            ref_audio=voice_ref.wav_path,
+            ref_text=voice_ref.ref_text,
+            stream=True,
+            streaming_interval=interval,
+        )
+    try:
+        while True:
+            with MLX_LOCK:   # one compute step per acquisition
+                try:
+                    result = next(gen)
+                except StopIteration:
+                    break
+                # The numpy conversion EVALUATES the lazy mx.array — that's MLX
+                # compute; keep it under the lock.
+                chunk = np.ascontiguousarray(
+                    np.asarray(result.audio, dtype=np.float32).reshape(-1)
+                )
+            if chunk.size:
+                yield chunk
+    finally:
+        # Close under the lock too — teardown of a half-consumed MLX generator
+        # (barge-in mid-line) is also MLX work. Then DRAIN all pending Metal work
+        # (mx.synchronize) before releasing: the second dev-mac crash
+        # (2026-07-19) fired right AFTER a generation finished, from a Metal-side
+        # thread with no Python thread state — async work must not outlive the
+        # generation.
+        with MLX_LOCK:
+            try:
+                gen.close()
+            except Exception:
+                pass
+            try:
+                import mlx.core as mx
+                mx.synchronize()
+            except Exception:
+                pass
+
+
 def generate_stream(text: str, voice_ref: VoiceRef) -> Iterator[np.ndarray]:
     """Yield float32 mono audio chunks at ``sample_rate()`` Hz for ``text`` in
     the reference voice. Segments a long line and streams each segment.
 
-    Locking discipline (this is what prevents the fatal MLX GIL crash observed
-    live 2026-07-19): _generate_lock serializes synthesis-vs-synthesis for the
-    whole iteration; the process-wide MLX_LOCK is additionally held around EACH
-    compute step (one streamed chunk, ~0.3 s) — and released between chunks,
-    where the caller is busy writing audio to the device — so an mlx_whisper
-    transcription on another thread interleaves between chunks instead of
-    colliding with a concurrent MLX evaluation (native crash) or stalling for a
-    whole utterance."""
-    from utils.mlx_lock import MLX_LOCK
-
+    ``_generate_lock`` is held for the WHOLE iteration, serializing synthesis
+    against synthesis (see _segment_chunks for the MLX_LOCK discipline inside).
+    """
     if not text or not text.strip():
         return
     model = _ensure_model()
     interval = float(getattr(config, "LOCAL_TTS_STREAMING_INTERVAL", 0.32))
     with _generate_lock:
         for seg in _split_line(text):
-            with MLX_LOCK:   # generator construction may already run MLX setup
-                gen = model.generate(
-                    text=seg,
-                    ref_audio=voice_ref.wav_path,
-                    ref_text=voice_ref.ref_text,
-                    stream=True,
-                    streaming_interval=interval,
-                )
-            try:
-                while True:
-                    with MLX_LOCK:   # one compute step per acquisition
-                        try:
-                            result = next(gen)
-                        except StopIteration:
-                            break
-                        # The numpy conversion EVALUATES the lazy mx.array —
-                        # that's MLX compute; keep it under the lock.
-                        chunk = np.ascontiguousarray(
-                            np.asarray(result.audio, dtype=np.float32).reshape(-1)
-                        )
-                    if chunk.size:
-                        yield chunk
-            finally:
-                # Close under the lock too — teardown of a half-consumed MLX
-                # generator (barge-in mid-line) is also MLX work. Then DRAIN all
-                # pending Metal work (mx.synchronize) before releasing: the
-                # second dev-mac crash (2026-07-19) fired right AFTER a
-                # generation finished, from a Metal-side thread with no Python
-                # thread state — async work must not outlive the generation.
-                with MLX_LOCK:
-                    try:
-                        gen.close()
-                    except Exception:
-                        pass
-                    try:
-                        import mlx.core as mx
-                        mx.synchronize()
-                    except Exception:
-                        pass
+            yield from _segment_chunks(model, seg, voice_ref, interval)
 
 
 def synthesize(text: str, voice_ref: VoiceRef) -> tuple[Optional[np.ndarray], int]:
@@ -338,51 +350,209 @@ def synthesize(text: str, voice_ref: VoiceRef) -> tuple[Optional[np.ndarray], in
     return np.concatenate(chunks), sr
 
 
-# ── Prewarmed takes (impersonation stutter fix, 2026-08-01) ──────────────────
-# A cloned-voice parody line is the LONGEST text the local engine ever gets, and
-# streamed playback stuttered whenever generation ran slower than real-time
-# (0.25s preroll was no match for a 12s line). The impersonation flow now
-# synthesizes the WHOLE take in a background thread (covered by Rex's intro line
-# + the thinking-sfx loop) and playback pops the finished array — no streaming,
-# no possible underrun. One-shot storage: popped on first use, never cached.
+# ── Pipelined takes (cloned-voice playback) ──────────────────────────────────
+# A cloned parody line is the LONGEST text the local engine ever gets, and
+# chunk-level streaming stuttered whenever generation ran slower than real time
+# (field 2026-08-01: 0.25 s of preroll is no match for a 12 s line). Rendering
+# the WHOLE take first killed the stutter but paid for it in dead time — the
+# room waited on every sentence before hearing any of them.
+#
+# A Take splits the line into SENTENCES and pipelines them: sentence 1 starts
+# playing the moment it exists while sentence 2 is already rendering behind it,
+# so the wait is one sentence of synthesis instead of the whole take, and each
+# unit is fully buffered before it plays (no underrun inside a sentence).
+#
+# Takes are never cached. A Take is a live one-shot object — the player pops it
+# and closes it when playback ends, so the same request always renders fresh
+# audio. (config.LOCAL_TTS_CACHE_ENABLED only ever covered Rex's OWN voice.)
 
-_prewarmed: "dict[tuple[str, str], tuple[np.ndarray, int]]" = {}
-_prewarm_lock = threading.Lock()
+
+def _split_take(text: str) -> list[str]:
+    """Split a take into sentence units for the pipeline. Units shorter than
+    LOCAL_TTS_TAKE_MIN_CHARS are merged into the sentence that FOLLOWS them —
+    a two-word fragment ("Six!") is not worth its own generation, and the model
+    reads a bare exclamation better with its follow-on attached."""
+    text = " ".join((text or "").split())
+    if not text:
+        return []
+    floor = int(getattr(config, "LOCAL_TTS_TAKE_MIN_CHARS", 24))
+    parts = [p.strip() for p in re.split(r"(?<=[.!?…—])\s+", text) if p.strip()]
+    units: list[str] = []
+    for part in parts:
+        if units and len(units[-1]) < floor:
+            units[-1] = f"{units[-1]} {part}"
+        else:
+            units.append(part)
+    return units or [text]
 
 
-def _prewarm_key(text: str, voice_ref: VoiceRef) -> "tuple[str, str]":
-    return ((text or "").strip(), getattr(voice_ref, "label", "") or "")
+def _synthesize_unit(text: str, voice_ref: VoiceRef) -> Optional[np.ndarray]:
+    """Render ONE pipeline unit to a contiguous array. Acquires _generate_lock
+    for this unit only — never for the whole take — so a take in flight can't
+    lock another speaker out for its full duration."""
+    model = _ensure_model()
+    interval = float(getattr(config, "LOCAL_TTS_STREAMING_INTERVAL", 0.32))
+    with _generate_lock:
+        chunks = list(_segment_chunks(model, text, voice_ref, interval))
+    if not chunks:
+        return None
+    return np.concatenate(chunks)
 
 
-def prewarm_take(text: str, voice_ref: VoiceRef) -> threading.Event:
-    """Kick a full background synthesis of (text, voice). Returns an Event set
-    when the take is ready (or failed — check pop_prewarmed for the result).
-    NOTE: shares _generate_lock with live synthesis, so in --local-tts mode
-    start it only when nothing else needs the engine (the impersonation flow
-    orders around this)."""
-    done = threading.Event()
+class Take:
+    """A sentence-pipelined clone take, rendering on a background thread.
 
-    def _run() -> None:
+    ``first_ready`` fires once the first unit is playable (or the take has given
+    up entirely — check ``failed``). ``stream()`` yields the finished units in
+    order, padding with short silences while the next one renders so the
+    caller's output stream never underruns at a seam.
+    """
+
+    def __init__(self, text: str, voice_ref: VoiceRef, *, lookahead: int = 1):
+        self.text = " ".join((text or "").split())
+        self.voice_ref = voice_ref
+        self.first_ready = threading.Event()
+        self._units = _split_take(self.text)
+        self._queue: "queue.Queue" = queue.Queue(maxsize=max(1, int(lookahead)))
+        self._stop = threading.Event()
+        self._done = threading.Event()
+        self._failed = False
+        self._started_at = time.monotonic()
+        self._thread = threading.Thread(
+            target=self._produce, daemon=True, name="local-tts-take"
+        )
+        self._thread.start()
+
+    @property
+    def failed(self) -> bool:
+        """True when the take produced nothing at all (only meaningful once
+        first_ready is set — which the producer also sets on giving up)."""
+        return self._failed
+
+    def _produce(self) -> None:
+        rendered = 0
         try:
-            audio, sr = synthesize(text, voice_ref)
-            if audio is not None and len(audio):
-                with _prewarm_lock:
-                    _prewarmed[_prewarm_key(text, voice_ref)] = (audio, sr)
-                logger.info("[local_tts] prewarmed take ready (%.1fs audio, voice=%s)",
-                          len(audio) / float(sr), getattr(voice_ref, "label", "?"))
-            else:
-                logger.warning("[local_tts] prewarm produced no audio (voice=%s)",
-                             getattr(voice_ref, "label", "?"))
-        except Exception as exc:
-            logger.warning("[local_tts] prewarm failed: %s", exc)
+            for unit in self._units:
+                if self._stop.is_set():
+                    break
+                try:
+                    audio = _synthesize_unit(unit, self.voice_ref)
+                except Exception as exc:
+                    logger.warning("[local_tts] take unit failed: %s", exc)
+                    audio = None
+                if audio is None or not len(audio):
+                    continue
+                rendered += 1
+                if rendered == 1:
+                    logger.info(
+                        "[local_tts] take unit 1/%d ready in %.1fs (voice=%s)",
+                        len(self._units), time.monotonic() - self._started_at,
+                        getattr(self.voice_ref, "label", "?"),
+                    )
+                # Bounded queue = the lookahead. Poll rather than block forever
+                # so close() during playback tears the producer down promptly,
+                # and give up entirely if nobody is draining — a take whose line
+                # was dropped before playback (shutdown, a busy output gate)
+                # must not leave a thread spinning for the rest of the session.
+                abandon_at = time.monotonic() + float(
+                    getattr(config, "LOCAL_TTS_TAKE_ABANDON_SECS", 120.0)
+                )
+                while not self._stop.is_set():
+                    try:
+                        self._queue.put(audio, timeout=0.25)
+                        break
+                    except queue.Full:
+                        if time.monotonic() >= abandon_at:
+                            logger.warning(
+                                "[local_tts] take abandoned — nothing consumed it (voice=%s)",
+                                getattr(self.voice_ref, "label", "?"),
+                            )
+                            self._stop.set()
+                        continue
+                self.first_ready.set()
         finally:
-            done.set()
+            self._failed = rendered == 0
+            if self._failed:
+                logger.warning("[local_tts] take produced no audio (voice=%s)",
+                               getattr(self.voice_ref, "label", "?"))
+            self._done.set()
+            self.first_ready.set()
 
-    threading.Thread(target=_run, daemon=True, name="local-tts-prewarm").start()
-    return done
+    def stream(self) -> Iterator[np.ndarray]:
+        """Yield each finished unit in order. While the producer is still
+        working on the next one, yield short silences instead: the caller writes
+        them straight to the device, so a slow sentence costs a clean gap rather
+        than an underrun. Nothing is emitted before the FIRST real unit — the
+        caller's preroll must fill with audio, not silence."""
+        fill_ms = float(getattr(config, "LOCAL_TTS_TAKE_FILL_MS", 120.0))
+        fill_ms = max(20.0, fill_ms)
+        fill = np.zeros(int(sample_rate() * fill_ms / 1000.0), dtype=np.float32)
+        played_any = False
+        try:
+            while True:
+                try:
+                    item = self._queue.get(timeout=fill_ms / 1000.0)
+                except queue.Empty:
+                    if self._done.is_set() and self._queue.empty():
+                        break
+                    if played_any:
+                        yield fill
+                    continue
+                played_any = True
+                yield item
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        """Stop rendering and release the producer. Idempotent."""
+        self._stop.set()
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
 
 
-def pop_prewarmed(text: str, voice_ref: VoiceRef) -> "tuple[np.ndarray, int] | None":
-    """One-shot retrieval of a prewarmed take, or None."""
-    with _prewarm_lock:
-        return _prewarmed.pop(_prewarm_key(text, voice_ref), None)
+# One-shot parking slot. The impersonation flow starts a take behind Rex's intro
+# line and the player picks it up by (text, voice); anything left unclaimed is
+# closed rather than kept, so a stale take can never be played back later.
+_pending_takes: "dict[tuple[str, str], Take]" = {}
+_take_lock = threading.Lock()
+
+
+def _take_key(text: str, voice_ref: VoiceRef) -> "tuple[str, str]":
+    return (" ".join((text or "").split()), getattr(voice_ref, "label", "") or "")
+
+
+def start_take(text: str, voice_ref: VoiceRef, *, lookahead: int = 1) -> Take:
+    """Begin rendering a take NOW and park it for the player to claim.
+
+    Only one take is ever parked — starting a new one closes whatever was left
+    behind (an abandoned bit, a barge-in). NOTE: units share _generate_lock with
+    live synthesis, so in --local-tts mode start this only when nothing else
+    needs the engine (features/impersonation.py orders around that).
+    """
+    take = Take(text, voice_ref, lookahead=lookahead)
+    with _take_lock:
+        stale = list(_pending_takes.values())
+        _pending_takes.clear()
+        _pending_takes[_take_key(text, voice_ref)] = take
+    for old in stale:
+        old.close()
+    return take
+
+
+def pop_take(text: str, voice_ref: VoiceRef) -> Optional[Take]:
+    """One-shot claim of a parked take, or None. Never returns the same take
+    twice — a repeated line is rendered fresh."""
+    with _take_lock:
+        return _pending_takes.pop(_take_key(text, voice_ref), None)
+
+
+def discard_takes() -> None:
+    """Close and drop every parked take (abandoned bit, shutdown)."""
+    with _take_lock:
+        takes = list(_pending_takes.values())
+        _pending_takes.clear()
+    for take in takes:
+        take.close()

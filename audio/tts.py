@@ -80,6 +80,17 @@ def _normalize_for_speech(text: str) -> str:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def spoken_form(text: str) -> str:
+    """The exact string the local engine will synthesize for ``text`` —
+    normalized and audio-tag-free (Qwen would read [tags] aloud).
+
+    Callers that pre-start a take (features/impersonation.py) must key on THIS,
+    not on the raw text, or the player looks up a key that was never parked and
+    silently re-renders from scratch.
+    """
+    return strip_audio_tags(_normalize_for_speech(text))
+
+
 def is_speaking() -> bool:
     """Return True while audio is actively playing."""
     with _speaking_lock:
@@ -989,43 +1000,42 @@ def _speak_local(
                 )
                 return True
 
-    # Fully-buffered takes play like a cache hit — no streaming, no underrun.
-    # Two sources: a take prewarmed in the background (impersonation kicks
-    # synthesis off behind the intro line + thinking-sfx loop), or an on-the-spot
-    # full synthesis for any CLONED voice (LOCAL_TTS_CLONE_FULL_BUFFER). Cloned
-    # parody lines are the longest text the local engine gets, and streamed
-    # playback stuttered whenever generation ran slower than real time (field
-    # 2026-08-01) — 0.25s of preroll can't carry a 12s line. Rex's own voice
-    # keeps the streaming path: his lines are short and latency matters.
-    prebuffered = local_tts.pop_prewarmed(clean_text, voice_ref)
-    if (
-        prebuffered is None
-        and getattr(voice_ref, "label", "") != "rex"
-        and bool(getattr(config, "LOCAL_TTS_CLONE_FULL_BUFFER", True))
-    ):
+    # A CLONED voice plays from a sentence pipeline: sentence 1 starts playing
+    # the moment it's rendered while sentence 2 generates behind it, so the room
+    # waits one sentence of synthesis instead of the whole take — and each unit
+    # is fully buffered before it plays, so nothing stutters mid-sentence (field
+    # 2026-08-01: chunk-level streaming starved on a 12s parody line). The
+    # impersonation flow starts the take behind Rex's intro line and parks it;
+    # any other cloned line starts one here. Rex's own voice keeps the
+    # chunk-level stream — his lines are short and latency matters.
+    is_clone = getattr(voice_ref, "label", "") != "rex"
+    take = local_tts.pop_take(clean_text, voice_ref) if is_clone else None
+    if take is None and is_clone and bool(getattr(config, "LOCAL_TTS_TAKE_PIPELINE", True)):
+        take = local_tts.Take(clean_text, voice_ref)
+
+    # Kill switch: pipeline off → render the clone whole and play it like a
+    # cache hit (the pre-pipeline behavior).
+    if take is None and is_clone and bool(getattr(config, "LOCAL_TTS_CLONE_FULL_BUFFER", True)):
         try:
             full_audio, full_sr = local_tts.synthesize(clean_text, voice_ref)
         except Exception as exc:
             logger.warning("[tts] clone full-buffer synthesis failed (%s) — streaming", exc)
             full_audio, full_sr = None, sr
         if full_audio is not None and len(full_audio):
-            prebuffered = (full_audio, full_sr)
-    if prebuffered is not None:
-        pre_audio, pre_sr = prebuffered
-        logger.info("[tts] local buffered take: %.1fs audio (voice=%s)",
-                    len(pre_audio) / float(pre_sr), getattr(voice_ref, "label", "?"))
-        if log_text:
-            try:
-                conv_log.log_rex(clean_text)
-            except Exception as exc:
-                logger.debug("[tts] conversation log write failed: %s", exc)
-        _play(
-            pre_audio, pre_sr, emotion,
-            on_playback_start=on_playback_start,
-            post_playback_tail_secs=post_playback_tail_secs,
-            flush_on_playback_stop=flush_on_playback_stop,
-        )
-        return True
+            logger.info("[tts] local buffered take: %.1fs audio (voice=%s)",
+                        len(full_audio) / float(full_sr), getattr(voice_ref, "label", "?"))
+            if log_text:
+                try:
+                    conv_log.log_rex(clean_text)
+                except Exception as exc:
+                    logger.debug("[tts] conversation log write failed: %s", exc)
+            _play(
+                full_audio, full_sr, emotion,
+                on_playback_start=on_playback_start,
+                post_playback_tail_secs=post_playback_tail_secs,
+                flush_on_playback_stop=flush_on_playback_stop,
+            )
+            return True
 
     front_pad = np.zeros(
         int(sr * float(getattr(config, "LOCAL_TTS_FRONT_PAD_MS", 150)) / 1000.0),
@@ -1038,7 +1048,9 @@ def _speak_local(
     # The generator holds local_tts._generate_lock for its whole lifetime, so it
     # MUST be closed on every exit path (including barge-in mid-stream) or the next
     # synthesis deadlocks. gen.close() raises GeneratorExit inside it, releasing it.
-    gen = local_tts.generate_stream(clean_text, voice_ref)
+    # (A take's stream() closes the take instead — same contract, and it stops the
+    # background renderer so an interrupted bit doesn't keep synthesizing.)
+    gen = take.stream() if take is not None else local_tts.generate_stream(clean_text, voice_ref)
     try:
         # Prime the pre-roll cushion (or drain fully if the line is short) so the
         # output stream never underruns waiting on the first model chunk.

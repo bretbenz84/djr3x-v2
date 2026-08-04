@@ -25,6 +25,19 @@ def _write_ref(dir_path: Path, stem: str):
     (dir_path / f"{stem}.txt").write_text("a reference transcript", encoding="utf-8")
 
 
+class _ReadyTake:
+    """Stand-in for local_tts.Take whose first sentence is already rendered."""
+
+    def __init__(self):
+        self.first_ready = threading.Event()
+        self.first_ready.set()
+        self.failed = False
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class PureHelpersTest(unittest.TestCase):
     def test_slugify(self):
         self.assertEqual(impersonation.slugify("Jimmy Carter"), "jimmy-carter")
@@ -208,7 +221,7 @@ class ScriptPromptTest(unittest.TestCase):
 
     def test_build_parody_stranger_mode_not_famous(self):
         seen = {}
-        def fake_prompt(name, material, do_not, *, is_self, famous, stranger=False):
+        def fake_prompt(name, material, do_not, *, is_self, famous, stranger=False, avoid=None):
             seen.update(famous=famous, stranger=stranger)
             return "p"
         with mock.patch.object(impersonation, "_script_prompt", side_effect=fake_prompt), \
@@ -234,11 +247,10 @@ class PerformThreadingTest(unittest.TestCase):
             calls.append({"text": text, "voice_ref": kw.get("voice_ref"), "log_text": kw.get("log_text")})
             return _Done()
 
-        done = threading.Event()
-        done.set()   # prewarm "already finished" — unit tests must never touch the real model
+        # Take "already rendered" — unit tests must never touch the real model.
         with mock.patch("audio.speech_queue.enqueue", side_effect=fake_enqueue), \
              mock.patch.object(impersonation, "build_parody_script", return_value="I am Bret and I am always late."), \
-             mock.patch.object(impersonation.local_tts, "prewarm_take", return_value=done), \
+             mock.patch.object(impersonation.local_tts, "start_take", return_value=_ReadyTake()), \
              mock.patch("memory.episodes.record_episode") as rec, \
              mock.patch.object(config, "IMPERSONATION_OUTRO_ENABLED", True):
             result = impersonation.perform(ref, "Bret", 3, is_self=False)
@@ -259,10 +271,9 @@ class PerformThreadingTest(unittest.TestCase):
             def wait(self, timeout=None):
                 return True
 
-        done2 = threading.Event(); done2.set()
         with mock.patch("audio.speech_queue.enqueue", return_value=_Done()) as enq, \
              mock.patch.object(impersonation, "build_parody_script", return_value=None), \
-             mock.patch.object(impersonation.local_tts, "prewarm_take", return_value=done2), \
+             mock.patch.object(impersonation.local_tts, "start_take", return_value=_ReadyTake()), \
              mock.patch("memory.episodes.record_episode") as rec:
             result = impersonation.perform(ref, "Bret", 3)
 

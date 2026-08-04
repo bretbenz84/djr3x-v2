@@ -355,9 +355,48 @@ def _gather_material(person_id: int) -> tuple[list[str], list[str]]:
     return material, do_not
 
 
+def _recent_scripts(subject_name: str, person_id: Optional[int], limit: int = 4) -> list[str]:
+    """The last few parodies Rex did of THIS subject, newest first.
+
+    Asked twice in a row, the model happily returns the same joke off the same
+    memory material — which reads as a cached bit even though it was generated
+    fresh. Feeding the previous takes back as a do-not-repeat list is what makes
+    a second "do me again" actually new.
+    """
+    want = str(subject_name or "").strip().lower()
+    out: list[str] = []
+    try:
+        from memory import episodes
+        rows = episodes.recent_episodes(limit=25, kind="impersonation")
+    except Exception as exc:
+        logger.debug("[impersonation] recent script lookup failed: %s", exc)
+        return out
+    for row in rows or []:
+        try:
+            if person_id is not None:
+                if row["person_id"] != person_id:
+                    continue
+            detail = row["detail"]
+            if not detail:
+                continue
+            payload = json.loads(detail)
+            if person_id is None:
+                if str(payload.get("subject") or "").strip().lower() != want:
+                    continue
+            prior = " ".join(str(payload.get("script") or "").split())
+        except Exception:
+            continue
+        if prior and prior not in out:
+            out.append(prior)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _script_prompt(
     name: str, material: list[str], do_not: list[str], *,
     is_self: bool, famous: bool, stranger: bool = False,
+    avoid: Optional[list[str]] = None,
 ) -> str:
     who = "yourself" if is_self else name
     parts = [
@@ -388,6 +427,11 @@ def _script_prompt(
             "NEVER reference, hint at, or joke about any of the following — these are hard "
             "boundaries, not material:\n- " + "\n- ".join(do_not[:12])
         )
+    if avoid:
+        parts.append(
+            "You have already done this impression before. Write a DIFFERENT bit — new angle, "
+            "new detail, new punchline. Do not reuse these:\n- " + "\n- ".join(avoid[:4])
+        )
     return "\n\n".join(parts)
 
 
@@ -404,6 +448,7 @@ def build_parody_script(
     prompt = _script_prompt(
         subject_name, material, do_not, is_self=is_self,
         famous=(person_id is None and not stranger), stranger=stranger,
+        avoid=_recent_scripts(subject_name, person_id),
     )
     try:
         from intelligence import llm
@@ -472,24 +517,35 @@ def perform(
         except Exception as exc:
             logger.debug("[impersonation] enqueue failed: %s", exc)
 
-    # 1. Script FIRST, so the full take can synthesize in the background while
-    #    Rex's intro line plays. Streamed clone synthesis stuttered live
-    #    (2026-08-01): generation ran slower than real time on the longest text
-    #    the local engine ever gets. Now the WHOLE take is prewarmed and played
-    #    from a buffer; any leftover wait is covered by the thinking-sfx loop
-    #    (owner's suggestion — same effect as the startup loading loop).
+    # 1. Script FIRST, so the take can start rendering in the background while
+    #    Rex's intro line plays. The take is SENTENCE-PIPELINED (see
+    #    local_tts.Take): sentence 1 plays as soon as it exists while sentence 2
+    #    renders behind it, so the room waits on one sentence, not the whole bit.
+    #    Nothing here is cached — every request re-generates the script AND
+    #    re-synthesizes the audio.
     script = build_parody_script(subject_name, person_id, is_self=is_self, stranger=stranger)
 
-    prewarm_done = None
+    # The player keys the parked take on the text it will actually synthesize.
+    speech_text = script or ""
     if script:
+        try:
+            from audio import tts as tts_module
+            speech_text = tts_module.spoken_form(script) or script
+        except Exception as exc:
+            logger.debug("[impersonation] spoken_form failed: %s", exc)
+            speech_text = script
+
+    take = None
+    if speech_text:
         # In --local-tts mode the INTRO also needs the engine, and synthesis is
-        # serialized — prewarming first would block the intro. Order around it.
-        prewarm_before_intro = not bool(getattr(config, "LOCAL_TTS_MODE", False))
-        if prewarm_before_intro:
+        # serialized — starting the take first would block the intro. Order
+        # around it.
+        start_before_intro = not bool(getattr(config, "LOCAL_TTS_MODE", False))
+        if start_before_intro:
             try:
-                prewarm_done = local_tts.prewarm_take(script, ref)
+                take = local_tts.start_take(speech_text, ref)
             except Exception as exc:
-                logger.debug("[impersonation] prewarm launch failed: %s", exc)
+                logger.debug("[impersonation] take launch failed: %s", exc)
 
     # 2. Stall/setup line in Rex's own voice (covers model load + synthesis).
     _say(intro_line(), "excited", log_text=True)
@@ -499,30 +555,54 @@ def perform(
         _say(cover, "sheepish", log_text=False)
         return cover
 
-    if prewarm_done is None:
+    if take is None:
         try:
-            prewarm_done = local_tts.prewarm_take(script, ref)
+            take = local_tts.start_take(speech_text, ref)
         except Exception as exc:
-            logger.debug("[impersonation] prewarm launch failed: %s", exc)
+            logger.debug("[impersonation] take launch failed: %s", exc)
 
-    # 3. Synthesis still running when the intro ends → loop the processing chirp
-    #    (never dead air, never a stuttering take).
-    if prewarm_done is not None and not prewarm_done.is_set():
+    # 3. First sentence still rendering when the intro ends → loop the
+    #    processing chirp (never dead air). Only the FIRST unit is waited on;
+    #    the rest render while the bit is already playing.
+    if take is not None and not take.first_ready.is_set():
         loop_handle = None
         try:
             from audio import sound_effects
             loop_handle = sound_effects.start_loop("thinking")
         except Exception as exc:
             logger.debug("[impersonation] thinking loop failed: %s", exc)
-        prewarm_done.wait(timeout=float(getattr(config, "IMPERSONATION_PREWARM_TIMEOUT_SECS", 90.0)))
+        take.first_ready.wait(
+            timeout=float(getattr(config, "IMPERSONATION_FIRST_UNIT_TIMEOUT_SECS", 45.0))
+        )
         try:
             from audio import sound_effects
             sound_effects.stop_loop(loop_handle)
         except Exception:
             pass
 
-    # 4. The parody in the cloned voice — plays the prewarmed buffer.
-    _say(script, "excited", voice_ref=ref, log_text=False)
+    def _release_take() -> None:
+        """Unpark and stop the take. Harmless once the player has claimed it;
+        essential when the line never reached playback (shutdown, busy output
+        gate), where an unclaimed renderer would otherwise keep running."""
+        if take is None:
+            return
+        try:
+            local_tts.pop_take(speech_text, ref)
+            take.close()
+        except Exception as exc:
+            logger.debug("[impersonation] take release failed: %s", exc)
+
+    if take is not None and take.failed:
+        _release_take()
+        cover = "...huh. My impression module just blew a fuse. We'll try that again later."
+        _say(cover, "sheepish", log_text=False)
+        return cover
+
+    # 4. The parody in the cloned voice — streams the pipelined take.
+    try:
+        _say(speech_text, "excited", voice_ref=ref, log_text=False)
+    finally:
+        _release_take()
 
     # 3. Optional Rex-voice button.
     outro = outro_line()
