@@ -10,10 +10,17 @@ Rebuild with:
 venv/bin/python tools/build_presidential_refs.py
 ```
 
-The clips are gitignored (`.gitignore:247`, `assets/voices/*` minus `rex/`), so
-the build script — not the audio — is the tracked artifact. Sources are cached
-under `assets/voices/_src_presidents/` (also gitignored); `--no-fetch` rebuilds
-from that cache without re-downloading.
+The finished clips **are** tracked (~13 MB), so a fresh checkout gets working
+impressions with no download step. The build script is tracked alongside them so
+the set can be regenerated or extended. The ~260 MB of source recordings is not
+tracked — it caches under `assets/voices/_src_presidents/`, and `--no-fetch`
+rebuilds from it without re-downloading.
+
+**This repo is public.** These fourteen are public-domain archive audio of dead
+presidents, which is why they are safe to ship. `assets/voices/people/` is
+permanently gitignored and must stay that way: those are live captures of real
+people, and a ~20 second clip is all this project needs to clone a voice, so
+publishing one hands anyone the ability to impersonate that person.
 
 ## Scope: deceased presidents only
 

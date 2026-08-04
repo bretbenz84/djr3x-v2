@@ -238,14 +238,24 @@ assets/models/pose/*
 assets/audio/tts_cache/
 
 # Voice reference clips for the local Qwen3-TTS clone + impersonation feature.
-# Person clips (people/) are personal/biometric-ish data and famous-person clips
-# (famous/) are user-supplied — neither belongs in git. Rex's OWN reference
-# (rex/) IS tracked: --local-tts is dead without it on a fresh checkout (the
-# dev-mac silently fell back to ElevenLabs when it was missing, 2026-07-19), and
-# the repo already ships Star Tours audio (assets/audio/startup/*.mp3), so the
-# licensing posture is unchanged. Dirs are recreated by setup_assets.py.
+# Rex's OWN reference (rex/) IS tracked: --local-tts is dead without it on a
+# fresh checkout (the dev-mac silently fell back to ElevenLabs when it was
+# missing, 2026-07-19), and the repo already ships Star Tours audio
+# (assets/audio/startup/*.mp3), so the licensing posture is unchanged.
+#
+# famous/ IS tracked too — the presidential set is public-domain archive audio
+# of dead presidents (see docs/presidential_voice_refs.md), so a fresh checkout
+# gets working impressions without a 260 MB re-download. Anything added here is
+# published: THIS REPO IS PUBLIC. Only drop in clips you are willing to publish.
+#
+# people/ is NEVER tracked. Those are live captures of real people — the user,
+# family, guests — and a ~20 s clip is all this project needs to clone a voice.
+# Publishing one hands anyone the ability to impersonate that person. The
+# _src_presidents/ download cache stays out too (~260 MB, rebuildable).
+# Dirs are recreated by setup_assets.py.
 assets/voices/*
 !assets/voices/rex/
+!assets/voices/famous/
 
 # Local music files — user-supplied, not part of the project
 assets/music/
