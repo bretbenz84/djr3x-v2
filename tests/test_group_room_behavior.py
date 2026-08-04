@@ -95,26 +95,40 @@ class SplicedEchoCoverageTest(unittest.TestCase):
 
 
 class AnimalSpeciesCooldownTest(unittest.TestCase):
-    def test_same_species_new_position_stays_quiet_in_window(self):
+    def test_same_species_new_position_stays_quiet_while_present(self):
+        """The protected behavior from the flat species cooldown, re-expressed in
+        the presence-ledger model: a dog roaming the room (new positions, brief
+        out-of-frame flicker) is ONE animal already remarked on — no re-announce.
+        A REAL departure past the grace window followed by a return is the one
+        thing that speaks again (as a return joke, not a re-announcement)."""
         from intelligence import consciousness as C
-        saved = dict(C._animal_species_reacted_at)
-        C._animal_species_reacted_at.clear()
+        saved_presence = dict(C._animal_presence)
+        C._animal_presence.clear()
         C._pending_animal_arrivals.clear()
         try:
-            C._animal_species_reacted_at["dog"] = time.monotonic()
+            now = time.monotonic()
+            # Dog already present + announced this run.
+            C._animal_presence["dog"] = {
+                "present": True, "first_seen_at": now - 60, "last_seen_at": now,
+                "departed_at": None, "return_count": 0,
+                "remarks_spoken": 1, "last_remark_at": now - 60,
+            }
             snapshot = {"animals": [{"species": "dog", "position": "left"}]}
             with mock.patch.object(C, "_last_snapshot", {"animals": []}):
                 C._stage_animal_arrivals(snapshot)
             self.assertEqual(C._pending_animal_arrivals, {})
-            # Window expired → the dog is announceable again.
-            C._animal_species_reacted_at["dog"] = time.monotonic() - 9999
+            # Real departure (past grace) then a sighting → the return bit fires.
+            C._animal_presence["dog"]["present"] = False
+            C._animal_presence["dog"]["departed_at"] = now - 300
+            C._animal_presence["dog"]["last_remark_at"] = now - 300
             with mock.patch.object(C, "_last_snapshot", {"animals": []}):
                 C._stage_animal_arrivals(snapshot)
             self.assertEqual(len(C._pending_animal_arrivals), 1)
+            self.assertEqual(C._pending_animal_arrivals["dog"]["kind"], "return")
         finally:
             C._pending_animal_arrivals.clear()
-            C._animal_species_reacted_at.clear()
-            C._animal_species_reacted_at.update(saved)
+            C._animal_presence.clear()
+            C._animal_presence.update(saved_presence)
 
 
 if __name__ == "__main__":

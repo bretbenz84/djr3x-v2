@@ -2137,8 +2137,9 @@ PET_NAMES = ("Max",)
 # awaited answer, query shapes, second-person ask) and otherwise listens.
 # The lean impulse still interjects on its governed cadence.
 GROUP_CHATTER_KNOWN_SPEAKER_GATE_ENABLED = _env_bool("GROUP_CHATTER_KNOWN_SPEAKER_GATE_ENABLED", True)
-# One species-level animal announce per window — the per-signature cooldown
-# keys on species:position, so a dog roaming the room re-announced itself.
+# RETIRED (2026-08-03): the flat species-level announce window was replaced by the
+# presence ledger (ANIMAL_DEPARTURE_GRACE_SECS and friends, further down) — kept
+# only so an env override doesn't crash an old deployment script; nothing reads it.
 ANIMAL_SPECIES_REMARK_COOLDOWN_SECS = _env_float("ANIMAL_SPECIES_REMARK_COOLDOWN_SECS", 300.0, min_value=0.0, max_value=86400.0)
 
 # Whole-utterance homophone fixes — applied ONLY when the phrase IS the entire
@@ -5523,8 +5524,15 @@ ROOM_CHANGE_REMARK_LINES = [
 # Animal detection runs alongside periodic scene scans. OpenAI animal detection
 # remains available for explicit scene queries and as an optional fallback.
 ANIMAL_DETECTION_ENABLED = True
-ANIMAL_ARRIVAL_COOLDOWN_SECS = 300
 ANIMAL_PENDING_REACTION_TTL_SECS = 90
+
+# Animal presence bit (owner 2026-08-03): first sighting reacts; a REAL departure
+# then a return earns an escalating return joke ("womp rat energy" → "doing laps"
+# → "get it a badge"); pacing keeps it from becoming a doorbell.
+ANIMAL_DEPARTURE_GRACE_SECS = 30.0        # out-of-frame shorter than this is flicker, not leaving
+ANIMAL_RETURN_REMARK_MIN_GAP_SECS = 120.0 # min gap between SPOKEN remarks per species
+ANIMAL_REMARK_SESSION_CAP = 4             # max spoken animal remarks per species per run
+ANIMAL_FRESH_ARRIVAL_AFTER_SECS = 1800.0  # absence this long resets the bit to a fresh arrival
 FURRY_COMPANION_ANIMAL_SPECIES = {
     "dog",
     "puppy",

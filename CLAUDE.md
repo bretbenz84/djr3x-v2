@@ -25,8 +25,11 @@ here and has burned hours repeatedly:
 These fail on a clean checkout of main, per-module, and are NOT caused by your
 change (tracked as their own fix-up task):
 
-- `tests/test_audio_and_conversation_gating.py` — 3 failures
-  (furry-animal surprise frame, direct-shutdown LED clip, +1)
+- `tests/test_audio_and_conversation_gating.py` — 2 failures
+  (`test_direct_shutdown_clip_leaves_leds_off`,
+  `test_existing_common_name_prompt_logs_human_turn_before_returning`; the
+  furry-animal surprise-frame failure was fixed 2026-08-03 by the animal
+  presence-ledger rework — the old species cooldown was leaking between tests)
 - `tests/test_body_mood.py` — `test_visor_released_to_lens_clear_floor_when_mood_ends`
 - `tests/test_holiday_plan_cue.py` — `test_spoken_lean_holiday_cue_marks_only_that_person`
 

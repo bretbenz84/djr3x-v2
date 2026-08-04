@@ -9214,6 +9214,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         old_animals = set(consciousness._animal_seen_signatures)
         old_reacted = dict(consciousness._animal_reacted_at)
         old_pending_animals = dict(consciousness._pending_animal_arrivals)
+        old_presence = dict(consciousness._animal_presence)
         old_self_state = world_state.get("self_state")
         profile = SituationProfile(
             conversation_active=False,
@@ -9250,6 +9251,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             consciousness._last_snapshot = prev
             consciousness._animal_seen_signatures.clear()
             consciousness._animal_reacted_at.clear()
+            consciousness._animal_presence.clear()
             with (
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
@@ -9265,6 +9267,8 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             consciousness._animal_reacted_at.update(old_reacted)
             consciousness._pending_animal_arrivals.clear()
             consciousness._pending_animal_arrivals.update(old_pending_animals)
+            consciousness._animal_presence.clear()
+            consciousness._animal_presence.update(old_presence)
             world_state.update("self_state", old_self_state)
 
         speak.assert_called_once()
@@ -9281,6 +9285,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         old_animals = set(consciousness._animal_seen_signatures)
         old_reacted = dict(consciousness._animal_reacted_at)
         old_pending_animals = dict(consciousness._pending_animal_arrivals)
+        old_presence = dict(consciousness._animal_presence)
         old_self_state = world_state.get("self_state")
         profile = SituationProfile(
             conversation_active=False,
@@ -9317,6 +9322,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             consciousness._last_snapshot = prev
             consciousness._animal_seen_signatures.clear()
             consciousness._animal_reacted_at.clear()
+            consciousness._animal_presence.clear()
             consciousness._pending_animal_arrivals.clear()
             with (
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
@@ -9326,7 +9332,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 consciousness._step_proactive_reactions(curr, profile)
 
             speak.assert_not_called()
-            self.assertIn("dog:lower right", consciousness._pending_animal_arrivals)
+            self.assertIn("dog", consciousness._pending_animal_arrivals)
 
             with (
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
@@ -9343,6 +9349,8 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             consciousness._animal_reacted_at.update(old_reacted)
             consciousness._pending_animal_arrivals.clear()
             consciousness._pending_animal_arrivals.update(old_pending_animals)
+            consciousness._animal_presence.clear()
+            consciousness._animal_presence.update(old_presence)
             world_state.update("self_state", old_self_state)
 
         speak.assert_called_once()

@@ -422,6 +422,15 @@ _animal_reacted_at: dict[str, float] = {}
 # cooldown keys on species:POSITION, so every new position was a "new" animal).
 _animal_species_reacted_at: dict[str, float] = {}
 _pending_animal_arrivals: dict[str, dict] = {}
+# Species-level PRESENCE ledger — the dynamic comings-and-goings bit (owner
+# 2026-08-03: "if the animal goes away and then comes back, he should mention it
+# as a joke; repeats can trigger more — but not too annoying"). Replaces the flat
+# 5-minute cooldowns as the staging logic: first sighting reacts, a REAL departure
+# (out of frame past a grace window, so frame flicker doesn't count) followed by a
+# return earns an escalating return joke, paced by a min remark gap + session cap.
+# Per species: {present, first_seen_at, last_seen_at, departed_at, return_count,
+# remarks_spoken, last_remark_at}.
+_animal_presence: dict[str, dict] = {}
 _last_startle_sound_reaction_at: float = 0.0
 
 # Crowd-change reaction debounce. The camera crowd count flickers (a face lost for
@@ -2083,40 +2092,95 @@ def _animal_signature(animal: dict) -> str:
     return f"{species}:{position}"
 
 
+def _stage_animal_remark(species: str, animal: dict, *, kind: str,
+                         return_count: int, now: float) -> None:
+    """Queue one pending animal remark for this species (arrival or return joke)."""
+    pending = dict(animal)
+    pending["species"] = species
+    pending["signature"] = _animal_signature(animal)
+    pending["kind"] = kind
+    pending["return_count"] = return_count
+    pending["first_seen_at"] = now
+    pending["last_seen_at"] = now
+    _pending_animal_arrivals[species] = pending
+    _log.info("consciousness: staged animal %s species=%s return_count=%d",
+              kind, species, return_count)
+
+
 def _stage_animal_arrivals(snapshot: dict) -> None:
-    """Remember animal arrivals even when startup greetings temporarily own speech."""
+    """Species-level presence tracking → staged arrival/return remarks.
+
+    The old shape was one remark per species per flat 5-minute window, so the dog
+    leaving and wandering back was just silence. New shape (owner 2026-08-03): the
+    bit follows the animal's comings and goings —
+      * first sighting: the arrival reaction, unchanged;
+      * out of frame under ANIMAL_DEPARTURE_GRACE_SECS: NOT a departure (the
+        floor-level wide-angle loses the dog constantly — flicker stays silent,
+        which is what the old species cooldown was really protecting);
+      * a real departure then a sighting: a RETURN joke, escalating with
+        return_count ("womp rat energy" → "doing laps" → "get it a badge");
+      * anti-annoyance pacing: at least ANIMAL_RETURN_REMARK_MIN_GAP_SECS between
+        SPOKEN remarks per species and at most ANIMAL_REMARK_SESSION_CAP spoken
+        remarks per species per run — beyond either, returns update state silently;
+      * absence of ANIMAL_FRESH_ARRIVAL_AFTER_SECS or more resets the bit — the
+        next sighting is a fresh arrival again, not "back again" after 3 hours.
+    Staged remarks still speak via _fire_pending_animal_arrival_reaction (pending
+    survives startup greetings; TTL applies)."""
     if not _last_snapshot:
         return
-    animal_cooldown = float(getattr(config, "ANIMAL_ARRIVAL_COOLDOWN_SECS", 300.0))
-    prev_animal_signatures = {
-        _animal_signature(a)
-        for a in _last_snapshot.get("animals", [])
-        if isinstance(a, dict) and a.get("species")
-    }
     now = time.monotonic()
+    grace = float(getattr(config, "ANIMAL_DEPARTURE_GRACE_SECS", 30.0))
+    fresh_after = float(getattr(config, "ANIMAL_FRESH_ARRIVAL_AFTER_SECS", 1800.0))
+    min_gap = float(getattr(config, "ANIMAL_RETURN_REMARK_MIN_GAP_SECS", 120.0))
+    cap = int(getattr(config, "ANIMAL_REMARK_SESSION_CAP", 4))
+
+    seen: dict[str, dict] = {}
     for animal in snapshot.get("animals", []) or []:
         if not isinstance(animal, dict) or not animal.get("species"):
             continue
-        signature = _animal_signature(animal)
-        _animal_seen_signatures.add(signature)
-        if signature in _pending_animal_arrivals:
-            _pending_animal_arrivals[signature]["last_seen_at"] = now
+        species = str(animal["species"]).strip().lower()
+        seen.setdefault(species, animal)
+        _animal_seen_signatures.add(_animal_signature(animal))
+
+    # Departures: time-based grace, so one dropped frame never counts as leaving.
+    for species, rec in _animal_presence.items():
+        if rec.get("present") and species not in seen:
+            last = float(rec.get("last_seen_at") or now)
+            if now - last >= grace:
+                rec["present"] = False
+                rec["departed_at"] = last
+                _log.info("consciousness: animal departed species=%s (unseen %.0fs)",
+                          species, now - last)
+
+    for species, animal in seen.items():
+        if species in _pending_animal_arrivals:
+            _pending_animal_arrivals[species]["last_seen_at"] = now
+        rec = _animal_presence.get(species)
+        departed_at = float((rec or {}).get("departed_at") or 0.0)
+        if rec is None or (not rec.get("present")
+                           and departed_at and now - departed_at >= fresh_after):
+            # Never seen this run, or gone long enough that "back again" would read
+            # weird — either way the bit starts fresh.
+            _animal_presence[species] = {
+                "present": True, "first_seen_at": now, "last_seen_at": now,
+                "departed_at": None, "return_count": 0,
+                "remarks_spoken": 0, "last_remark_at": 0.0,
+            }
+            _stage_animal_remark(species, animal, kind="arrival",
+                                 return_count=0, now=now)
             continue
-        species = (animal.get("species") or "creature").strip().lower()
-        species_cooldown = float(getattr(
-            config, "ANIMAL_SPECIES_REMARK_COOLDOWN_SECS", 300.0))
-        if (now - _animal_species_reacted_at.get(species, 0.0)) < species_cooldown:
-            continue          # same creature roaming in/out of frame — one remark per window
-        if signature in prev_animal_signatures:
-            continue
-        if (now - _animal_reacted_at.get(signature, 0.0)) < animal_cooldown:
-            continue
-        pending = dict(animal)
-        pending["signature"] = signature
-        pending["first_seen_at"] = now
-        pending["last_seen_at"] = now
-        _pending_animal_arrivals[signature] = pending
-        _log.info("consciousness: staged animal arrival signature=%s", signature)
+        rec["last_seen_at"] = now
+        if rec.get("present"):
+            continue  # still here (or frame flicker) — nothing new to say
+        # A real departure followed by a sighting: the return bit.
+        rec["present"] = True
+        rec["return_count"] = int(rec.get("return_count") or 0) + 1
+        if int(rec.get("remarks_spoken") or 0) >= cap:
+            continue  # bit is spent for this run — welcome back silently
+        if (now - float(rec.get("last_remark_at") or 0.0)) < min_gap:
+            continue  # too soon after the last remark — let it breathe
+        _stage_animal_remark(species, animal, kind="return",
+                             return_count=rec["return_count"], now=now)
 
 
 _FURRY_ANIMAL_REACTION_LINES = (
@@ -2138,9 +2202,50 @@ _GENERIC_ANIMAL_REACTION_LINES = (
     "Organic inventory update: additional lifeform present.",
 )
 
+# Return-joke ladder: the bit escalates with how many times the animal has left
+# and wandered back this run. Furry companions get the warm riff; everything else
+# gets the neutral pool (a returning bird is a cameo, not a roommate).
+_ANIMAL_RETURN_LINES_FIRST = (
+    "Whoa — the furry lifeform is back. It's got the energy of a womp rat on a sugar run.",
+    "The furry lifeform has returned. Apparently I'm on its patrol route now.",
+    "Furry lifeform re-entry detected. Smooth landing. No customs check.",
+)
+_ANIMAL_RETURN_LINES_SECOND = (
+    "That's twice now. The furry one is either doing laps or casing the place.",
+    "Back AGAIN. I'm starting to feel like a waypoint on a smuggling run.",
+    "Second re-entry logged. Someone is optimizing a patrol route.",
+)
+_ANIMAL_RETURN_LINES_MANY = (
+    "I've lost count. The furry lifeform now has standing docking clearance.",
+    "In. Out. In again. I admire the cardio, honestly.",
+    "At this point the creature works here. Somebody get it a badge.",
+)
+_ANIMAL_RETURN_LINES_GENERIC = (
+    "The creature has returned. Bold.",
+    "Re-entry detected. The lifeform's commute continues.",
+    "Ah. The creature again. We meet as equals.",
+)
+
 
 def _animal_reaction_frame_and_line(animal: dict):
     species = (animal.get("species") or "creature").strip().lower()
+    if (animal.get("kind") or "arrival") == "return":
+        # A return isn't a surprise — the joke is that Rex has clocked the pattern.
+        # Warm/amused frame, escalating line pool by how many round-trips so far.
+        count = int(animal.get("return_count") or 1)
+        if _animal_is_furry_companion(species, animal):
+            pool = (_ANIMAL_RETURN_LINES_FIRST if count <= 1
+                    else _ANIMAL_RETURN_LINES_SECOND if count == 2
+                    else _ANIMAL_RETURN_LINES_MANY)
+        else:
+            pool = _ANIMAL_RETURN_LINES_GENERIC
+        frame = emotion_orchestrator.frame_for_emotion(
+            "happy",
+            intensity=0.6,
+            source="event",
+            trigger=f"animal_return:{species}",
+        )
+        return frame, random.choice(pool)
     if emotion_orchestrator.is_startling_animal(species):
         frame = emotion_orchestrator.frame_for_event("animal_detected", species=species)
         return frame, random.choice(_STARTLING_ANIMAL_REACTION_LINES)
@@ -2169,28 +2274,38 @@ def _fire_pending_animal_arrival_reaction() -> bool:
         return False
     now = time.monotonic()
     stale_after = float(getattr(config, "ANIMAL_PENDING_REACTION_TTL_SECS", 90.0))
-    for signature, animal in list(_pending_animal_arrivals.items()):
+    for pending_key, animal in list(_pending_animal_arrivals.items()):
         if now - float(animal.get("last_seen_at") or now) > stale_after:
-            _pending_animal_arrivals.pop(signature, None)
+            _pending_animal_arrivals.pop(pending_key, None)
             continue
         frame, line = _animal_reaction_frame_and_line(animal)
 
         _ep_species = (animal.get("species") or "creature")
         _ep_position = animal.get("position")
+        _ep_kind = (animal.get("kind") or "arrival")
 
-        def _on_spoke(signature=signature, frame=frame, line=line, now=now,
-                      species=_ep_species, position=_ep_position) -> None:
-            # Prime the face + retire the pending arrival only on an actual spoken
+        def _on_spoke(pending_key=pending_key, frame=frame, line=line, now=now,
+                      species=_ep_species, position=_ep_position,
+                      kind=_ep_kind) -> None:
+            # Prime the face + retire the pending remark only on an actual spoken
             # reaction — under ENFORCE a losing candidate must not pop the queue.
             _prime_emotion_frame(frame)
-            _animal_reacted_at[signature] = now
-            _animal_species_reacted_at[
-                (species or "creature").strip().lower()] = now
-            _pending_animal_arrivals.pop(signature, None)
-            episodic_hooks.animal(species, position)  # "I saw a dog" → rex.db
+            species_key = (species or "creature").strip().lower()
+            _animal_reacted_at[pending_key] = now
+            _animal_species_reacted_at[species_key] = now
+            # The presence ledger paces the bit on SPOKEN remarks only — a staged
+            # line that lost the governor race must not burn the session cap.
+            rec = _animal_presence.get(species_key)
+            if rec is not None:
+                rec["remarks_spoken"] = int(rec.get("remarks_spoken") or 0) + 1
+                rec["last_remark_at"] = now
+            _pending_animal_arrivals.pop(pending_key, None)
+            if kind == "arrival":
+                episodic_hooks.animal(species, position)  # "I saw a dog" → rex.db
             _log.info(
-                "consciousness: animal arrival reaction fired signature=%s text=%r",
-                signature,
+                "consciousness: animal %s reaction fired species=%s text=%r",
+                kind,
+                species_key,
                 line,
             )
 
@@ -2198,7 +2313,8 @@ def _fire_pending_animal_arrival_reaction() -> bool:
             line,
             frame.affect,
             purpose="world.animal_arrival",
-            label=f"animal arrival: {(animal.get('species') or 'creature').strip().lower()}",
+            label=(f"animal {_ep_kind}: "
+                   f"{(animal.get('species') or 'creature').strip().lower()}"),
             on_spoke=_on_spoke,
             force_salient=True,
         ):
@@ -5748,7 +5864,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
 
     if _last_snapshot:
         _stage_animal_arrivals(snapshot)
-        # A newly-arrived animal is a salient, time-sensitive event (300s cooldown)
+        # A newly-arrived (or returning) animal is a salient, time-sensitive event
         # and deserves a reaction even mid-conversation — so attempt it BEFORE the
         # general proactive-suppression gates below, which would otherwise starve it
         # the way they did when a dog was held up during an active conversation. The
@@ -12836,6 +12952,7 @@ def start() -> None:
     _animal_reacted_at.clear()
     _animal_species_reacted_at.clear()
     _pending_animal_arrivals.clear()
+    _animal_presence.clear()
     _update_unknown_streak(False)   # reset unknown-face persistence streak
     _last_startle_sound_reaction_at = 0.0
     _acknowledged_dates.clear()
@@ -12977,6 +13094,7 @@ def stop() -> None:
     _animal_reacted_at.clear()
     _animal_species_reacted_at.clear()
     _pending_animal_arrivals.clear()
+    _animal_presence.clear()
     _last_startle_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()
     _group_turn_visible_since.clear()
