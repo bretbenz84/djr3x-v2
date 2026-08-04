@@ -327,7 +327,7 @@ def _strike_lean_cue(kind: "Optional[str]") -> None:
 # attentiveness, not a bit — but everything spoken still gets RECORDED.
 _BIT_LEDGER_EXEMPT_CUES = {
     "celebration", "holiday_plan", "event_followup", "open_thread",
-    "place_question", "room_question",
+    "place_question", "room_question", "workday_checkin",
 }
 
 
@@ -5190,6 +5190,85 @@ def _lean_interest_discovery_cue(person_id: Optional[int]) -> Optional[dict]:
         return None
 
 
+# One probability roll per (person, day) for the workday check-in — memoized so
+# a failed roll doesn't get re-rolled every lull until it passes (which would
+# make the "doesn't always trigger" knob meaningless).
+_workday_checkin_rolls: dict = {}
+
+
+def _person_profession(person_id: int) -> str:
+    """The person's stored job/profession ('trainer'), or ''. Facts with
+    category job/work/career win; job-shaped keys anywhere else back them up."""
+    try:
+        rows = facts_memory.get_facts(int(person_id)) or []
+    except Exception:
+        return ""
+    job_keys = {"job_title", "job", "profession", "occupation", "career", "works_as"}
+    for row in rows:
+        if str(row.get("category") or "").lower() in ("job", "work", "career"):
+            value = str(row.get("value") or "").strip()
+            if value:
+                return value
+    for row in rows:
+        if str(row.get("key") or "").lower() in job_keys:
+            value = str(row.get("value") or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _lean_workday_checkin_cue(
+    person_id: Optional[int], now: Optional["datetime"] = None
+) -> Optional[dict]:
+    """Offer the evening "how was work today?" / "how was your day?" check-in
+    (owner 2026-08-03: a conversation sparker for repeat visitors).
+
+    Gates: weekday evening (WORKDAY_CHECKIN_START_HOUR..END_HOUR, Mon-Fri),
+    known person, not already asked today (durable via mark_proactive_asked, so
+    restarts can't re-ask), and one probability roll per day so it deliberately
+    does NOT fire every evening. The work variant fires when Rex knows a
+    profession (person_facts category='job'); otherwise the plain day variant.
+    The mark is written only when the line is actually SPOKEN (the on-spoke
+    bookkeeping below), so losing the cue ladder to a richer cue retries at a
+    later lull the same evening."""
+    if person_id is None or not bool(getattr(config, "WORKDAY_CHECKIN_ENABLED", True)):
+        return None
+    from datetime import datetime as _dt
+    moment = now or _dt.now()
+    weekdays = set(getattr(config, "WORKDAY_CHECKIN_WEEKDAYS", (0, 1, 2, 3, 4)))
+    if moment.weekday() not in weekdays:
+        return None
+    start = int(getattr(config, "WORKDAY_CHECKIN_START_HOUR", 17))
+    end = int(getattr(config, "WORKDAY_CHECKIN_END_HOUR", 23))
+    if not (start <= moment.hour < end):
+        return None
+    day_key = moment.date().isoformat()
+    topic_key = f"workday_checkin:{day_key}"
+    try:
+        if rel_memory.was_proactive_asked(int(person_id), topic_key):
+            return None
+    except Exception:
+        return None
+    roll_key = (int(person_id), day_key)
+    if roll_key not in _workday_checkin_rolls:
+        _workday_checkin_rolls[roll_key] = (
+            random.random() < float(getattr(config, "WORKDAY_CHECKIN_PROBABILITY", 0.8))
+        )
+        if not _workday_checkin_rolls[roll_key]:
+            _log.info(
+                "[lean] workday check-in sitting out today for person_id=%s "
+                "(probability roll)", person_id,
+            )
+    if not _workday_checkin_rolls[roll_key]:
+        return None
+    profession = _person_profession(int(person_id))
+    return {
+        "topic_key": topic_key,
+        "kind": "work" if profession else "day",
+        "profession": profession,
+    }
+
+
 def _lean_weekend_plans_cue(person_id: Optional[int]) -> Optional[dict]:
     """Offer the "got anything going this weekend?" discovery ask (owner
     2026-07-18: the river-float weekend came and went unasked — the legacy
@@ -5610,6 +5689,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     open_thread = None
     place_question = None
     room_question = None
+    workday_checkin = None
     weekend_plans = None
     interest_discovery = None
     news_story = None
@@ -5668,15 +5748,25 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             callback_premise = None
     _no_higher = not (celebration or holiday_plan or event_followup or open_thread
                       or callback_premise)
+    # Evening workday check-in ("how was work today?" / "how was your day?") is
+    # PERSONAL and time-bound, so it outranks the environment cues below —
+    # but a real memory follow-up above still beats it.
+    if _no_higher and not low_energy and not no_questions:
+        try:
+            workday_checkin = _lean_workday_checkin_cue(person_id)
+            if workday_checkin and _lean_cue_blocked("workday_checkin"):
+                workday_checkin = None
+        except Exception as exc:
+            _log.debug("[lean] workday check-in cue failed: %s", exc)
     # Not recognizing the ROOM outranks object curiosity — knowing where he is comes
     # first. place_questions gates itself (only when the belief is unknown + paced).
-    if _no_higher and not low_energy and not no_questions:
+    if _no_higher and not workday_checkin and not low_energy and not no_questions:
         place_question = _lean_place_question_cue()
     # Room curiosity beats a generic visual riff (it LEARNS something), but only
     # when the person has energy for a question.
-    if _no_higher and not place_question and not low_energy and not no_questions:
+    if _no_higher and not workday_checkin and not place_question and not low_energy and not no_questions:
         room_question = _lean_room_question_cue()
-    if _no_higher and not place_question and not room_question:
+    if _no_higher and not workday_checkin and not place_question and not room_question:
         try:
             visual_riff = _lean_visual_riff_cue(person_id, world)
         except Exception as exc:
@@ -5685,7 +5775,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # richer fires. Data-driven (the model can't invent a memory it wasn't given), once/session.
     # Weekend-plans discovery beats news (it's personal and time-bound), but
     # never fires at a tired user or with the question budget spent.
-    if _no_higher and not place_question and not room_question and not visual_riff and not low_energy and not no_questions:
+    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not low_energy and not no_questions:
         try:
             weekend_plans = _lean_weekend_plans_cue(person_id)
         except Exception as exc:
@@ -5693,16 +5783,16 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # Interest discovery ("what are you into that you haven't told me?") is
     # personal like weekend plans — it beats news, loses to everything richer,
     # and never fires at a tired user or with the question budget spent.
-    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans and not low_energy and not no_questions:
+    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not low_energy and not no_questions:
         try:
             interest_discovery = _lean_interest_discovery_cue(person_id)
         except Exception as exc:
             _log.debug("[lean] interest-discovery cue failed: %s", exc)
     # News beats the diary musing (fresher material) but loses to everything
     # personal. Its own session cap + spend-once live in the cue/bookkeeping.
-    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery:
+    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery:
         news_story = _lean_news_cue(person_id)
-    if _no_higher and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not news_story:
+    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not news_story:
         try:
             memory_musing = _lean_memory_musing_cue(person_id)
         except Exception as exc:
@@ -5725,6 +5815,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             open_thread=open_thread,
             place_question=place_question,
             room_question=room_question,
+            workday_checkin=workday_checkin,
             weekend_plans=weekend_plans,
             interest_discovery=interest_discovery,
             news_story=news_story,
@@ -5742,7 +5833,9 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         (kind for kind, cue in (
             ("celebration", celebration), ("holiday_plan", holiday_plan),
             ("event_followup", event_followup), ("open_thread", open_thread),
-            ("callback_premise", callback_premise), ("place_question", place_question),
+            ("callback_premise", callback_premise),
+            ("workday_checkin", workday_checkin),
+            ("place_question", place_question),
             ("room_question", room_question), ("visual_riff", visual_riff),
             ("weekend_plans", weekend_plans), ("interest_discovery", interest_discovery),
             ("news_story", news_story), ("memory_musing", memory_musing),
@@ -5929,6 +6022,12 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 room_questions.note_asked(room_question["label"])
             except Exception as exc:
                 _log.debug("[lean] room-question latch failed: %s", exc)
+        if workday_checkin:
+            # Durable once-per-day mark, so the check-in can't repeat across runs.
+            try:
+                rel_memory.mark_proactive_asked(person_id, workday_checkin["topic_key"])
+            except Exception as exc:
+                _log.debug("[lean] workday check-in mark failed: %s", exc)
         if weekend_plans:
             # Durable once-per-ISO-week mark, so the ask can't repeat across runs.
             try:

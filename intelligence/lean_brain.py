@@ -1042,6 +1042,25 @@ _WEEKEND_PLANS_INSTRUCTION = (
     "reply PASS."
 )
 
+_WORKDAY_CHECKIN_WORK_INSTRUCTION = (
+    "[It's a weekday evening, {who} is here after the workday, and the conversation "
+    "just reached a lull — the natural moment a friend asks about it.]\n"
+    "{situation}"
+    "You know their work: {profession}. Ask ONE short, warm 'how was work today?' "
+    "question in your own voice — genuine, not an interview opener; you may nod to "
+    "what they do, but don't roast their job or pile on follow-ups. ONE question. "
+    "You MUST ask it; do not reply PASS."
+)
+
+_WORKDAY_CHECKIN_DAY_INSTRUCTION = (
+    "[It's a weekday evening, {who} is here, and the conversation just reached a "
+    "lull — the natural moment a friend checks in.]\n"
+    "{situation}"
+    "Ask ONE short, warm 'how was your day?' question in your own voice — plain and "
+    "genuine, no interview follow-ups. ONE question. You MUST ask it; do not "
+    "reply PASS."
+)
+
 
 # Rotating inspiration for the lull-breakers. The instruction prompt used to be IDENTICAL every
 # call, so the model kept converging on its strongest persona default: music questions ("what song
@@ -1365,6 +1384,7 @@ def consider_initiating(
     open_thread: Optional[dict] = None,
     place_question: Optional[dict] = None,
     room_question: Optional[dict] = None,
+    workday_checkin: Optional[dict] = None,
     weekend_plans: Optional[dict] = None,
     interest_discovery: Optional[dict] = None,
     news_story: Optional[dict] = None,
@@ -1418,6 +1438,18 @@ def consider_initiating(
                 situation=situation,
                 premise=str(callback_premise.get("premise") or "their harmless running bit"),
             )
+        elif workday_checkin:
+            if (workday_checkin.get("kind") or "") == "work":
+                instruction = _WORKDAY_CHECKIN_WORK_INSTRUCTION.format(
+                    who=who,
+                    situation=situation,
+                    profession=str(workday_checkin.get("profession") or "their job"),
+                )
+            else:
+                instruction = _WORKDAY_CHECKIN_DAY_INSTRUCTION.format(
+                    who=who,
+                    situation=situation,
+                )
         elif place_question:
             instruction = _PLACE_QUESTION_INSTRUCTION.format(situation=situation)
         elif room_question:

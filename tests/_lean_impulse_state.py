@@ -45,7 +45,7 @@ _CONTAINERS = ("_lean_impulse_spoken_times",)
 # generated line benches its cue for 600s of MOCKED time, which silently
 # starved the same cue in every later test (2 wiring tests broke module-wide
 # while passing in isolation — the exact leak this helper exists to stop).
-_DICTS = ("_lean_cue_cooldowns",)
+_DICTS = ("_lean_cue_cooldowns", "_workday_checkin_rolls")
 
 
 def reset_impulse_state(testcase) -> None:

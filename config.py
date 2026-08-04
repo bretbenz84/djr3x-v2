@@ -5444,6 +5444,19 @@ CURRENT_EVENTS_MAX_AGE_HOURS = _env_float("CURRENT_EVENTS_MAX_AGE_HOURS", 36.0, 
 # exists (Rex references THAT instead) or the user is low-energy.
 WEEKEND_PLANS_ASK_ENABLED = _env_bool("WEEKEND_PLANS_ASK_ENABLED", True)
 WEEKEND_PLANS_ASK_WEEKDAYS = (3, 4, 5, 6)   # Thu, Fri, Sat, Sun (Monday=0)
+
+# ── Evening workday check-in (owner 2026-08-03) ──────────────────────────────
+# On a weekday evening, a known repeat visitor gets ONE "how was work today?"
+# (when Rex knows their profession — person_facts category='job') or "how was
+# your day?" (when he doesn't). Once per person per day, durable across
+# restarts (mark_proactive_asked), and deliberately not every day: one
+# probability roll per day decides whether today is a check-in day at all —
+# a conversation sparker, not a ritual.
+WORKDAY_CHECKIN_ENABLED = _env_bool("WORKDAY_CHECKIN_ENABLED", True)
+WORKDAY_CHECKIN_START_HOUR = _env_int("WORKDAY_CHECKIN_START_HOUR", 17, min_value=0, max_value=23)
+WORKDAY_CHECKIN_END_HOUR = _env_int("WORKDAY_CHECKIN_END_HOUR", 23, min_value=1, max_value=24)
+WORKDAY_CHECKIN_WEEKDAYS = (0, 1, 2, 3, 4)  # Mon-Fri (Monday=0)
+WORKDAY_CHECKIN_PROBABILITY = _env_float("WORKDAY_CHECKIN_PROBABILITY", 0.8, min_value=0.0, max_value=1.0)
 # Rich-share follow-up: a substantive answer to Rex's question earns one
 # concrete follow-up question in the same reply (the inverse of the flat-
 # answer probe). Cooldown keeps consecutive turns from becoming an interview.
