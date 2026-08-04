@@ -314,10 +314,31 @@ CREATE TABLE IF NOT EXISTS person_emotional_events (
     checkins_muted_at        DATETIME,
     checkins_muted_reason    TEXT,
     sensitivity_decay_days   INTEGER,
-    person_invited_topic     INTEGER DEFAULT 0
+    person_invited_topic     INTEGER DEFAULT 0,
+    recency                  TEXT DEFAULT 'unknown'
 );
 
 CREATE INDEX IF NOT EXISTS idx_emoevent_person ON person_emotional_events(person_id);
+
+-- One row per spoken turn, for dated conversation recall ("what did we talk
+-- about on July 12?"). Mirrors memory/database.py's migration definition so a
+-- FRESH install (and every test fixture built from DB_SCHEMA) matches a
+-- migrated live DB — this file drifted once (recency was migration-only for
+-- months) and every emotional-events read on a fresh DB hit the failure-safe
+-- error path.
+CREATE TABLE IF NOT EXISTS conversation_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          DATETIME NOT NULL,
+    day         TEXT NOT NULL,
+    session_id  TEXT,
+    speaker     TEXT NOT NULL,
+    person_id   INTEGER,
+    text        TEXT NOT NULL,
+    UNIQUE(ts, speaker, text)
+);
+
+CREATE INDEX IF NOT EXISTS idx_convlog_day ON conversation_log(day);
+CREATE INDEX IF NOT EXISTS idx_convlog_person ON conversation_log(person_id);
 
 CREATE TABLE IF NOT EXISTS person_conversation_boundaries (
     id              INTEGER PRIMARY KEY,
@@ -1099,6 +1120,8 @@ def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
     for column in ("loss_subject", "loss_subject_kind", "loss_subject_name"):
         if _ensure_column(conn, "person_emotional_events", column, "TEXT"):
             applied.append(f"person_emotional_events.{column}")
+    if _ensure_column(conn, "person_emotional_events", "recency", "TEXT DEFAULT 'unknown'"):
+        applied.append("person_emotional_events.recency")
     if _ensure_column(conn, "person_facts", "last_confirmed_at", "DATETIME"):
         applied.append("person_facts.last_confirmed_at")
     if _ensure_column(conn, "person_facts", "evidence_count", "INTEGER DEFAULT 1"):
