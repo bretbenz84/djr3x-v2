@@ -76,6 +76,27 @@ _BOUNDARY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"(?:my\s+|the\s+)?(?P<topic>[^.?!,;]+)",
         re.IGNORECASE,
     )),
+    # Softened stand-downs (field 2026-08-03 20:03: "we don't need to bring up the
+    # website anymore" matched NOTHING — every pattern above expects a bare
+    # imperative — so the turn fell through to the plain reply LLM, which said
+    # "Understood" and then kept probing the same topic). First-person-plural /
+    # second-person polite forms with a NAMED topic; "anymore" and "no need" carry
+    # the same durable weight as an imperative. The lookahead keeps pronoun objects
+    # out of the topic slot — those belong to the generic patterns + fallback.
+    ("mention", re.compile(
+        r"\b(?:we|you)\s+(?:don'?t|do not)\s+(?:need|have)\s+to\s+"
+        r"(?:bring up|talk about|mention|discuss|keep (?:bringing up|talking about|mentioning))\s+"
+        r"(?:my\s+|the\s+)?(?P<topic>(?!(?:it|that|this)\b)[^.?!,;]+)",
+        re.IGNORECASE,
+    )),
+    ("mention", re.compile(
+        r"\b(?:(?:there'?s\s+)?no need to|you can stop|we can stop|let'?s stop|"
+        r"let'?s not|quit)\s+"
+        r"(?:bringing up|talking about|mentioning|asking about|discussing|"
+        r"bring up|talk about|mention|ask about|discuss)\s+"
+        r"(?:my\s+|the\s+)?(?P<topic>(?!(?:it|that|this)\b)[^.?!,;]+)",
+        re.IGNORECASE,
+    )),
     ("ask", re.compile(
         r"\b(?:i hate|i don'?t like|i do not like)\s+"
         r"(?:being\s+)?(?:asked|getting asked)\s+"
@@ -102,6 +123,14 @@ _GENERIC_BOUNDARY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"do not talk about (?:that|this|it)(?: anymore| again)?|"
         r"don'?t bring (?:that|this|it) up(?: anymore| again)?|"
         r"do not bring (?:that|this|it) up(?: anymore| again)?|"
+        # softened pronoun stand-downs — "we don't need to bring it up (anymore)"
+        r"(?:we|you) (?:don'?t|do not) (?:need|have) to "
+        r"(?:bring (?:that|this|it) up|talk about (?:that|this|it)|"
+        r"mention (?:that|this|it))(?: anymore| again)?|"
+        r"(?:there'?s )?no need to (?:bring (?:that|this|it) up|"
+        r"talk about (?:that|this|it)|mention (?:that|this|it))(?: anymore| again)?|"
+        r"(?:we|you) can stop (?:bringing (?:that|this|it) up|"
+        r"talking about (?:that|this|it)|mentioning (?:that|this|it))|"
         r"forget about (?:that|this|it))\b",
         re.IGNORECASE,
     )),
@@ -351,6 +380,10 @@ def detect_boundary(
         topic = _normalize_topic(match.groupdict().get("topic") or fallback_topic or _DEFAULT_TOPIC)
         if topic in {"again", "anymore", "any more"}:
             topic = _normalize_topic(fallback_topic or _DEFAULT_TOPIC)
+        elif topic == _DEFAULT_TOPIC and fallback_topic:
+            # A pronoun object normalized to the placeholder — the live thread
+            # knows the real subject better than "current topic" does.
+            topic = _normalize_topic(fallback_topic)
         return {
             "action": "add",
             "behavior": behavior,

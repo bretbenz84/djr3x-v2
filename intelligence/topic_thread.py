@@ -37,7 +37,15 @@ _log = logging.getLogger(__name__)
 _AVOID_PAT = re.compile(
     r"\b(rather not|don'?t want to|do not want to|change (the )?subject|"
     r"talk about something else|drop it|leave it|not talk about|not now|"
-    r"don'?t ask|do not ask|stop asking)\b",
+    r"don'?t ask|do not ask|stop asking|"
+    # Softened stand-downs (field 2026-08-03 20:03: "we don't need to bring up the
+    # website anymore" read as a NEW topic, so the thread label became the request's
+    # own keywords and the eventual ban protected nothing).
+    r"(?:don'?t|do not) (?:need|have) to (?:bring|talk|mention|discuss)|"
+    r"no need to (?:bring|talk|mention|discuss)|"
+    r"can stop (?:bringing|talking|mentioning)|"
+    r"stop (?:bringing|talking about|mentioning)|"
+    r"let'?s not talk about)\b",
     re.IGNORECASE,
 )
 _PLAYFUL_PAT = re.compile(r"\b(lol|haha|funny|joke|roast|kidding|teasing)\b", re.I)

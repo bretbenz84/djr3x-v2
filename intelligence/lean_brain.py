@@ -129,6 +129,33 @@ def _person_lines(person_id: Optional[int], user_text: str = "") -> list[str]:
             "enjoy the sparring and can take a sharp, SPECIFIC roast, so don't soften your wit to be "
             "polite. (Still: drop it instantly on a genuinely sincere or vulnerable moment.)"
         )
+    # Consent boundaries + live topic bans — placed BEFORE the recall branches so
+    # every reply path carries them. The lean rebuild dropped the classic prompt's
+    # boundary rendering entirely, so a stored "don't bring up X" was invisible to
+    # the live reply (field 2026-08-03 20:03: Bret said "we don't need to bring up
+    # the website anymore" and Rex's very next line probed the website).
+    try:
+        from memory import boundaries as _boundaries
+        b_summary = _boundaries.summarize_for_prompt(int(person_id))
+        if b_summary:
+            out.append(" ".join(b_summary.split()))
+    except Exception as exc:
+        _log.debug("[lean] boundary summary skipped: %s", exc)
+    try:
+        from intelligence import interaction as _intx
+        bans = _intx.recently_banned_topics()
+        topics = ", ".join(sorted({
+            str(b.get("topic") or "").strip() for b in bans if b.get("topic")
+        }))
+        if topics:
+            out.append(
+                "They JUST asked to drop this topic — do NOT raise, return to, or "
+                "joke about it, even in passing: " + topics + ". Follow them to "
+                "whatever they bring up instead."
+            )
+    except Exception as exc:
+        _log.debug("[lean] topic-ban injection skipped: %s", exc)
+
     # Dated-conversation recall ("what did we talk about on July 12 / yesterday /
     # earlier today?") — the persisted conversation_log turns from that window,
     # summarized by THIS reply call. Checked first: it's the more specific ask.
@@ -175,11 +202,21 @@ def _person_lines(person_id: Optional[int], user_text: str = "") -> list[str]:
         topic_tokens = _recall.utterance_tokens(user_text) or None
     except Exception:
         topic_tokens = None
+    # Boundary-muted terms: a "don't bring up X" boundary must suppress the X fact
+    # from the background list too, exactly as the classic path does — otherwise
+    # the prompt says "don't mention X" while handing the model the X fact to riff on.
+    mute_terms = None
+    try:
+        if getattr(config, "MEMORY_BOUNDARY_SUPPRESSES_FACTS", True):
+            from memory import boundaries as _boundaries
+            mute_terms = _boundaries.muted_topic_terms(int(person_id)) or None
+    except Exception as exc:
+        _log.debug("[lean] boundary mute terms skipped: %s", exc)
     background: list[str] = []
     try:
         from memory import retrieval as _retrieval
         bundle = _retrieval.retrieve_person_memory(
-            int(person_id), topic_tokens=topic_tokens,
+            int(person_id), topic_tokens=topic_tokens, mute_terms=mute_terms,
             budget=int(getattr(config, "LEAN_BACKGROUND_BUDGET", 10)),
         )
         background += [

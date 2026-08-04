@@ -5046,24 +5046,53 @@ def _lean_event_followup_cue(person_id: Optional[int]) -> Optional[dict]:
     return None
 
 
+def _lean_topic_blocked(person_id: Optional[int], text: str) -> bool:
+    """True when a lean cue's subject collides with a live topic ban (they JUST
+    asked to drop it) or a durable mention-boundary ("don't bring up X"). The gate
+    that stops the diary's open threads from resurrecting a topic the person shut
+    down (field 2026-08-03 20:03: the website open-thread kept coming back across
+    sessions until Bret had to say stop twice — and it still wasn't banned)."""
+    t = str(text or "")
+    if not t:
+        return False
+    if _topic_is_recently_banned(t):
+        return True
+    if person_id is None:
+        return False
+    try:
+        terms = boundary_memory.muted_topic_terms(int(person_id))
+        if not terms:
+            return False
+        from memory import text_match
+        stems = text_match.stems(t)
+        return any(text_match.stem(term) in stems for term in terms)
+    except Exception as exc:
+        _log.debug("[lean] boundary topic gate failed: %s", exc)
+        return False
+
+
 def _lean_open_thread_cue(person_id: Optional[int]) -> Optional[dict]:
     """Offer ONE diary open thread ("whether the motor swap happened") to Lean's
     lull speaker. The consciousness-side _step_open_thread_followup is suppressed
     under the lean brain (lean owns silence-fill), so this cue is the LIVE path.
-    Freshness/once-ever rules live in intelligence/open_threads."""
+    Freshness/once-ever rules live in intelligence/open_threads. Threads whose
+    subject the person banned or set a boundary on are skipped, not just delayed."""
     if person_id is None or not bool(getattr(config, "OPEN_THREAD_FOLLOWUP_ENABLED", True)):
         return None
     try:
         from intelligence import open_threads
         candidates = open_threads.pending_for_person(int(person_id))
-        if not candidates:
-            return None
-        pick = candidates[0]
-        return {
-            "episode_id": pick["episode_id"],
-            "thread": pick["thread"],
-            "when": open_threads.describe_age(pick["age_days"]),
-        }
+        for pick in candidates:
+            if _lean_topic_blocked(person_id, str(pick.get("thread") or "")):
+                _log.info("[lean] open thread skipped — banned/bounded topic: %r",
+                          pick.get("thread"))
+                continue
+            return {
+                "episode_id": pick["episode_id"],
+                "thread": pick["thread"],
+                "when": open_threads.describe_age(pick["age_days"]),
+            }
+        return None
     except Exception as exc:
         _log.debug("[lean] open-thread cue lookup failed: %s", exc)
         return None
@@ -5862,6 +5891,16 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # remembered "how did it go?" is attentiveness, not a bit.
     if _winning_kind not in _BIT_LEDGER_EXEMPT_CUES and _bit_ledger_blocks(person_id, line):
         _log.info("[lean] impulse dropped — repeats a recent bit: %r", line)
+        _strike_lean_cue(_winning_kind)
+        return False
+
+    # Banned/bounded-topic backstop: whatever cue won, a generated line that lands
+    # on a topic the person banned ("we can change the subject") or set a durable
+    # boundary on ("don't bring up the website anymore") is dropped, not spoken.
+    # NO cue is exempt — a remembered follow-up about a shut-down topic is exactly
+    # the resurrection being stopped.
+    if _lean_topic_blocked(person_id, line):
+        _log.info("[lean] impulse dropped — banned/bounded topic: %r", line)
         _strike_lean_cue(_winning_kind)
         return False
 
@@ -19330,10 +19369,19 @@ def _handle_conversation_boundary(
     try:
         detected = boundary_memory.detect_boundary(
             text,
-            fallback_topic=_boundary_fallback_topic(),
+            fallback_topic=_boundary_fallback_topic(exclude_text=text),
         )
         if not detected:
             return None
+        # A durable add whose topic never resolved past the placeholder (pronoun
+        # form + no usable live thread) must not store a junk "current topic" row —
+        # treat it as the transient steer it effectively is.
+        if (
+            detected.get("action") == "add"
+            and detected.get("kind") == "boundary"
+            and str(detected.get("topic") or "") == "current topic"
+        ):
+            detected = dict(detected, kind="subject_change")
         if detected.get("kind") == "subject_change":
             # "Can we talk about something else?" is a TRANSIENT steer, not a durable
             # consent rule — don't persist a boundary (the old path stored garbage like
@@ -19453,9 +19501,13 @@ def _apply_topic_boundary_side_effects(
 ) -> None:
     """Stop proactive continuation when the human closes or rejects a topic."""
     # Capture the live topic BEFORE clearing so the ban carries the real subject.
+    # exclude_text=text: never let the ban label be derived from the ban request's
+    # own words (field 2026-08-03 20:03: the thread label had become "don't / need"
+    # — the request's keywords — so the ban protected nothing while the website
+    # stayed fair game).
     if banned_topic is None:
         try:
-            banned_topic = _boundary_fallback_topic()
+            banned_topic = _boundary_fallback_topic(exclude_text=text)
         except Exception:
             banned_topic = None
     _record_banned_topic(banned_topic)
@@ -19477,8 +19529,20 @@ def _apply_topic_boundary_side_effects(
         _log.debug("end-thread boundary grace failed: %s", exc)
 
 
-def _boundary_fallback_topic() -> Optional[str]:
-    """Best current topic for generic boundaries like 'don't ask me that again'."""
+def _boundary_fallback_topic(exclude_text: Optional[str] = None) -> Optional[str]:
+    """Best current topic for generic boundaries like 'don't ask me that again'.
+
+    exclude_text (the boundary request itself, when the caller has it) rejects any
+    candidate whose ban tokens ALL come from that request — a thread label scraped
+    from "we don't need to bring it up" names no real topic, and banning it lets
+    the actual subject sail on unbanned."""
+    def _derived_from_request(candidate: Optional[str]) -> bool:
+        if not candidate or not exclude_text:
+            return False
+        cand_toks = _topic_ban_tokens(candidate)
+        if not cand_toks:
+            return True   # nothing bannable in it anyway
+        return cand_toks <= _topic_ban_tokens(exclude_text)
     if _pending_face_reveal_confirm is not None:
         return "face"
     if _pending_offscreen_identify is not None:
@@ -19506,12 +19570,17 @@ def _boundary_fallback_topic() -> Optional[str]:
         label = str(thread.get("label") or "").strip()
         if label and label.lower() not in {
             "current exchange", "current topic", "the current exchange",
-        }:
+        } and not _derived_from_request(label):
             return label
     except Exception:
         pass
     try:
-        toks = topic_thread.topic_tokens()
+        # Normalize the candidates through the ban tokenizer too — raw thread
+        # tokens can carry steering words ("subject", "don't") that must never
+        # become the banned "topic".
+        toks = _topic_ban_tokens(" ".join(topic_thread.topic_tokens()))
+        if exclude_text:
+            toks = toks - _topic_ban_tokens(exclude_text)
         if toks:
             return max(toks, key=len)  # best-effort topic word
     except Exception:
