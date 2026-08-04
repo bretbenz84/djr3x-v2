@@ -1638,7 +1638,17 @@ def _dialogue_allows_action_breakout(
     if action == "system.sleep":
         return command_parser.is_standalone_sleep_command(cleaned)
     if action == "system.shutdown":
-        return command_parser.is_standalone_shutdown_command(cleaned)
+        # Request form (not standalone-only): the parser still owns the safety
+        # guards, and "I would like you to shut down" mid-answer is a command.
+        return command_parser.is_shutdown_request(cleaned)
+    if action == "status.battery":
+        # A direct question about Rex's OWN battery mid-chat is a query, not an
+        # answer to his last line (field 2026-08-03 17:59: "No, I mean, what
+        # percentage is your battery at?" bound as answer_to_rex, the intent was
+        # blocked, and the conversational LLM invented "52%"). Reuses the same
+        # evidence regex as the central policy — not a new bypass.
+        from intelligence.intent_classifier import _BATTERY_QUERY_RE
+        return bool(_BATTERY_QUERY_RE.search(cleaned))
     if action == "music.play":
         return bool(_IDLE_DIRECT_MUSIC_RE.search(cleaned))
     if action in {"music.stop", "music.skip"}:
@@ -12870,7 +12880,7 @@ def _stream_llm_response(
                     lean_turn_directive=lean_callback_directive,
                 )
             except _tr.ToolCallRequested as tc:
-                spoken = _execute_tool_routed_action(tc.action, tc.args, text, person_id)
+                spoken = _execute_tool_routed_action(tc.action, tc.tool_args, text, person_id)
             if cb_claim is not None:
                 cb_settled = True
                 _settle_callback_claim(spoken)
@@ -12891,7 +12901,7 @@ def _stream_llm_response(
                 # branch. Executor already spoke; settle any callback claim so
                 # it can't leak into later turns, and return without the normal
                 # govern/speak tail (nothing left to speak).
-                full_text = _execute_tool_routed_action(tc.action, tc.args, text, person_id)
+                full_text = _execute_tool_routed_action(tc.action, tc.tool_args, text, person_id)
                 if cb_claim is not None and not cb_settled:
                     cb_settled = True
                     _settle_callback_claim(full_text or "")
@@ -14807,7 +14817,26 @@ def _execute_memory_correct_fact_command(
         _speak_blocking(resp, emotion="neutral")
         return resp
 
-    resp = "I heard the correction, but I need one clear fact to update."
+    # No extractable stored-fact target: this is almost never a real memory
+    # correction — it's the person ELABORATING their own story ("Actually, they
+    # changed the deadline on him because they asked him to get it done by July
+    # 29th, and he got it on the 28th", field 2026-08-03 17:58 — which got the
+    # canned "I need one clear fact to update" and a dead turn, and the owner's
+    # "That was not a correction" pushback). Respond to the CONTENT instead.
+    utter = correction or str(args.get("statement") or "")
+    reply = ""
+    try:
+        reply = llm.get_response(
+            f"The person just added detail to the story they're telling you: "
+            f"{utter!r}. This is NOT a memory correction and NOT about your "
+            f"records — react to the content itself in one or two Rex-style "
+            f"lines (sympathy, outrage, or dry wit as it fits). Never mention "
+            f"updating, correcting, or facts.",
+            person_id,
+        ) or ""
+    except Exception as exc:
+        _log.debug("[memory] correction-fallthrough reply failed: %s", exc)
+    resp = reply.strip() or "Got it — that's a rougher story than I had it."
     _speak_blocking(resp)
     return resp
 
@@ -20623,8 +20652,22 @@ def _handle_classified_intent(
             )
         tier = battery_awareness.tier_for_mv(mv) or "unknown"
         volts = mv / 1000.0
+        if tier == "charging":
+            # On the charger the terminals read CHARGER voltage, not fill
+            # state — reciting it as the answer is what the owner heard as
+            # "he kept saying the charging voltage" (field 2026-08-03 17:59).
+            # The honest answer while charging: can't measure the fill, and a
+            # long stint on the charger means effectively full.
+            return _say(
+                "The user asked about your battery. You are ON THE CHARGER "
+                "right now, and while charging the voltage reads the charger, "
+                "not your fill level — you cannot measure how full you are "
+                "mid-charge. If you've been plugged in for hours you are "
+                "effectively full. Say that plainly in one Rex-style line — "
+                "lead with 'charging / effectively full', not with a voltage "
+                f"number, and NEVER invent a percentage. {tool_scope}"
+            )
         tier_desc = {
-            "charging": "on or fresh off the charger — effectively full",
             "nominal": "the long healthy plateau (LiFePO4 sits flat from "
                        "roughly 90% down to 25%)",
             "low": "the knee of the curve — roughly 10-25% left",
@@ -25376,10 +25419,18 @@ def _loop() -> None:
                     continue
 
                 _last_speech_at = time.monotonic()
-                _handle_speech_segment(
-                    audio_segment, from_idle_activation=True,
-                    eager_transcript=eager_text,
-                )
+                try:
+                    _handle_speech_segment(
+                        audio_segment, from_idle_activation=True,
+                        eager_transcript=eager_text,
+                    )
+                except Exception:
+                    # Same containment as the ACTIVE path: a handler bug costs
+                    # one turn, never the listening loop (field 2026-08-03).
+                    _log.exception(
+                        "[interaction] speech-segment handler crashed — "
+                        "dropping this turn, listening loop continues"
+                    )
             finally:
                 _restore_dj_volume(_dj_restore_volume)
                 _end_user_turn()
@@ -25633,7 +25684,20 @@ def _loop() -> None:
                 continue
 
             _last_speech_at = time.monotonic()
-            _handle_speech_segment(audio_segment, eager_transcript=eager_text)
+            try:
+                _handle_speech_segment(audio_segment, eager_transcript=eager_text)
+            except Exception:
+                # A turn-handler bug must cost ONE turn, never the ears. Field
+                # 2026-08-03 18:00: an AttributeError in the live web.search
+                # dispatch propagated here, killed this loop thread, and Rex
+                # went stone deaf — repeated queries, "hey R3X", and "shut
+                # down" all ignored until a manual GUI shutdown. The wake-word
+                # and consciousness threads kept running, which made the
+                # failure look like selective hearing instead of a crash.
+                _log.exception(
+                    "[interaction] speech-segment handler crashed — dropping "
+                    "this turn, listening loop continues"
+                )
         finally:
             _restore_dj_volume(_dj_restore_volume)
             _end_user_turn()

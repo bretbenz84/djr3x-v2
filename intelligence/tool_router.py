@@ -159,12 +159,20 @@ class ToolCallRequested(Exception):
     """Raised by the lean reply stream when the model chose a LIVE tool instead
     of prose. Deliberately an exception: it unwinds the streaming/TTS machinery
     before any text is spoken, and the reply pipeline catches it and dispatches
-    to the existing executor for that action."""
+    to the existing executor for that action.
 
-    def __init__(self, action: str, args: dict):
+    The tool arguments live on ``tool_args`` — NOT ``args``. ``args`` is
+    BaseException's reserved attribute: assigning a dict to it silently stores
+    ``tuple(dict)`` = a tuple of the KEYS (field 2026-08-03 18:00: web.search
+    args became ``('query',)``, the executor's ``.get`` raised AttributeError,
+    and the crash killed the speech loop — Rex went deaf until a manual
+    shutdown). Every argument-less tool had masked the bug: ``()`` is falsy,
+    so ``args or {}`` papered over it."""
+
+    def __init__(self, action: str, tool_args: dict):
         super().__init__(action)
         self.action = str(action)
-        self.args = dict(args or {})
+        self.tool_args = dict(tool_args or {})
 
 
 # Phase 1 live set (docs/tool_router_scope.md): the intent-backed actions where

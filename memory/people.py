@@ -551,7 +551,70 @@ def rename_person(person_id: int, name: str) -> bool:
     if old_name and _normalize_name(old_name) != _normalize_name(clean):
         add_alias(int(person_id), old_name, source="previous_name")
     add_alias(int(person_id), clean, source="canonical_name")
+    _propagate_rename_to_episodes(int(person_id), old_name, clean)
     return True
+
+
+def _propagate_rename_to_episodes(person_id: int, old_name: str, new_name: str) -> None:
+    """Rewrite the old name inside this person's rex.db episodes (diary
+    summaries + open-thread texts + the person_name snapshot).
+
+    The diary freezes names into free text at write time, so a rename alone
+    left every stored thread speaking the DEAD name — field 2026-08-03: 'Brad'
+    corrected himself to JT on Aug 2, and the next day the lull callback still
+    opened with "Brad's 'maintaining his freedom' thing". Whole-word,
+    first-name-aware replace (Brad / Brad's), scoped to the renamed person's
+    own episodes; best-effort and never raises."""
+    old_first = (old_name or "").strip().split()[0] if (old_name or "").strip() else ""
+    new_first = (new_name or "").strip().split()[0] if (new_name or "").strip() else ""
+    if not old_first or not new_first or old_first.lower() == new_first.lower():
+        # Still refresh the snapshot column even when the text needs no rewrite.
+        old_first = ""
+    try:
+        import json as _json
+        import re as _re
+        from memory import rex_db
+        rex_db.execute(
+            "UPDATE rex_episodes SET person_name = ? WHERE person_id = ?",
+            (new_name, person_id),
+        )
+        if not old_first:
+            return
+        name_re = _re.compile(r"\b" + _re.escape(old_first) + r"\b")
+        rows = rex_db.fetchall(
+            "SELECT id, summary, detail FROM rex_episodes WHERE person_id = ?",
+            (person_id,),
+        )
+        for row in rows:
+            summary = str(row["summary"] or "")
+            detail_raw = str(row["detail"] or "")
+            new_summary = name_re.sub(new_first, summary)
+            new_detail = detail_raw
+            if detail_raw:
+                try:
+                    detail = _json.loads(detail_raw)
+                    changed = False
+                    threads = detail.get("open_threads")
+                    if isinstance(threads, list):
+                        rewritten = [name_re.sub(new_first, str(t)) for t in threads]
+                        if rewritten != threads:
+                            detail["open_threads"] = rewritten
+                            changed = True
+                    if changed:
+                        new_detail = _json.dumps(detail, ensure_ascii=False)
+                except Exception:
+                    pass
+            if new_summary != summary or new_detail != detail_raw:
+                rex_db.execute(
+                    "UPDATE rex_episodes SET summary = ?, detail = ? WHERE id = ?",
+                    (new_summary, new_detail, int(row["id"])),
+                )
+        _log.info(
+            "[people] rename propagated to episodes person_id=%s %r -> %r",
+            person_id, old_first, new_first,
+        )
+    except Exception as exc:
+        _log.debug("rename episode propagation failed: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
