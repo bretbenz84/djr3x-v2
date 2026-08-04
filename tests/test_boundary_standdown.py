@@ -169,6 +169,28 @@ class LeanTopicBlockedTest(_TempDb):
         self.assertTrue(I._lean_topic_blocked(1, "whether the website testing went okay"))
         self.assertFalse(I._lean_topic_blocked(1, "how the garden project is going"))
 
+    def test_ask_boundary_blocks_too(self):
+        from intelligence import interaction as I
+        boundaries.add_boundary(1, "ask", "divorce")
+        self.assertTrue(I._lean_topic_blocked(1, "how the divorce is going"))
+
+    def test_preference_etiquette_wording_never_blocks_cues(self):
+        # Preference rows like "back up a few feet" / "do not talk too much" feed
+        # muted_topic_terms with common words ("back", "come", "work") — those
+        # must mute facts at most, never kill whole proactive lines (the workday
+        # check-in literally contains "work").
+        from intelligence import interaction as I
+        from memory import preferences
+        preferences.upsert_preference(
+            1, "conversation", "boundary", "back_up",
+            "do not come closer than three feet, back up",
+        )
+        preferences.upsert_preference(
+            1, "conversation", "boundary", "work_ask", "do not ask about work stuff",
+        )
+        self.assertFalse(I._lean_topic_blocked(1, "So — how was work today?"))
+        self.assertFalse(I._lean_topic_blocked(1, "welcome back, take a few minutes"))
+
     def test_fresh_topic_ban_blocks_for_anyone(self):
         from intelligence import interaction as I
         saved = list(I._recently_banned_topics)

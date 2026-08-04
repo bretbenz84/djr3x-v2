@@ -5060,7 +5060,12 @@ def _lean_topic_blocked(person_id: Optional[int], text: str) -> bool:
     if person_id is None:
         return False
     try:
-        terms = boundary_memory.muted_topic_terms(int(person_id))
+        # proactive_block_terms, NOT muted_topic_terms: the muted set folds in
+        # preference rows whose etiquette wording ("back up a few feet", "do not
+        # talk too much") would turn common words into banned topics and silence
+        # half the proactive vocabulary. Blocking a whole line needs a real
+        # topical boundary (mention/ask on a named subject).
+        terms = boundary_memory.proactive_block_terms(int(person_id))
         if not terms:
             return False
         from memory import text_match

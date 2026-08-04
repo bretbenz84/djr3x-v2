@@ -313,6 +313,28 @@ def _topic_terms(text: str) -> set[str]:
     }
 
 
+def proactive_block_terms(person_id: int) -> set[str]:
+    """Topic tokens from ACTIVE conversation boundaries (mention/ask behaviors) —
+    the proactive-cue kill-list. Deliberately EXCLUDES the preference-derived terms
+    that muted_topic_terms folds in: preference rows are largely behavioral
+    etiquette ("back up a few feet", "do not talk too much") whose content words
+    ("back", "come", "work", "people") would silence half the proactive vocabulary
+    if treated as banned topics. Fact-muting keeps the broader set; blocking a
+    whole proactive line needs a REAL topical boundary."""
+    terms: set[str] = set()
+    try:
+        for row in get_boundaries(person_id, active_only=True):
+            if _normalize_behavior(row.get("behavior") or "") not in {"mention", "ask"}:
+                continue
+            topic = _normalize_topic(row.get("topic") or "")
+            if topic in {"anything", "questions", "how are you", _DEFAULT_TOPIC}:
+                continue
+            terms |= _topic_terms(topic)
+    except Exception as exc:
+        _log.debug("proactive_block_terms failed: %s", exc)
+    return terms
+
+
 def muted_topic_terms(person_id: int) -> set[str]:
     """Topic tokens Rex has been asked NOT to bring up — from active conversation
     boundaries (a mention/bring-up behavior) AND boundary/avoids preferences. Used to
