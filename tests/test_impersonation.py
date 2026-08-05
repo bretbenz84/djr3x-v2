@@ -776,7 +776,10 @@ class WhoSlotTest(unittest.TestCase):
         with mock.patch.object(self.itn, "_speak_blocking") as say:
             line = self.itn._handle_router_impersonation(d, "Impersonate.", 1, "Bret", "")
         self.assertIsNotNone(line)
-        self.assertIn("who", line.lower())
+        # the ask is drawn at random from IMPERSONATION_WHO_LINES, so assert it
+        # IS one of them rather than pinning wording ("Name your victim" has no
+        # "who" in it and made this flaky)
+        self.assertIn(line, config.IMPERSONATION_WHO_LINES)
         say.assert_called_once()
         self.assertIsNotNone(self.itn._pending_impersonation_target)
 
@@ -828,3 +831,41 @@ class WhoSlotTest(unittest.TestCase):
             r = self.itn._handle_impersonation_target_prompt("never mind")
         self.assertIsNotNone(r)
         self.assertIsNone(self.itn._pending_impersonation_target)
+
+    def test_answer_naming_an_enrolled_person_opens_their_capture_slot(self):
+        """Answering with a KNOWN person (not "me", not famous) routes through
+        resolve_target: they perform if a clip is saved, otherwise Rex opens the
+        live-capture slot keyed to THEIR person_id, not the asker's."""
+        self.itn._pending_impersonation_target = {
+            "person_id": 1, "person_name": "Bret", "asked_at": time.monotonic(),
+        }
+        person = {"id": 3, "name": "Exudica Marbles"}
+        with mock.patch("memory.people.find_person_by_name", return_value=person), \
+             mock.patch.object(impersonation, "person_ref", return_value=None), \
+             mock.patch.object(local_tts, "is_available", return_value=True), \
+             mock.patch.object(self.itn, "_speak_blocking") as say:
+            r = self.itn._handle_impersonation_target_prompt("Exudica")
+
+        self.assertIsNotNone(r)
+        slot = self.itn._pending_impersonation_capture
+        self.assertIsNotNone(slot)
+        self.assertEqual(slot["person_id"], 3)          # hers, not the asker's
+        self.assertEqual(slot["name"], "Exudica Marbles")
+        self.assertFalse(slot["is_self"])
+        self.assertIn("repeat after me", say.call_args.args[0].lower())
+
+    def test_answer_naming_an_enrolled_person_with_a_clip_performs(self):
+        self.itn._pending_impersonation_target = {
+            "person_id": 1, "person_name": "Bret", "asked_at": time.monotonic(),
+        }
+        person = {"id": 3, "name": "Exudica Marbles"}
+        ref = local_tts.VoiceRef("/x.wav", "ref", "person:3")
+        with mock.patch("memory.people.find_person_by_name", return_value=person), \
+             mock.patch.object(impersonation, "person_ref", return_value=ref), \
+             mock.patch.object(local_tts, "is_available", return_value=True), \
+             mock.patch.object(impersonation, "perform", return_value="a parody") as perf:
+            r = self.itn._handle_impersonation_target_prompt("Exudica")
+
+        self.assertEqual(r, ("a parody", True))
+        self.assertIsNone(self.itn._pending_impersonation_capture)
+        self.assertEqual(perf.call_args.args[0].label, "person:3")
