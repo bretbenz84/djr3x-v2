@@ -302,6 +302,12 @@ _last_lean_impulse_at: float = 0.0   # cooldown anchor for the lean agentic impu
 # into the void. Reset the instant the user speaks (_begin_user_turn) — a fresh lull gets a fresh run.
 _consecutive_lean_impulses: int = 0
 _lean_news_mentioned_this_session: bool = False   # one story per session, like the musing
+# The story Rex most recently OFFERED in a lull ("did you hear ...?"), kept so a
+# follow-up ("tell me more about that") can be answered with the story's actual
+# content instead of the bare pronoun (field 2026-08-04 23:09: the follow-up
+# turn had no story context, the model hallucinated a text tool tag, and the
+# turn died silent). {"headline", "summary", "topic", "at": time.monotonic()}.
+_last_news_story_offered: Optional[dict] = None
 # Cue-kind cooldowns after a DROPPED generated line (field 2026-08-02 12:38: the
 # open-thread cue about "what you and JT do together" won the ladder five times
 # in a row, every line was rejected as a re-ask of a recent question, and the
@@ -5195,6 +5201,63 @@ def _lean_news_cue(person_id: Optional[int] = None) -> Optional[dict]:
         return None
 
 
+# Elaboration shapes that count as "asked to hear more" about the story Rex just
+# offered. The explicit-more branch matches on wording alone; the looser
+# referential branch ("when is that?", "is it in Vegas?") additionally requires
+# the news offer to still be the ACTIVE reply frame, so an unrelated question a
+# few minutes later can't hijack the turn into a story search.
+_NEWS_FOLLOWUP_MORE_RE = re.compile(
+    r"\b(?:tell\s+(?:me|us)\s+more|say\s+more|more\s+about|go\s+on|keep\s+going|"
+    r"elaborate|what\s+else|what\s+happened|fill\s+(?:me|us)\s+in|"
+    r"what(?:'s|\s+is)\s+(?:that|it|this)\s+about)\b",
+    re.IGNORECASE,
+)
+_NEWS_FOLLOWUP_REF_RE = re.compile(
+    r"\b(?:that|it|this|the\s+story|the\s+news)\b", re.IGNORECASE
+)
+_NEWS_HEADLINE_STOPWORDS = {
+    "with", "from", "that", "this", "their", "there", "about", "after",
+    "into", "over", "gets", "sets", "says", "will", "have", "been", "more",
+}
+
+
+def _news_followup_story(text: str) -> Optional[dict]:
+    """The just-offered news story when `text` asks to hear more about it, else
+    None. Drives the grounded elaboration: forced web search on the story (or a
+    summary-grounded reply) instead of a context-free 'tell me more' turn."""
+    if not bool(getattr(config, "NEWS_FOLLOWUP_ELABORATION_ENABLED", True)):
+        return None
+    story = _last_news_story_offered
+    headline = str((story or {}).get("headline") or "").strip()
+    if not story or not headline:
+        return None
+    window = float(getattr(config, "NEWS_FOLLOWUP_WINDOW_SECS", 240.0))
+    if (time.monotonic() - float(story.get("at") or 0.0)) > window:
+        return None
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+    if _NEWS_FOLLOWUP_MORE_RE.search(cleaned):
+        return dict(story)
+    # Looser referential/topic matches only bind while the news offer is still
+    # the latest active Rex turn frame (its topic carries the headline).
+    try:
+        from intelligence import dialogue_act
+        frame = dialogue_act.active_frame()
+        frame_is_news = bool(frame is not None and frame.topic == headline)
+    except Exception:
+        frame_is_news = False
+    if not frame_is_news or "?" not in cleaned:
+        return None
+    if _NEWS_FOLLOWUP_REF_RE.search(cleaned):
+        return dict(story)
+    low = cleaned.lower()
+    for word in re.findall(r"[a-z0-9']+", headline.lower()):
+        if len(word) >= 4 and word not in _NEWS_HEADLINE_STOPWORDS and word in low:
+            return dict(story)
+    return None
+
+
 def _lean_interest_discovery_cue(person_id: Optional[int]) -> Optional[dict]:
     """Offer the "so, what are you into that you haven't told me?" discovery
     ask — the catalogue-builder behind interest-tailored news. Fires only for
@@ -5504,7 +5567,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     config (LEAN_IMPULSE_*), tuned live — the model reliably produces a good line OR passes."""
     global _last_lean_impulse_at, _last_proactive_line_at, _consecutive_lean_impulses
     global _awaiting_followup_event, _lean_memory_mused_this_session
-    global _lean_news_mentioned_this_session
+    global _lean_news_mentioned_this_session, _last_news_story_offered
     global _engagement_probe_at, _impulse_snooze_until, _impulse_snooze_reason
     global _impulse_snooze_person
     if not (
@@ -5967,6 +6030,18 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                     "identity.introduce_person",
                 ],
             )
+        elif news_story:
+            # A news offer ("did you hear ...?") invites a follow-up whether or
+            # not the generated line carries a literal '?': always expect a
+            # reply so "tell me more about that" binds to THIS frame, and put
+            # the headline in the topic for the logs.
+            _register_rex_utterance(
+                line,
+                source="lean_impulse",
+                topic=str(news_story.get("headline") or ""),
+                target_person_id=person_id,
+                expected_reply_types=["answer", "statement"],
+            )
         else:
             _register_rex_utterance(
                 line,
@@ -6089,6 +6164,17 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 _log.debug("[lean] interest-discovery mark failed: %s", exc)
         if news_story:
             _lean_news_mentioned_this_session = True
+            # Keep the offered story at hand: the person's "tell me more about
+            # that" is answered from THIS content (forced grounded search, or
+            # the cached summary), not from the bare pronoun.
+            _last_news_story_offered = {
+                "headline": str(news_story.get("headline") or ""),
+                "summary": str(news_story.get("summary") or ""),
+                "topic": str(
+                    news_story.get("interest_topic") or news_story.get("topic") or ""
+                ),
+                "at": time.monotonic(),
+            }
             try:
                 from awareness import current_events
                 if news_story.get("interest_topic"):
@@ -12515,11 +12601,52 @@ def _extract_primary_purpose(directive: str) -> str:
     return ""
 
 
+# A whole reply the model wrote as a TEXT-shaped tool call — "[web_search]\n
+# {\"query\": ...}" — instead of a native tool-call delta (field 2026-08-04
+# 23:09: it was dropped as an unspeakable stream tail and the turn died silent).
+# Parsed and dispatched like the real thing when it names a LIVE action; an
+# inline v3 audio tag ("[curious] Hey...") never matches because trailing prose
+# fails the anchor, and a bare "[sarcastic]" resolves to no known tool.
+_TEXT_TOOL_CALL_RE = re.compile(
+    r"^\s*\[([A-Za-z][A-Za-z0-9_.]{2,40})\]\s*(\{.*\})?\s*$", re.S
+)
+
+
+def _parse_text_tool_call(raw: str) -> Optional[tuple]:
+    """(action_key, args) when ``raw`` is a text-shaped call on a LIVE tool,
+    else None. Never raises."""
+    m = _TEXT_TOOL_CALL_RE.match(raw or "")
+    if not m:
+        return None
+    name = m.group(1).strip().replace(".", "_")
+    try:
+        from intelligence import tool_router
+        return tool_router.resolve_tool_call(name, m.group(2) or "{}")
+    except Exception as exc:
+        _log.debug("[interaction] text tool-call resolve failed: %s", exc)
+        return None
+
+
+def _compose_news_search_input(text: str, story: dict) -> str:
+    """Search input for a follow-up about the story Rex just offered: the user's
+    words alone ("tell me more about that") carry no topic, so the cached
+    headline + summary ride along as the grounding."""
+    headline = str(story.get("headline") or "").strip()
+    summary = str(story.get("summary") or "").strip()
+    detail = f" ({summary})" if summary else ""
+    return (
+        f"{text}\n\n[They are asking about the news story you just mentioned: "
+        f'"{headline}"{detail}. Search the web for that story and give them the '
+        "concrete details — what, when, where — in your own voice.]"
+    )
+
+
 def _maybe_web_search_reply(
     text: str,
     person_id: Optional[int],
     turn_start: Optional[float] = None,
     force: bool = False,
+    news_story: Optional[dict] = None,
 ) -> Optional[str]:
     """If this turn needs CURRENT info, run a web search and speak Rex's answer.
 
@@ -12538,7 +12665,12 @@ def _maybe_web_search_reply(
         return None
     try:
         from intelligence import web_search
-        if force:
+        if news_story is not None:
+            # Follow-up about the story Rex just offered in a lull — always a
+            # real search, grounded on the cached headline/summary (the user's
+            # own words are just "tell me more about that").
+            decision = web_search.SearchDecision(True, True, "news_followup")
+        elif force:
             # Live tool-router dispatch: the reply-call LLM already judged this
             # turn needs current data (it beat the phrase triggers AND the
             # autonomous gate to it) — treat like an explicit user request.
@@ -12584,8 +12716,11 @@ def _maybe_web_search_reply(
         )
 
     started = time.monotonic()
+    search_text = (
+        _compose_news_search_input(text, news_story) if news_story is not None else text
+    )
     try:
-        result = web_search.answer(text, person_id, forced=decision.forced)
+        result = web_search.answer(search_text, person_id, forced=decision.forced)
     except Exception as exc:
         _log.warning("[web_search] answer failed: %s", exc)
         return None
@@ -12632,7 +12767,11 @@ def _maybe_web_search_reply(
     # ask about the topic ("what got you asking about X?") rather than re-commenting
     # on what was just looked up. Cleared when they next speak (topic_thread).
     try:
-        web_search.note_search(text)
+        # For a news follow-up, the topic worth being inquisitive about later is
+        # the story itself, not the composed search blob.
+        web_search.note_search(
+            str(news_story.get("headline") or "") if news_story is not None else text
+        )
     except Exception as exc:
         _log.debug("[web_search] note_search skipped: %s", exc)
     return answer_text
@@ -12685,10 +12824,15 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
         # going on with the Iran War?" fell to conversation and Rex refused
         # from stale knowledge while the web_search feature sat unused).
         # Search on the user's own words — they carry the follow-up context —
-        # and note the extracted topic only in the log.
+        # and note the extracted topic only in the log. When the turn is a
+        # follow-up about the news story Rex just offered, the cached
+        # headline/summary ride along (the user's words alone are "tell me
+        # more about that").
         _log.info("[tool_router] web.search query=%r", (args or {}).get("query"))
         try:
-            resp = _maybe_web_search_reply(text, person_id, force=True)
+            resp = _maybe_web_search_reply(
+                text, person_id, force=True, news_story=_news_followup_story(text)
+            )
         except Exception as exc:
             _log.error("[tool_router] web.search failed: %s", exc)
             resp = None
@@ -12881,7 +13025,13 @@ def _stream_llm_response(
     # Current-info web search branch: when the turn needs live data (explicit ask or
     # autonomous gate), Rex looks it up and speaks the answer here, skipping the normal
     # reply. Failure-safe — on no-trigger / no-result it returns None and we proceed.
-    web_answer = _maybe_web_search_reply(text, person_id, turn_start=turn_start)
+    # A follow-up about the news story Rex just offered ("tell me more about that")
+    # forces the search, grounded on the cached headline/summary (field 2026-08-04
+    # 23:09: the context-free follow-up died silent and the subject changed).
+    news_followup = _news_followup_story(text)
+    web_answer = _maybe_web_search_reply(
+        text, person_id, turn_start=turn_start, news_story=news_followup
+    )
     if web_answer is not None:
         return web_answer
     # Fire the surprise classifier in parallel with the main LLM stream so
@@ -12995,6 +13145,22 @@ def _stream_llm_response(
                 agenda_directive,
                 social_frame.build_directive(frame),
                 comedy_modes.build_directive(comedy_mode),
+            ])
+        if news_followup is not None:
+            # The forced search above fell through (disabled / failed / no
+            # citations) — ground the normal reply on the cached story so "tell
+            # me more" is answered with content, not a subject change. Appended
+            # AFTER the slim-contract render so it actually reaches the LLM.
+            _nf_headline = str(news_followup.get("headline") or "").strip()
+            _nf_summary = str(news_followup.get("summary") or "").strip()
+            agenda_directive = "\n".join([
+                agenda_directive,
+                "They are asking about the news story you brought up: "
+                f'"{_nf_headline}" — {_nf_summary} Actually tell them about it: '
+                "share those concrete details (what, when, where) in 2-4 "
+                "sentences before any joke, and do NOT change the subject. If "
+                "they want more than you know, say that's the whole scoop you "
+                "picked up.",
             ])
         _log.info("[agenda] %s", agenda_directive.replace("\n", " | "))
         _full_streaming = bool(getattr(config, "LLM_STREAMING_TTS_ENABLED", True))
@@ -13717,6 +13883,18 @@ def _stream_and_speak_sentences(
     # whole-reply governance — which yields a frame fallback line — so Rex is
     # never left silent. Rare: general frames never drop sentences here.
     if not spoken and not _interrupted.is_set():
+        # The model sometimes writes its tool call as TEXT ("[web_search]\n{...}")
+        # instead of a native tool-call delta; nothing was spoken, so dispatch it
+        # like the real thing rather than dying silent (the caller catches
+        # ToolCallRequested and runs the action's executor).
+        parsed_call = _parse_text_tool_call("".join(raw_chunks))
+        if parsed_call is not None:
+            from intelligence import tool_router as _tr
+            _log.info(
+                "[interaction] text-shaped tool call rescued from stream: %s args=%s",
+                parsed_call[0], parsed_call[1],
+            )
+            raise _tr.ToolCallRequested(parsed_call[0], parsed_call[1])
         # Trim a trailing mid-sentence fragment first — otherwise a max_tokens
         # truncation ("Wow indeed! I") gets re-emitted as a cut-off line. A short
         # finished sentence the splitter's min-chars merge skipped ("Wow indeed!",
@@ -16630,6 +16808,7 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     """
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _idle_outro_spoken, _lean_memory_mused_this_session
+    global _lean_news_mentioned_this_session, _last_news_story_offered
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
@@ -16655,6 +16834,7 @@ def _end_session(*, include_consolidation: bool = True) -> None:
         _idle_outro_spoken = False
         _lean_memory_mused_this_session = False
         _lean_news_mentioned_this_session = False
+        _last_news_story_offered = None
         _lean_impulse_spoken_times.clear()
         try:
             topic_thread.clear()
@@ -16942,6 +17122,7 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     _idle_outro_spoken = False
     _lean_memory_mused_this_session = False
     _lean_news_mentioned_this_session = False
+    _last_news_story_offered = None
     _lean_impulse_spoken_times.clear()
     try:
         topic_thread.clear()

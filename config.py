@@ -8195,6 +8195,15 @@ LEAN_CUE_DROP_COOLDOWN_SECS = _env_float("LEAN_CUE_DROP_COOLDOWN_SECS", 600.0, m
 NEWS_REMARK_PRIORITY = _env_int("NEWS_REMARK_PRIORITY", 54, min_value=1, max_value=100)
 NEWS_REMARK_SESSION_CAP = _env_int("NEWS_REMARK_SESSION_CAP", 1, min_value=0, max_value=10)
 NEWS_REMARK_COOLDOWN_SECS = _env_float("NEWS_REMARK_COOLDOWN_SECS", 900.0, min_value=0.0, max_value=86400.0)
+# News follow-up elaboration: when Rex OFFERS a story ("did you hear ...?") and
+# the person asks to hear more ("tell me more about that"), the turn is answered
+# with a FORCED web search grounded on the story's cached headline+summary — not
+# the bare follow-up words, which carry no topic (field 2026-08-04 23:09: "Can
+# you tell me more about that?" produced a dropped hallucinated tool tag, total
+# silence, and a subject change). If the search can't run, the cached summary is
+# injected into the reply directive so he elaborates from what he already knows.
+NEWS_FOLLOWUP_ELABORATION_ENABLED = _env_bool("NEWS_FOLLOWUP_ELABORATION_ENABLED", True)
+NEWS_FOLLOWUP_WINDOW_SECS = _env_float("NEWS_FOLLOWUP_WINDOW_SECS", 240.0, min_value=30.0, max_value=3600.0)
 
 # ── Open-thread follow-ups (intelligence/open_threads.py) ─────────────────────
 # The diary stores what a person left unresolved (open_threads); when they're
