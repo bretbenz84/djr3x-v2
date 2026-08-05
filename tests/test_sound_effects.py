@@ -414,6 +414,21 @@ class SoundEffectsTest(unittest.TestCase):
     def test_unknown_emotion_silent(self):
         self.assertFalse(sfx.play_for_speech("melancholic-jazz"))
 
+    # play() is mocked in these two so the shared speech-emotion cooldown can't
+    # swallow the second call -- what's under test is the tag filter, not pacing.
+    def test_muted_tag_gets_no_chirp(self):
+        """A droid chirp a beat before a cloned human voice gives the bit away."""
+        with mock.patch.object(sfx, "play", return_value=True) as play:
+            self.assertFalse(sfx.play_for_speech("excited", tag="impersonation"))
+            self.assertFalse(sfx.play_for_speech("EXCITED", tag="  Impersonation "))
+        play.assert_not_called()
+
+    def test_other_tags_still_chirp(self):
+        with mock.patch.object(sfx, "play", return_value=True) as play:
+            self.assertTrue(sfx.play_for_speech("excited", tag="reaction"))
+            self.assertTrue(sfx.play_for_speech("excited"))
+        self.assertEqual(play.call_count, 2)
+
     def test_registry_override_wins(self):
         with mock.patch.object(config, "SOUND_EFFECTS_EMOTION_MAP_OVERRIDES",
                                {"happy": ["motion_whir"]}, create=True), \

@@ -326,11 +326,18 @@ def play_for_speech(emotion: str, tag: Optional[str] = None) -> bool:
     plays normally on top; the chirp's audible content is over in the first second, so
     the overlap lands in its trailing silence (owner spec). It never holds the output
     gate, so TTS is never delayed; it just won't fire if the speaker is already busy
-    (so it can't cut off an in-progress reply). Neutral gets nothing."""
+    (so it can't cut off an in-progress reply). Neutral gets nothing.
+
+    Tags in SOUND_EFFECTS_NO_EMOTION_CHIRP_TAGS opt out: impersonation has no
+    synthesis gap to cover, and a droid chirp landing a beat before a cloned human
+    voice gives the game away."""
     emotion = str(emotion or "").strip().lower()
     if not emotion or emotion == "neutral":
         return False
     if emotion not in _registry():
+        return False
+    muted = getattr(config, "SOUND_EFFECTS_NO_EMOTION_CHIRP_TAGS", ()) or ()
+    if tag and str(tag).strip().lower() in {str(t).strip().lower() for t in muted}:
         return False
     return play(emotion, concurrent=True)
 

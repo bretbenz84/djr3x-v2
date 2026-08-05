@@ -8322,6 +8322,12 @@ SOUND_EFFECTS_HEADLIFT_STARTUP_MUTE_SECS = 20.0
 # Optional overrides: map an emotion/key to different clip stem lists without code
 # changes, e.g. {"happy": ["Droid_Excited"]}. Merged over the built-in registry.
 SOUND_EFFECTS_EMOTION_MAP_OVERRIDES: dict = {}
+# Speech tags that get NO emotion chirp. The chirp exists to fill the ~1 s TTS
+# generation gap, but an impersonation has no gap to fill (the intro line and the
+# thinking loop already cover it) and a droid chirp fired a beat before a cloned
+# human voice breaks the illusion the whole bit depends on — jarring on the
+# dev mac, 2026-08-04. Rex's own lines elsewhere keep their chirps.
+SOUND_EFFECTS_NO_EMOTION_CHIRP_TAGS = ("impersonation",)
 SOUND_EFFECTS_REGISTRY_OVERRIDES: dict = {}
 
 
