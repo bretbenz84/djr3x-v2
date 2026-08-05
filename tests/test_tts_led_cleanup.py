@@ -140,3 +140,37 @@ class TtsLedCleanupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LedChunkingTests(unittest.TestCase):
+    """A clone take renders as ONE unit, so playback receives the whole line as a
+    single array. Driving the mouth once per received chunk then meant one RMS
+    for the entire bit: motionless head, dead mouth LEDs, and a blocking write
+    that barge-in could not interrupt."""
+
+    def test_whole_take_is_resliced_into_led_frames(self):
+        from audio import tts
+
+        sr = 24000
+        whole = np.zeros(int(sr * 12.0), dtype=np.float32)
+        pieces = list(tts._led_chunks(whole, sr))
+        self.assertGreater(len(pieces), 100)
+        # ~30 fps by default, so a 12 s line is a few hundred updates
+        self.assertAlmostEqual(len(pieces), 12.0 / 0.033, delta=30)
+
+    def test_no_samples_are_lost_or_duplicated(self):
+        from audio import tts
+
+        sr = 24000
+        whole = np.arange(int(sr * 1.5), dtype=np.float32)
+        rebuilt = np.concatenate(list(tts._led_chunks(whole, sr)))
+        np.testing.assert_array_equal(rebuilt, whole)
+
+    def test_small_chunks_pass_through_untouched(self):
+        from audio import tts
+
+        sr = 24000
+        small = np.zeros(int(sr * 0.02), dtype=np.float32)
+        pieces = list(tts._led_chunks(small, sr))
+        self.assertEqual(len(pieces), 1)
+        self.assertIs(pieces[0], small)

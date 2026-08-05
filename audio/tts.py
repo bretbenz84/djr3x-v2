@@ -42,7 +42,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, Iterator, Optional, Tuple
 
 import numpy as np
 
@@ -591,6 +591,27 @@ def _begin_speech(emotion: str, ttl_secs: float):
     return emotion_frame, led_emotion
 
 
+def _led_chunks(samples: np.ndarray, sr: int) -> Iterator[np.ndarray]:
+    """Split one generator chunk into LED-update-sized pieces.
+
+    The streaming paths drive the mouth once per chunk they receive, which is
+    fine when chunks arrive every ~0.3 s but not when one chunk IS the whole
+    line. A clone take renders as a single unit (LOCAL_TTS_TAKE_WHOLE_CLIP), so
+    stream() hands playback one ~12 s array: the mouth got a single RMS for the
+    entire bit and the head sat still through it, and the 12 s blocking write
+    could not be barged in on. Re-slicing here restores per-frame mouth motion
+    and gives barge-in a check every ~33 ms.
+    """
+    step = max(1, int(sr * float(getattr(config, "TTS_LED_UPDATE_INTERVAL_SECS", 0.033))))
+    if samples.size <= step:
+        yield samples
+        return
+    for i in range(0, samples.size, step):
+        piece = samples[i:i + step]
+        if piece.size:
+            yield piece
+
+
 def _drive_mouth_chunk(samples: np.ndarray, last_led: int, min_delta: int) -> int:
     """Drive mouth LED brightness + speech-reactive servo from one chunk's RMS,
     throttled by min_delta. Returns the new last_led."""
@@ -1086,7 +1107,12 @@ def _speak_local(
 
             with _speaking_lock:
                 _speaking = True
-            _begin_speech(emotion, ttl_secs=8.0)
+            # A whole-clip clone take is already fully buffered here, so its real
+            # length is known and the emotion frame is given enough TTL to cover
+            # it. The flat 8 s expired partway through a ~13 s impersonation,
+            # dropping the speech pose and lights before the bit had finished.
+            buffered_secs = sum(int(c.size) for c in buffered) / float(sr or 1)
+            _begin_speech(emotion, ttl_secs=max(8.0, buffered_secs + 3.0))
 
             all_samples: list[np.ndarray] = list(buffered)
             last_led = -1
@@ -1107,11 +1133,17 @@ def _speak_local(
                 if not canceled:
                     stream.write(front_pad)
                 for samples in buffered:
-                    if echo_cancel.was_canceled():
-                        canceled = True
+                    if canceled:
                         break
-                    last_led = _drive_mouth_chunk(samples, last_led, min_delta)
-                    stream.write(samples)
+                    # Re-sliced to LED-frame size: one clone take arrives as a
+                    # single ~12 s array, and writing it whole froze the mouth and
+                    # the head for the entire line (see _led_chunks).
+                    for piece in _led_chunks(samples, sr):
+                        if echo_cancel.was_canceled():
+                            canceled = True
+                            break
+                        last_led = _drive_mouth_chunk(piece, last_led, min_delta)
+                        stream.write(piece)
                     if not ttfa_logged:
                         logger.info(
                             "[tts] local first audio in %.2fs",
@@ -1120,12 +1152,15 @@ def _speak_local(
                         ttfa_logged = True
                 if not canceled:
                     for samples in gen:
-                        if echo_cancel.was_canceled():
-                            canceled = True
+                        if canceled:
                             break
                         all_samples.append(samples)
-                        last_led = _drive_mouth_chunk(samples, last_led, min_delta)
-                        stream.write(samples)
+                        for piece in _led_chunks(samples, sr):
+                            if echo_cancel.was_canceled():
+                                canceled = True
+                                break
+                            last_led = _drive_mouth_chunk(piece, last_led, min_delta)
+                            stream.write(piece)
 
                 if canceled:
                     stream.abort()
