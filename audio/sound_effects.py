@@ -24,8 +24,12 @@ THE ONE HARD RULE — effects never gate speech. Two playback disciplines:
     reply, and hands mic-suppression to TTS when TTS takes the speaker.
   Both wrap echo_cancel.set_playing so Rex never transcribes his own chirps.
 
-Variants: registry keys map to LISTS of clip stems; multi-entry keys pick uniformly
-at random per play (the "_1"/"_2" files). Decoded audio is cached after first use.
+Variants: registry keys map to LISTS of clip stems, and an entry ending in "/" names a
+SUBFOLDER of the effects dir standing for every clip inside it (``"thinking/"``) — drop
+files in, they join the rotation, no code change. A multi-clip pool plays as a shuffled
+BAG (see _pick): every clip is used once before any repeats and the same clip never
+plays twice in a row, so the looping "thinking" filler cycles through the whole folder
+instead of landing on the same chirp. Decoded audio is cached after first use.
 """
 
 from __future__ import annotations
@@ -46,11 +50,14 @@ _log = logging.getLogger(__name__)
 _AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a")
 
 # ── Registry: effect key -> clip stem(s). Stems resolve case-insensitively against
-# the directory, so the generator's quirky filenames stay untouched on disk. ──────
+# the directory (subfolders included), so the generator's quirky filenames stay
+# untouched on disk. An entry ending in "/" is a whole FOLDER of variants. ────────
 _REGISTRY: dict = {
     # Emotions (keys match the TTS emotion vocabulary)
     "happy":        ["Droid_Happy_bouncy"],
-    "excited":      ["Droid_Excited"],
+    # Folder pool: the single harsh Droid_Excited chirp was replaced by the
+    # excitement/ set (owner 2026-08-04) — picked at random, never twice in a row.
+    "excited":      ["excitement/"],
     "curious":      ["Droid_Curious"],
     "surprised":    ["Droid_Surprised"],
     "sad":          ["Droid_Sad_slow_descent"],
@@ -94,7 +101,9 @@ _REGISTRY: dict = {
     "alert":        ["Alert_ping,_two-tone"],
     "attention":    ["Attention-getting_polite"],
     "scanning":     ["Scanning_sweep,_slow"],
-    "thinking":     ["robot_Processing_thinking_1", "robot_Processing_thinking_2"],
+    # Folder pool: replaces the two harsh robot_Processing_thinking clips (owner
+    # 2026-08-04). The startup/impersonation loops cycle the whole folder.
+    "thinking":     ["thinking/"],
     "charger_connected": ["droid_gaining_electric"],
     "charger_disconnected": ["droid_losing_electric"],
     "idle_breath":  ["Soft_idle_robot_breathing"],
@@ -108,6 +117,9 @@ _HEADLIFT_KEYS = {"headlift_up", "headlift_down"}
 _lock = threading.Lock()
 _decode_cache: dict = {}          # resolved Path -> (np.ndarray float32 mono, samplerate)
 _stem_cache: dict = {}            # lowercase stem -> Path (built lazily per dir scan)
+_dir_pools: dict = {}             # lowercase folder name -> tuple of clip stems
+_bags: dict = {}                  # key -> (pool signature, remaining stems this pass)
+_last_stem: dict = {}             # key -> stem played last (no back-to-back repeats)
 _last_play_at: dict = {}          # family -> monotonic ts of last successful start
 _last_key_at: dict = {}           # key -> monotonic ts
 _yield_event = threading.Event() # set by output_gate's blocking acquirers via the hook
@@ -217,6 +229,21 @@ def _effects_dir() -> Path:
     return Path(getattr(config, "SOUND_EFFECTS_DIR", "assets/audio/sound_effects"))
 
 
+def _scan_effects_dir() -> None:
+    """(Re)index the effects dir by lowercase stem. SUBFOLDERS are included — a
+    registry key can name a whole folder of variants — and are walked deepest-first
+    so a top-level file still wins a stem collision."""
+    root = _effects_dir()
+    try:
+        files = [f for f in root.rglob("*")
+                 if f.is_file() and f.suffix.lower() in _AUDIO_EXTS]
+        files.sort(key=lambda p: (-len(p.relative_to(root).parts), p.name.lower()))
+    except OSError:
+        return
+    for f in files:
+        _stem_cache[f.stem.lower()] = f
+
+
 def _resolve_stem(stem: str) -> Optional[Path]:
     """Case-insensitive stem -> file path (mirrors soundboard.resolve_clip: scan the
     dir, never trust case-insensitive .exists())."""
@@ -226,13 +253,84 @@ def _resolve_stem(stem: str) -> Optional[Path]:
     cached = _stem_cache.get(key)
     if cached is not None and cached.is_file():
         return cached
-    try:
-        for f in _effects_dir().iterdir():
-            if f.is_file() and f.suffix.lower() in _AUDIO_EXTS:
-                _stem_cache[f.stem.lower()] = f
-    except OSError:
-        return None
+    _scan_effects_dir()
     return _stem_cache.get(key)
+
+
+def _dir_pool(name: str) -> tuple:
+    """Every clip stem in subfolder ``name`` of the effects dir, sorted by filename.
+
+    Lets a registry key point at a FOLDER instead of a hand-listed set of stems: new
+    clips dropped in join the rotation with no code change (owner 2026-08-04, on
+    replacing the single excited chirp and the two thinking chirps with sets)."""
+    key = str(name).strip().strip("/\\").lower()
+    if not key:
+        return ()
+    cached = _dir_pools.get(key)
+    if cached is not None:
+        return cached
+    pool: list = []
+    try:
+        root = _effects_dir()
+        # Case-insensitive folder match, same discipline as the stem lookup.
+        folder = next((d for d in root.iterdir()
+                       if d.is_dir() and d.name.lower() == key), None)
+        if folder is not None:
+            pool = [f.stem for f in sorted(folder.iterdir(), key=lambda p: p.name.lower())
+                    if f.is_file() and f.suffix.lower() in _AUDIO_EXTS]
+    except OSError:
+        pool = []
+    if not pool:
+        _log.warning("[sfx] no clips in folder %r under %s", key, _effects_dir())
+    _dir_pools[key] = tuple(pool)
+    return _dir_pools[key]
+
+
+def _stems_for(key: str) -> list:
+    """Resolved clip stems for ``key``: registry entries with folder pools expanded.
+
+    Tolerates a bare string entry (a plausible shape for a config override)."""
+    entries = _registry().get(key) or []
+    if isinstance(entries, str):
+        entries = [entries]
+    out: list = []
+    seen: set = set()
+    for entry in entries:
+        text = str(entry).strip()
+        if not text:
+            continue
+        stems = _dir_pool(text) if text.endswith(("/", "\\")) else (text,)
+        for stem in stems:
+            if stem.lower() not in seen:
+                seen.add(stem.lower())
+                out.append(stem)
+    return out
+
+
+def _pick(key: str, stems: list) -> str:
+    """Choose the next clip for ``key`` from its pool.
+
+    A multi-clip pool is drawn as a shuffled BAG, not an independent coin flip: every
+    clip plays once before any repeats, and the seam between passes never replays the
+    clip that just played. random.choice() repeated back-to-back ~1 time in N, which
+    reads as a stuck tape — worst on the looping "thinking" filler, where the whole
+    point of a folder of variants is that the wait doesn't sound like one chirp."""
+    if not stems:
+        return ""
+    if len(stems) == 1:
+        return stems[0]
+    sig = tuple(stems)
+    with _lock:
+        bag_sig, bag = _bags.get(key, (None, []))
+        if bag_sig != sig or not bag:
+            bag = list(stems)
+            random.shuffle(bag)
+            if bag[0] == _last_stem.get(key):
+                bag.append(bag.pop(0))     # push the repeat to the end of the pass
+        stem = bag.pop(0)
+        _bags[key] = (sig, bag)
+        _last_stem[key] = stem
+    return stem
 
 
 def _decode(path: Path):
@@ -289,7 +387,7 @@ def play(key: str, *, force: bool = False, concurrent: bool = False,
         family = _family(key)
         if not force and not _family_allowed(family):
             return False
-        stems = _registry().get(key)
+        stems = _stems_for(key)
         if not stems:
             return False
         now = time.monotonic()
@@ -303,7 +401,7 @@ def play(key: str, *, force: bool = False, concurrent: bool = False,
                     return False
             _last_play_at[family] = now
             _last_key_at[key] = now
-        stem = random.choice(list(stems)) if len(stems) > 1 else stems[0]
+        stem = _pick(key, stems)
         path = _resolve_stem(str(stem))
         if path is None:
             _log.warning("[sfx] clip not found for key %r (stem %r in %s)",
@@ -550,7 +648,7 @@ def start_loop(key: str, *, mode: str = "gated", gap_secs: float = 0.15,
     family = _family(key)
     if not _family_allowed(family):
         return None
-    if not _registry().get(key):
+    if not _stems_for(key):
         return None
 
     handle = LoopHandle(key)
@@ -584,10 +682,10 @@ def stop_loop(handle: Optional[LoopHandle], *, join_timeout: float = 1.0) -> Non
 
 def _play_once(key: str, *, mode: str = "gated", abort=None) -> bool:
     """Synchronously play one pass of ``key``. Returns True if it actually started."""
-    stems = _registry().get(key)
+    stems = _stems_for(key)
     if not stems:
         return False
-    stem = random.choice(list(stems)) if len(stems) > 1 else stems[0]
+    stem = _pick(key, stems)      # each loop pass advances the cycle (never a repeat)
     path = _resolve_stem(str(stem))
     if path is None:
         return False
@@ -616,9 +714,11 @@ def _play_once(key: str, *, mode: str = "gated", abort=None) -> bool:
 
 
 def list_effects() -> dict:
-    """Key -> resolved file names (diagnostics: which registry entries have files)."""
+    """Key -> resolved file names (diagnostics: which registry entries have files).
+    Folder pools are expanded, so an empty/misnamed folder shows up as MISSING."""
     out = {}
-    for key, stems in sorted(_registry().items()):
+    for key in sorted(_registry()):
+        stems = _stems_for(key) or [f"{key}:EMPTY-POOL"]
         out[key] = [
             (p.name if (p := _resolve_stem(str(s))) is not None else f"MISSING:{s}")
             for s in stems
@@ -631,5 +731,8 @@ def reset() -> None:
     with _lock:
         _last_play_at.clear()
         _last_key_at.clear()
+        _bags.clear()
+        _last_stem.clear()
     _stem_cache.clear()
+    _dir_pools.clear()
     _yield_event.clear()

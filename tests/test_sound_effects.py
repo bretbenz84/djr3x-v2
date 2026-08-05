@@ -387,6 +387,54 @@ class SoundEffectsTest(unittest.TestCase):
             self.assertFalse(sfx.play("motion_turn"))    # …but same-key dedup (2x) holds
             self.assertTrue(sfx.play("motion_move"))     # different key OK
 
+    # ── folder pools + cycling (owner 2026-08-04: the single excited chirp and the
+    # two harsh thinking chirps were replaced by whole folders of variants) ──
+    def test_folder_pools_expand_to_their_clips(self):
+        for key in ("thinking", "excited"):
+            with self.subTest(key=key):
+                stems = sfx._stems_for(key)
+                self.assertGreater(len(stems), 1, f"{key} pool should have variants")
+                for stem in stems:
+                    self.assertIsNotNone(sfx._resolve_stem(stem),
+                                         f"{key} stem {stem!r} has no file")
+
+    def test_retired_clips_are_gone_from_every_pool(self):
+        retired = {"droid_excited", "robot_processing_thinking_1",
+                   "robot_processing_thinking_2"}
+        for key in sfx._registry():
+            for stem in sfx._stems_for(key):
+                self.assertNotIn(stem.lower(), retired, f"{key} still uses {stem}")
+
+    def test_thinking_cycles_the_whole_folder_before_repeating(self):
+        # The startup/impersonation loops repeat this key for as long as the wait
+        # lasts; the folder exists so that wait doesn't sound like one chirp.
+        pool = sfx._stems_for("thinking")
+        picks = [sfx._pick("thinking", pool) for _ in range(len(pool))]
+        self.assertEqual(sorted(p.lower() for p in picks),
+                         sorted(p.lower() for p in pool), "a pass must use each clip once")
+        # …and the pass seam must not replay the clip that just played.
+        nxt = sfx._pick("thinking", pool)
+        self.assertNotEqual(nxt, picks[-1])
+
+    def test_excited_never_plays_the_same_clip_twice_in_a_row(self):
+        pool = sfx._stems_for("excited")
+        picks = [sfx._pick("excited", pool) for _ in range(200)]
+        repeats = [a for a, b in zip(picks, picks[1:]) if a == b]
+        self.assertEqual(repeats, [], "back-to-back repeat of the same clip")
+        self.assertEqual(set(picks), set(pool), "every clip in the folder gets used")
+
+    def test_subfolder_clips_resolve_by_stem(self):
+        stem = sfx._stems_for("excited")[0]
+        path = sfx._resolve_stem(stem)
+        self.assertIsNotNone(path)
+        self.assertEqual(path.parent.name, "excitement")
+
+    def test_pool_play_picks_a_folder_clip(self):
+        with mock.patch.object(sfx.threading, "Thread") as thread:
+            self.assertTrue(sfx.play("thinking"))
+        path = thread.call_args.kwargs["args"][0]
+        self.assertEqual(path.parent.name, "thinking")
+
     def test_variants_randomize(self):
         chosen = set()
         with mock.patch.object(sfx.threading, "Thread") as thread, \

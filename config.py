@@ -8320,7 +8320,9 @@ SOUND_EFFECTS_HEADLIFT_MIN_TRAVEL_QUS = 1200   # ~21% of the head-lift's full tr
 SOUND_EFFECTS_HEADLIFT_COOLDOWN_SECS = 5.0
 SOUND_EFFECTS_HEADLIFT_STARTUP_MUTE_SECS = 20.0
 # Optional overrides: map an emotion/key to different clip stem lists without code
-# changes, e.g. {"happy": ["Droid_Excited"]}. Merged over the built-in registry.
+# changes, e.g. {"happy": ["Droid_Happy_bouncy"]}. An entry ending in "/" names a
+# SUBFOLDER of SOUND_EFFECTS_DIR and stands for every clip in it, e.g.
+# {"curious": ["thinking/"]}. Merged over the built-in registry.
 SOUND_EFFECTS_EMOTION_MAP_OVERRIDES: dict = {}
 # Speech tags that get NO emotion chirp. The chirp exists to fill the ~1 s TTS
 # generation gap, but an impersonation has no gap to fill (the intro line and the
