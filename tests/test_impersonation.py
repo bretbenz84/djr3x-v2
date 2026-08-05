@@ -5,6 +5,7 @@ script prompt, the spoken performance's voice_ref threading, and the router evid
 gate. The local TTS engine and the LLM are mocked — no model loads, no audio.
 """
 
+import json
 import threading
 import unittest
 from contextlib import ExitStack
@@ -221,8 +222,9 @@ class ScriptPromptTest(unittest.TestCase):
 
     def test_build_parody_stranger_mode_not_famous(self):
         seen = {}
-        def fake_prompt(name, material, do_not, *, is_self, famous, stranger=False, avoid=None):
-            seen.update(famous=famous, stranger=stranger)
+        def fake_prompt(name, material, do_not, *, is_self, famous, stranger=False,
+                        avoid=None, angle=None):
+            seen.update(famous=famous, stranger=stranger, angle=angle)
             return "p"
         with mock.patch.object(impersonation, "_script_prompt", side_effect=fake_prompt), \
              mock.patch("intelligence.llm._client") as client:
@@ -232,6 +234,86 @@ class ScriptPromptTest(unittest.TestCase):
             impersonation.build_parody_script("guest", None, is_self=True, stranger=True)
         self.assertTrue(seen["stranger"])
         self.assertFalse(seen["famous"])
+        self.assertIsNone(seen["angle"])   # angles are a famous-mode device only
+
+    def test_famous_prompt_collides_their_world_with_the_droid(self):
+        prompt = impersonation._script_prompt(
+            "Richard Nixon", [], [], is_self=False, famous=True
+        )
+        low = prompt.lower()
+        self.assertIn("droid", low)
+        # the bit is ABOUT being impersonated, not just a voice match
+        self.assertIn("borrowed his voice", low)
+        # and it must not invert -- takes drifted into the president calling
+        # HIMSELF a droid until the direction was spelled out
+        self.assertIn("never calls himself a droid", low)
+
+    def test_famous_prompt_carries_the_drawn_angle(self):
+        prompt = impersonation._script_prompt(
+            "Harry Truman", [], [], is_self=False, famous=True,
+            angle="have them lodge a dignified complaint",
+        )
+        self.assertIn("Angle for THIS take: have them lodge a dignified complaint", prompt)
+
+    def test_build_parody_draws_an_angle_for_famous_people(self):
+        angles = set()
+
+        def fake_prompt(name, material, do_not, *, is_self, famous, stranger=False,
+                        avoid=None, angle=None):
+            angles.add(angle)
+            return "p"
+
+        with mock.patch.object(impersonation, "_script_prompt", side_effect=fake_prompt), \
+             mock.patch.object(impersonation, "_recent_scripts", return_value=[]), \
+             mock.patch("intelligence.llm._client") as client:
+            client.chat.completions.create.return_value.choices = [
+                mock.Mock(message=mock.Mock(content="a script"))
+            ]
+            for _ in range(40):
+                impersonation.build_parody_script("Nixon", None)
+        self.assertTrue(angles <= set(impersonation._FAMOUS_ANGLES))
+        # 40 draws off 8 angles landing on one lane would mean it isn't varying
+        self.assertGreater(len(angles), 1)
+
+
+class RecentScriptsTest(unittest.TestCase):
+    """The avoid-list is what stops a second "do Nixon again" repeating the bit."""
+
+    def _rows(self):
+        return [
+            {"person_id": None, "detail": json.dumps(
+                {"subject": "Nixon", "voice": "famous:richard-nixon", "script": "bit one"})},
+            {"person_id": None, "detail": json.dumps(
+                {"subject": "President Nixon", "voice": "famous:richard-nixon",
+                 "script": "bit two"})},
+            {"person_id": None, "detail": json.dumps(
+                {"subject": "Reagan", "voice": "famous:ronald-reagan", "script": "other guy"})},
+        ]
+
+    def test_voice_key_matches_across_different_spoken_names(self):
+        with mock.patch("memory.episodes.recent_episodes", return_value=self._rows()):
+            got = impersonation._recent_scripts(
+                "Richard Nixon", None, voice_key="famous:richard-nixon"
+            )
+        # both prior Nixon takes come back even though neither was asked for by
+        # the name used this time -- that miss is what made the bit repeat
+        self.assertEqual(got, ["bit one", "bit two"])
+
+    def test_voice_key_does_not_pull_in_another_president(self):
+        with mock.patch("memory.episodes.recent_episodes", return_value=self._rows()):
+            got = impersonation._recent_scripts(
+                "Reagan", None, voice_key="famous:ronald-reagan"
+            )
+        self.assertEqual(got, ["other guy"])
+
+    def test_falls_back_to_subject_name_for_episodes_written_before_the_key(self):
+        rows = [{"person_id": None,
+                 "detail": json.dumps({"subject": "Nixon", "script": "legacy bit"})}]
+        with mock.patch("memory.episodes.recent_episodes", return_value=rows):
+            got = impersonation._recent_scripts(
+                "Nixon", None, voice_key="famous:richard-nixon"
+            )
+        self.assertEqual(got, ["legacy bit"])
 
 
 class PerformThreadingTest(unittest.TestCase):

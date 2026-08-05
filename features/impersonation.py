@@ -42,6 +42,21 @@ _CANCEL_RE = re.compile(
 )
 _STOPWORDS = {"the", "a", "an", "of", "mr", "mrs", "ms", "dr", "president", "sir", "madam"}
 
+# Comic angles for a famous-person bit, one picked at random per request.
+# Temperature alone kept landing the model on the same "greatest hit" joke for a
+# given figure (the avoid-list only rules out what was said, not the lane it was
+# said in), so the lane is chosen for it.
+_FAMOUS_ANGLES = (
+    "bend their single most-quoted line so it lands on the droid or the party",
+    "have them lodge a dignified complaint about a machine borrowing their voice",
+    "have them mistake the party for something from their own era and hold forth about it",
+    "have them try, and fail, to stay presidential while surrounded by droids and music",
+    "have them give the droid unsolicited advice in their signature style",
+    "have them be tickled by the whole thing and take entirely too much credit for it",
+    "have them campaign — earnestly, to a room that did not ask — for something absurd",
+    "have them narrate the impression itself like a state occasion",
+)
+
 
 # ── Paths / availability ──────────────────────────────────────────────────────
 
@@ -355,19 +370,29 @@ def _gather_material(person_id: int) -> tuple[list[str], list[str]]:
     return material, do_not
 
 
-def _recent_scripts(subject_name: str, person_id: Optional[int], limit: int = 4) -> list[str]:
+def _recent_scripts(
+    subject_name: str, person_id: Optional[int], limit: int = 6, *,
+    voice_key: Optional[str] = None,
+) -> list[str]:
     """The last few parodies Rex did of THIS subject, newest first.
 
     Asked twice in a row, the model happily returns the same joke off the same
     memory material — which reads as a cached bit even though it was generated
     fresh. Feeding the previous takes back as a do-not-repeat list is what makes
     a second "do me again" actually new.
+
+    ``voice_key`` is the resolved VoiceRef label ("famous:richard-nixon"), and it
+    is what makes that work for famous people. Matching on the SPOKEN name did
+    not: "do Nixon", "do Richard Nixon" and "do President Nixon" all land on one
+    voice clip but recorded three different subjects, so each phrasing saw an
+    empty history and the model was free to tell its favourite joke again.
+    Episodes written before the key existed still fall back to the name.
     """
     want = str(subject_name or "").strip().lower()
     out: list[str] = []
     try:
         from memory import episodes
-        rows = episodes.recent_episodes(limit=25, kind="impersonation")
+        rows = episodes.recent_episodes(limit=60, kind="impersonation")
     except Exception as exc:
         logger.debug("[impersonation] recent script lookup failed: %s", exc)
         return out
@@ -381,7 +406,11 @@ def _recent_scripts(subject_name: str, person_id: Optional[int], limit: int = 4)
                 continue
             payload = json.loads(detail)
             if person_id is None:
-                if str(payload.get("subject") or "").strip().lower() != want:
+                prior_voice = str(payload.get("voice") or "")
+                if voice_key and prior_voice:
+                    if prior_voice != voice_key:
+                        continue
+                elif str(payload.get("subject") or "").strip().lower() != want:
                     continue
             prior = " ".join(str(payload.get("script") or "").split())
         except Exception:
@@ -396,7 +425,7 @@ def _recent_scripts(subject_name: str, person_id: Optional[int], limit: int = 4)
 def _script_prompt(
     name: str, material: list[str], do_not: list[str], *,
     is_self: bool, famous: bool, stranger: bool = False,
-    avoid: Optional[list[str]] = None,
+    avoid: Optional[list[str]] = None, angle: Optional[str] = None,
 ) -> str:
     who = "yourself" if is_self else name
     parts = [
@@ -417,9 +446,32 @@ def _script_prompt(
         )
     elif famous:
         parts.append(
-            "This is a well-known public figure; riff on their famous mannerisms and speaking "
-            "style. Keep it light and playful — no politics-of-the-day or cheap shots."
+            f"This is a well-known public figure, and the bit is HALF him, HALF where he has "
+            f"ended up. Both halves are required:\n"
+            f"1. Anchor it in something unmistakably {name} — a line he is genuinely famous "
+            f"for, a known fixation, a verbal tic, the thing every impressionist does. Someone "
+            f"who knows nothing else about him should still recognise him from it. A generic "
+            f"dignified old statesman is a failed take.\n"
+            f"2. Collide that with the fact that a Star Wars droid at somebody's house party "
+            f"has borrowed his voice and is doing him for a room of friends. The classic move "
+            f"is his own famous line, bent so it lands on the droid, the guests, or the music.\n"
+            f"Direction matters: the DROID is impersonating {name}, not the other way round. "
+            "He is a man, reacting to a machine that took his voice — outraged, flattered, or "
+            "magnificently oblivious. He may mock the droid, deny being one, or refuse to "
+            "believe in one, but he NEVER calls himself a droid or claims to be one.\n"
+            "Vary the anchor between takes. If an earlier take opened on his single most "
+            "famous line, reach for different material this time — another catchphrase, a "
+            "policy he would not shut up about, a mannerism, a known appetite or vanity.\n"
+            "Keep it light and playful — no politics-of-the-day or cheap shots, and nothing "
+            "about how he died."
         )
+        if angle:
+            parts.append(
+                f"Angle for THIS take: {angle}. The angle only shapes HOW the bit goes — it "
+                "never excuses dropping the recognisable-him half or the droid half above. A "
+                "take that follows the angle but could have come out of any old politician's "
+                "mouth has failed."
+            )
     if material:
         parts.append("Things you know about " + name + " (riff on these):\n- " + "\n- ".join(material[:14]))
     if do_not:
@@ -430,7 +482,8 @@ def _script_prompt(
     if avoid:
         parts.append(
             "You have already done this impression before. Write a DIFFERENT bit — new angle, "
-            "new detail, new punchline. Do not reuse these:\n- " + "\n- ".join(avoid[:4])
+            "new detail, new punchline. Reusing a joke, a premise, or a closing beat from these "
+            "is a failure, even reworded:\n- " + "\n- ".join(avoid[:6])
         )
     return "\n\n".join(parts)
 
@@ -438,17 +491,26 @@ def _script_prompt(
 def build_parody_script(
     subject_name: str, person_id: Optional[int] = None, *,
     is_self: bool = False, stranger: bool = False,
+    voice_key: Optional[str] = None,
 ) -> Optional[str]:
     """Generate the short parody line via a one-off LLM completion. Returns the
     cleaned script text, or None on failure. `stranger` = an anonymous live guest
-    (no memory, no famous framing — a generic warm tease)."""
+    (no memory, no famous framing — a generic warm tease).
+
+    Nothing here is cached: every call re-asks the model, and the avoid-list plus
+    a randomly drawn angle push it off the take it gave last time.
+    """
+    import random
+
     material, do_not = ([], [])
     if person_id is not None:
         material, do_not = _gather_material(person_id)
+    famous = (person_id is None and not stranger)
     prompt = _script_prompt(
         subject_name, material, do_not, is_self=is_self,
-        famous=(person_id is None and not stranger), stranger=stranger,
-        avoid=_recent_scripts(subject_name, person_id),
+        famous=famous, stranger=stranger,
+        avoid=_recent_scripts(subject_name, person_id, voice_key=voice_key),
+        angle=(random.choice(_FAMOUS_ANGLES) if famous else None),
     )
     try:
         from intelligence import llm
@@ -523,7 +585,10 @@ def perform(
     #    renders behind it, so the room waits on one sentence, not the whole bit.
     #    Nothing here is cached — every request re-generates the script AND
     #    re-synthesizes the audio.
-    script = build_parody_script(subject_name, person_id, is_self=is_self, stranger=stranger)
+    voice_key = getattr(ref, "label", "") or None
+    script = build_parody_script(
+        subject_name, person_id, is_self=is_self, stranger=stranger, voice_key=voice_key,
+    )
 
     # The player keys the parked take on the text it will actually synthesize.
     speech_text = script or ""
@@ -617,7 +682,7 @@ def perform(
             f"I did an impersonation of {subject_name}.",
             person_id=person_id,
             person_name=(subject_name if person_id is not None else None),
-            detail={"subject": subject_name, "script": script},
+            detail={"subject": subject_name, "voice": voice_key, "script": script},
             salience=0.75,
         )
     except Exception as exc:
