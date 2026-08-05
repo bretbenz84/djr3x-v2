@@ -1844,10 +1844,26 @@ IMPERSONATION_WHO_LINES = [
     "Happy to. Who's the target? You, or someone famous?",
     "Name your victim. I can do you, or a famous voice.",
 ]
+# The stall line, spoken while the clone renders. Both this and the bow cycle
+# through the whole list before repeating and never land back-to-back
+# (utils.phrase_cycler, state under assets/state/) — with only three intros and a
+# random pick, "loading the impression module" came up before nearly every bit.
+# Keep them SHORT: this line is covering synthesis, not filling for it.
+IMPERSONATION_INTRO_STATE_PATH = ""      # default: assets/state/impersonation_intro.json
+IMPERSONATION_OUTRO_STATE_PATH = ""      # default: assets/state/impersonation_outro.json
 IMPERSONATION_INTRO_LINES = [
     "Okay, okay — clearing my vocal buffers. Ahem.",
     "Alright, loading the impression module. This is going to be uncanny.",
     "Give me a second to calibrate the sarcasm. There we go.",
+    "Ladies and gentlemen, for my next trick — a voice that isn't mine.",
+    "Warming up the good speaker. The one I save for special occasions.",
+    "Stand back. I've been practicing this one in the charging dock.",
+    "Let me just find the right larynx. Ah — here we go.",
+    "Rolling tape. If this goes badly, nobody heard it.",
+    "One moment. Swapping out my voice for a borrowed one.",
+    "Hold on, hold on. A performance of this caliber requires a running start.",
+    "Tuning the vocal cords I don't technically have. Almost...",
+    "This next voice is not covered under my warranty.",
 ]
 # Optional Rex-voice button after the bit. Rex takes a BOW — a ringmaster
 # stepping back out in front of the curtain, milking a room that may not have
@@ -1863,6 +1879,10 @@ IMPERSONATION_OUTRO_LINES = [
     "Thank you! I'm here all week. Literally. I can't leave.",
     "Please, please. You're spoiling me.",
     "A round of applause for the voice, if not the droid delivering it.",
+    "I'll be signing autographs by the charging cable.",
+    "Somewhere, a very expensive voice actor just felt a chill.",
+    "No refunds. But honestly? Worth every credit.",
+    "That's my closer. Everything after this is just encore material.",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -869,3 +869,54 @@ class WhoSlotTest(unittest.TestCase):
         self.assertEqual(r, ("a parody", True))
         self.assertIsNone(self.itn._pending_impersonation_capture)
         self.assertEqual(perf.call_args.args[0].label, "person:3")
+
+
+class LineCyclingTest(unittest.TestCase):
+    """Intro and bow walk the whole list before repeating, and never land on the
+    same line twice running. With a random pick over three intros, "loading the
+    impression module" opened nearly every bit (field 2026-08-04)."""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        d = Path(self._tmp.name)
+        self._stack = ExitStack()
+        self.addCleanup(self._stack.close)
+        self._stack.enter_context(mock.patch.object(
+            config, "IMPERSONATION_INTRO_STATE_PATH", str(d / "intro.json"), create=True))
+        self._stack.enter_context(mock.patch.object(
+            config, "IMPERSONATION_OUTRO_STATE_PATH", str(d / "outro.json"), create=True))
+
+    def test_intro_covers_every_line_before_repeating(self):
+        n = len(config.IMPERSONATION_INTRO_LINES)
+        self.assertGreaterEqual(n, 10)
+        seq = [impersonation.intro_line() for _ in range(n)]
+        self.assertEqual(len(set(seq)), n)
+
+    def test_bow_covers_every_line_before_repeating(self):
+        n = len(config.IMPERSONATION_OUTRO_LINES)
+        self.assertGreaterEqual(n, 10)
+        seq = [impersonation.outro_line() for _ in range(n)]
+        self.assertEqual(len(set(seq)), n)
+
+    def test_no_back_to_back_repeat_across_the_cycle_boundary(self):
+        n = len(config.IMPERSONATION_INTRO_LINES)
+        seq = [impersonation.intro_line() for _ in range(n * 3)]
+        dupes = [a for a, b in zip(seq, seq[1:]) if a == b]
+        self.assertEqual(dupes, [], f"repeated back-to-back: {dupes}")
+
+    def test_intro_and_bow_cycle_independently(self):
+        # shared state would let one starve the other's rotation
+        impersonation.intro_line()
+        bows = {impersonation.outro_line() for _ in range(
+            len(config.IMPERSONATION_OUTRO_LINES))}
+        self.assertEqual(len(bows), len(config.IMPERSONATION_OUTRO_LINES))
+
+    def test_unwritable_state_still_returns_a_line(self):
+        with mock.patch.object(config, "IMPERSONATION_INTRO_STATE_PATH",
+                               "/nonexistent-dir/x.json", create=True):
+            self.assertIn(impersonation.intro_line(), config.IMPERSONATION_INTRO_LINES)
+
+    def test_bow_disabled_returns_none(self):
+        with mock.patch.object(config, "IMPERSONATION_OUTRO_ENABLED", False):
+            self.assertIsNone(impersonation.outro_line())

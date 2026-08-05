@@ -201,6 +201,30 @@ def _pick(lines, fallback: str) -> str:
     return random.choice(lines) if lines else fallback
 
 
+def _pick_cycling(lines, fallback: str, state_name: str, config_key: str) -> str:
+    """Like _pick, but walks the WHOLE list before repeating and never lands on
+    the same line twice running (utils.phrase_cycler, state under assets/state/).
+
+    A random pick over three intros meant "loading the impression module" opened
+    most bits; the frame around the joke got stale faster than the joke did.
+    Falls back to a plain random pick if the cycler is unavailable.
+    """
+    lines = [str(x).strip() for x in (lines or []) if str(x).strip()]
+    if not lines:
+        return fallback
+    try:
+        from utils import phrase_cycler
+        state_path = str(getattr(config, config_key, "") or "") or str(
+            _project_root() / "assets" / "state" / state_name
+        )
+        picked = phrase_cycler.select_cycling_line(lines, state_path)
+        if picked:
+            return picked
+    except Exception as exc:
+        logger.debug("[impersonation] line cycling unavailable (%s)", exc)
+    return _pick(lines, fallback)
+
+
 def capture_line() -> str:
     return _pick(
         getattr(config, "IMPERSONATION_CAPTURE_LINES", []),
@@ -231,16 +255,25 @@ def who_line() -> str:
 
 
 def intro_line() -> str:
-    return _pick(
+    """The stall line while the clone renders. Cycles — see _pick_cycling."""
+    return _pick_cycling(
         getattr(config, "IMPERSONATION_INTRO_LINES", []),
         "Okay, clearing my vocal buffers. Ahem.",
+        "impersonation_intro.json",
+        "IMPERSONATION_INTRO_STATE_PATH",
     )
 
 
 def outro_line() -> Optional[str]:
+    """Rex's bow after the bit. Cycles independently of the intro."""
     if not bool(getattr(config, "IMPERSONATION_OUTRO_ENABLED", True)):
         return None
-    return _pick(getattr(config, "IMPERSONATION_OUTRO_LINES", []), "I do not sound like that.")
+    return _pick_cycling(
+        getattr(config, "IMPERSONATION_OUTRO_LINES", []),
+        "Thank you, thank you. You're too kind.",
+        "impersonation_outro.json",
+        "IMPERSONATION_OUTRO_STATE_PATH",
+    )
 
 
 # ── Target resolution ─────────────────────────────────────────────────────────
