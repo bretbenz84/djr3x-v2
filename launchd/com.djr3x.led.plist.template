@@ -10,8 +10,10 @@
   menu bar item with one button per head/chest LED animation. It opens
   ARDUINO_HEAD_PORT / ARDUINO_CHEST_PORT directly while the robot is off and
   releases both ports automatically whenever main.py is running (see the module
-  docstring). A user LaunchAgent (not a system daemon) because the menu bar
-  only exists inside a logged-in GUI session.
+  docstring). It starts in Battery Meter Mode — both ports released so the
+  battery meter agent can paint the chest charge gauge — and only takes them
+  when you uncheck that item or click an animation. A user LaunchAgent (not a
+  system daemon) because the menu bar only exists inside a logged-in GUI session.
 -->
 <plist version="1.0">
 <dict>

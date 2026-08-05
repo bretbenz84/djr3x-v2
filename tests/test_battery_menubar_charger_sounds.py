@@ -97,6 +97,49 @@ class ChestChargeGaugeTest(unittest.TestCase):
         send.assert_not_called()
         self.assertIsNone(self.meter._chest_charge_state)
 
+    def test_failed_send_repaints_as_soon_as_the_port_frees(self):
+        # The LED Control console holding the chest port made every open here
+        # fail; the meter must not then dedup the retry away once it lets go.
+        with mock.patch.object(self.meter, "_send_chest_command", return_value=True):
+            self.meter._sync_chest_charge("live", 50, True)
+        with mock.patch.object(self.meter, "_send_chest_command", return_value=False) as send:
+            self.meter._sync_chest_charge("live", 60, True)
+        send.assert_called_once_with("CHARGE:60:1")
+        self.assertIsNone(self.meter._chest_charge_state)
+
+        self.meter._chest_retry_at = 0.0     # backoff elapsed; port is free now
+        with mock.patch.object(self.meter, "_send_chest_command", return_value=True) as send:
+            self.meter._sync_chest_charge("live", 60, True)
+        send.assert_called_once_with("CHARGE:60:1")
+
+    def test_open_failure_warns_once_per_outage(self):
+        board = self.meter._BOARD_CHEST
+        with mock.patch.object(self.meter.log, "warning") as warn:
+            for _ in range(3):
+                self.meter._warn_board_unreachable(
+                    board, "/dev/cu.usbserial-1420",
+                    OSError("[Errno 16] Resource busy"))
+        self.assertEqual(warn.call_count, 1)
+        self.assertIn("LED Control", warn.call_args[0][0] % warn.call_args[0][1:])
+
+        self.meter._clear_board_warning(board)
+        with mock.patch.object(self.meter.log, "warning") as warn:
+            self.meter._warn_board_unreachable(board, "/dev/cu.usbserial-1420",
+                                               OSError("nope"))
+        self.assertEqual(warn.call_count, 1)
+
+    def test_unopenable_port_retries_fast_but_a_failed_write_backs_off(self):
+        # A failed open reset nothing, and the delay is how long the gauge stays
+        # wrong after another app releases the port. A failed WRITE means the
+        # open already reset the Nano, so don't strobe it.
+        board = self.meter._BOARD_CHEST
+        self.meter._warn_board_unreachable(board, "/dev/null", OSError("busy"))
+        self.assertEqual(self.meter._retry_delay(board),
+                         self.meter._PORT_BUSY_RETRY_SECS)
+        self.meter._clear_board_warning(board)      # open succeeded this time
+        self.assertEqual(self.meter._retry_delay(board),
+                         self.meter._WRITE_FAIL_RETRY_SECS)
+
 
 class MouthChargeColorTest(unittest.TestCase):
     def setUp(self):
@@ -114,6 +157,18 @@ class MouthChargeColorTest(unittest.TestCase):
         }
         for soc, band in expected.items():
             self.assertEqual(self.meter._mouth_soc_band(soc), band, soc)
+
+    def test_failed_send_repaints_as_soon_as_the_port_frees(self):
+        with mock.patch.object(self.meter, "_send_mouth_command", return_value=True):
+            self.meter._sync_mouth_charge("live", 91, True)
+        with mock.patch.object(self.meter, "_send_mouth_command", return_value=False):
+            self.meter._sync_mouth_charge("live", 40, True)
+        self.assertIsNone(self.meter._mouth_charge_state)
+
+        self.meter._mouth_retry_at = 0.0
+        with mock.patch.object(self.meter, "_send_mouth_command", return_value=True) as send:
+            self.meter._sync_mouth_charge("live", 40, True)
+        send.assert_called_once_with("CHARGE:40")
 
     def test_charging_sends_color_command_only_when_band_changes(self):
         with mock.patch.object(self.meter, "_send_mouth_command", return_value=True) as send:

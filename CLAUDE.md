@@ -32,6 +32,9 @@ change (tracked as their own fix-up task):
   presence-ledger rework — the old species cooldown was leaking between tests)
 - `tests/test_body_mood.py` — `test_visor_released_to_lens_clear_floor_when_mood_ends`
 - `tests/test_holiday_plan_cue.py` — `test_spoken_lean_holiday_cue_marks_only_that_person`
+- `tests/test_rex_supervisor.py` — 3 failures (`test_chime_uses_afplay_when_available`,
+  `test_consecutive_frame_default_and_override`, `test_threshold_env_override`;
+  verified against clean HEAD 2026-08-04)
 
 **Before investigating any failure as a regression, check it against HEAD
 first** (`git stash -u && venv/bin/python -m unittest tests.<module> && git

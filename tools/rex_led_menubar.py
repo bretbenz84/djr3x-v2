@@ -18,6 +18,18 @@ therefore also starts a synthetic level wave (a few overlapping sines) so the
 mouth actually dances; any other head button stops the wave (Speak Stop sends
 SPEAK_STOP first). Chest speak patterns animate autonomously — no stream needed.
 
+Battery Meter Mode (the top menu item, DEFAULT ON):
+  While Rex is off, the battery menu bar app (tools/rex_battery_menubar.py) is
+  what paints the chest's 24-pixel charge gauge and the mouth's SOC breathing —
+  it briefly opens each Arduino whenever the level or charger state changes.
+  Ports are exclusive-open, so this console holding them permanently meant those
+  opens silently failed forever and the robot sat dark on the charger (owner
+  2026-08-04: "the LED Control app is hijacking control of that board"). So the
+  console now starts in Battery Meter Mode: both ports released, buttons inert,
+  gauge visible. Toggle the menu item (or just click any animation — that takes
+  the ports automatically) to switch to LED-control mode; the choice persists in
+  assets/state/led_console_mode.json across relaunches.
+
 How it shares the serial ports with main.py (ports are exclusive-open):
   Same dormant pattern as the battery meter and servo console. main.py holds
   the single-instance flock for its whole lifetime; each zone worker polls it
@@ -27,7 +39,8 @@ How it shares the serial ports with main.py (ports are exclusive-open):
     - lock free  → reopen the port and the buttons go live
   Opening either port toggles DTR and reboots that Arduino (both boards reset
   on open on this Mac), so each worker waits ~2 s after opening before it will
-  send anything.
+  send anything. A click made during that boot wait (or the one that flips out
+  of Battery Meter Mode) is held in the queue and sent when the board is up.
 
 Run directly for debugging:
     venv/bin/python tools/rex_led_menubar.py
@@ -35,6 +48,7 @@ Run directly for debugging:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -61,6 +75,8 @@ _LOCK_POLL_SECS = 1.0
 _BAUD = 115200                 # config.HEAD_ARDUINO_BAUD == CHEST_ARDUINO_BAUD
 _BOOT_WAIT_SECS = 2.0          # DTR toggle on open reboots the Arduino
 _SPEAK_LEVEL_HZ = 30.0         # synthetic level stream rate for head speak demos
+_MAX_QUEUED = 8                # clicks held while a board boots / mode flips
+_MODE_STATE_PATH = _PROJECT_ROOT / "assets" / "state" / "led_console_mode.json"
 
 # Animation buttons per zone: (menu label, wire command). Mirrors each
 # firmware's handleCommand() — keep in sync if a sketch gains a mode.
@@ -133,6 +149,62 @@ def _rex_running() -> bool:
         return False
 
 
+# ── Ownership mode: battery meter vs LED control ──────────────────────────────
+# Which app owns the two Arduinos while Rex is off. ON (the default) means this
+# console keeps its hands off so the battery menu bar app can paint the chest
+# charge gauge and the mouth's SOC breathing; OFF means we hold both ports and
+# the animation buttons are live. Persisted so a relaunch (login, KeepAlive
+# restart) doesn't silently take the boards back.
+
+_mode_lock = threading.Lock()
+_battery_mode = True
+
+
+def _load_battery_mode() -> bool:
+    try:
+        data = json.loads(_MODE_STATE_PATH.read_text())
+        return bool(data["battery_mode"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return True          # default: leave the boards to the battery meter
+
+
+def _save_battery_mode(value: bool) -> None:
+    try:
+        _MODE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _MODE_STATE_PATH.write_text(json.dumps({"battery_mode": bool(value)}) + "\n")
+    except OSError as exc:
+        log.warning("Could not persist LED console mode: %s", exc)
+
+
+def battery_mode() -> bool:
+    with _mode_lock:
+        return _battery_mode
+
+
+def set_battery_mode(value: bool, *, persist: bool = True) -> None:
+    global _battery_mode
+    value = bool(value)
+    with _mode_lock:
+        if value == _battery_mode:
+            return
+        _battery_mode = value
+    log.info("Battery Meter Mode %s — %s.", "ON" if value else "OFF",
+             "releasing both boards to the battery meter app" if value
+             else "LED Control is taking the ports")
+    if persist:
+        _save_battery_mode(value)
+
+
+def _status_line(mode: str, detail: str) -> str:
+    return {
+        "live": f"● {detail}",
+        "dormant": "⏸  Rex is running — buttons inert",
+        "battery": "🔋 battery meter owns this board",
+        "connecting": f"… {detail}",
+        "no_port": f"✕ {detail}",
+    }.get(mode, detail)
+
+
 # ── Per-zone serial worker ─────────────────────────────────────────────────────
 # One worker thread per board. Buttons enqueue a command; the worker owns the
 # port, drops to dormant while main.py runs, and reconnects on failure. The head
@@ -152,10 +224,19 @@ class _Zone:
 
     # UI thread → worker
     def enqueue(self, cmd: str) -> None:
+        """Queue a command for the worker.
+
+        Dropped only when the board is genuinely unreachable — Rex owns the port,
+        or none is configured. Anything else (booting after an open, or the pass
+        that follows a Battery-Meter-Mode → LED-control flip) HOLDS the click and
+        sends it once the board is up, so a button never feels dead for the ~2 s
+        an Arduino spends rebooting.
+        """
         with self._lock:
-            if self._mode != "live":
-                return                  # inert while Rex owns the port
+            if self._mode in ("dormant", "no_port"):
+                return
             self._queue.append(cmd)
+            del self._queue[:-_MAX_QUEUED]
 
     def status(self) -> tuple[str, str]:
         with self._lock:
@@ -206,6 +287,23 @@ class _Zone:
                     _close()
                     log.info("%s: Rex is running — port released (dormant).", self.name)
                 self._set("dormant", "Rex is running")
+                stop.wait(_LOCK_POLL_SECS)
+                continue
+
+            if battery_mode():
+                # Hands off: the battery menu bar app needs to open this board to
+                # repaint the charge gauge / mouth glow, and it can't while we
+                # hold the port. Drop queued clicks too — one that raced the
+                # toggle back to battery mode must not fire on some later
+                # takeover. ser is None after the close, so the log line happens
+                # once per handover, not once a second.
+                with self._lock:
+                    self._queue.clear()
+                if ser is not None:
+                    _close()
+                    log.info("%s: Battery Meter Mode — port released to the "
+                             "battery meter app.", self.name)
+                self._set("battery", "battery meter owns this board")
                 stop.wait(_LOCK_POLL_SECS)
                 continue
 
@@ -282,7 +380,13 @@ def run_app() -> int:
             super().__init__("R3XLed", title="💡 LED Control",
                              quit_button="Quit LED Control")
             self._status: dict[str, rumps.MenuItem] = {}
-            menu: list = []
+            # Checked = both boards handed to the battery meter app (see the
+            # module docstring). Sits at the top because it decides whether any
+            # of the buttons below it do anything.
+            self._mode_item = rumps.MenuItem("🔋 Battery Meter Mode",
+                                             callback=self._on_toggle_mode)
+            self._mode_hint = rumps.MenuItem("hint", callback=lambda _: None)
+            menu: list = [self._mode_item, self._mode_hint, None]
             for zone in zones:
                 header = rumps.MenuItem(f"— {zone.name.upper()} —",
                                         callback=lambda _: None)
@@ -308,26 +412,45 @@ def run_app() -> int:
 
         def _make_cb(self, zone: _Zone, cmd: str):
             def _cb(_item):
+                # Clicking an animation IS a request to take the boards — flipping
+                # the toggle first would be a pointless extra step, and a silently
+                # dead button is worse. The command waits in the queue through the
+                # open + ~2 s Arduino boot, so it plays a moment later.
+                if battery_mode():
+                    log.info("Animation clicked (%s) — leaving Battery Meter Mode.", cmd)
+                    set_battery_mode(False)
+                    self._sync_mode_item()
                 zone.enqueue(cmd)
             return _cb
 
+        def _on_toggle_mode(self, _item):
+            set_battery_mode(not battery_mode())
+            self._sync_mode_item()
+
+        def _sync_mode_item(self):
+            on = battery_mode()
+            self._mode_item.state = 1 if on else 0
+            self._mode_hint.title = ("   charge gauge is showing — click any "
+                                     "animation to take over"
+                                     if on else
+                                     "   LED Control owns the boards — no charge gauge")
+
         def _refresh(self, _timer):
+            self._sync_mode_item()
             for zone in zones:
                 mode, detail = zone.status()
-                line = {
-                    "live": f"● {detail}",
-                    "dormant": "⏸  Rex is running — buttons inert",
-                    "connecting": f"… {detail}",
-                    "no_port": f"✕ {detail}",
-                }.get(mode, detail)
-                self._status[zone.name].title = line
+                self._status[zone.name].title = _status_line(mode, detail)
+
+    # Restore the operator's last choice before any worker can grab a port.
+    set_battery_mode(_load_battery_mode(), persist=False)
 
     for zone in zones:
         threading.Thread(target=zone.worker, args=(stop,), daemon=True,
                          name=f"rex-led-{zone.name}").start()
-    log.info("LED Control menu bar app online (head=%s, chest=%s).",
+    log.info("LED Control menu bar app online (head=%s, chest=%s, battery mode=%s).",
              _zone_port("ARDUINO_HEAD_PORT") or "<unset>",
-             _zone_port("ARDUINO_CHEST_PORT") or "<unset>")
+             _zone_port("ARDUINO_CHEST_PORT") or "<unset>",
+             "ON" if battery_mode() else "off")
     try:
         RexLedApp().run()
     finally:

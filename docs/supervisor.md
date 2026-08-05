@@ -166,6 +166,13 @@ color: red at 0–25%, orange at 26–50%, yellow at 51–75%, green at 76–90%
 blue at 91–100%. Unplugging sends `OFF`. As with the chest gauge, this never runs
 while `main.py` is alive.
 
+Both of those displays need a *brief* open of an Arduino that no one else holds,
+so a second app sitting on either port makes them silently impossible. If an open
+fails, the meter logs one WARNING per outage (naming the LED console as the usual
+culprit), forgets its dedup baseline, and retries every 5 s — so the display
+repaints within seconds of the port coming free instead of waiting for the SOC to
+move or for the 30-minute refresh.
+
 Bring-up check without the GUI (prints raw battery frames):
 
 ```bash
@@ -190,12 +197,27 @@ Head speak animations are normally driven by a `SPEAK_LEVEL` audio stream from
 is active so the mouth equalizer actually dances. Clicking any other head
 button stops the wave.
 
+**Battery Meter Mode** is the checkbox at the top of the dropdown, and it is
+**on by default**. Checked, the console releases both Arduinos and shows
+"🔋 battery meter owns this board" in each status row, which is what lets the
+battery companion above paint the chest charge gauge and the mouth's SOC glow
+while Rex is off. Unchecked, this console holds both ports and the animation
+buttons are live — but nothing is drawing the charge display. Clicking any
+animation button unchecks it for you (a dead button would be worse than an
+implied takeover); the click itself is held in the queue and fires once the
+board finishes its ~2 s reboot. The choice persists in
+`assets/state/led_console_mode.json`, so if you leave the console in control
+mode, it is still in control mode after the next login — the chest stays dark on
+the charger until you check the box again. That is exactly how the gauge went
+missing for two days (owner 2026-08-04).
+
 **Port sharing with the robot** follows the battery/servo pattern: each zone
 polls the single-instance flock ~1×/s, releases its serial port while `main.py`
 is alive (buttons go inert, status shows "Rex is running"), and reopens it when
-Rex shuts down. Opening a port reboots that Arduino, so the app waits ~2 s
-after each (re)open before sending. Its logs are `logs/led_menubar.out.log` /
-`.err.log`.
+Rex shuts down. `main.py` outranks the mode checkbox — while Rex is alive the
+ports are his either way. Opening a port reboots that Arduino, so the app waits
+~2 s after each (re)open before sending. Its logs are `logs/led_menubar.out.log`
+/ `.err.log`.
 
 ## Tunables (environment variables)
 

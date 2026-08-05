@@ -487,6 +487,51 @@ def _head_port() -> str:
     return (os.environ.get("ARDUINO_HEAD_PORT") or env.get("ARDUINO_HEAD_PORT") or "").strip()
 
 
+_BOARD_MOUTH = "mouth PCB"
+_BOARD_CHEST = "chest Arduino"
+
+# Retry pacing for the two companion Arduinos. An open that FAILS costs nothing —
+# a busy or missing port errors immediately and no board is reset — and the delay
+# is exactly how long the charge display stays wrong after another app lets go of
+# a port, so retry it quickly. An open that SUCCEEDED and then failed to write has
+# already reset that board, so back off instead of strobing it.
+_PORT_BUSY_RETRY_SECS = 5.0
+_WRITE_FAIL_RETRY_SECS = 30.0
+
+# One WARNING per outage instead of per attempt. These used to be debug-only, so
+# a permanently held port looked exactly like everything working: the LED Control
+# menu bar console held both Arduinos whenever Rex was off, every open here
+# failed, and the charge gauge silently never appeared (owner 2026-08-04).
+_open_fail_warned: dict[str, bool] = {}
+_reached_open: dict[str, bool] = {}
+
+
+def _warn_board_unreachable(board: str, port: str, exc: Exception) -> None:
+    _reached_open[board] = False
+    if _open_fail_warned.get(board):
+        log.debug("%s open failed again (%s).", board, exc)
+        return
+    _open_fail_warned[board] = True
+    text = str(exc).lower()
+    hint = (" — another process holds it (the LED Control menu bar item takes "
+            "both Arduinos unless it is in Battery Meter Mode)"
+            if ("busy" in text or "errno 16" in text) else "")
+    log.warning("Could not open the %s on %s: %s%s. Charge display is NOT updating.",
+                board, port, exc, hint)
+
+
+def _clear_board_warning(board: str) -> None:
+    _reached_open[board] = True
+    if _open_fail_warned.pop(board, None):
+        log.info("The %s is reachable again — charge display resumed.", board)
+
+
+def _retry_delay(board: str) -> float:
+    """Seconds to wait after a failed sync — see the two constants above."""
+    return (_WRITE_FAIL_RETRY_SECS if _reached_open.get(board)
+            else _PORT_BUSY_RETRY_SECS)
+
+
 def _send_mouth_command(cmd: str) -> bool:
     port = _head_port()
     if not port:
@@ -495,8 +540,9 @@ def _send_mouth_command(cmd: str) -> bool:
         import serial
         ser = serial.Serial(port, 115200, timeout=1.0, write_timeout=1.0, exclusive=True)
     except Exception as exc:
-        log.debug("mouth PCB open failed (%s) — will retry.", exc)
+        _warn_board_unreachable(_BOARD_MOUTH, port, exc)
         return False
+    _clear_board_warning(_BOARD_MOUTH)
     try:
         # Opening the port auto-resets the AVR; wait out its bootloader before
         # writing or the command lands on deaf ears.
@@ -558,7 +604,11 @@ def _sync_mouth_charge(mode: str, soc, charging: bool) -> None:
     if _send_mouth_command(cmd):
         _mouth_charge_state = target
     else:
-        _mouth_retry_at = now + 30.0    # don't hammer a missing/busy port
+        # Nothing reached the PCB, so it still shows whatever it had. Forget the
+        # baseline as well, or a later success would be deduped away and the glow
+        # would stay wrong until the SOC band moved.
+        _mouth_charge_state = None
+        _mouth_retry_at = now + _retry_delay(_BOARD_MOUTH)
 
 
 # ── Chest charge gauge sync ──────────────────────────────────────────────────
@@ -580,8 +630,9 @@ def _send_chest_command(cmd: str) -> bool:
         import serial
         ser = serial.Serial(port, 115200, timeout=1.0, write_timeout=1.0, exclusive=True)
     except Exception as exc:
-        log.debug("chest Arduino open failed (%s) — will retry.", exc)
+        _warn_board_unreachable(_BOARD_CHEST, port, exc)
         return False
+    _clear_board_warning(_BOARD_CHEST)
     try:
         time.sleep(2.0)  # Nano/CH340 resets on open; wait out its bootloader
         ser.write((cmd + "\n").encode("ascii"))
@@ -644,7 +695,11 @@ def _sync_chest_charge(mode: str, soc, charging: bool) -> None:
         _chest_charge_state = target
         _chest_sent_at = now
     else:
-        _chest_retry_at = now + 30.0
+        # The gauge never got the command, so drop the dedup baseline too: the
+        # meter must repaint the moment the port frees up, not wait for the SOC
+        # to move or for the 30-minute refresh.
+        _chest_charge_state = None
+        _chest_retry_at = now + _retry_delay(_BOARD_CHEST)
 
 
 def _worker() -> None:
