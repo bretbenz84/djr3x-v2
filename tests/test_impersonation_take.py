@@ -41,8 +41,26 @@ class ScriptCapTest(unittest.TestCase):
             self.assertEqual(impersonation._cap_script_words(giant.strip()), giant.strip())
 
 
+def _pipelined(test):
+    """Turn sentence pipelining back on for a test that is about pipelining.
+
+    It ships OFF (LOCAL_TTS_TAKE_WHOLE_CLIP): every unit is a separate
+    conditioning pass on the reference clip and the passes do not match, so a
+    split take changed voice partway through the bit.
+    """
+    prev = getattr(config, "LOCAL_TTS_TAKE_WHOLE_CLIP", True)
+    config.LOCAL_TTS_TAKE_WHOLE_CLIP = False
+    test.addCleanup(setattr, config, "LOCAL_TTS_TAKE_WHOLE_CLIP", prev)
+
+
 class SplitTakeTest(unittest.TestCase):
+    def test_whole_clip_is_the_default_so_the_voice_cannot_drift(self):
+        text = ("I rewired the neck servo again. It still judges me from the shelf. "
+                "Ask me tomorrow if it was worth it.")
+        self.assertEqual(local_tts._split_take(text), [text])
+
     def test_splits_on_sentence_boundaries(self):
+        _pipelined(self)
         units = local_tts._split_take(
             "I rewired the neck servo again. It still judges me from the shelf. "
             "Ask me tomorrow if it was worth it."
@@ -54,6 +72,7 @@ class SplitTakeTest(unittest.TestCase):
         ])
 
     def test_short_fragment_merges_into_the_next_sentence(self):
+        _pipelined(self)
         units = local_tts._split_take("Six! And it still looks at me like I'm the problem.")
         self.assertEqual(units, ["Six! And it still looks at me like I'm the problem."])
 
@@ -62,9 +81,14 @@ class SplitTakeTest(unittest.TestCase):
 
 
 class TakePipelineTest(unittest.TestCase):
-    """The point of the pipeline: unit 1 is playable before unit 2 is rendered."""
+    """The point of the pipeline: unit 1 is playable before unit 2 is rendered.
+
+    Pipelining is off by default now (see _pipelined) — these tests still cover
+    it because the machinery is intact behind LOCAL_TTS_TAKE_WHOLE_CLIP=False.
+    """
 
     def setUp(self):
+        _pipelined(self)
         self.ref = local_tts.VoiceRef("/tmp/x.wav", "hello", "person:1")
         self.addCleanup(local_tts.discard_takes)
 

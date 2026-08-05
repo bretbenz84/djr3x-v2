@@ -164,6 +164,28 @@ def log_rex(text: str, *, to_gui: bool = True) -> None:
         _mirror_to_gui("Rex", text.strip(), "rex")
 
 
+def claim_rex_line(text: str) -> None:
+    """Mark `text` as already written, without writing it again.
+
+    For a handler that speaks SEVERAL lines and returns only one of them. The
+    caller logs whatever it gets back, which lands after everything the handler
+    already logged — so the impersonation bit wrote intro, then outro, then the
+    parody it returned, and the GUI showed the punchline after the bow (field
+    2026-08-04). The handler logs the parody at the moment it is spoken and
+    claims it here; the caller's later write then dedupes away.
+
+    Only the immediately-previous line is compared, so this has to be called
+    AFTER the handler's last write, not before it.
+    """
+    global _last_rex_norm, _last_rex_at
+    text = _strip_audio_tags(text)
+    if not text or not text.strip():
+        return
+    with _lock:
+        _last_rex_norm = _normalize(text)
+        _last_rex_at = time.monotonic()
+
+
 def log_rex_stream(text: str) -> None:
     """Stream one freshly-generated reply sentence to the GUI conversation panel.
 

@@ -371,10 +371,18 @@ def _split_take(text: str) -> list[str]:
     """Split a take into sentence units for the pipeline. Units shorter than
     LOCAL_TTS_TAKE_MIN_CHARS are merged into the sentence that FOLLOWS them —
     a two-word fragment ("Six!") is not worth its own generation, and the model
-    reads a bare exclamation better with its follow-on attached."""
+    reads a bare exclamation better with its follow-on attached.
+
+    Under LOCAL_TTS_TAKE_WHOLE_CLIP (the default) there is no split at all: every
+    unit is a separate conditioning pass on the reference clip and the voice does
+    not land identically each pass, so splitting made a bit change voice partway
+    through. One unit, one pass, one voice.
+    """
     text = " ".join((text or "").split())
     if not text:
         return []
+    if bool(getattr(config, "LOCAL_TTS_TAKE_WHOLE_CLIP", True)):
+        return [text]
     floor = int(getattr(config, "LOCAL_TTS_TAKE_MIN_CHARS", 24))
     parts = [p.strip() for p in re.split(r"(?<=[.!?…—])\s+", text) if p.strip()]
     units: list[str] = []

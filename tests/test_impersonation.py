@@ -342,9 +342,45 @@ class PerformThreadingTest(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 3)
         parody_calls = [c for c in calls if c["voice_ref"] is ref]
         self.assertEqual(len(parody_calls), 1)
-        self.assertFalse(parody_calls[0]["log_text"])   # caller logs it once
+        # the queue must not log the parody -- perform() logs the SCRIPT itself,
+        # since speech_text may be a spoken_form() rewrite of it
+        self.assertFalse(parody_calls[0]["log_text"])
         self.assertIsNone(calls[0]["voice_ref"])        # intro is Rex's own voice
         rec.assert_called_once()
+
+    def test_parody_is_logged_between_the_intro_and_the_bow(self):
+        """The GUI showed the punchline AFTER the bow: perform() spoke three lines
+        but returned one, and the caller's write of it landed last."""
+        ref = local_tts.VoiceRef("/x.wav", "ref", "famous:richard-nixon")
+        script = "I am not a crook, and that droid is no better."
+        written = []
+
+        class _Done:
+            def wait(self, timeout=None):
+                return True
+
+        def fake_enqueue(text, emotion, **kw):
+            if kw.get("log_text"):
+                written.append(text)
+            return _Done()
+
+        with mock.patch("audio.speech_queue.enqueue", side_effect=fake_enqueue), \
+             mock.patch.object(impersonation, "build_parody_script", return_value=script), \
+             mock.patch.object(impersonation.local_tts, "start_take", return_value=_ReadyTake()), \
+             mock.patch("memory.episodes.record_episode"), \
+             mock.patch("utils.conv_log.log_rex", side_effect=written.append) as log_rex, \
+             mock.patch("utils.conv_log.claim_rex_line") as claim, \
+             mock.patch.object(config, "IMPERSONATION_OUTRO_ENABLED", True):
+            result = impersonation.perform(ref, "Nixon", None)
+
+        self.assertEqual(result, script)
+        log_rex.assert_called_once_with(script)
+        self.assertEqual(len(written), 3)
+        self.assertEqual(written[1], script)         # intro, PARODY, bow
+        self.assertNotEqual(written[2], script)
+        # and the caller's own write of the return value is claimed away, so the
+        # parody isn't repeated under the bow
+        claim.assert_called_once_with(script)
 
     def test_perform_script_miss_covers_in_rex_voice(self):
         ref = local_tts.VoiceRef("/x.wav", "ref", "person:3")

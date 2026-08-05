@@ -46,15 +46,21 @@ _STOPWORDS = {"the", "a", "an", "of", "mr", "mrs", "ms", "dr", "president", "sir
 # Temperature alone kept landing the model on the same "greatest hit" joke for a
 # given figure (the avoid-list only rules out what was said, not the lane it was
 # said in), so the lane is chosen for it.
+#
+# None of these mention a party. The earlier set did, and the model took it as a
+# standing fact about the world — every bit came back about partygoers, snacks
+# and the dance floor even when Rex was sitting in a quiet room (field
+# 2026-08-04). The only setting the script may assume is that a droid is doing
+# an impression and someone is listening.
 _FAMOUS_ANGLES = (
-    "bend their single most-quoted line so it lands on the droid or the party",
+    "bend their single most-quoted line so it lands on the droid",
     "have them lodge a dignified complaint about a machine borrowing their voice",
-    "have them mistake the party for something from their own era and hold forth about it",
-    "have them try, and fail, to stay presidential while surrounded by droids and music",
-    "have them give the droid unsolicited advice in their signature style",
-    "have them be tickled by the whole thing and take entirely too much credit for it",
-    "have them campaign — earnestly, to a room that did not ask — for something absurd",
-    "have them narrate the impression itself like a state occasion",
+    "have them address the droid directly, as an inferior they intend to instruct",
+    "have them try, and fail, to stay dignified about being mimicked by a machine",
+    "have them take entirely too much credit for how good the impression is",
+    "have them campaign — earnestly, to nobody who asked — for something absurd",
+    "have them treat the impression as a matter of national importance",
+    "have them be delighted, and slightly too impressed with the technology",
 )
 
 
@@ -430,7 +436,7 @@ def _script_prompt(
     who = "yourself" if is_self else name
     parts = [
         f"You are DJ-R3X, a witty Star Wars droid, doing a live comedic impression of {name} "
-        f"for a small room of friends. Write ONLY the words you would SAY while impersonating "
+        f"out loud for whoever is in earshot. Write ONLY the words you would SAY while impersonating "
         f"{who}, in {name}'s own first-person voice.",
         "Rules: 2 to 3 short sentences. Affectionate exaggeration — play up their catchphrases, "
         "obsessions, and signature quirks for a warm laugh, never mean. PG. No stage directions, "
@@ -452,9 +458,12 @@ def _script_prompt(
             f"for, a known fixation, a verbal tic, the thing every impressionist does. Someone "
             f"who knows nothing else about him should still recognise him from it. A generic "
             f"dignified old statesman is a failed take.\n"
-            f"2. Collide that with the fact that a Star Wars droid at somebody's house party "
-            f"has borrowed his voice and is doing him for a room of friends. The classic move "
-            f"is his own famous line, bent so it lands on the droid, the guests, or the music.\n"
+            f"2. Collide that with the fact that a Star Wars droid has borrowed his voice and "
+            f"is doing an impression of him right now, out loud, to whoever is listening. The "
+            f"classic move is his own famous line, bent so it lands on the droid.\n"
+            "Setting: assume NOTHING beyond that. There may be one person here or ten, in a "
+            "kitchen or a workshop, at any hour. No party, no crowd, no guests, no dance "
+            "floor, no music, no snacks or drinks — inventing an occasion is a failed take.\n"
             f"Direction matters: the DROID is impersonating {name}, not the other way round. "
             "He is a man, reacting to a machine that took his voice — outraged, flattered, or "
             "magnificently oblivious. He may mock the droid, deny being one, or refuse to "
@@ -556,9 +565,10 @@ def perform(
     ref: local_tts.VoiceRef, subject_name: str, person_id: Optional[int], *, is_self: bool = False
 ) -> str:
     """Speak the full bit: Rex-voice stall line → the parody in the cloned voice →
-    optional Rex-voice button. Blocks until each line finishes. Logs an episode.
-    Returns the parody text (the caller logs it once as Rex's turn); the intro/outro
-    self-log. On a synthesis/script miss, covers in Rex's voice and returns that.
+    optional Rex-voice bow. Blocks until each line finishes. Logs an episode.
+    Returns the parody text. All three lines are logged HERE, in spoken order —
+    the caller's own write of the return value dedupes away (see claim_rex_line).
+    On a synthesis/script miss, covers in Rex's voice and returns that.
 
     An anonymous guest (label 'person:anon' — captured live, no person row) gets
     the stranger script mode: no invented facts, no famous framing.
@@ -580,11 +590,11 @@ def perform(
             logger.debug("[impersonation] enqueue failed: %s", exc)
 
     # 1. Script FIRST, so the take can start rendering in the background while
-    #    Rex's intro line plays. The take is SENTENCE-PIPELINED (see
-    #    local_tts.Take): sentence 1 plays as soon as it exists while sentence 2
-    #    renders behind it, so the room waits on one sentence, not the whole bit.
-    #    Nothing here is cached — every request re-generates the script AND
-    #    re-synthesizes the audio.
+    #    Rex's intro line plays. Under LOCAL_TTS_TAKE_WHOLE_CLIP the take is ONE
+    #    unit: the room waits on the whole bit rather than its first sentence,
+    #    which is the price of the voice not drifting partway through (each unit
+    #    is a separate conditioning pass and they do not match). Nothing here is
+    #    cached — every request re-generates the script AND re-synthesizes.
     voice_key = getattr(ref, "label", "") or None
     script = build_parody_script(
         subject_name, person_id, is_self=is_self, stranger=stranger, voice_key=voice_key,
@@ -626,9 +636,9 @@ def perform(
         except Exception as exc:
             logger.debug("[impersonation] take launch failed: %s", exc)
 
-    # 3. First sentence still rendering when the intro ends → loop the
-    #    processing chirp (never dead air). Only the FIRST unit is waited on;
-    #    the rest render while the bit is already playing.
+    # 3. Take still rendering when the intro ends → loop the processing chirp
+    #    (never dead air). With a whole-clip take that wait covers the entire
+    #    bit, so the chirp is doing real work now rather than covering a seam.
     if take is not None and not take.first_ready.is_set():
         loop_handle = None
         try:
@@ -663,16 +673,38 @@ def perform(
         _say(cover, "sheepish", log_text=False)
         return cover
 
-    # 4. The parody in the cloned voice — streams the pipelined take.
+    # 4. The parody in the cloned voice.
+    #
+    # Logged HERE, as it is spoken, rather than left to the caller. The caller
+    # logs whatever perform() returns, which happens after the outro has already
+    # been written — so the transcript and the GUI showed intro, bow, then the
+    # punchline last (field 2026-08-04). Logging the SCRIPT, not speech_text:
+    # spoken_form() may have expanded numbers and abbreviations for the
+    # synthesizer, and the caller will later try to log the script itself.
+    try:
+        from utils import conv_log
+        conv_log.log_rex(script)
+    except Exception as exc:
+        logger.debug("[impersonation] parody log failed: %s", exc)
+
     try:
         _say(speech_text, "excited", voice_ref=ref, log_text=False)
     finally:
         _release_take()
 
-    # 3. Optional Rex-voice button.
+    # 5. Optional Rex-voice button — Rex steps back out and takes his bow.
     outro = outro_line()
     if outro:
         _say(outro, "amused", log_text=True)
+
+    # The caller logs the returned script; claim it so that write dedupes away
+    # instead of repeating the parody below the bow. Must come after the outro —
+    # only the previous line is compared.
+    try:
+        from utils import conv_log
+        conv_log.claim_rex_line(script)
+    except Exception as exc:
+        logger.debug("[impersonation] parody log claim failed: %s", exc)
 
     # 4. Episodic memory of the bit.
     try:

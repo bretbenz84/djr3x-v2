@@ -1794,16 +1794,26 @@ IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0     # pending capture slot expiry
 IMPERSONATION_CAPTURE_MATCH_RATIO = 0.6
 IMPERSONATION_CAPTURE_END_PAD_SECS = 0.5      # min trailing silence on the saved clip
 # Anti-stutter (field 2026-08-01: a long parody line synthesized slower than
-# real time and streamed playback starved repeatedly). The take is SENTENCE-
-# PIPELINED: sentence 1 plays as soon as it's rendered while sentence 2 renders
-# behind it, so the room waits on one sentence instead of the whole bit, and
-# each sentence is fully buffered before it plays. Nothing is ever cached — the
+# real time and streamed playback starved repeatedly). The take used to be
+# SENTENCE-PIPELINED — sentence 1 played while sentence 2 rendered behind it —
+# which cut the wait to one sentence. Nothing is ever cached either way: the
 # script AND the audio are regenerated on every request.
+#
+# That pipeline is now OFF by default. Each unit is a SEPARATE conditioning pass
+# on the reference clip, and the voice does not land identically every pass, so a
+# multi-sentence bit drifted mid-take: sentence one sounded like the man,
+# sentence two sounded like someone else doing him (field 2026-08-04, whole log).
+# One unit means one pass and one voice. The cost is latency — the room waits on
+# the WHOLE bit instead of its first sentence — which is what the thinking loop
+# and IMPERSONATION_FIRST_UNIT_TIMEOUT_SECS cover. Scripts are capped at ~45
+# words, so that wait is bounded at roughly the spoken length of the bit.
 IMPERSONATION_SCRIPT_MAX_WORDS = 45           # sentence-boundary cap on the parody script
-IMPERSONATION_FIRST_UNIT_TIMEOUT_SECS = 45.0  # max thinking-loop wait for sentence 1
-LOCAL_TTS_TAKE_PIPELINE = True                # cloned (non-rex) voices stream sentence by
-                                              # sentence; Rex's own short lines keep the
+IMPERSONATION_FIRST_UNIT_TIMEOUT_SECS = 45.0  # max thinking-loop wait for the take
+LOCAL_TTS_TAKE_PIPELINE = True                # cloned (non-rex) voices go through Take;
+                                              # Rex's own short lines keep the
                                               # lower-latency chunk stream
+LOCAL_TTS_TAKE_WHOLE_CLIP = True              # render a take as ONE unit (see above).
+                                              # False restores sentence pipelining.
 LOCAL_TTS_TAKE_MIN_CHARS = 24                 # merge shorter fragments into the next unit
 LOCAL_TTS_TAKE_FILL_MS = 120.0                # silence written at a seam while the next
                                               # sentence is still rendering (a clean gap
@@ -1828,12 +1838,20 @@ IMPERSONATION_INTRO_LINES = [
     "Alright, loading the impression module. This is going to be uncanny.",
     "Give me a second to calibrate the sarcasm. There we go.",
 ]
-# Optional Rex-voice button after the bit — a cheap laugh to close it out.
+# Optional Rex-voice button after the bit. Rex takes a BOW — a ringmaster
+# stepping back out in front of the curtain, milking a room that may not have
+# applauded yet. Not a self-deprecating shrug: the old lines ("...I do not sound
+# like that", "Tip your droid") undercut the act instead of landing it.
 IMPERSONATION_OUTRO_ENABLED = True
 IMPERSONATION_OUTRO_LINES = [
-    "...I do not sound like that.",
-    "Tip your droid.",
-    "I'll be here all week.",
+    "Thank you, thank you — you're too kind. Please, hold your applause.",
+    "Thank you! No, really — that one goes out to everybody.",
+    "You've been wonderful. Truly. I'll be taking my bow now.",
+    "Hold your applause... no, actually, don't. Let it out.",
+    "And THAT, ladies and gentlemen, is why they built me.",
+    "Thank you! I'm here all week. Literally. I can't leave.",
+    "Please, please. You're spoiling me.",
+    "A round of applause for the voice, if not the droid delivering it.",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
