@@ -1833,6 +1833,17 @@ IMPERSONATION_CAPTURE_LINES = [
 ]
 # Rex-voice setup/stall lines spoken (in HIS voice) before the impersonation. Also
 # covers the one-time model-load latency, the way the web-search stall line does.
+# Asked when the request names nobody — "Impersonate." on its own, usually a
+# sentence that got cut off. Rex holds a short slot open and treats the next
+# thing said as the target, so the follow-up is just a name ("Obama") rather
+# than the whole request again.
+IMPERSONATION_WHO_TIMEOUT_SECS = 30.0
+IMPERSONATION_WHO_LINES = [
+    "Impersonate who? I can do you, or somebody famous.",
+    "Who am I doing? Say a name — or say me, and I'll do you.",
+    "Happy to. Who's the target? You, or someone famous?",
+    "Name your victim. I can do you, or a famous voice.",
+]
 IMPERSONATION_INTRO_LINES = [
     "Okay, okay — clearing my vocal buffers. Ahem.",
     "Alright, loading the impression module. This is going to be uncanny.",

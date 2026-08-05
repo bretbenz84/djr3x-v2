@@ -7,6 +7,7 @@ gate. The local TTS engine and the LLM are mocked — no model loads, no audio.
 
 import json
 import threading
+import time
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -743,3 +744,87 @@ class CaptureConsumerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WhoSlotTest(unittest.TestCase):
+    """"Impersonate." with nobody named — Rex asks who, then performs on the answer.
+
+    Before this, a cut-off request classified as nothing, fell through to the
+    LLM, and got answered with a refusal to impersonate anyone (field
+    2026-08-04)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from intelligence import interaction
+        cls.itn = interaction
+
+    def setUp(self):
+        self.itn._pending_impersonation_target = None
+        self.itn._pending_impersonation_capture = None
+
+    def tearDown(self):
+        self.itn._pending_impersonation_target = None
+        self.itn._pending_impersonation_capture = None
+
+    def _bare_decision(self):
+        from intelligence import action_router as ar
+        return ar.classify_explicit_impersonation("Impersonate.")
+
+    def test_bare_request_asks_who_and_arms_the_slot(self):
+        d = self._bare_decision()
+        self.assertEqual(d.args["target"], "")
+        with mock.patch.object(self.itn, "_speak_blocking") as say:
+            line = self.itn._handle_router_impersonation(d, "Impersonate.", 1, "Bret", "")
+        self.assertIsNotNone(line)
+        self.assertIn("who", line.lower())
+        say.assert_called_once()
+        self.assertIsNotNone(self.itn._pending_impersonation_target)
+
+    def test_answer_is_treated_as_the_target(self):
+        self.itn._pending_impersonation_target = {
+            "person_id": 1, "person_name": "Bret", "asked_at": time.monotonic(),
+        }
+        seen = {}
+
+        def fake_handler(decision, text, pid, pname, target):
+            seen["target"] = target
+            return "a parody"
+
+        with mock.patch.object(self.itn, "_handle_router_impersonation",
+                               side_effect=fake_handler):
+            r = self.itn._handle_impersonation_target_prompt("Obama")
+        self.assertEqual(r, ("a parody", True))
+        self.assertEqual(seen["target"], "Obama")
+        self.assertIsNone(self.itn._pending_impersonation_target)
+
+    def test_answer_may_repeat_the_verb(self):
+        self.itn._pending_impersonation_target = {
+            "person_id": 1, "person_name": "Bret", "asked_at": time.monotonic(),
+        }
+        seen = {}
+        with mock.patch.object(
+            self.itn, "_handle_router_impersonation",
+            side_effect=lambda d, t, p, n, target: seen.update(target=target) or "x",
+        ):
+            self.itn._handle_impersonation_target_prompt("impersonate Richard Nixon")
+        self.assertEqual(seen["target"], "Richard Nixon")
+
+    def test_no_slot_falls_through(self):
+        self.assertIsNone(self.itn._handle_impersonation_target_prompt("Obama"))
+
+    def test_stale_slot_is_cleared_and_ignored(self):
+        self.itn._pending_impersonation_target = {
+            "person_id": 1, "person_name": "Bret", "asked_at": 0.0,
+        }
+        with mock.patch.object(config, "IMPERSONATION_WHO_TIMEOUT_SECS", 1.0, create=True):
+            self.assertIsNone(self.itn._handle_impersonation_target_prompt("Obama"))
+        self.assertIsNone(self.itn._pending_impersonation_target)
+
+    def test_cancel_closes_the_slot(self):
+        self.itn._pending_impersonation_target = {
+            "person_id": 1, "person_name": "Bret", "asked_at": time.monotonic(),
+        }
+        with mock.patch.object(self.itn, "_speak_blocking"):
+            r = self.itn._handle_impersonation_target_prompt("never mind")
+        self.assertIsNotNone(r)
+        self.assertIsNone(self.itn._pending_impersonation_target)

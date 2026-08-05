@@ -786,6 +786,17 @@ _IMPERSONATE_PATTERNS: tuple[re.Pattern[str], ...] = (
 _IMPERSONATE_NEGATION_RE = re.compile(
     r"\b(?:don'?t|do\s+not|never|stop|quit|no\s+more)\b", re.IGNORECASE
 )
+# The verb with NOBODY named — "Impersonate." on its own, usually because the
+# speaker was cut off before finishing the sentence (field 2026-08-04). This used
+# to classify as nothing at all, so the turn fell through to the LLM, which
+# answered a bare "impersonate" by declining to impersonate anyone. It routes to
+# the same action with an empty target, and the handler asks who.
+_IMPERSONATE_BARE_RE = re.compile(
+    r"^(?:(?:do|give\s+(?:me|us)|perform)\s+(?:an?\s+|your\s+(?:best\s+)?)?"
+    r"(?:impersonation|impression)|impersonate|imitate|mimic)"
+    r"\s*[.!?]*$",
+    re.IGNORECASE,
+)
 _IMPERSONATE_SELF_RE = re.compile(r"^(?:me|myself|my|mine)$", re.IGNORECASE)
 
 
@@ -808,6 +819,7 @@ def classify_explicit_impersonation(text: str) -> ActionDecision | None:
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
         return None
+    verb_seen = False
     for pattern in _IMPERSONATE_PATTERNS:
         m = pattern.search(cleaned)
         if not m:
@@ -816,13 +828,24 @@ def classify_explicit_impersonation(text: str) -> ActionDecision | None:
         if _IMPERSONATE_NEGATION_RE.search(cleaned[: m.start()]):
             return None
         target = _clean_impersonate_target(m.group("target"))
-        if not target:
+        if target:
+            return ActionDecision(
+                action="performance.impersonate",
+                confidence=0.95,
+                args={"target": target},
+                reason="explicit impersonation request",
+            )
+        # The verb matched but nothing usable came with it ("impersonate please").
+        verb_seen = True
+        break
+    if verb_seen or _IMPERSONATE_BARE_RE.match(cleaned):
+        if _IMPERSONATE_NEGATION_RE.search(cleaned):
             return None
         return ActionDecision(
             action="performance.impersonate",
-            confidence=0.95,
-            args={"target": target},
-            reason="explicit impersonation request",
+            confidence=0.9,
+            args={"target": ""},
+            reason="impersonation request with no target named",
         )
     return None
 _BODY_BEAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (

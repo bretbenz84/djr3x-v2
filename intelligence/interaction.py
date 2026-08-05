@@ -684,6 +684,9 @@ _pending_intro_voice_capture: Optional[dict] = None
 # person is saved as their voice-clone reference before the parody performs.
 #   keys: person_id, name, ref_text (the line to repeat), is_self, asked_at
 _pending_impersonation_capture: Optional[dict] = None
+# Armed when an impersonation request named nobody; the next turn is read as the
+# target ("Obama", "me") instead of as a fresh utterance.
+_pending_impersonation_target: Optional[dict] = None
 # Scene-snapshot confirmation slot ("say yes, remember this scene") — see
 # _offer_scene_snapshot / _handle_scene_snapshot_confirmation.
 _pending_scene_snapshot: Optional[dict] = None
@@ -17603,12 +17606,26 @@ def _handle_router_impersonation(
     """Execute performance.impersonate: resolve who to imitate, then either perform
     the parody in the cloned voice, open a live voice-capture slot, or refuse in
     character. Speaks internally; returns the spoken text for the caller to log."""
-    global _pending_impersonation_capture
+    global _pending_impersonation_capture, _pending_impersonation_target
     try:
         from features import impersonation
     except Exception as exc:
         _log.warning("[impersonation] module import failed: %s", exc)
         return None
+
+    # Nobody named — "Impersonate." on its own, usually a sentence cut short.
+    # Ask who and hold a slot for the answer, rather than letting the turn fall
+    # through to the LLM (which answered a bare "impersonate" by declining).
+    if not (target or "").strip():
+        _pending_impersonation_target = {
+            "person_id": person_id,
+            "person_name": person_name,
+            "asked_at": time.monotonic(),
+        }
+        ask = impersonation.who_line()
+        _log.info("[impersonation] no target named — opened who-slot")
+        _speak_blocking(ask, emotion="curious", pre_beat_ms=100, log_text=False)
+        return ask
 
     resolution = impersonation.resolve_target(target, person_id, person_name)
 
@@ -17644,6 +17661,66 @@ def _handle_router_impersonation(
     return impersonation.perform(
         resolution.ref, resolution.name, resolution.person_id, is_self=resolution.is_self
     )
+
+
+def _impersonation_target_fresh(ctx: Optional[dict]) -> bool:
+    if not ctx:
+        return False
+    ttl = float(getattr(config, "IMPERSONATION_WHO_TIMEOUT_SECS", 30.0))
+    return (time.monotonic() - float(ctx.get("asked_at") or 0.0)) <= ttl
+
+
+def _handle_impersonation_target_prompt(text: str) -> Optional[tuple[str, bool]]:
+    """Resolve the answer to "impersonate who?".
+
+    Returns (spoken_text, already_spoken) when this turn was the answer, else
+    None. The whole utterance is the target — the reply to "who?" is a name
+    ("Obama", "me"), not a fresh command — so it is handed to resolve_target
+    verbatim after stripping a leading verb the user may have repeated.
+    """
+    global _pending_impersonation_target
+    ctx = _pending_impersonation_target
+    if ctx is None:
+        return None
+    if not _impersonation_target_fresh(ctx):
+        _pending_impersonation_target = None
+        return None
+
+    try:
+        from features import impersonation
+    except Exception:
+        _pending_impersonation_target = None
+        return None
+
+    said = " ".join((text or "").strip().split())
+    if not said:
+        return None
+    if impersonation.sounds_like_cancel(said):
+        _pending_impersonation_target = None
+        line = "Fine. Another time."
+        _speak_blocking(line, emotion="amused", log_text=False)
+        return (line, True)
+
+    # "impersonate Obama" as the ANSWER — drop the repeated verb, keep the name.
+    target = re.sub(
+        r"^(?:(?:do|give\s+(?:me|us)|perform)\s+(?:an?\s+|your\s+(?:best\s+)?)?"
+        r"(?:impersonation|impression)\s+of\s+|impersonate\s+|imitate\s+|mimic\s+)",
+        "", said, flags=re.IGNORECASE,
+    ).strip()
+    target = re.sub(r"[.!?,;:]+$", "", target).strip() or said
+    _pending_impersonation_target = None
+    _log.info("[impersonation] who-slot answered with %r", target)
+
+    decision = action_router.ActionDecision(
+        action="performance.impersonate", confidence=0.95,
+        args={"target": target}, reason="answer to impersonate-who prompt",
+    )
+    spoken = _handle_router_impersonation(
+        decision, text, ctx.get("person_id"), ctx.get("person_name"), target,
+    )
+    if spoken is None:
+        return None
+    return (spoken, True)
 
 
 def _handle_impersonation_capture(
@@ -17861,6 +17938,12 @@ def _settle_response_wait_after_action() -> None:
         if _pending_impersonation_capture is not None:
             consciousness.begin_response_wait(
                 float(getattr(config, "IMPERSONATION_CAPTURE_TIMEOUT_SECS", 45.0))
+            )
+        elif _pending_impersonation_target is not None:
+            # Rex just asked "impersonate who?" — same rule: he is waiting on a
+            # name, so proactive beats must not talk over the answer.
+            consciousness.begin_response_wait(
+                float(getattr(config, "IMPERSONATION_WHO_TIMEOUT_SECS", 30.0))
             )
         elif _pending_scene_snapshot is not None:
             # Rex just asked "say yes, remember this scene" — hold proactive
@@ -22972,6 +23055,22 @@ def _handle_speech_segment(
                 consciousness.clear_response_wait()
             except Exception:
                 pass
+            return
+
+        # "Impersonate who?" was asked last turn — this turn is the name. Runs
+        # BEFORE the capture handler: answering "me" opens the capture slot, so
+        # the two must not both claim the same turn.
+        impersonation_target = _handle_impersonation_target_prompt(text)
+        if impersonation_target is not None:
+            imp_line, imp_already_spoken = impersonation_target
+            _record_heard_turn_once()
+            if not imp_already_spoken:
+                _speak_blocking(imp_line, emotion="curious", pre_beat_ms=100)
+            _settle_response_wait_after_action()
+            conv_memory.add_to_transcript("Rex", imp_line)
+            conv_log.log_rex(imp_line)
+            _session_exchange_count += 1
+            _register_rex_utterance(imp_line)
             return
 
         impersonation_capture = _handle_impersonation_capture(

@@ -222,6 +222,14 @@ def capture_prompt(name: object, line: str) -> str:
     )
 
 
+def who_line() -> str:
+    """The ask when a request named nobody ("Impersonate.")."""
+    return _pick(
+        getattr(config, "IMPERSONATION_WHO_LINES", []),
+        "Impersonate who? I can do you, or somebody famous.",
+    )
+
+
 def intro_line() -> str:
     return _pick(
         getattr(config, "IMPERSONATION_INTRO_LINES", []),
