@@ -5955,17 +5955,27 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 workday_checkin = None
         except Exception as exc:
             _log.debug("[lean] workday check-in cue failed: %s", exc)
+    # Lower-tier cues honor the drop-bench too (review find 2026-08-05: only the
+    # top-tier cues consulted _lean_cue_blocked, so _strike_lean_cue recorded a bench
+    # for these kinds that nothing read, and the ladder could regenerate the same
+    # doomed line on the very next consult). Checked BEFORE the builder runs — unlike
+    # the top-tier lookup-then-discard shape — because some of these builders arm
+    # their own pacing/probability state at lookup time, and a benched lookup would
+    # silently spend it.
     # Not recognizing the ROOM outranks object curiosity — knowing where he is comes
     # first. place_questions gates itself (only when the belief is unknown + paced).
     if _no_higher and not workday_checkin and not low_energy and not no_questions:
-        place_question = _lean_place_question_cue()
+        if not _lean_cue_blocked("place_question"):
+            place_question = _lean_place_question_cue()
     # Room curiosity beats a generic visual riff (it LEARNS something), but only
     # when the person has energy for a question.
     if _no_higher and not workday_checkin and not place_question and not low_energy and not no_questions:
-        room_question = _lean_room_question_cue()
+        if not _lean_cue_blocked("room_question"):
+            room_question = _lean_room_question_cue()
     if _no_higher and not workday_checkin and not place_question and not room_question:
         try:
-            visual_riff = _lean_visual_riff_cue(person_id, world)
+            if not _lean_cue_blocked("visual_riff"):
+                visual_riff = _lean_visual_riff_cue(person_id, world)
         except Exception as exc:
             _log.debug("visual-riff Lean cue lookup failed: %s", exc)
     # LOWEST-priority cue: a low-stakes "since I was last on" diary musing, only when nothing
@@ -5974,7 +5984,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # never fires at a tired user or with the question budget spent.
     if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not low_energy and not no_questions:
         try:
-            weekend_plans = _lean_weekend_plans_cue(person_id)
+            if not _lean_cue_blocked("weekend_plans"):
+                weekend_plans = _lean_weekend_plans_cue(person_id)
         except Exception as exc:
             _log.debug("weekend-plans Lean cue lookup failed: %s", exc)
     # Interest discovery ("what are you into that you haven't told me?") is
@@ -5982,7 +5993,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # and never fires at a tired user or with the question budget spent.
     if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not low_energy and not no_questions:
         try:
-            interest_discovery = _lean_interest_discovery_cue(person_id)
+            if not _lean_cue_blocked("interest_discovery"):
+                interest_discovery = _lean_interest_discovery_cue(person_id)
         except Exception as exc:
             _log.debug("[lean] interest-discovery cue failed: %s", exc)
     # Rex volunteering his OWN day ("ugh, what a day") beats generic news — it's the
@@ -5998,10 +6010,12 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # News beats the diary musing (fresher material) but loses to everything
     # personal. Its own session cap + spend-once live in the cue/bookkeeping.
     if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not mood_share:
-        news_story = _lean_news_cue(person_id)
+        if not _lean_cue_blocked("news_story"):
+            news_story = _lean_news_cue(person_id)
     if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not mood_share and not news_story:
         try:
-            memory_musing = _lean_memory_musing_cue(person_id)
+            if not _lean_cue_blocked("memory_musing"):
+                memory_musing = _lean_memory_musing_cue(person_id)
         except Exception as exc:
             _log.debug("memory-musing Lean cue lookup failed: %s", exc)
     try:
