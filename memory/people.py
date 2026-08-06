@@ -822,6 +822,72 @@ def greetings_today_count(person_id: int) -> int:
     return int(row["greetings_today"] or 0)
 
 
+def _age_secs(stamp) -> Optional[float]:
+    """Seconds since a stored tz-aware-UTC ISO timestamp, or None if absent/unparseable.
+
+    Naive values are back-filled as UTC, matching how consciousness._pick_absence_phase
+    reads `last_seen` — older rows predate the tz-aware convention.
+    """
+    if not stamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(stamp))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def last_greeted_age_secs(person_id: int) -> Optional[float]:
+    """Seconds since Rex last GREETED this person, or None if he never has.
+
+    Unlike the in-memory presence cooldowns (monotonic, wiped by every restart), this
+    survives a reboot — which is the whole point: rebooting was the thing that made
+    Rex re-run the full hello at someone he greeted ten minutes ago.
+    """
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return None
+    row = db.fetchone("SELECT last_greeted_at FROM people WHERE id = ?", (pid,))
+    return _age_secs(row["last_greeted_at"]) if row is not None else None
+
+
+def record_wellbeing_ask(person_id: int) -> None:
+    """Mark that Rex just asked this person how THEY are doing.
+
+    Tracked separately from `last_greeted_at` because the two decay differently: a
+    return greeting is fine every few hours, but "how are you doing?" twice in one
+    evening is the redundancy the owner flagged — real people ask it once and then
+    remember they asked.
+    """
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return
+    db.execute(
+        "UPDATE people SET last_wellbeing_ask_at = ? WHERE id = ?",
+        (_now(), pid),
+    )
+
+
+def last_wellbeing_ask_age_secs(person_id: int) -> Optional[float]:
+    """Seconds since Rex last asked this person how they're doing, or None."""
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return None
+    row = db.fetchone("SELECT last_wellbeing_ask_at FROM people WHERE id = ?", (pid,))
+    if row is None:
+        return None
+    try:
+        return _age_secs(row["last_wellbeing_ask_at"])
+    except (IndexError, KeyError):
+        # Column missing on a DB that predates the migration — treat as never asked.
+        return None
+
+
 def update_familiarity(person_id: int, increment: float) -> None:
     """Add increment to familiarity_score (clamped to 1.0) and recalculate friendship_tier."""
     row = db.fetchone(

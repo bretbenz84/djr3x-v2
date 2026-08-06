@@ -4148,6 +4148,17 @@ def _line_duplicates_recent_question(line: str) -> bool:
     return False
 
 
+def _note_day_mood(kind: str) -> None:
+    """Nudge Rex's mood for the day (intelligence/rex_mood.py). Best-effort — a mood
+    that fails to shift must never cost a turn. See config.REX_MOOD_DRIFT for the
+    per-event deltas; unknown kinds are no-ops."""
+    try:
+        from intelligence import rex_mood
+        rex_mood.note(kind)
+    except Exception as exc:
+        _log.debug("[interaction] day-mood note %r skipped: %s", kind, exc)
+
+
 def _register_rex_utterance(
     text: str,
     wait_secs: Optional[float] = None,
@@ -4196,6 +4207,26 @@ def _register_rex_utterance(
         # near-verbatim repeat). Covers ALL reply paths — the only prior caller was the
         # dead idle-banter branch, so the guard never armed.
         rex_pov.note_pov_spoken_if_voiced(text)
+    except Exception:
+        pass
+    try:
+        # If this line VOICED today's mood, lock its framing — the background enrich
+        # pass must not go back and attach a different reason to a mood he has already
+        # explained out loud.
+        from intelligence import rex_mood
+        rex_mood.note_spoken_if_voiced(text)
+    except Exception:
+        pass
+    try:
+        # Same idea for the wellbeing ritual: if this line asked them how they are,
+        # spend it so he doesn't ask again in twenty minutes. Only ~7 of the ~25
+        # callers pass target_person_id, so fall back to whoever he's engaged with.
+        from intelligence import greeting_cadence
+        _ask_target = target_person_id
+        if _ask_target is None:
+            _engaged = consciousness.get_recent_engagement()
+            _ask_target = (_engaged or {}).get("person_id")
+        greeting_cadence.note_wellbeing_ask(_ask_target, text)
     except Exception:
         pass
     try:
@@ -5775,6 +5806,13 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # Arm the cooldown NOW (whether he speaks OR passes) so we consult at most once per window,
     # not every tick — but never burn a window on a coin-flip skip (the bug that made him mute).
     _last_lean_impulse_at = now
+    if long_silence:
+        # A long dead stretch takes a little energy out of him for the rest of the day.
+        # Placed AFTER the cooldown anchor above, not next to the long_silence
+        # computation: several gates between here and there `return False`, so an
+        # earlier hook would re-fire on every tick of the same silence and slam the
+        # drift to its clamp in seconds. (rex_mood paces per-kind as a second belt.)
+        _note_day_mood("long_quiet")
     decided_at = now
     try:
         mood = body_mood.current_mood()[0]
@@ -16816,6 +16854,20 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     global _pending_prompted_name_confirmation
 
     transcript = conv_memory.get_session_transcript()
+
+    # A conversation with real back-and-forth in it leaves Rex in a better mood for
+    # the rest of the day; an empty session doesn't count. Persist the mood here too —
+    # the day's accumulated drift should survive a restart, not just a clean shutdown.
+    try:
+        from intelligence import rex_mood
+        if len(transcript or []) >= int(
+            getattr(config, "REX_MOOD_GOOD_CONVERSATION_TURNS", 6)
+        ):
+            rex_mood.note("good_conversation")
+        rex_mood.persist()
+    except Exception as exc:
+        _log.debug("[interaction] day-mood session-end update skipped: %s", exc)
+
     if not transcript:
         _session_exchange_count = 0
         _session_person_ids.clear()
@@ -25232,6 +25284,7 @@ def _handle_speech_segment(
             _log.info(
                 "[interaction] layer-1 insult detected — anger now %d", new_level,
             )
+            _note_day_mood("insulted")
         elif (
             response_text is None
             and not _turn_is_answer_to_rex
@@ -25248,6 +25301,7 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("[interaction] compliment body beat skipped: %s", exc)
             _log.info("[interaction] layer-1 compliment detected")
+            _note_day_mood("complimented")
 
         # Active grief flow must consume short replies before command/intent
         # routing. A name like "Tom Foster" can otherwise be misclassified as

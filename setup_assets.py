@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS people (
     greetings_today         INTEGER DEFAULT 0,
     greetings_today_date    TEXT,
     last_milestone_greeted  INTEGER DEFAULT 0,
+    last_wellbeing_ask_at   DATETIME,
     height                  TEXT,
     build                   TEXT,
     hair_color              TEXT,

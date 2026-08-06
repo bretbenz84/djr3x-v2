@@ -303,6 +303,11 @@ def _run_migrations() -> None:
                 # Highest visit milestone Rex has already announced, so a
                 # milestone greeting ("your 5th visit") fires once, not every boot.
                 ("last_milestone_greeted", "INTEGER DEFAULT 0"),
+                # Last time Rex asked THIS person how they're doing. Separate from
+                # last_greeted_at because a return hello is fine every few hours
+                # while "how are you?" twice in an evening is redundant — see
+                # intelligence/greeting_cadence.py.
+                ("last_wellbeing_ask_at", "DATETIME"),
             ):
                 _ensure_column(
                     conn,

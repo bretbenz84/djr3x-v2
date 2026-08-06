@@ -748,6 +748,14 @@ def _shutdown() -> None:
     except Exception as exc:
         logger.debug("rex_pov persist on shutdown failed: %s", exc)
 
+    # Save the day's mood + its accumulated drift, so relaunching later today resumes
+    # it instead of re-rolling a brand-new personality mid-afternoon.
+    try:
+        from intelligence import rex_mood
+        rex_mood.persist()
+    except Exception as exc:
+        logger.debug("rex_mood persist on shutdown failed: %s", exc)
+
     # Episodic memory: summarize this session into rex.db BEFORE interaction.stop()
     # clears the transcript. Timeout-bounded so it can't hang shutdown.
     _episodic_shutdown_summary()
@@ -1612,6 +1620,24 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     except Exception as exc:
         logger.debug("rex_pov load_persisted on startup failed: %s", exc)
 
+    # Rex's mood for the day — resumed if it was already minted today (a relaunch at
+    # 4pm keeps the mood he woke up with, plus the day's drift), freshly minted if
+    # this is the day's first boot. Must land BEFORE consciousness.start(), because
+    # the greeting path reads it. Purely local: no network, nothing to wait on.
+    try:
+        from intelligence import rex_mood
+        resumed = rex_mood.load_persisted()
+        mood = rex_mood.ensure_today()
+        if mood is not None:
+            logger.info(
+                "Rex's mood today: %s (%s%s)",
+                mood.label,
+                "resumed" if resumed else f"minted via {mood.seed_kind}",
+                f" — {mood.because}" if mood.because else "",
+            )
+    except Exception as exc:
+        logger.debug("rex_mood startup mint failed: %s", exc)
+
     _abort_startup_if_shutdown("consciousness/interaction")
     logger.info("Starting intelligence.consciousness...")
     consciousness.start()
@@ -1707,6 +1733,16 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         current_events.start_background_refresh()
     except Exception as exc:
         logger.debug("current events refresh kick failed: %s", exc)
+
+    # The boot-time mood mint usually has no CAUSE attached: weather lands 1-3s after
+    # chronoception starts and a stale news cache is ~45s behind this line. Poll for a
+    # while and attach a real reason if one shows up — but only until he has actually
+    # told someone how he is, since retconning it after the fact is worse than no reason.
+    try:
+        from intelligence import rex_mood
+        rex_mood.start_background_enrich()
+    except Exception as exc:
+        logger.debug("rex_mood enrich kick failed: %s", exc)
 
     # Compass fusion service (no-op until COMPASS_ENABLED).
     try:

@@ -43,6 +43,13 @@ def record_novel_event(kind: str, detail: str = "") -> None:
         _events_this_session += 1
     _log.info("[novelty] %s%s — staleness clock reset", kind,
               f" ({detail})" if detail else "")
+    # Something new happening lifts Rex's day mood a little — this is the single
+    # choke point every genuinely-novel event already flows through.
+    try:
+        from intelligence import rex_mood
+        rex_mood.note("novelty")
+    except Exception:
+        pass
 
 
 def staleness_secs() -> float:

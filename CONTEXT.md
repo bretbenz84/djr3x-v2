@@ -1538,6 +1538,69 @@ and those poses then vouch for other phantoms.
 - Tests: `tests/test_wave_back.py::WaveSpeedGateTest`,
   `tests/test_unknown_face_persistence.py::UnknownFaceConfidenceGateTest`.
 
+### Rex's day mood + greeting cadence (2026-08-05)
+
+Owner gripe, two halves with one root — Rex had no persistent state about HIMSELF or
+about what he had already said to you:
+
+1. **"How are you?" always got "operating within normal parameters."** Nothing
+   special-cases a wellbeing question about Rex; it falls through every classifier to
+   the generic LLM reply, and that prompt carried ZERO information about his own
+   state. `REX_CORE_PROMPT` then hands the model "systems nominal" as a canonical
+   droid tic, so a status report was the only attractor. The reciprocal case ("I'm
+   good, how about you?") was worse: `intent_classifier._CONTEXTUAL_FOLLOWUP_RE`
+   forces it to `general`, and nothing anywhere knows the human is bouncing Rex's own
+   question back at him.
+2. **Repeat visits re-ran the full hello.** Every anti-repeat guard was IN-MEMORY —
+   `_greeted_this_session` is a set wiped at process start, `_should_fire_presence`
+   uses `time.monotonic()` cooldowns that reset with the process — so a RESTART, the
+   single most common way to "arrive" twice in an hour, defeated all of them.
+   `PRESENCE_STARTUP_RECENT_RETURN_GRACE_SECS` only ever changed the P4 wording.
+
+- **`intelligence/rex_mood.py`** — ONE mood per LOCAL day, minted from what the day
+  handed him (holiday → news → weather → hardware → clock, first firing signal owns
+  the stated reason, every firing signal contributes tags to the roll), DRIFTING
+  during the day (`note("good_conversation"/"long_quiet"/"insulted"/…)`, clamped to
+  `REX_MOOD_DRIFT_LIMIT` so the day keeps its character), tapering energy in late
+  hours at READ time only, and persisted to `assets/memory/rex_mood_state.json` so a
+  relaunch at 4pm resumes the morning's mood plus its drift. Anti-repeat is an
+  EXCLUSION, not a de-weighting: the RNG is seeded on the date, so shrinking a weight
+  just slides the cumulative bands under a fixed cursor and lands back on the same
+  seed (measured: three identical moods in a row). Do not "simplify" that back.
+- **Do NOT write the day mood into `world_state.self_state["emotion"]`.** The three
+  existing affect layers are all short and reactive — emotion_orchestrator frame ~8s,
+  `body_mood` ~45s, `personality._mood_intensity` ~10min — and
+  `personality.apply_mood_decay` would stomp a day mood to `neutral` within ten
+  minutes. The day mood is the BASELINE those ride on, held in its own state.
+- **Injection goes in BOTH voices.** `lean_brain._system_prompt` (the live path —
+  covers replies AND greeting/proactive directives under ONE VOICE) *and*
+  `llm.assemble_system_prompt` (classic fallback + web search). This is the rex_pov
+  trap, avoided deliberately: rex_pov injects only into `assemble_system_prompt`, so
+  under `LEAN_BRAIN_ENABLED` its preoccupation never reaches a direct reply at all.
+  A new self-state that lands in only one builder is invisible in production.
+- **`REX_CORE_PROMPT` gained a wellbeing rule** (shared by both voices, per the
+  "keep persona rules in REX_CORE_PROMPT" rule above): answer a question about your
+  own state as someone who HAS a day; never with "systems nominal" / "normal
+  parameters" / an uptime figure; never the same answer twice in one day. The authored
+  mood line is explicitly an EXAMPLE, not a script — otherwise the fix just relocates
+  the repetition one level down.
+- **`intelligence/greeting_cadence.py`** — stateless; every answer derives from
+  PERSISTED per-person timestamps, which is exactly what a reboot cannot reset.
+  `recency()` buckets `people.last_greeted_at` into SNAP (<20 min → a half-sentence
+  acknowledgment, asks nothing) / RECENT (<3 h → warm return beat, no wellbeing
+  question) / None (normal ladder). New `people.last_wellbeing_ask_at` column tracks
+  the ask on its own clock (`WELLBEING_ASK_COOLDOWN_SECS`, 4 h) because a return hello
+  and "how are you?" decay differently. Consumed as greeting-ladder **Priority 3.4**
+  (above the calendar-day-coarse P3.5 same-day beat) plus a suppression clause
+  appended to whichever branch won.
+- **The ask is detected from Rex's FINAL TEXT, not from which prompt-builder ran** —
+  the builder only says what he was told to do. Recorded at both seams:
+  `consciousness.note_rex_utterance` (greetings/proactive) and
+  `interaction._register_rex_utterance` (replies), falling back to
+  `get_recent_engagement()` since only ~7 of ~25 callers pass `target_person_id`.
+- Tests: `tests/test_rex_mood.py`, `tests/test_greeting_cadence.py`,
+  `tests/test_self_state_injection.py`.
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

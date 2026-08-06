@@ -32,6 +32,7 @@ from awareness.situation import assessor as _situation_assessor, SituationProfil
 from intelligence import emotion_orchestrator
 from intelligence import episodic_hooks
 from intelligence import gaze_engine
+from intelligence import greeting_cadence
 from intelligence import person_specials
 from intelligence import profile_questions
 from intelligence import speech_engine
@@ -1249,6 +1250,19 @@ def note_rex_utterance(
         )
     except Exception:
         pass
+    # If this line asked someone how THEY are doing, spend the ask so the next
+    # greeting / reply doesn't run the same ritual at them. Detected from the final
+    # TEXT rather than from which prompt-builder ran, because the builder only says
+    # what Rex was told to do — the text says what he actually said.
+    try:
+        _ask_target = target_person_id
+        if _ask_target is None:
+            _engaged = get_recent_engagement()
+            _ask_target = (_engaged or {}).get("person_id")
+        greeting_cadence.note_wellbeing_ask(_ask_target, text)
+    except Exception:
+        pass
+
     # A Rex line from another behavior (smile reaction, greeting, idle banter)
     # during an active "tell me about" briefing leaves the teller unsure
     # whether the file is still open — let the flow queue its re-anchor
@@ -5211,6 +5225,31 @@ def _same_day_return_count(person_db_id: Optional[int]) -> int:
         return 0
 
 
+def _greeting_recency(person_db_id: Optional[int]) -> tuple:
+    """(bucket, age_secs) for how recently Rex greeted this person — see
+    intelligence/greeting_cadence.py. (None, …) means the normal ladder should run.
+
+    Deliberately DB-backed rather than in-memory: the point is to survive the restart
+    that resets every other repeat-visit guard.
+    """
+    try:
+        return greeting_cadence.recency(person_db_id)
+    except Exception as exc:
+        _log.debug("greeting recency lookup failed: %s", exc)
+        return (None, None)
+
+
+def _wellbeing_ask_clause(person_db_id: Optional[int]) -> str:
+    """A clause appended to ANY greeting prompt when Rex already asked this person how
+    they're doing recently — so the suppression holds no matter which ladder branch
+    won, including the LLM-improvised ones that could smuggle the question back in."""
+    try:
+        return greeting_cadence.suppression_line(person_db_id)
+    except Exception as exc:
+        _log.debug("wellbeing ask clause lookup failed: %s", exc)
+        return ""
+
+
 def _build_same_day_return_prompt(
     first_name: str, prior_greetings_today: int, *, tone: str = "",
     opener: Optional[str] = None,
@@ -8964,6 +9003,36 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 prior_today = _same_day_return_count(person_db_id)
                 greeting_opener = _repeat_greeting_opener(prior_today + 1)
 
+                # How long since Rex last greeted THIS person, read from the DB so it
+                # survives a restart (owner gripe 2026-08-05). Every in-memory guard —
+                # _greeted_this_session, the monotonic presence cooldowns — is wiped by
+                # a reboot, which made the single most common repeat-visit case (relaunch
+                # him twenty minutes later) the one case nothing could suppress.
+                greet_bucket, greet_age = _greeting_recency(person_db_id)
+
+                # Priority 3.4 — a QUICK return: he greeted them minutes or a couple of
+                # hours ago. Outranks the same-day beat below, which is calendar-day
+                # coarse and would still run a full "you're back" hello for someone who
+                # stepped out for coffee. People don't re-greet at that range; they say
+                # four words, or nothing.
+                if prompt is None and greet_bucket is not None:
+                    constraint = greeting_cadence.greeting_constraint(greet_bucket, greet_age)
+                    if constraint:
+                        # Tone FIRST, constraint LAST. The relationship tone says
+                        # things like "greet them with genuine warmth" — which reads
+                        # as an instruction to run a full hello, exactly what the
+                        # constraint forbids. Whichever comes last wins, and here the
+                        # constraint has to.
+                        prompt = (
+                            f"You see {first_name} again. {greeting_tone} {constraint}"
+                        )
+                        label = f"startup quick-return ({greet_bucket}) for {person_name}"
+                        emotion = "happy" if greet_bucket == greeting_cadence.RECENT else "amused"
+                        _log.info(
+                            "consciousness: startup quick-return for %s (%s, %.0fs since last greeting)",
+                            person_name, greet_bucket, greet_age or 0.0,
+                        )
+
                 # Priority 3.5 — same-day repeat activation. A warm "good to see you back",
                 # NOT a roast, keyed on Rex's recorded greetings_today_count.
                 if prompt is None:
@@ -9207,6 +9276,15 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 context_sentence,
                             )
                             _log.info("consciousness: startup greeting for %s", person_name)
+
+                # Whichever branch won, if Rex already asked this person how they're
+                # doing recently, the greeting must not ask again. Applied HERE rather
+                # than inside each builder so it also covers the LLM-improvised
+                # branches, which could otherwise smuggle the question back in.
+                if prompt is not None and direct_text is None:
+                    _no_reask = _wellbeing_ask_clause(person_db_id)
+                    if _no_reask:
+                        prompt = f"{prompt} {_no_reask}"
 
                 queued = _generate_and_speak_presence(
                     prompt,

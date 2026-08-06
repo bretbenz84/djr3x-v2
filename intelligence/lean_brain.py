@@ -320,6 +320,38 @@ def _room_belief_lines() -> list[str]:
         return []
 
 
+def _mood_lines() -> list[str]:
+    """Rex's own state today (intelligence/rex_mood.py).
+
+    Lives in the SHARED builder, not in _situation_block, for the same reason
+    _room_belief_lines does: _situation_block feeds ONLY the proactive
+    consider_initiating path, so putting it there would leave a DIRECT "how are
+    you?" with no self-state at all — which is the exact bug this fixes. It also
+    reaches the greeting/proactive directive path, since stream_directive routes
+    through _messages -> _system_prompt too.
+
+    (This is the rex_pov trap, avoided: rex_pov injects only into
+    llm.assemble_system_prompt, so under LEAN_BRAIN_ENABLED its preoccupation never
+    reaches a live reply.)
+    """
+    try:
+        from intelligence import rex_mood
+        return rex_mood.prompt_lines()
+    except Exception:
+        return []
+
+
+def _cadence_lines(person_id: Optional[int]) -> list[str]:
+    """"You already asked them how they're doing" — persisted per person, so it
+    survives the restart that used to reset every anti-repeat guard Rex had."""
+    try:
+        from intelligence import greeting_cadence
+        line = greeting_cadence.suppression_line(person_id)
+        return [line] if line else []
+    except Exception:
+        return []
+
+
 def _system_prompt(
     person_id: Optional[int],
     world: Optional[dict],
@@ -331,6 +363,8 @@ def _system_prompt(
         _person_lines(person_id, user_text)
         + _scene_lines(world)
         + _room_belief_lines()
+        + _mood_lines()
+        + _cadence_lines(person_id)
         + list(extra_lines or [])
     )
     if not ctx:

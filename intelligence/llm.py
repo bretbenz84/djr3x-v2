@@ -1257,6 +1257,29 @@ def assemble_system_prompt(
             _log.debug("empathy directive injection skipped: %s", exc)
     sections.append("\n".join(emotion_block))
 
+    # 3b. Rex's own DAY mood (intelligence/rex_mood.py) — the baseline the short affect
+    # layers above ride on. Sits right after them because it is the same subject at a
+    # different timescale: the emotion frame is this utterance (~8s), this is today.
+    # The live voice gets it via lean_brain._system_prompt; this keeps the classic
+    # fallback and the web-search prompt from answering "how are you" without it.
+    try:
+        from intelligence import rex_mood as _rex_mood
+        mood_section = _rex_mood.prompt_section()
+        if mood_section:
+            sections.append(mood_section)
+    except Exception as exc:
+        _log.debug("day-mood section injection skipped: %s", exc)
+
+    # 3c. "You already asked them how they're doing" — persisted per person, so a
+    # restart no longer resets the guard (intelligence/greeting_cadence.py).
+    try:
+        from intelligence import greeting_cadence as _greeting_cadence
+        cadence_line = _greeting_cadence.suppression_line(person_id)
+        if cadence_line:
+            sections.append(cadence_line)
+    except Exception as exc:
+        _log.debug("greeting-cadence section injection skipped: %s", exc)
+
     # 4. WorldState snapshot summary
     sections.append("World context:\n" + _summarize_world_state(ws))
 

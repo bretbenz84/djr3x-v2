@@ -44,6 +44,22 @@ change (tracked as their own fix-up task):
   `test_consecutive_frame_default_and_override`, `test_threshold_env_override`;
   verified against clean HEAD 2026-08-04)
 
+Found by a full per-module sweep of all 241 modules on 2026-08-05 and each verified
+against clean HEAD the same day — same list, so a sweep should now come back with
+exactly these 11 modules failing and nothing else:
+
+- `tests/test_lean_memory_musing.py` — `test_spoken_musing_sets_once_per_session_flag`
+- `tests/test_proactive_discipline.py` — `test_idle_monologue_is_excluded_from_the_cooldown`
+- `tests/test_pose_face_guard.py` — `test_no_pose_anchor_keeps_all`
+- `tests/test_rfdetr_backend.py` — `test_object_records_apply_exclusions`
+- `tests/test_speaker_challenge.py` — `test_cold_signature_needs_strict_bar`
+- `tests/test_vision_panel_skeleton.py` — 2 failures
+  (`test_coarse_hand_points_render`,
+  `test_skeleton_does_not_bleed_past_video_edges`)
+
+A full sweep is easiest as a small Python runner that shells out per module with a
+timeout (macOS has no `timeout(1)`), skipping `test_local_tts`. Budget ~12 minutes.
+
 **Before investigating any failure as a regression, check it against HEAD
 first** (`git stash -u && venv/bin/python -m unittest tests.<module> && git
 stash pop`). If it fails there too, it is pre-existing — note it, move on, and
