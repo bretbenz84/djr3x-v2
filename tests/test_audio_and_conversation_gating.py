@@ -995,6 +995,14 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             with (
                 mock.patch.object(interaction.time, "monotonic", return_value=100.0),
                 mock.patch.object(interaction.config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.12),
+                # No playback preceded this handoff — the case this test models.
+                # Pinned explicitly because the floor now prefers the REAL audio-end
+                # stamp when one is recent (2026-08-06 front-clip fix), and
+                # patching interaction.time patches the shared `time` module, so a
+                # stamp left by an earlier test lands on this same fake clock.
+                mock.patch.object(
+                    interaction.echo_cancel, "last_playback_ended_at", return_value=0.0
+                ),
                 mock.patch.object(interaction.stream, "flush") as flush,
                 mock.patch.object(interaction.vad, "reset_state"),
             ):

@@ -2662,7 +2662,32 @@ def _apply_post_tts_handoff(
         # Safe to reach further back past the handoff to recover an overlapping
         # reply: that audio is hardware-AEC'd, so Rex's tail in it is ~16 dB down.
         grace = max(grace, float(getattr(config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS_AEC", 0.5)))
-    _listen_capture_floor_at = max(0.0, now - grace)
+    # Anchor the floor on when the SOUND stopped, not on when this callback ran
+    # (field 2026-08-06 00:10: "I know, am I right?" → HEARD "Am I right?"). This
+    # handoff fires from the queue's done-callback, 0.5-1.5s after the audio
+    # actually ended (streamed-take cache save, sequence bookkeeping) — and on the
+    # fast dev Mac the human's reply starts inside that lag. Those words are in
+    # the rolling buffer, CLEAN (playback was already over), but a now-anchored
+    # floor lands after them and clips them out of the capture.
+    #   hardware AEC: keep the grace reach-back past the real end (residual is
+    #     ~17dB down; the 0.12 grace was tuned for exactly that).
+    #   software suppression (dev Mac): floor AT the real end — no reach into
+    #     playback, where Rex's voice sits at full volume and self-transcribes.
+    # Only trust the stamp when it plausibly belongs to THIS handoff: the callback
+    # lag is sub-second, so anything older than the bound is a leftover from an
+    # earlier line (or, in the suite, an earlier test) and anchoring on it would
+    # drag the floor seconds into the past and let capture reach back over
+    # unrelated audio. Stale or missing -> the original now-anchored behavior.
+    real_end = 0.0
+    try:
+        real_end = float(echo_cancel.last_playback_ended_at() or 0.0)
+    except Exception:
+        real_end = 0.0
+    max_lag = float(getattr(config, "CAPTURE_FLOOR_PLAYBACK_END_MAX_LAG_SECS", 3.0) or 0.0)
+    if 0.0 < real_end <= now and (now - real_end) <= max_lag:
+        _listen_capture_floor_at = max(0.0, real_end - (grace if aec_on else 0.0))
+    else:
+        _listen_capture_floor_at = max(0.0, now - grace)
     # A question invites an IMMEDIATE answer — arm the one-shot retro scan so a
     # short reply spoken in the dead window before the loop's first live read is
     # recovered from the rolling buffer instead of silently lost.
@@ -12623,7 +12648,23 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
     preroll = _speech_preroll_secs()
     start_at = float(speech_start_mono) - preroll
     clamped_to_floor = False
-    if _listen_capture_floor_at > 0.0 and _listen_capture_floor_at > start_at:
+    # FAST-REPLY WIDENING (field 2026-08-06 00:10, "I know, am I right?" heard as
+    # "Am I right?"): when VAD fires shortly after the capture floor, the human
+    # almost certainly started talking the moment Rex went quiet — but the software
+    # suppression tail flattens their onset, so VAD triggers a beat late and a
+    # preroll-sized reach-back misses the first words. Everything between the floor
+    # and VAD onset is post-playback audio already sitting in the rolling buffer,
+    # so capture from the FLOOR: worst case is a second of leading room tone, which
+    # ASR shrugs off; the first words are what we cannot get back.
+    near = float(getattr(config, "CAPTURE_FROM_FLOOR_NEAR_SECS", 2.0) or 0.0)
+    if (
+        near > 0.0
+        and _listen_capture_floor_at > 0.0
+        and 0.0 <= (float(speech_start_mono) - _listen_capture_floor_at) <= near
+    ):
+        start_at = _listen_capture_floor_at
+        clamped_to_floor = True
+    elif _listen_capture_floor_at > 0.0 and _listen_capture_floor_at > start_at:
         start_at = _listen_capture_floor_at
         clamped_to_floor = True
     duration = max(0.0, finished - start_at)

@@ -4529,6 +4529,24 @@ SPEECH_PREROLL_SECS = 0.45
 # turn was already being discarded here, just silently (owner 2026-08-05: "he's not
 # hearing my first line", and the logs contained no trace of the lost turn at all).
 CAPTURE_MIN_USABLE_SECS = 0.20
+# Fast-reply widening: when VAD fires within this many seconds of the capture
+# floor, capture from the FLOOR instead of speech_start - preroll. The suppression
+# tail flattens a fast reply's onset so VAD triggers late, and a preroll-sized
+# reach-back missed the first words ("I know, am I right?" → "Am I right?",
+# "Well thanks" → "Thanks", field 2026-08-06 00:10 on the dev Mac). Audio after
+# the floor is post-playback and clean; the cost is at most ~a second of leading
+# room tone into ASR. 0 disables.
+CAPTURE_FROM_FLOOR_NEAR_SECS = _env_float(
+    "CAPTURE_FROM_FLOOR_NEAR_SECS", 2.0, min_value=0.0, max_value=10.0,
+)
+# How stale echo_cancel.last_playback_ended_at() may be and still be treated as
+# "this handoff's playback". The queue-callback lag is sub-second; an older stamp
+# belongs to an earlier line, and anchoring the capture floor on it would drag the
+# floor seconds into the past and reach back over unrelated audio. Beyond this,
+# the floor falls back to now - grace.
+CAPTURE_FLOOR_PLAYBACK_END_MAX_LAG_SECS = _env_float(
+    "CAPTURE_FLOOR_PLAYBACK_END_MAX_LAG_SECS", 3.0, min_value=0.5, max_value=30.0,
+)
 # Robot (hardware-AEC) override — see VAD_THRESHOLD_AEC for the full history. At
 # far-field the VAD fires well after true speech onset, so 0.45s of pre-roll still
 # loses the leading words; 1.0 covers the detection delay (leading silence is free

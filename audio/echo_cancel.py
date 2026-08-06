@@ -26,6 +26,12 @@ _playing = False
 _suppress_until: float = 0.0  # monotonic deadline for post-playback tail suppression
 _sequence_active: bool = False  # when True, set_playing(False) is deferred until end_sequence()
 _playback_canceled: bool = False  # set by request_cancel() right before sd.stop()
+# When audio output ACTUALLY last stopped (monotonic), stamped even when the
+# sequence hold swallows the set_playing(False) itself. The post-TTS capture floor
+# anchors here instead of on the queue callback, which runs 0.5-1.5s later (cache
+# save, sequence bookkeeping) — words spoken in that lag were clean, buffered, and
+# clipped (field 2026-08-06 00:10: "I know, am I right?" → HEARD "Am I right?").
+_last_real_playback_end: float = 0.0
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -67,6 +73,16 @@ def end_sequence(flush: bool = True, tail_secs: Optional[float] = None) -> None:
     )
 
 
+def last_playback_ended_at() -> float:
+    """Monotonic time audio output ACTUALLY last stopped (0.0 = never).
+
+    Stamped at the real end of every playback segment — including segments whose
+    set_playing(False) the sequence hold swallows — so callers can anchor timing
+    on the sound instead of on the queue bookkeeping that runs ~a second later."""
+    with _lock:
+        return _last_real_playback_end
+
+
 def set_playing(
     is_playing: bool,
     *,
@@ -74,14 +90,19 @@ def set_playing(
     flush: Optional[bool] = None,
 ) -> None:
     """Called by TTS and playback modules when audio output starts or stops."""
-    global _playing, _suppress_until, _playback_canceled
+    global _playing, _suppress_until, _playback_canceled, _last_real_playback_end
     with _lock:
         if not is_playing and _sequence_active:
-            # Mid-sequence: suppress the turn-off so the next segment sees no gap.
+            # Mid-sequence: suppress the turn-off so the next segment sees no gap —
+            # but STAMP the real end regardless: if this turns out to be the final
+            # segment, this timestamp is when Rex genuinely went quiet, and the
+            # capture floor needs it (the sequence callback runs noticeably later).
+            _last_real_playback_end = time.monotonic()
             return
         changed = _playing != is_playing
         _playing = is_playing
         if not is_playing:
+            _last_real_playback_end = time.monotonic()
             tail = (
                 config.POST_PLAYBACK_SUPPRESSION_SECS
                 if tail_secs is None
