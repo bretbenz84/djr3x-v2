@@ -4524,6 +4524,11 @@ MIN_SPEECH_DURATION_SECS = 0.45
 # clipped. Question answers get more pre-roll because people often begin while
 # Rex's last syllable or room echo is still fading.
 SPEECH_PREROLL_SECS = 0.45
+# Below this, a computed capture window is treated as a DROPPED utterance and logged
+# (interaction._speech_capture_secs). Diagnostic only — it changes no behavior; the
+# turn was already being discarded here, just silently (owner 2026-08-05: "he's not
+# hearing my first line", and the logs contained no trace of the lost turn at all).
+CAPTURE_MIN_USABLE_SECS = 0.20
 # Robot (hardware-AEC) override — see VAD_THRESHOLD_AEC for the full history. At
 # far-field the VAD fires well after true speech onset, so 0.45s of pre-roll still
 # loses the leading words; 1.0 covers the detection delay (leading silence is free

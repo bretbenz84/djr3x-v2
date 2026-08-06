@@ -5537,6 +5537,51 @@ def _log_impulse_session_summary() -> None:
     _last_impulse_block_reason = ""
 
 
+# ── Capture telemetry (owner 2026-08-05: "he's not hearing my first line") ────
+# A turn that VAD detected can die with ZERO logging: _accumulate_speech returns
+# None (state left ACTIVE / shutdown) or an EMPTY array (the capture window
+# computed to ~0s), and the listen loop's `if audio_segment is None or len(...)==0:
+# continue` drops it silently. So a dropped utterance is indistinguishable in the
+# logs from the user never having spoken — which is exactly why the field report
+# ("I pause a second, he doesn't hear me, I repeat myself") could not be diagnosed
+# from a full-debug run. Same shape as the lull-impulse telemetry: count every
+# outcome, log TRANSITIONS at INFO, dump a summary at session end.
+_capture_outcome_counts: dict = {}
+_last_capture_drop_reason: str = ""
+
+
+def _capture_outcome(reason: str) -> None:
+    _capture_outcome_counts[reason] = _capture_outcome_counts.get(reason, 0) + 1
+
+
+def _capture_dropped(reason: str, **detail) -> None:
+    """Record + log a turn that VAD accepted but that never reached transcription."""
+    global _last_capture_drop_reason
+    _capture_outcome(reason)
+    bits = " ".join(f"{k}={v}" for k, v in detail.items())
+    if reason != _last_capture_drop_reason:
+        _last_capture_drop_reason = reason
+        _log.warning(
+            "[capture] utterance DROPPED before transcription — %s %s", reason, bits,
+        )
+    else:
+        _log.info("[capture] utterance dropped again — %s %s", reason, bits)
+
+
+def _log_capture_session_summary() -> None:
+    """One line per session: heard vs dropped, and why. Grep `[capture] session`."""
+    global _last_capture_drop_reason
+    if not _capture_outcome_counts:
+        return
+    parts = ", ".join(
+        f"{k}={v}" for k, v in
+        sorted(_capture_outcome_counts.items(), key=lambda kv: -kv[1])
+    )
+    _log.info("[capture] session summary: %s", parts)
+    _capture_outcome_counts.clear()
+    _last_capture_drop_reason = ""
+
+
 def _person_visible_now(person_id: Optional[int]) -> bool:
     """Is this person on CAMERA right now (stricter than _lean_impulse_person_present,
     which also accepts heard-recently)? Fail-closed — this only grants a bonus."""
@@ -12551,10 +12596,27 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
     with the human's answer.
     """
     finished = time.monotonic() if finished_mono is None else float(finished_mono)
-    start_at = float(speech_start_mono) - _speech_preroll_secs()
-    if _listen_capture_floor_at > 0.0:
-        start_at = max(start_at, _listen_capture_floor_at)
+    preroll = _speech_preroll_secs()
+    start_at = float(speech_start_mono) - preroll
+    clamped_to_floor = False
+    if _listen_capture_floor_at > 0.0 and _listen_capture_floor_at > start_at:
+        start_at = _listen_capture_floor_at
+        clamped_to_floor = True
     duration = max(0.0, finished - start_at)
+    # A post-TTS handoff that lands AFTER this utterance began pushes the floor past
+    # the speech itself, collapsing the window to ~0s. The caller then gets an empty
+    # array and drops the turn — historically in total silence. Say so.
+    if duration < float(getattr(config, "CAPTURE_MIN_USABLE_SECS", 0.20)):
+        _capture_dropped(
+            "capture_window_collapsed" if clamped_to_floor else "capture_window_empty",
+            window=f"{duration:.2f}s",
+            floor_after_speech_start=(
+                f"{_listen_capture_floor_at - float(speech_start_mono):+.2f}s"
+                if _listen_capture_floor_at > 0.0 else "n/a"
+            ),
+            preroll=f"{preroll:.2f}s",
+            speech_len=f"{finished - float(speech_start_mono):.2f}s",
+        )
     return min(duration, float(config.AUDIO_BUFFER_SECONDS))
 
 
@@ -17056,6 +17118,12 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     # "Why was he quiet?" — one summary line per session of lull-consult outcomes.
     try:
         _log_impulse_session_summary()
+    except Exception:
+        pass
+
+    # "Why didn't he hear me?" — heard vs silently-dropped utterances, and why.
+    try:
+        _log_capture_session_summary()
     except Exception:
         pass
 
@@ -26476,8 +26544,20 @@ def _loop() -> None:
             audio_segment = _accumulate_speech(speech_start)
             eager_text = _pop_eager_transcript()
             if audio_segment is None or len(audio_segment) == 0:
+                # THE invisible drop (owner 2026-08-05: "he's not hearing my first
+                # line"). VAD accepted this turn and the loop committed to it, then
+                # it vanished here without a single log line — indistinguishable
+                # from the user never speaking. _speech_capture_secs already logs
+                # the window-collapse case with numbers; this catches the rest.
+                _capture_dropped(
+                    "accumulate_returned_none" if audio_segment is None
+                    else "accumulate_returned_empty",
+                    held_for=f"{time.monotonic() - speech_start:.2f}s",
+                    state=str(state_module.get_state()),
+                )
                 continue
 
+            _capture_outcome("captured")
             _last_speech_at = time.monotonic()
             try:
                 _handle_speech_segment(audio_segment, eager_transcript=eager_text)
