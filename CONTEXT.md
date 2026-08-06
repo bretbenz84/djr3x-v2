@@ -2216,8 +2216,12 @@ than the mic-side gate above: **don't play effects while a reply is expected.**
   reaches `voice_signatures`. It had been reaching it: signature id=15 matched the
   phantom at 0.990 and had grown to **14 turns across sessions since 2026-08-02** — Rex
   learning his own AEC residual as a recurring person. A pinned regression test asserts
-  the ordering. Existing poisoned rows are NOT auto-cleaned (all are `person_id=None`
-  anonymous slots and some may be real unnamed guests — owner's call).
+  the ordering. **Row id=15 was dropped on owner approval 2026-08-06** after it went on
+  to match a real human's laugh at 0.863 (next entry); backup at
+  `assets/memory/people.db.bak-*`. The other 12 anonymous rows were left alone and all
+  sit at 1–2 turns — the runaway growth was unique to the poisoned one, which is the
+  cheapest signal to watch for a recurrence: `select id, turns from voice_signatures`,
+  anything climbing past a handful of turns with `person_id IS NULL` is suspect.
 - **Relationship to the mic-gate change (a09960d):** verified inert here — the `proud`
   chirp is speech-family with `_suppresses_mic=True`, so the mic was skipped during it
   exactly as before; the capture had already begun in the post-TTS seam BEFORE the chirp
@@ -2261,8 +2265,9 @@ earlier — and got "Nice laugh, mystery voice—who are you, exactly?".
   at 0.455 while Bret sat silently on camera) is unchanged. Pinned by
   `test_a_short_spoken_turn_is_still_vetoed`.
 - **The poisoned signature made it worse:** the laugh matched `voice_signatures` id=15 at
-  0.863 — the same row that matched Rex's own echo at 0.990 in session 13-20-57. That row
-  behaves like a junk non-speech cluster and is still present (see the previous entry).
+  0.863 — the same row that matched Rex's own echo at 0.990 in session 13-20-57. A row
+  that confidently matches BOTH Rex's AEC residual and a human's laughter is not anyone's
+  voice; it is a junk non-speech cluster. Dropped on owner approval (previous entry).
 - Tests: `tests/test_voice_primary_identity.py::LaughIsNotAStrangerTest` /
   `LaughterDetectionTest`.
 
