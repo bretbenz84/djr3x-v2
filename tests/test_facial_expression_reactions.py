@@ -198,7 +198,42 @@ class FacialExpressionReactionTests(unittest.TestCase):
 
         speak.assert_not_called()
 
-    def test_sustained_smile_can_trigger_general_reaction(self):
+    def test_sustained_smile_feeds_reaction_awareness_not_a_spoken_line(self):
+        # Owner rework 2026-08-05 (second smile system): a sustained SPONTANEOUS
+        # smile no longer emits canned interjection candidates ("You're smiling
+        # like you know exactly what you're doing") — it records first-person
+        # awareness so Rex's next generated line can acknowledge it woven-in.
+        # The per-person/kind cooldown must still arm (a held smile must not
+        # re-mint the awareness every consciousness tick).
+        from intelligence import reaction_awareness
+        c = self.c
+        c.world_state.update("people", [
+            self._person(
+                "smile",
+                "happy",
+                0.78,
+                {"mouthSmileLeft": 0.78, "mouthSmileRight": 0.76},
+            )
+        ])
+
+        reaction_awareness.clear()
+        self.addCleanup(reaction_awareness.clear)
+        with (
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c, "_speak_facial_expression_reaction", return_value=True) as speak,
+        ):
+            c._step_facial_expression_reactions(c.world_state.snapshot(), mock.Mock())
+
+        speak.assert_not_called()
+        active = reaction_awareness.active()
+        self.assertIsNotNone(active)
+        self.assertEqual(active["kind"], "smile")
+        # Spontaneous framing — no Rex line caused this smile.
+        self.assertIn("You just caught", reaction_awareness.prompt_lines(None)[0])
+
+    def test_sustained_smile_legacy_flag_restores_the_spoken_reaction(self):
         c = self.c
         c.world_state.update("people", [
             self._person(
@@ -213,6 +248,7 @@ class FacialExpressionReactionTests(unittest.TestCase):
             mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS", 0.0),
             mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS", 0.0),
             mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c.config, "SMILE_REACTION_CANNED_LINES_ENABLED", True),
             mock.patch.object(c, "_speak_facial_expression_reaction", return_value=True) as speak,
         ):
             c._step_facial_expression_reactions(c.world_state.snapshot(), mock.Mock())

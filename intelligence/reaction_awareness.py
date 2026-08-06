@@ -41,8 +41,9 @@ class _Reaction:
     person_id: Optional[int]
     first_name: str
     kind: str                   # "smile" | "laugh" | ...
-    trigger_text: str           # the Rex line that landed
+    trigger_text: str           # the Rex line that landed ("" when spontaneous)
     at: float                   # monotonic
+    spontaneous: bool = False   # they just smiled, unprompted — no Rex line caused it
     injected: bool = False      # rendered into at least one prompt
 
 
@@ -71,10 +72,20 @@ def note_reaction(
     first_name: str,
     kind: str,
     trigger_text: str = "",
+    *,
+    spontaneous: bool = False,
 ) -> None:
-    """Record that Rex's line just visibly LANDED (they smiled/laughed at it).
-    Called by the detection side (consciousness's smile watch) at confirm time.
-    A new reaction replaces any unspent previous one — the freshest moment wins."""
+    """Record a visible reaction. Two flavors:
+
+    * landed (default) — Rex's own line caused it (quip → smile-watch confirm);
+      `trigger_text` is the line that landed.
+    * spontaneous=True — they just smiled at something, unprompted (the old
+      facial-expression-reaction system's territory); there is no trigger line, and
+      the awareness framing shifts from "your joke worked" to "you caught them
+      smiling".
+
+    Called by the detection side at confirm time; a new reaction replaces any
+    unspent previous one — the freshest moment wins."""
     if not _enabled():
         return
     global _current
@@ -85,10 +96,13 @@ def note_reaction(
             kind=str(kind or "smile").strip().lower(),
             trigger_text=" ".join(str(trigger_text or "").split())[:200],
             at=time.monotonic(),
+            spontaneous=bool(spontaneous),
         )
     _log.info(
-        "[reaction_awareness] %s landed on %s (trigger=%r)",
-        _current.kind, _current.first_name, _current.trigger_text[:60],
+        "[reaction_awareness] %s %s on %s (trigger=%r)",
+        _current.kind,
+        "noticed" if _current.spontaneous else "landed",
+        _current.first_name, _current.trigger_text[:60],
     )
 
 
@@ -121,9 +135,24 @@ def prompt_lines(person_id: Optional[int] = None) -> list:
         verb = _KIND_VERB.get(r.kind, r.kind)
         trigger = f' ("{r.trigger_text}")' if r.trigger_text else ""
         name = r.first_name
+        spontaneous = r.spontaneous
+        kind = r.kind
+        noun = kind if kind in ("smile", "laugh") else "react"
+    if spontaneous:
+        doing = {"smile": "smiling", "laugh": "laughing"}.get(kind, verb)
+        return [
+            f"You just caught {name} {doing} "
+            f"— at you, at the moment, maybe at their own thoughts; you don't know "
+            f"which, and that's part of the charm. If it fits what you're saying, you "
+            f"may acknowledge it in first person, lightly and warmly — curious or "
+            f"quietly pleased, one small touch. Never report it like a sensor ('I saw "
+            f"you smile', 'smile detected'), never interrogate it, never make it the "
+            f"whole line — and if it doesn't fit, just let it warm your tone and say "
+            f"nothing about it."
+        ]
     return [
         f"A moment ago your line{trigger} LANDED — you saw {name} {verb} at it. "
-        f"You genuinely enjoy making them {r.kind if r.kind in ('smile', 'laugh') else 'react'}; "
+        f"You genuinely enjoy making them {noun}; "
         f"it means the material is working. If it fits THIS reply, you may let that "
         f"satisfaction show in first person — one light, dry touch woven into what "
         f"you're saying (owning that the joke landed, riding the good mood). Never "

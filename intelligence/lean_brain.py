@@ -1672,7 +1672,21 @@ def consider_initiating(
                 "\nIMPORTANT: you've already asked plenty of questions this session. Do "
                 "NOT ask another one — make it a statement, an observation, or PASS."
             )
-        messages: list[dict] = [{"role": "system", "content": _persona()}]
+        # The impulse used to run on the BARE persona, so Rex's self-state never
+        # reached his self-initiated lines: the field case (2026-08-05 21:22) was a
+        # detected smile whose awareness sat recorded and unread while his next lull
+        # line was generated blind to it, then expired. The person/scene/memory
+        # context stays out on purpose (the situation block already carries what the
+        # impulse should ground on) — but his OWN state (day mood, a reaction he
+        # just caused, the spent how-are-you ask) rides along, same as replies.
+        _self_lines = (
+            _mood_lines() + _reaction_lines(person_id) + _cadence_lines(person_id)
+        )
+        _sys_content = _persona() if not _self_lines else (
+            _persona() + "\n\nRight now:\n"
+            + "\n".join("- " + line for line in _self_lines)
+        )
+        messages: list[dict] = [{"role": "system", "content": _sys_content}]
         keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))
         for turn in (transcript or [])[-keep:] if keep else []:
             text = str(turn.get("text") or "").strip()

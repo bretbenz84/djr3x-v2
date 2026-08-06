@@ -118,6 +118,33 @@ class InjectionTests(unittest.TestCase):
             self.assertEqual(lean_brain._reaction_lines(1), [])
             self.assertIsInstance(lean_brain._system_prompt(1, None), str)
 
+    def test_awareness_reaches_the_lull_impulse_prompt(self):
+        # THE field gap (2026-08-05 21:22): the smile landed and was recorded, but
+        # consider_initiating built its prompt from the bare persona, so Rex's next
+        # lull line was generated blind to it and the moment expired unheard. The
+        # impulse system prompt must carry his self-state now.
+        from types import SimpleNamespace as NS
+        ra.note_reaction(1, "Bret", "smile", spontaneous=True)
+        captured = {}
+
+        def fake_create(client, **kw):
+            captured["m"] = kw["messages"]
+            return iter([NS(choices=[NS(delta=NS(content="PASS"))])])
+
+        with mock.patch.object(lean_brain.llm_compat, "create", side_effect=fake_create):
+            lean_brain.consider_initiating(1, transcript=[])
+        system = captured["m"][0]["content"]
+        self.assertIn("You just caught Bret smiling", system)
+
+    def test_spontaneous_framing_differs_from_landed(self):
+        ra.note_reaction(1, "Bret", "smile", spontaneous=True)
+        line = ra.prompt_lines(1)[0]
+        self.assertIn("You just caught", line)
+        self.assertNotIn("LANDED", line)
+        self.assertIn("never interrogate it", line)
+        # The sensor-report ban holds in both framings.
+        self.assertIn("Never report it like a sensor", line)
+
     def test_render_into_prompt_arms_the_spend(self):
         ra.note_reaction(None, "Bret", "smile")
         lean_brain._system_prompt(None, None)          # render = injection

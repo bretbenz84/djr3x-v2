@@ -3955,6 +3955,37 @@ def _step_facial_expression_reactions(snapshot: dict, profile: SituationProfile)
     if _facial_expression_reaction_on_cooldown(person_key, kind, now):
         return
 
+    # SMILE diverts to first-person awareness (owner 2026-08-05: "get rid of the
+    # sometimes triggered canned text"). This is the SPONTANEOUS-smile system — no
+    # Rex quip caused it — and it used to emit interjection candidates ("You're
+    # smiling like you know exactly what you're doing") into the governor. Now the
+    # noticing feeds reaction_awareness so his next generated line can acknowledge
+    # it woven-in, or not at all. Same cooldowns arm (a held smile must not re-mint
+    # every tick); surprise/brow_furrow keep the spoken path — those are prompted
+    # reactions to a live moment, not the canned smile commentary the owner cut.
+    if (
+        kind == "smile"
+        and bool(getattr(config, "REACTION_AWARENESS_ENABLED", True))
+        and not bool(getattr(config, "SMILE_REACTION_CANNED_LINES_ENABLED", False))
+    ):
+        try:
+            from intelligence import reaction_awareness
+            reaction_awareness.note_reaction(
+                _person_db_id(person),
+                _first_name((person or {}).get("face_id"), "them"),
+                "smile",
+                spontaneous=True,
+            )
+            _last_facial_expression_reaction_at = now
+            _facial_expression_reacted_at[(person_key, kind)] = now
+            _log.info(
+                "consciousness: spontaneous smile → reaction awareness person=%s score=%.2f",
+                person_key, float(score),
+            )
+        except Exception as exc:
+            _log.debug("spontaneous smile awareness note failed: %s", exc)
+        return
+
     # Prefer a context-aware, conversation-grounded reaction (judges surprise vs.
     # whether Rex just said something provocative; never narrates the camera). Fall
     # back to the authored bank when the LLM path is disabled or returns nothing.
