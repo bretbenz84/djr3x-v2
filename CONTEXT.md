@@ -1660,6 +1660,15 @@ Two fixes from the 20:54 field log:
   `consciousness.note_rex_utterance`), TTL 90s, per-person isolation (Bret's smile
   never colors a reply to JT), newest reaction replaces the old. Legacy canned path
   is behind `SMILE_REACTION_CANNED_LINES_ENABLED` (ships False).
+  Field-fixed same night (e942cb7): the awareness fired but never reached a prompt —
+  (a) `consider_initiating` built its system prompt from the BARE persona, so lull
+  lines were generated blind to ALL self-state; it now carries day mood + reaction
+  awareness + the spent how-are-you ask (person/scene context deliberately stays
+  out — the situation block owns that). (b) The SECOND smile system
+  (`_step_facial_expression_reactions`, spontaneous sustained smiles) still emitted
+  canned interjection candidates; smiles there now feed `reaction_awareness` with a
+  "you just caught them smiling" framing (no trigger line exists).
+  Surprise/brow-furrow keep their spoken path.
 - **Spoken news digest contract.** "Tell me more" about an offered story produced a
   ~150-word press release read aloud (platform roll-calls, "if you want, I can also
   pull the submission rules…"). `_compose_news_search_input` now demands three
