@@ -38,6 +38,7 @@ _SCALARS = {
     "_lean_news_mentioned_this_session": False,
     "_last_news_story_offered": None,
     "_awaiting_followup_event": None,
+    "_last_impulse_block_reason": "",
 }
 
 # Mutable containers must be restored IN PLACE — other modules hold references.
@@ -47,7 +48,7 @@ _CONTAINERS = ("_lean_impulse_spoken_times",)
 # generated line benches its cue for 600s of MOCKED time, which silently
 # starved the same cue in every later test (2 wiring tests broke module-wide
 # while passing in isolation — the exact leak this helper exists to stop).
-_DICTS = ("_lean_cue_cooldowns", "_workday_checkin_rolls")
+_DICTS = ("_lean_cue_cooldowns", "_workday_checkin_rolls", "_impulse_outcome_counts")
 
 
 def reset_impulse_state(testcase) -> None:

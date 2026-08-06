@@ -1614,6 +1614,36 @@ about what he had already said to you:
 - Tests: `tests/test_rex_mood.py`, `tests/test_greeting_cadence.py`,
   `tests/test_self_state_injection.py`, `tests/test_mood_share_cue.py`.
 
+### Lull quietness telemetry + tuning (2026-08-05)
+
+Owner: "during lulls he sits there quiet so much." The lull gauntlet in
+`interaction._maybe_lean_impulse` is ~18 gates deep, each added for a documented
+over-talking gripe — individually defensible, multiplicatively harsh, and with no
+visibility into which gate was doing the silencing.
+
+- **Telemetry:** every consult now records exactly one outcome (`spoken`,
+  `watched_pass`, `dropped_*`, or a gate name) via `_impulse_blocked` /
+  `_impulse_outcome`. Gate TRANSITIONS log at INFO (the consult loop ticks ~1/s, so
+  repeats are counted silently); a per-session rollup logs at session end — grep
+  `[lean] impulse session summary` to see exactly where the speech went. A
+  source-level completeness test (`tests/test_lean_quietness_tuning.py`) fails if a
+  new gate is added without instrumentation — it caught one on day one.
+- **PASS re-arms only half the window** (`LEAN_IMPULSE_PASS_REARM_FRACTION`, 0.5).
+  The anchor arms on every consult so the model isn't hammered, but the instructions
+  praise PASSing, so each polite shrug bought a FULL window of guaranteed silence —
+  chained PASSes on the 40s re-engage path meant minutes of dead air. 1.0 restores
+  old behavior.
+- **+1 unanswered-line allowance when visibly on camera**
+  (`LEAN_IMPULSE_MAX_UNANSWERED_VISIBLE_BONUS`): sitting in plain view is soft
+  permission for one more try; the base cap of 2 stands for voice-only, where
+  silence more plausibly means they left. `_person_visible_now` fails CLOSED — it
+  only grants a bonus.
+- **Probe snooze 600s → 240s** (`ENGAGEMENT_PROBE_NO_ANSWER_SNOOZE_SECS`): ten
+  minutes of total silence was a harsh sentence for missing one 30s answer window.
+- Tune from live data now: run a session, grep the summary, and adjust the gate the
+  numbers actually blame — don't blanket-loosen (the gates each trace to a real
+  dated over-talking field report).
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

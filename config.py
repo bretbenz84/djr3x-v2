@@ -401,7 +401,19 @@ FLAT_ANSWER_PROBE_COOLDOWN_SECS = 180.0
 # until the person actually says something. The counter resets the moment the user speaks, so a
 # fresh silence gets its full allowance. Break the silence once or twice — then let it be.
 LEAN_IMPULSE_MAX_UNANSWERED = 2       # consecutive self-initiated lines w/ no user reply before he goes quiet
+# +1 to the unanswered allowance when the person is VISIBLY on camera right now
+# (owner 2026-08-05: "he sits there quiet so much"). Sitting in plain view is soft
+# permission to keep trying; the base cap unchanged for the voice-only case, where
+# silence more plausibly means they left. 0 restores the flat cap.
+LEAN_IMPULSE_MAX_UNANSWERED_VISIBLE_BONUS = 1
 LEAN_IMPULSE_ESCALATION     = 1.0     # gap after n unanswered lines = COOLDOWN * (1 + ESCALATION * n)
+# A model PASS re-arms only this FRACTION of the pacing window (owner 2026-08-05, the
+# "sits there quiet" tuning). The anchor arms on every consult so the model is asked at
+# most once per window — but the instructions repeatedly tell it PASS is fine, so each
+# polite shrug used to buy a FULL window of guaranteed silence; two chained PASSes on
+# the 40s re-engage path meant 2+ minutes of dead air with the person sitting right
+# there. 0.5 = after a PASS, ask again in half the window. 1.0 restores old behavior.
+LEAN_IMPULSE_PASS_REARM_FRACTION = 0.5
 # SLOW re-engagement — after the fast lull-break yields the floor, don't let the conversation just
 # die: if the person is still HERE but it's gone truly quiet for this long (since Rex last spoke),
 # take one PATIENT swing on a genuinely NEW topic/question (bypasses the fast unanswered cap). Spaced
@@ -425,7 +437,10 @@ IDLE_PRESENCE_IMPULSE_ENABLED = True
 #   person leaves the frame → all state cleared; normal idle/boredom/sleep path owns the room
 ENGAGEMENT_PROBE_ENABLED = True
 ENGAGEMENT_PROBE_ANSWER_WINDOW_SECS = 30.0    # how long the probe waits for any reply
-ENGAGEMENT_PROBE_NO_ANSWER_SNOOZE_SECS = 600.0  # silence = not interested — quiet for 10 min
+# Was 600 (10 min): a very long sentence for missing one 30s window — stepping out,
+# being mid-thought, or just not hearing the probe muted Rex for ten minutes (owner
+# 2026-08-05 quietness tuning). Speaking still clears it instantly.
+ENGAGEMENT_PROBE_NO_ANSWER_SNOOZE_SECS = 240.0  # silence = not interested — quiet for 4 min
 ENGAGEMENT_DEFER_SNOOZE_SECS = 100.0          # "give me a few minutes" — back in ~a minute and a half
 # Cadence = quiet-threshold (measured from Rex's last line, so a natural short pause triggers it)
 # + cooldown. Each eligible window Rex consults the lean brain and either says one motivated thing

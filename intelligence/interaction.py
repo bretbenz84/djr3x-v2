@@ -5490,6 +5490,58 @@ def _lean_weekend_plans_cue(person_id: Optional[int]) -> Optional[dict]:
     return {"topic_key": topic_key, "when": when}
 
 
+# ── Lull-gauntlet telemetry (owner 2026-08-05: "he sits there quiet so much") ──
+# Every consult of _maybe_lean_impulse ends in exactly one outcome: spoken, a model
+# PASS, a dropped line, or one of ~15 gates. Nothing recorded WHICH, so tuning the
+# quietness meant guessing. This counts outcomes per session and logs gate
+# TRANSITIONS at INFO (the consult loop ticks ~1/s, so logging every repeat of the
+# same gate would flood — a transition is the informative event). Summary line at
+# session end: grep `[lean] impulse session summary`.
+_impulse_outcome_counts: dict = {}
+_last_impulse_block_reason: str = ""
+
+
+def _impulse_outcome(reason: str) -> None:
+    _impulse_outcome_counts[reason] = _impulse_outcome_counts.get(reason, 0) + 1
+
+
+def _impulse_blocked(reason: str) -> bool:
+    """Count a gate outcome; log at INFO only when the blocking gate CHANGES."""
+    global _last_impulse_block_reason
+    _impulse_outcome(reason)
+    if reason != _last_impulse_block_reason:
+        _last_impulse_block_reason = reason
+        _log.info("[lean] impulse blocked: %s", reason)
+    return False
+
+
+def _log_impulse_session_summary() -> None:
+    """One line per session answering "why was he quiet?" — logged then reset."""
+    global _last_impulse_block_reason
+    if not _impulse_outcome_counts:
+        return
+    total = sum(_impulse_outcome_counts.values())
+    parts = ", ".join(
+        f"{k}={v}" for k, v in
+        sorted(_impulse_outcome_counts.items(), key=lambda kv: -kv[1])
+    )
+    _log.info("[lean] impulse session summary: consults=%d — %s", total, parts)
+    _impulse_outcome_counts.clear()
+    _last_impulse_block_reason = ""
+
+
+def _person_visible_now(person_id: Optional[int]) -> bool:
+    """Is this person on CAMERA right now (stricter than _lean_impulse_person_present,
+    which also accepts heard-recently)? Fail-closed — this only grants a bonus."""
+    try:
+        for p in world_state.get("people") or []:
+            if p.get("person_db_id") == person_id:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _lean_impulse_person_present(person_id: int) -> bool:
     """Is the impulse's target plausibly HERE — on camera now, or heard recently?
 
@@ -5665,20 +5717,20 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     ):
         return False
     if _game_suppresses_conversation() or _directed_context_fresh():
-        return False
+        return _impulse_blocked("game_or_directed_context")
     try:
         if end_thread.is_grace_active():
-            return False
+            return _impulse_blocked("end_thread_grace")
     except Exception:
         pass
     person_id = _primary_session_person_id()
     if person_id is None:                       # nobody known present → never nudge an empty room
-        return False
+        return _impulse_blocked("no_known_person")
     if not _lean_impulse_person_present(person_id):
         # Target left (or went silent + off-camera): forget any probe/snooze so
         # the normal idle/boredom/sleep path owns the room from here.
         _clear_engagement_state("person left")
-        return False
+        return _impulse_blocked("person_absent")
     # ── Disengagement protocol (owner 2026-07-18) ────────────────────────────
     # An unanswered probe past its window = they don't want to talk right now:
     # go quiet for a long while (presence-gated; speaking clears it instantly).
@@ -5696,10 +5748,10 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             "impulses snoozed %.0fs (speaking resumes immediately)", _no_ans,
         )
     if _engagement_probe_at > 0.0:
-        return False                            # probe outstanding — wait out the window quietly
+        return _impulse_blocked("probe_outstanding")  # wait out the window quietly
     if _now_eng < _impulse_snooze_until:
         if _impulse_snooze_person in (None, person_id):
-            return False                        # snoozed ("give me a few minutes" / no answer)
+            return _impulse_blocked(f"probe_snoozed_{_impulse_snooze_reason or 'unknown'}")
         # A DIFFERENT known person is now the target — their arrival isn't
         # muted by someone else's snooze.
         _clear_engagement_state("new person arrived")
@@ -5712,7 +5764,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     except Exception:
         quiet = idle_for
     if quiet == float("inf") or quiet < float(getattr(config, "LEAN_IMPULSE_QUIET_SECS", 5.0)):
-        return False
+        return _impulse_blocked("too_soon_after_rex_spoke")
     # A conversation that is actively FLOWING is not a lull. If the user spoke within
     # the flow window, the reply thread owns the floor — a new self-initiated thread
     # needs a genuinely long mutual silence first. (Field bug: 7 impulse questions in
@@ -5735,13 +5787,13 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         and (time.monotonic() - _last_user_content_at) <= _flow_window
         and quiet < _flow_quiet
     ):
-        return False
+        return _impulse_blocked("conversation_flowing")
     if idle_for >= max(0.0, effective_idle_timeout - 1.0):   # leave room for the outro
-        return False
+        return _impulse_blocked("outro_imminent")
     if time.monotonic() < _floor_held_until:    # Rex just asked something — let them answer
-        return False
+        return _impulse_blocked("awaiting_answer_floor_hold")
     if _proactive_line_recently_fired():
-        return False
+        return _impulse_blocked("proactive_line_gap")
     now = time.monotonic()
     # Two tempos for a quiet room:
     #  FAST lull-break — within a few seconds of Rex finishing, up to MAX_UNANSWERED escalating lines,
@@ -5759,25 +5811,32 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         and (now - _last_lean_impulse_at) >= _reengage_secs
     )
     if not long_silence:
-        if _consecutive_lean_impulses >= int(getattr(config, "LEAN_IMPULSE_MAX_UNANSWERED", 2)):
-            return False
+        # +1 allowance when they're visibly ON CAMERA (owner 2026-08-05 quietness
+        # tuning): sitting in plain view is soft permission for one more try; the
+        # base cap stands for voice-only, where silence more plausibly means gone.
+        _allowance = int(getattr(config, "LEAN_IMPULSE_MAX_UNANSWERED", 2))
+        if _person_visible_now(person_id):
+            _allowance += max(0, int(getattr(
+                config, "LEAN_IMPULSE_MAX_UNANSWERED_VISIBLE_BONUS", 1)))
+        if _consecutive_lean_impulses >= _allowance:
+            return _impulse_blocked("unanswered_cap")
         _base_cooldown = float(getattr(config, "LEAN_IMPULSE_COOLDOWN_SECS", 50.0))
         _escalation = float(getattr(config, "LEAN_IMPULSE_ESCALATION", 1.0))
         _required_gap = _base_cooldown * (1.0 + _escalation * _consecutive_lean_impulses)
         if now - _last_lean_impulse_at < _required_gap:
-            return False
+            return _impulse_blocked("cooldown")
     try:
         if consciousness.is_waiting_for_response():
-            return False
+            return _impulse_blocked("awaiting_response")
     except Exception:
         pass
     if _interrupted.is_set():
-        return False
+        return _impulse_blocked("interrupted")
     if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
-        return False
+        return _impulse_blocked("audio_busy")
     try:
         if _suppress_proactive_after_heavy(person_id):
-            return False
+            return _impulse_blocked("post_heavy_grace")
     except Exception:
         pass
 
@@ -5789,7 +5848,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     _cap_n = int(getattr(config, "LEAN_IMPULSE_MAX_PER_WINDOW", 5))
     _lean_impulse_spoken_times[:] = [t for t in _lean_impulse_spoken_times if now - t < _cap_window]
     if len(_lean_impulse_spoken_times) >= _cap_n:
-        return False
+        return _impulse_blocked("rate_cap")
     # ── Disengagement probe trigger ──────────────────────────────────────────
     # The unanswered run has maxed out and it's gone truly quiet: instead of yet
     # another topic swing, ask DIRECTLY whether they want to talk ("Am I
@@ -5843,14 +5902,14 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             _log.debug("[lean] facing override check failed: %s", exc)
     if low_energy:
         if long_silence:
-            return False                        # no re-engage pestering when tired
+            return _impulse_blocked("low_energy_no_reengage")
         # Content is the guard (statement-or-PASS via the lean addendum), NOT a
         # silence wall: the old quiet >= 60s requirement meant lean could never
         # beat the ~35s idle-wander re-greet, so a tired user got "Oh—still
         # here" instead of anything real (field 2026-07-18 01:10 session).
         _low_gap = float(getattr(config, "LEAN_IMPULSE_LOW_ENERGY_GAP_SECS", 120.0))
         if (now - _last_lean_impulse_at) < _low_gap:
-            return False
+            return _impulse_blocked("low_energy_cooldown")
         _log.info("[lean] impulse consult in LOW-ENERGY mode (statements only)")
     # Question budget: an exhausted budget doesn't silence the impulse, it
     # converts it to statement-or-pass (the addendum in lean_brain).
@@ -6046,6 +6105,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         )
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)
+        _impulse_outcome("generation_failed")
         return False
     _mode = "reengage" if long_silence else "lull"
     # Which cue fed the instruction (mirrors lean_brain's dispatch priority) —
@@ -6066,10 +6126,23 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         None,
     )
     if not line:
+        _impulse_outcome("watched_pass")
+        # A PASS must not buy a FULL pacing window (owner 2026-08-05: chained
+        # PASSes on the 40s re-engage path meant minutes of dead air with the
+        # person sitting right there). Re-arm only a fraction of the window so
+        # the next consult comes sooner; the model still isn't hammered.
+        _frac = float(getattr(config, "LEAN_IMPULSE_PASS_REARM_FRACTION", 0.5))
+        if 0.0 < _frac < 1.0:
+            _gap = float(getattr(config, "LEAN_IMPULSE_COOLDOWN_SECS", 50.0)) * (
+                1.0 + float(getattr(config, "LEAN_IMPULSE_ESCALATION", 1.0))
+                * _consecutive_lean_impulses)
+            _window = _reengage_secs if (long_silence and _reengage_secs > 0.0) else _gap
+            _last_lean_impulse_at = now - _window * (1.0 - _frac)
         _log.info("[lean] impulse — watched (person_id=%s, quiet=%.0fs, mode=%s)", person_id, quiet, _mode)
         return False                            # Rex chose to just watch
     if holiday_plan and not _assistant_asked_question(line):
         _log.info("[lean] holiday cue dropped — generated line was not a question: %r", line)
+        _impulse_outcome("dropped_holiday_shape")
         _strike_lean_cue(_winning_kind)
         return False
     # Content-based anti-repeat (NOT the first-word opener guard — that killed every 'What…?'
@@ -6077,6 +6150,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # drops a near-duplicate of a recent question, so distinct curious questions still get through.
     if _line_duplicates_recent_question(line):
         _log.info("[lean] impulse dropped — re-asks a recent question: %r", line)
+        _impulse_outcome("dropped_duplicate_question")
         _strike_lean_cue(_winning_kind)
         return False
 
@@ -6085,6 +6159,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # remembered "how did it go?" is attentiveness, not a bit.
     if _winning_kind not in _BIT_LEDGER_EXEMPT_CUES and _bit_ledger_blocks(person_id, line):
         _log.info("[lean] impulse dropped — repeats a recent bit: %r", line)
+        _impulse_outcome("dropped_bit_repeat")
         _strike_lean_cue(_winning_kind)
         return False
 
@@ -6095,6 +6170,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # the resurrection being stopped.
     if _lean_topic_blocked(person_id, line):
         _log.info("[lean] impulse dropped — banned/bounded topic: %r", line)
+        _impulse_outcome("dropped_banned_topic")
         _strike_lean_cue(_winning_kind)
         return False
 
@@ -6329,6 +6405,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             # One "since I was last on" musing per session — session_recap is stable within a
             # session, so a second would repeat. Reset in _end_session.
             _lean_memory_mused_this_session = True
+        _impulse_outcome("spoken")
         _log.info("[lean] impulse — person_id=%s mode=%s text=%r", person_id, _mode, line)
     return completed
 
@@ -16957,6 +17034,12 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     global _pending_prompted_name_confirmation
 
     transcript = conv_memory.get_session_transcript()
+
+    # "Why was he quiet?" — one summary line per session of lull-consult outcomes.
+    try:
+        _log_impulse_session_summary()
+    except Exception:
+        pass
 
     # A conversation with real back-and-forth in it leaves Rex in a better mood for
     # the rest of the day; an empty session doesn't count. Persist the mood here too —
