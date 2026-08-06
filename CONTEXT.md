@@ -1717,6 +1717,47 @@ All in `tests/test_field_2026_08_05_night.py`:
   classification: negation over real motion clauses still refuses whole (None);
   negation over zero motion clauses is conversation ([]).
 
+### A reply to Rex's NEXT topic filed as the room's name (2026-08-06)
+
+Field log 10-24-04: Rex asked "Which room is this, Bret?", Bret answered "This is the
+workshop", 24s later Rex offered a news story, Bret said "Tell me more." — and that
+became a room. `[place_questions] learned room 'tell me more' (place_id=4)`, ack'd with
+"Got it — the tell me more. I'll remember this place.", and the observe loop enrolled
+**8 embeddings of the actual workshop** under it before shutdown. Two independent
+defects, both fixed; either alone would have prevented it.
+
+- **The latch only ever counted HUMAN turns, so it survived REX changing the subject.**
+  `note_asked()` armed a 3-turn/120s window and nothing closed it when Rex opened a
+  different thread — so the news reply landed in a window belonging to a question he had
+  already talked past. `place_questions.note_rex_line(text, source)` now disarms it,
+  called from `consciousness.note_rex_utterance` (the seam EVERY Rex line passes through,
+  including `interaction._register_rex_utterance`, which delegates to it). Lines in
+  `_PLACE_FLOW_SOURCES` keep the latch, and `note_asked(text)` records the ask's own text
+  so the ask can never cancel its own latch whatever order the caller uses (today
+  registration runs first, but the text exemption makes that ordering non-load-bearing).
+  This is the `_awaiting_followup_event` rule — a later line opening a different thread
+  clears stale awaiting-state — applied to the place flow.
+- **The latched bare-answer path accepted any 1–4 word phrase** that didn't start with a
+  filler, with no notion of what a room name looks like. `_bare_answer` now vetoes
+  request shapes (`_IMPERATIVE_OPENERS` on the FIRST WORD + a `_NOT_ROOM_PHRASES` set):
+  "tell me more", "go on", "shut down", "play music", "turn left" are things said TO Rex,
+  never what a room is called. **Precision guard:** a phrase carrying a known room word,
+  or simply ending in a room head noun (`_room_head_nouns()` — derived from
+  `PLACE_ROOM_WORDS`, so user_config additions extend it free), bypasses the veto — which
+  is what keeps the compound "play room" / "show room" / "the back nook" working. The
+  first draft vetoed those and was caught by its own test.
+- Cleanup: the poisoned `places.db` row + its 8 embeddings and 1 observation were
+  deleted (backup at `data/places.db.bak-*`); the gallery is back to dining room /
+  workshop / living room at 15 embeddings each.
+- **Not fixed, separate root cause:** Bret's real answer never reached the pipeline.
+  At 10:26:56 the segment decoded as Rex's OWN two prior lines and was correctly
+  rejected — `[transcription] context-echo hallucination rejected (ratio 0.87 …)` →
+  `EMPTY result — segment dropped`. The answer was spoken into the post-TTS capture seam
+  and lost to AEC residual, which is why Rex moved on at all. See the capture-seam notes;
+  the guards above mean a lost answer now costs a missed room, not a fabricated one.
+- Tests: `tests/test_place_questions.py` (request-veto, head-noun bypass, disarm,
+  ask-exemption, place-flow-source cases).
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

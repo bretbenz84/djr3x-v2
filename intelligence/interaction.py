@@ -6437,7 +6437,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             # the person-introduction path.
             try:
                 from intelligence import place_questions
-                place_questions.note_asked()
+                place_questions.note_asked(line)
             except Exception as exc:
                 _log.debug("[lean] place-question latch failed: %s", exc)
         if room_question:

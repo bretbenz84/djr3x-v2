@@ -37,8 +37,14 @@ import config
 
 _log = logging.getLogger(__name__)
 
-# Answer-capture latch: {"armed_at", "turns_left"}. One pending room answer is plenty.
+# Answer-capture latch: {"armed_at", "turns_left", "asked_text"}. One pending room
+# answer is plenty.
 _latch: Optional[dict] = None
+
+# Rex lines that belong to the place flow and so never disarm the latch (note_rex_line).
+_PLACE_FLOW_SOURCES = frozenset({
+    "place_question", "place_enrollment", "place_denial", "place_drive_rule",
+})
 _last_asked_at: float = 0.0
 _last_capture_at: float = 0.0
 _last_capture: Optional[dict] = None    # {"name", "place_id"}
@@ -88,6 +94,38 @@ _FILLERS = ("what", "why", "how", "who", "when", "where", "anyway", "well", "oka
             "ok", "yeah", "yes", "no", "nope", "hmm", "huh", "sure", "right", "hey",
             "oh", "uh", "um", "so", "i", "it", "that", "this", "we", "you", "just")
 
+# The latched bare-answer path is the loosest capture in the module: any short phrase
+# that isn't a filler becomes a room name. Field 2026-08-06 — Rex asked "which room is
+# this?", never got a usable answer (the real "this is the workshop" was lost to an
+# echo-hallucinated transcript), moved on to a news offer 24s later, and then filed the
+# reply to THAT — "Tell me more." — as a room, enrolling 8 views of the actual workshop
+# under a place named "tell me more".
+#
+# A room name is a NOUN PHRASE ("the lab", "my studio", "garage"). These openers make a
+# phrase a REQUEST aimed at Rex, which is never what a room is called. Matched on the
+# FIRST WORD only, so "playroom"/"study"/"shop" are untouched, and any phrase carrying a
+# known room word bypasses the veto entirely.
+_IMPERATIVE_OPENERS = (
+    "tell", "say", "speak", "talk", "repeat", "explain", "describe", "elaborate",
+    "continue", "go", "keep", "carry", "stop", "quit", "wait", "hold", "come", "turn",
+    "move", "drive", "roll", "walk", "follow", "bring", "send", "play", "sing", "dance",
+    "show", "give", "let", "make", "do", "don't", "dont", "try", "check", "find",
+    "look", "listen", "watch", "open", "close", "start", "begin", "pause", "skip",
+    "shut", "power", "reboot", "restart", "sleep", "wake", "help", "forget", "remember",
+    "read", "write", "add", "remove", "delete", "cancel", "change", "switch", "pick",
+    "choose", "answer", "ask", "call", "get", "put", "take", "leave", "hurry", "relax",
+    "shush", "hush", "quiet", "more", "again", "another", "anything", "something",
+    "nothing", "everything", "whatever", "please", "thanks", "thank", "sorry",
+)
+
+# Whole-phrase non-names that slip past the first-word veto.
+_NOT_ROOM_PHRASES = frozenset({
+    "go on", "carry on", "one more time", "the same", "same thing", "not much",
+    "not really", "of course", "for sure", "all good", "no thanks", "no thank you",
+    "any", "some", "none", "both", "either", "neither", "us", "them", "me", "him",
+    "her", "everyone", "anyone", "nobody", "somebody",
+})
+
 
 def _enabled() -> bool:
     return bool(getattr(config, "PLACE_QUESTIONS_ENABLED", True))
@@ -120,6 +158,25 @@ def _room_word_re() -> "re.Pattern":
         pat = re.compile(r"\b(" + alt + r")\b", re.IGNORECASE) if alt else re.compile(r"(?!x)x")
         _ROOM_WORD_RE_CACHE = (tuple(words), pat)
     return _ROOM_WORD_RE_CACHE[1]
+
+
+# Head nouns a room name ends in. Derived from PLACE_ROOM_WORDS (so user_config
+# additions extend it for free) plus generic spatial heads. Used to spare compound
+# names from the request veto: "play room" and "show room" are rooms, "play music"
+# and "show me" are not.
+_EXTRA_ROOM_HEADS = ("room", "area", "space", "spot", "nook", "corner", "wing",
+                     "suite", "quarters", "annex", "shed", "barn")
+_ROOM_HEAD_CACHE: Optional[tuple] = None
+
+
+def _room_head_nouns() -> frozenset:
+    global _ROOM_HEAD_CACHE
+    words = _room_words()
+    if _ROOM_HEAD_CACHE is None or _ROOM_HEAD_CACHE[0] != tuple(words):
+        heads = {w.split()[-1] for w in words if w.split()}
+        heads.update(_EXTRA_ROOM_HEADS)
+        _ROOM_HEAD_CACHE = (tuple(words), frozenset(heads))
+    return _ROOM_HEAD_CACHE[1]
 
 
 # ── Availability (only act when the recognizer is actually running) ──────────────
@@ -175,14 +232,42 @@ def next_place_question() -> Optional[dict]:
     return {"text": random.choice(list(templates))}
 
 
-def note_asked() -> None:
-    """Mark the place question asked and arm the answer-capture latch."""
+def note_asked(text: str = "") -> None:
+    """Mark the place question asked and arm the answer-capture latch.
+
+    `text` is the line Rex actually spoke; it exempts that line from note_rex_line()'s
+    disarm so the ask can never cancel its own latch, whatever order the caller uses.
+    """
     global _latch, _last_asked_at
     _last_asked_at = time.monotonic()
     _latch = {
         "armed_at": time.monotonic(),
         "turns_left": int(getattr(config, "PLACE_QUESTION_ANSWER_TURNS", 3)),
+        "asked_text": " ".join(str(text or "").split()).lower(),
     }
+
+
+def note_rex_line(text: str = "", source: Optional[str] = None) -> None:
+    """Disarm the answer-capture latch once Rex has moved on to something else.
+
+    The latch only ever counted HUMAN turns, so it survived REX changing the subject.
+    Field 2026-08-06: he asked "which room is this?", got nothing usable back, offered
+    a news story 24s later, and then filed the reply to the NEWS ("Tell me more.") as
+    the room's name. A question he has already talked past is not pending any more —
+    the same rule `_awaiting_followup_event` uses when a later lull line opens a
+    different thread. Lines belonging to the place flow itself keep the latch.
+    """
+    global _latch
+    latch = _latch
+    if latch is None:
+        return
+    if str(source or "") in _PLACE_FLOW_SOURCES:
+        return
+    line = " ".join(str(text or "").split()).lower()
+    if line and line == latch.get("asked_text"):
+        return                              # this IS the ask
+    _latch = None
+    _log.debug("[place_questions] answer latch dropped — Rex moved on (source=%s)", source)
 
 
 # ── NAME (answer / declaration capture) ─────────────────────────────────────────
@@ -196,6 +281,18 @@ def _normalize(name: str) -> str:
     return n.strip()
 
 
+def _looks_like_a_request(phrase: str) -> bool:
+    """True when a short phrase is something said TO Rex, not the name of a room.
+
+    "Tell me more", "go on", "keep going" are replies to whatever Rex said LAST —
+    they are never what a room is called. See _IMPERATIVE_OPENERS.
+    """
+    if phrase in _NOT_ROOM_PHRASES:
+        return True
+    words = phrase.split()
+    return bool(words) and words[0] in _IMPERATIVE_OPENERS
+
+
 def _bare_answer(text: str) -> Optional[str]:
     """A short direct reply ('the lab', 'kitchen', 'my studio') — but not chatter."""
     n = _normalize(text)
@@ -205,6 +302,12 @@ def _bare_answer(text: str) -> Optional[str]:
     if not (1 <= len(words) <= 4):
         return None
     if words[0] in _FILLERS:
+        return None
+    # A known room word — or simply ending in a room head noun, which is what keeps
+    # "play room"/"show room" working — vouches for the phrase outright. Anything else
+    # has to be shaped like a name rather than an instruction aimed at Rex.
+    vouched = bool(_room_word_re().search(n)) or words[-1] in _room_head_nouns()
+    if not vouched and _looks_like_a_request(n):
         return None
     return n
 

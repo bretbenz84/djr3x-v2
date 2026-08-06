@@ -1233,6 +1233,13 @@ def note_rex_utterance(
     except Exception:
         pass
     try:
+        # Rex saying anything ELSE closes a pending "what room is this?" — otherwise
+        # the reply to his NEXT topic gets filed as the room's name (field 2026-08-06).
+        from intelligence import place_questions
+        place_questions.note_rex_line(text, source=source)
+    except Exception:
+        pass
+    try:
         from intelligence import topic_thread
         topic_thread.note_assistant_turn(text)
     except Exception:

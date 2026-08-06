@@ -147,6 +147,61 @@ class PlaceQuestionsTest(unittest.TestCase):
         pq.note_asked()
         self.assertIsNone(pq.maybe_capture_answer("why do you want to know?"))
 
+    # ── field 2026-08-06: "Tell me more." became a room ──
+    def test_latched_request_to_rex_is_not_a_room_name(self):
+        """A reply aimed at Rex is never what a room is called. He asked which room
+        this was, moved on to a news offer, and filed the reply to THAT as the room."""
+        for utterance in ("Tell me more.", "tell me more about that", "go on",
+                          "keep going", "say that again", "shut down", "play music",
+                          "stop it", "come here", "turn left", "read it to me",
+                          "anything else", "one more time", "explain that"):
+            with self.subTest(utterance):
+                pq.reset()
+                pq.note_asked()
+                self.assertIsNone(pq.maybe_capture_answer(utterance))
+        self.assertEqual(self.svc.enrolled, [])
+
+    def test_room_word_still_wins_over_the_request_veto(self):
+        """The veto is first-word-only, and a known room word or a room head noun
+        bypasses it — so a compound name starting with a vetoed token still lands."""
+        for utterance, want in [("show room", "show room"),
+                                ("play room", "play room"),
+                                ("the back nook", "back nook"),
+                                ("the shop", "shop"),
+                                ("study", "study"),
+                                ("playroom", "playroom")]:
+            with self.subTest(utterance):
+                pq.reset()
+                pq.note_asked()
+                cap = pq.maybe_capture_answer(utterance)
+                self.assertIsNotNone(cap, utterance)
+                self.assertEqual(cap["name"], want)
+
+    def test_rex_changing_the_subject_disarms_the_latch(self):
+        pq.note_asked("Which room is this, Bret?")
+        pq.note_rex_line("Hey, did you hear about the AWS outage?", source="lean_impulse")
+        self.assertIsNone(pq.maybe_capture_answer("the workshop"))
+        self.assertEqual(self.svc.enrolled, [])
+
+    def test_the_ask_does_not_disarm_its_own_latch(self):
+        """note_asked() is called after the line is registered, but the exemption is
+        by TEXT so the order can never matter."""
+        line = "Which room is this, Bret?"
+        pq.note_asked(line)
+        pq.note_rex_line(line, source="lean_impulse")
+        self.assertEqual(pq.maybe_capture_answer("the workshop")["name"], "workshop")
+
+    def test_place_flow_lines_keep_the_latch(self):
+        pq.note_asked("Which room is this?")
+        pq.note_rex_line("Sorry — which room?", source="place_question")
+        self.assertEqual(pq.maybe_capture_answer("the lab")["name"], "lab")
+
+    def test_unlatched_declaration_is_unaffected_by_the_disarm(self):
+        """Volunteered "this is the kitchen" never needed a latch and must still work."""
+        pq.note_asked("Which room is this?")
+        pq.note_rex_line("Something else entirely.", source="lean_impulse")
+        self.assertEqual(pq.maybe_capture_answer("this is the kitchen")["name"], "kitchen")
+
     # ── robot-lens review regressions ──
     def test_past_tense_never_enrolls(self):
         # "we'?re" used to match past-tense "were" — reminiscing enrolled the current view.
