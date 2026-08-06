@@ -194,6 +194,22 @@ def _family_allowed(family: str) -> bool:
     return bool(getattr(config, flag, True))
 
 
+# True only while a GATED effect that is *supposed* to mute the mic is playing.
+# _play_gated is the one effects path that holds the shared output gate, and the
+# capture loop skips the mic for ANY gate holder — which quietly defeated
+# _suppresses_mic() below for the whole length of a whir. See gated_effect_mutes_mic().
+_gated_mutes_mic = False
+
+
+def gated_effect_mutes_mic() -> bool:
+    """Whether the gated effect playing right now should mute the microphone.
+
+    Lets the capture loop honour _suppresses_mic()'s family decision instead of
+    inferring "our audio is playing, go deaf" from the output gate alone.
+    """
+    return _gated_mutes_mic
+
+
 def _suppresses_mic(family: str) -> bool:
     """Whether playing this family should mute the microphone.
 
@@ -481,6 +497,8 @@ def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
             _log.debug("[sfx] output busy — dropped %s", path.stem)
             return False
         mutes = _suppresses_mic(_family(key))
+        global _gated_mutes_mic
+        _gated_mutes_mic = mutes
         try:
             if mutes:
                 echo_cancel.set_playing(True)
@@ -498,6 +516,7 @@ def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
         except Exception as exc:
             _log.debug("[sfx] playback error for %s: %s", path.name, exc)
         finally:
+            _gated_mutes_mic = False
             try:
                 if mutes:
                     echo_cancel.set_playing(False, tail_secs=0.25)

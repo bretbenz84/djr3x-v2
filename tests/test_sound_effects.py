@@ -235,6 +235,66 @@ class SoundEffectsTest(unittest.TestCase):
             sfx._play_path(path, "motion_move", mode="gated")
         self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
 
+    # ── field 2026-08-06: a servo whir ate the answer to Rex's own question ──
+    def test_gated_whir_does_not_claim_to_mute_the_mic(self):
+        """_suppresses_mic exempts machinery whirs, but the capture loop skipped the
+        mic for ANY output-gate holder — so the exemption never reached it. The flag
+        is what lets the loop honour the family decision."""
+        path = sfx._resolve_stem("motion_whir")
+        seen = []
+        real_play = self.sd.play
+
+        def _spy(*a, **kw):
+            seen.append(sfx.gated_effect_mutes_mic())
+            return real_play(*a, **kw)
+
+        with mock.patch.object(sfx, "_decode",
+                               return_value=(np.zeros(4800, np.float32), 48000)), \
+                mock.patch.object(self.sd, "play", _spy):
+            sfx._play_path(path, "motion_move", mode="gated")
+        self.assertEqual(seen, [False])
+        self.assertFalse(sfx.gated_effect_mutes_mic())      # cleared after playback
+
+    def test_gated_speech_chirp_still_mutes_the_mic(self):
+        path = sfx._resolve_stem("motion_whir")
+        seen = []
+        real_play = self.sd.play
+
+        def _spy(*a, **kw):
+            seen.append(sfx.gated_effect_mutes_mic())
+            return real_play(*a, **kw)
+
+        with mock.patch.object(sfx, "_decode",
+                               return_value=(np.zeros(4800, np.float32), 48000)), \
+                mock.patch.object(self.sd, "play", _spy):
+            sfx._play_path(path, "curious", mode="gated")
+        self.assertEqual(seen, [True])
+        self.assertFalse(sfx.gated_effect_mutes_mic())
+
+    def test_flag_clears_even_when_playback_raises(self):
+        path = sfx._resolve_stem("motion_whir")
+        with mock.patch.object(sfx, "_decode",
+                               return_value=(np.zeros(4800, np.float32), 48000)), \
+                mock.patch.object(self.sd, "play", side_effect=RuntimeError("boom")):
+            sfx._play_path(path, "curious", mode="gated")
+        self.assertFalse(sfx.gated_effect_mutes_mic())
+
+    def test_capture_loop_listens_through_a_whir_but_not_a_chirp(self):
+        """The whole point: the mic stays open for an exempt effect and closed for
+        everything else. Guards the interaction-side gate against re-tightening."""
+        from intelligence import interaction as ix
+        self.addCleanup(setattr, sfx, "_gated_mutes_mic", False)
+
+        self.assertFalse(ix._effect_allows_listening())          # nothing playing
+        with output_gate.hold("sound-effects", blocking=False):
+            sfx._gated_mutes_mic = False                          # servo/motion whir
+            self.assertTrue(ix._effect_allows_listening())
+            sfx._gated_mutes_mic = True                           # speech chirp
+            self.assertFalse(ix._effect_allows_listening())
+        sfx._gated_mutes_mic = False
+        with output_gate.hold("tts"):                             # Rex's actual voice
+            self.assertFalse(ix._effect_allows_listening())
+
     def test_overlay_is_ducked_below_the_spoken_line(self):
         path = sfx._resolve_stem("motion_whir")
         loud = np.ones(4800, np.float32)

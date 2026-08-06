@@ -3512,6 +3512,37 @@ def _vad_barge_in_enabled() -> bool:
     return bool(getattr(config, "VAD_BARGE_IN_ENABLED", False))
 
 
+def _effect_allows_listening() -> bool:
+    """Keep reading the mic when the only thing playing is a NON-muting sound effect.
+
+    `sound_effects._suppresses_mic` already decided (field 2026-07-25, "the move sound
+    effects and motor whine are cutting me off from being heard") that motion/servo/
+    headlift whirs are Rex's own machinery and must NOT mute the mic — a motor whine
+    transcribes to junk the hallucination filters drop anyway. But that decision only
+    reached `echo_cancel`; the capture loop skipped the mic for ANY output-gate holder,
+    so a whir still deafened him for its full ~1.5 s.
+
+    Field 2026-08-06: Rex asked what room he was in, a `servo` chirp fired one second
+    after he stopped, and the entire answer ("This is the workshop room") landed inside
+    that window and was never captured — no VAD, no segment, no transcript. The session
+    counter read `mic_skip_output_busy_sfx=148` against `captured=6`.
+
+    Speech-family chirps are voice-like and still mute (they'd be transcribed as words),
+    and real speech playback is unaffected — this only relaxes the gate for effects
+    that were already exempt. `SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC=True` restores the
+    old deafening behavior for the whole class.
+    """
+    try:
+        if speech_queue.is_speaking():
+            return False                    # Rex's voice always owns the mic gate
+        from audio import output_gate, sound_effects
+        if output_gate.active_source() != "sound-effects":
+            return False
+        return not sound_effects.gated_effect_mutes_mic()
+    except Exception:
+        return False                        # fail CLOSED: keep the old skip
+
+
 def _is_interruptible_game_audio_path(path: Optional[str]) -> bool:
     if not path:
         return False
@@ -26541,7 +26572,8 @@ def _loop() -> None:
                 direct_audio_path is not None
                 and _is_interruptible_game_audio_path(direct_audio_path)
             )
-            if not interruptible_audio and not _vad_barge_in_enabled():
+            if (not interruptible_audio and not _vad_barge_in_enabled()
+                    and not _effect_allows_listening()):
                 # Rex (or a sound effect / servo chirp) is producing audio, so the
                 # mic is not read. A servo sfx landing in the human's reply window
                 # mutes exactly the words they are speaking.

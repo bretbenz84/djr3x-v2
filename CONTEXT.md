@@ -2153,6 +2153,40 @@ defects, both fixed; either alone would have prevented it.
 - Tests: `tests/test_place_questions.py` (request-veto, head-noun bypass, disarm,
   ask-exemption, place-flow-source cases).
 
+### A servo whir was eating the answer to Rex's own question (2026-08-06)
+
+The capture-drop telemetry added the night before paid for itself on its first field
+log (13-04-31): `[capture] session summary: mic_skip_output_busy_sfx=148,
+mic_skip_rex_speaking=71, mic_skip_listen_resume=11, captured=6`. The dominant loss
+channel was not Rex speaking — it was his own **decorative sound effects**.
+
+- **Root cause: the capture loop never consulted `sound_effects._suppresses_mic`.**
+  That function already decided (field 2026-07-25 — "the move sound effects and motor
+  whine are cutting me off from being heard") that `motion`/`servo`/`headlift` whirs are
+  Rex's own machinery and must NOT mute the mic; a motor whine transcribes to junk the
+  hallucination filters drop anyway. But the decision only reached `echo_cancel`. The
+  mic loop skipped the read for **any** holder of the shared output gate, and
+  `_play_gated` — the one effects path that takes that gate — is used by exactly those
+  exempt families. So the 2026-07-25 fix never actually reached capture, and a ~1.5 s
+  whir went on deafening him for its full length.
+- **Why it hits the reply window every time:** Rex re-centres his head when a turn ends,
+  which fires a servo accent ~1 s after he stops talking — precisely when the person
+  starts answering. All three post-speech gaps in the 13-04-31 session had one: 13:05:27,
+  13:06:22, and 13:07:10. The last one swallowed "This is the workshop room" whole — no
+  VAD, no segment, no transcript, a 16-second silence, and then the repeat landed.
+- **Fix:** `sound_effects.gated_effect_mutes_mic()` publishes the family decision for the
+  currently-playing gated effect, and `interaction._effect_allows_listening()` lets the
+  loop keep reading when the only gate holder is a non-muting effect. Speech-family
+  chirps are voice-like and still mute; `speech_queue.is_speaking()` still always wins;
+  the helper fails CLOSED to the old skip on any error.
+  `SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC=True` restores the old deafening behavior for the
+  whole class. This makes capture CONSISTENT with an already-shipped decision rather
+  than making a new one — the tradeoff (a whir now reaches VAD unfiltered, since these
+  families deliberately don't set `echo_cancel.set_playing`) is the same one accepted in
+  July, and wants a live listen to confirm no junk segments appear.
+- Tests: `tests/test_sound_effects.py` (flag set/cleared per family, cleared on
+  exception, and the interaction-side gate for whir / chirp / TTS / idle).
+
 ## Likely Future Work
 
 - **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The
