@@ -116,12 +116,21 @@ intelligence/
   consciousness.py       Proactive loop, greetings, presence, empty-room behavior.
   dialogue_act.py        Cheap conversational-frame gate before executable actions.
   action_router.py       LLM action routing.
+  tool_router.py         Native tool-calling router. LIVE: the live-action tool
+                         schemas ride the lean REPLY call, so a routed turn costs
+                         zero extra LLM round-trips; a tool choice unwinds as
+                         ToolCallRequested before any speech. Also holds the
+                         off-by-default shadow collector.
   command_parser.py      Fast/local command recognition.
   intent_classifier.py   Intent fallback and deterministic guards.
   llm.py                 Main LLM prompt assembly and response generation.
   local_llm.py           Ollama sidecar for low-latency local calls.
   empathy.py             Affect classification and emotional event handling.
   social_frame.py        Response shape/governance cleanup.
+  bit_ledger.py          Persistent per-person comedy-bit cooldown (rex.db).
+                         Records SPOKEN lean impulses by topic signature; blocks a
+                         re-run within BIT_LEDGER_COOLDOWN_DAYS and feeds recent
+                         angles to the lean prompt as an exclusion list.
   tell_me_about.py       "Tell me about someone" pre-briefing parsing/lines/classifier.
   motion_controller.py   High-level drive-base API: turn/move/come/stop + heartbeat + safety gates.
   motion_agency.py       Autonomous motion decisions: requested COME search/align/approach,
@@ -248,6 +257,54 @@ When investigating false positives, search logs for:
 
 The failure mode to avoid: a normal contextual response gets a second chance in a later legacy layer and becomes a durable action. Do not add new command/intent bypasses after the dialogue gate unless they pass the same central evidence policy.
 
+### Tool-Calling Router (LIVE — routing rides the reply call)
+
+`intelligence/tool_router.py` is the fifth and LAST routing layer, and it is **live**
+(`TOOL_ROUTER_LIVE_ENABLED = True`, Phase 1 cutover 2026-08-01, Phase 2 batch
+2026-08-02). Full plan + cutover evidence: `docs/tool_router_scope.md`. NOTE the
+module docstring still says "Phase 0 (SHADOW ONLY)" — it is stale; the shadow
+collector is only the second half of the file.
+
+How it works: `live_reply_tools()` attaches the LIVE subset of tool schemas to the
+lean **reply** call, so the model either answers in prose or calls a tool. Routing
+therefore folds INTO a call that already happens — it *removes* an LLM round-trip on
+routed turns rather than adding one. A tool choice raises `ToolCallRequested` out of
+the stream **before any text is spoken** (`lean_brain.py` ~line 795), and
+`interaction.py` catches it and dispatches the SAME `_handle_classified_intent`
+executor the intent classifier uses, stamping
+`final_executed_path="tool_router.<action>"`.
+
+Rules to preserve:
+
+- **It runs LAST, not first.** Every deterministic layer still runs ahead of it, so
+  the tool router only catches what used to fall through to conversation — the
+  off-pattern phrasings ("how's the weather looking tomorrow?", "kill the music",
+  "please forget who I am"). It is not a replacement for the regex fast lanes; the
+  measured shipped misses all lived in that fall-through.
+- **Never execute a non-live tool.** `resolve_tool_call` returns None for any action
+  outside `live_actions()`, so widening the blast radius requires editing
+  `TOOL_ROUTER_LIVE_ACTIONS` (config.py, each addition carries its field-log
+  justification in a comment). `vision.snapshot` was deliberately held back until it
+  had an executor.
+- **Write-path and safety guards stay downstream.** `event.cancel` keeps
+  `looks_like_cancellation`; `system.sleep`/`system.shutdown` are re-verified with
+  `command_parser.is_shutdown_request`/`is_sleep_request`; `memory.forget_person` may
+  only ever target the CURRENT speaker (a named third party is never deleted off an
+  LLM tool call) and still routes through the wipe-confirmation flow. The tool call
+  selects the action; it does not earn a bypass.
+- **`ToolCallRequested` stores args on `tool_args`, NEVER on `args`.** `args` is
+  `BaseException`'s reserved attribute and silently coerces a dict to a tuple of its
+  KEYS — this deafened the robot in the field (see the 2026-08-03 section). A
+  source-scan test pins it.
+- Humor / character / motion actions are deliberately NOT live: their fast lanes work.
+- Kill switch `TOOL_ROUTER_LIVE_ENABLED` reverts to pre-cutover behavior instantly.
+  `TOOL_ROUTER_SHADOW_ENABLED` (default False) is the separate off-path collector —
+  one extra small call per routed turn, for a collection week; report via
+  `tools/tool_router_report.py`.
+
+Tests: `tests/test_tool_router.py` (contracts + coverage-enforcement: a new
+`ActionSpec` without a tool definition fails CI).
+
 ### Conversation Voice (lean brain primary, classic prompt as fallback)
 
 `intelligence/lean_brain.py` is Rex's PRIMARY conversational voice (`LEAN_BRAIN_ENABLED`).
@@ -365,7 +422,7 @@ Recent latency architecture:
 
 - `audio.speaker_id.preload()` runs at startup when `config.SPEAKER_ID_PRELOAD_ON_STARTUP` is true, removing first-turn encoder load cost (ECAPA ~1.3s, Resemblyzer ~0.6s).
 - Slow-path acknowledgments (short "One sec." receipts for known-slow `general`/`memory`/`vision` paths) and the delayed latency filler (in-character "One sec, thinking." lines) are now **disabled by default** — `config.SLOW_PATH_ACK_ENABLED = False` and `config.LATENCY_FILLER_ENABLED = False`. They felt out of place, and the streaming answer path now gets Rex's real first sentence out fast, so the latency cover is unnecessary. The machinery and tunables (`SLOW_PATH_ACK_LINES`, `SLOW_PATH_ACK_EXPECTED_SECS`, `LATENCY_FILLER_LINES`, `SLOW_PATH_ACK_IN_TEXT_ONLY`) remain; flip either flag back to True to restore. The slow-path-ack tests enable the flag explicitly to keep covering the firing logic.
-- End-of-speech wait `config.SILENCE_TIMEOUT_SECS = 0.6` (was 0.9): how long of sustained silence after the user stops before transcription begins. Lowered for responsiveness on every turn; raise toward 0.8 if slow / pausing speakers get cut off mid-sentence.
+- End-of-speech wait `config.SILENCE_TIMEOUT_SECS = 0.65`: how long of sustained silence after the user stops before transcription begins. This is the largest "I stopped talking, why is Rex waiting?" knob. History: 0.6 → 0.85 (2026-07, owner was getting cut off mid-thought) → **0.65** (2026-08-02 latency batch: with every other stage tuned, the hold was the single largest fixed cost left). If mid-sentence cutoffs return, **0.85 is the known-good fallback** and the turn-completion repair prompt is the backstop. Explicit motion commands bypass this entirely via eager endpointing (see the 2026-08-02 latency batch).
 
 When assessing responsiveness, prefer TTFS/audio-start timings over total turn duration. Total duration includes how long Rex speaks.
 
@@ -1048,7 +1105,7 @@ venv/bin/python main.py
 - **Voice-primary identity** (`VOICE_PRIMARY_IDENTITY_ENABLED`, default on): WHO is speaking is decided by the VOICE, not the visible face — see the "Identity And Multiple Speakers" section. A *confident* voice match (≥`SPEAKER_ID_CONFIDENT_THRESHOLD` 0.70) wins regardless of who's on camera, but an *accepted-but-not-confident* match (0.45–0.70) pointing at someone OTHER than the single visible known face does NOT override that face — the present known person anchors identity (`voice_weak_face_wins`), since a sub-confident score is exactly where an absent/poor print lands a voice on its nearest neighbor (the Bret→Wade failure); the off-camera voice is kept only if the active-speaker latch names a *different* on-camera talker. A weak/absent match lets the visible face only CORROBORATE (when `raw_best_id == that person`) and otherwise resolves off-screen/unknown; voiceprint auto-refresh is gated on `raw_best_id == person_id` so a different voice can't pollute a print. The old "single visible face wins regardless of voice" rule is retained only behind the flag (`_single_visible_face_voice_override`). Decision logic is the pure, unit-tested `_voice_primary_face_decision`; `tests/test_voice_primary_identity.py`. (Earlier note, now superseded: "sub-0.75 floors require raw_best_id == person, so a 2nd speaker in a 1:1 is treated as off-camera" — the corroboration rule generalizes this to all frames.)
 - Bug fixes to keep: `SCENE_MUSIC_BAND_ENERGY_MIN=2e-6` (was a typo making music always "detected"); dead `GUI_SHOW_FPS` removed; `social_frame` optional-lookup excepts log at debug.
 - Event follow-up resolution: a reply that an event never happened (`interaction._followup_event_did_not_happen`) resolves a pending follow-up instead of re-asking (kills the "how was the concert?" loop).
-- The "one sec" fillers (slow-path ack + latency filler) are disabled by default and `SILENCE_TIMEOUT_SECS=0.6` — see Latency And Telemetry. Don't re-enable without reason.
+- The "one sec" fillers (slow-path ack + latency filler) are disabled by default and `SILENCE_TIMEOUT_SECS=0.65` — see Latency And Telemetry. Don't re-enable without reason.
 - The local `assets/memory/people.db` is disposable dev/test data — wipe freely (see Memory Model).
 - Upstream merge (~`ffa068e`, authored separately): per-person greetings/intros (`intelligence/person_specials.py`), delayed last-name prompts, sleep wake-word fallback, turn-completion for embedded answers.
 - Comedy-forward balance (current intent): Rex leads with a comedic/curious beat, not an every-turn polite interview that opens "Ah," and ends with a profile question. Keep the profile-building machinery, not the interview cadence.
@@ -1494,6 +1551,233 @@ third-person null reports ("The person did not share...") at a hardcoded salienc
   uncalibrated magnetic readings must never steer the base. A newer motion command,
   stop, e-stop, or disconnect invalidates any delayed correction.
 
+### Latency batch (2026-08-02)
+
+A measured pass over every fixed cost on a turn, after a field session averaged
+3.9s perceived reply on simple conversation. Each item was A/B'd, not guessed.
+
+- **Router skips.** Two mirror-image short-circuits around the blocking routing
+  call. `ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED` skips it on
+  deterministically-conversational turns (~0.8s). `ACTION_ROUTER_SELF_QUERY_SKIP_ENABLED`
+  skips it when the deterministic intent classifier ALREADY claims the turn as a
+  self-knowledge query answered from local data (time/date/weather/uptime/
+  capabilities/games/who-is-speaking) — the LLM router could only agree (~0.9s). The
+  claim must still pass the router's OWN evidence regexes (the classifier's patterns
+  are looser), active games keep full routing, and **music/memory/vision are
+  deliberately excluded** — the router owns their args and disambiguation.
+- **Action router on `gpt-5.4-nano`** via `llm_compat` (0.78s → 0.68s warm, cheaper
+  per token). `ACTION_ROUTER_MODEL` is now DECOUPLED from `LLM_MODEL` — the
+  user_config re-derive alias was removed, so override `ACTION_ROUTER_MODEL` directly
+  to roll back. (The general/utility model stays `gpt-4o-mini`; the conversation path
+  is `LLM_CONVERSATION_MODEL = gpt-5.4-mini`.)
+- **Warmup 400s fixed.** `llm.warmup()`'s `max_tokens=1` ping had failed on every
+  boot since the gpt-5.4-mini flip: GPT-5-family models **400 on a cap they cannot
+  finish within** instead of truncating. This was the mystery startup "400 Bad
+  Request" in field logs. Cap raised to 16 tokens (same fix in the action_router
+  warmup). Keep this in mind for any new GPT-5-class warmup ping.
+- **Endpoint hold `SILENCE_TIMEOUT_SECS` 0.85 → 0.65s** — the largest fixed cost
+  left once everything else was tuned. 0.85 is the known-good fallback if
+  mid-sentence cutoffs return; the turn-completion repair prompt is the backstop.
+- **Eager endpointing for motion commands** (`MOTION_EAGER_ENDPOINT_ENABLED`): at
+  0.35s of silence a background probe transcribes the segment-so-far, and if it
+  decodes to a COMPLETE explicit drive command the turn ends immediately and the
+  probe transcript is REUSED (never decoded twice) — wheels move 0.6-0.9s sooner.
+  Ordinary speech probes, misses the motion regexes, and waits out the normal hold.
+  A trailing connective ("turn left and…") never cuts. Robot-only by default
+  (`MOTION_EAGER_ENDPOINT_REQUIRE_AEC` gates on `hardware_aec.is_active()`).
+- **ASR context prompt trimmed** (measured ~0.5ms/char): Rex lines join NEWEST
+  first (the user re-uses entities from the line Rex JUST spoke — oldest-first meant
+  the cap truncated the freshest line's tail, backwards) and
+  `QWEN_ASR_CONTEXT_MAX_CHARS` 600 → 400. Removing context entirely would save the
+  full ~0.18s but forfeits the field-documented bias fixes ("Lake Folsom" → "like
+  falsum"); `QWEN_ASR_CONTEXT_BIAS_ENABLED` remains for that experiment.
+- **Reaction-delay pause absorbed** into transcription time: the randomized 0-80ms
+  "don't feel robotic" pause used to sleep serially BEFORE transcription. The
+  deadline is now set before processing and only the REMAINDER is slept — 0.000s on
+  audio turns, while the GUI text path (no ASR) keeps its full pacing pause.
+- **Vision call hygiene** (a "what do you see?" turn took 17.5s to first audio):
+  frames downscale to `VISION_UPLOAD_MAX_DIM`=1024 before every upload EXCEPT face
+  enrollment (which needs the detail); room-level directed looks use detail `"low"`
+  (held-object queries keep `"auto"` — small objects need the pixels);
+  `VISION_REQUEST_TIMEOUT_SECS`=12 on every `_call_gpt4o` (callers already handle
+  None); and the 180s periodic scan DEFERS while a user-initiated directed look is
+  in flight. Tests: `tests/test_vision_call_hygiene.py`.
+
+### Conversation quality: plan lifecycle, repairs, low-trust reprompt, bit ledger (2026-08-02)
+
+Four fixes from a Jul 31 - Aug 2 conversation-log analysis.
+
+- **A stored plan is a BELIEF, not a fact.** `extract_events` preserves hedges
+  ("might") into a `person_events.hedged` column; hedged plans are ASKED about
+  ("still the plan?"), never asserted as scheduled. Every follow-up prompt (startup
+  2.5/2.6, lean cue, reactive, Monday-weekend, engagement plan clause) now asks
+  whether the plan ended up HAPPENING instead of presupposing it did. Continuity
+  greetings stop conflating mention-time with event-time ("How'd Lake Folsom go
+  earlier today?" for a trip planned tomorrow). Cancellations with garbled event
+  names ("like falsum") fall back to the event Rex raised seconds earlier via the
+  memory hint. Diary open threads drop bookkeeping shapes (name corrections,
+  mishears, forget requests).
+- **Repair moves must actually repair.** The deflection lines were DELETED ("We'll
+  get there — recalibrating", "Noted. I'll route around that one", "Consider it
+  logged. Onward"): they sounded like acknowledgment while refusing the repair, and
+  one ate a direct question. Clarify repairs now explain or honestly admit they
+  can't; recovery tags are only injected for the kinds that use them; an embedded
+  question inside a correction gets answered.
+- **Low-trust reprompt:** a garbled decode carrying real content gets a human
+  "Sorry — what was that?" instead of a bluffed reply ("I'm not a cat." at logprob
+  -1.88 earned a quip about mystery voices). Once per exchange; short backchannels,
+  games, and motion/stop commands exempt.
+- **Bit ledger** (`intelligence/bit_ledger.py`, `BIT_LEDGER_*`): session-level
+  anti-repeat couldn't see YESTERDAY — the haircut observation ran Jul 31 AND Aug 2,
+  "I made you" was re-roasted the next day. Spoken lean impulses are recorded in
+  rex.db by topic signature (quoted phrases + content words); a regenerated bit
+  inside `BIT_LEDGER_COOLDOWN_DAYS` (5) is dropped, and recent angles feed the lean
+  prompt as an EXCLUSION list so generation steers away instead of being vetoed
+  after the fact. Repeat = a quoted phrase matches, OR `BIT_LEDGER_MIN_OVERLAP` (2)
+  content words are shared with one prior bit, OR a single DISTINCTIVE word
+  (`BIT_LEDGER_DISTINCTIVE_LEN`, 7+ chars) recurs. Follow-up-shaped cues (event
+  follow-ups, open threads, celebrations, workday check-in) are exempted BY THE
+  CALLER — a "how did the interview go?" is attentiveness, not a bit. Fail-safe
+  throughout: any error reads as "not a repeat". Tests: `tests/test_bit_ledger.py`.
+
+Also landed this window: **evening workday check-in** (`_lean_workday_checkin_cue`
+— Mon-Fri 17:00-23:00, ONE per person per day, durable across restarts via
+`mark_proactive_asked`; a single memoized probability roll per (person, day) decides
+whether today is a check-in day at all, so it never becomes a ritual; profession read
+from `person_facts` so the question can nod to what they actually do; ranked below
+real remembered threads, above environment cues) and **time-aware lull nudges**
+(`_day_shape_line` — weekend midday / Friday evening / Sunday evening / weekday
+evening get an actionable nudge, not just a clock reading).
+
+### Group-room behavior + animal presence ledger (2026-08-02 → 08-03)
+
+From a 3-person session with heavy cross-talk, plus an owner request.
+
+- **Pet-directed speech guard:** "Come here, Max." fired `motion_agency.request_come`
+  and the robot DROVE at the speaker; "Lay down." was answered as if aimed at Rex.
+  Utterances carrying a known pet name (`config.PET_NAMES`) + an imperative, or bare
+  pet-only command shapes (lay down / sit / stay / fetch — things a droid can't do
+  anyway), are ignored before any reply/command/motion path. Bare "come here" and
+  "turn around" stay Rex commands.
+- **Known speakers are gated during group chatter.** The existing ignore path only
+  covered `person_id is None`, so the moment a second person was ENROLLED Rex
+  answered every human-to-human exchange and literal self-talk. With 2+ humans
+  trading turns, a recognized speaker now earns a reply only on DIRECTED evidence
+  (name mention, parsed command, awaited answer, weather/vision/look query shapes,
+  drive commands, second-person asks); otherwise Rex listens. The lean impulse still
+  interjects on its own governed cadence — participation by choice, not reflex.
+- **Own-echo coverage window widened to 45s** (`OWN_ECHO_COVERAGE_WINDOW_SECS`): a
+  spliced echo joined a 20s-old line (outside the 12s ratio window) to a fresh one.
+- **Mouth-still veto recalibrated** (same-day regression): the veto challenged
+  genuine Bret twice in one session (0.660 and 0.742, squarely in the ECAPA genuine
+  band) because the active-speaker detector misses real jaw motion on short
+  utterances at room distance. An empty ASD latch is WEAKER evidence than a
+  band-level voice score, so the veto now only overrules SUB-genuine-band scores —
+  exactly where impostor cross-matches live. Also removed from `face_only_continuity`
+  (an ASD miss there would resurrect the 2026-07-06 "Guest 1 all session" bug).
+- **Animal presence ledger** replaces the flat cooldown (`tests/test_animal_returns.py`):
+  the old `ANIMAL_ARRIVAL_COOLDOWN_SECS` made the dog's comings and goings invisible
+  — first sighting spoke, then silence. Now a per-species ledger in consciousness:
+  first sighting = the existing arrival reaction; out of frame under
+  `ANIMAL_DEPARTURE_GRACE_SECS` (30s) = frame flicker, NOT a departure (the
+  floor-level wide-angle loses the dog constantly — this is what the old cooldown was
+  really protecting); a real departure then return = an ESCALATING return joke
+  ("womp rat energy" → "doing laps" → "standing docking clearance"), on a happy
+  frame not surprise, because the joke is that Rex clocked the pattern. Anti-annoyance:
+  ≥120s between SPOKEN remarks per species, ≤4 per species per run (unspoken stagings
+  that lose the governor race don't burn the cap), absence ≥30min resets to a fresh
+  arrival. Pendings are keyed by species. This rework FIXED one of the three
+  documented pre-existing gating failures — the old species cooldown was the
+  cross-test leak.
+
+### Field fixes, 2026-08-03 (deafness root cause, known-context recall, rename sweep)
+
+- **THE DEAFNESS BUG — `BaseException.args` clobbered live tool arguments.** The
+  first live `web.search` call ever fired was also the last thing the speech loop
+  did. `ToolCallRequested` stored its arguments on `self.args` — BaseException's
+  RESERVED attribute, which silently coerces a dict to a **tuple of its keys**. So
+  `{"query": …}` reached the executor as `('query',)`, `.get` raised AttributeError,
+  and the exception killed the listening-loop thread. Wake word kept detecting and
+  consciousness kept speaking, so the failure looked like *selective hearing*; only a
+  manual GUI shutdown ended it. Every argument-less live tool (time/weather/battery)
+  had MASKED the bug — `()` is falsy, so `args or {}` papered over it. Fixes:
+  arguments renamed to `tool_args` (+ a source-scan test so no consumer can read the
+  clobbered attribute again), and **containment** — `_handle_speech_segment` is now
+  wrapped at BOTH loop call sites, so a turn-handler bug costs one turn, never the
+  ears. Preserve that wrapper.
+- **Known-context recall — memories about the topic at hand now shape the reply.**
+  Reply-time recall fired only on memory QUESTIONS, so a STATEMENT touching stored
+  memory retrieved nothing ("I got all the new interns set up" → "How many interns
+  were there?", a stranger's question, with the plan sitting in `person_events` and
+  two diary episodes). `recall.known_context_lines` does statement-time recall over
+  person_events + rex_episodes + prior-session summaries, matched with
+  `text_match.strong_overlap` (2 shared stems, or one distinctive ≥6-char stem —
+  deliberately conservative, since a wrong "you already know this" is worse than a
+  missed connection), injected into `lean_brain._person_lines` with a
+  connect-don't-re-learn instruction. `events.complete_matching_events` closes a plan
+  on a spontaneous outcome report.
+- **Embedded shutdown in a compound farewell:** "I will talk to you later, and I
+  would like you to shut down." scored conversation (0.20) and the reply model
+  generated "Powering down." as a farewell QUIP without powering down. Three layers:
+  `command_parser` polite-leader regex accepts desire-form directives;
+  `action_router.decide()` pre-routes verified shutdown requests deterministically
+  (no LLM, no reply-model tool-call mood); and `system.shutdown` was added to the
+  execute allowlist — it was MISSING, so even correct routing died silently.
+- **Facing beats mirror-silence.** Rex mirrored a minute of silence at someone
+  deliberately waiting for him. Two-step misread: a terse but DIRECTLY responsive
+  answer ("It's a Delorean.") scored as a "short reply" and flipped the energy read
+  to quiet, and lean's low-energy mode then suppressed every impulse AND the
+  re-engage path. Now: a short answer to a question Rex JUST asked never counts
+  against engagement (only unprompted terseness reads as low energy), and the new
+  `consciousness.person_visibly_facing()` overrides the low-energy read entirely —
+  someone facing you during a lull is waiting, not withdrawing
+  (`LEAN_LOW_ENERGY_FACING_OVERRIDE_ENABLED`). Disengagement is still judged from
+  ACTUAL ignores by the unanswered-run discipline.
+- **Rename propagation completed.** The earlier fix only rewrote the RENAMED
+  person's own rex.db episodes — but the field mentions live in the OWNER's rows (the
+  diary files a session under the primary person present). `rename_person` now sweeps
+  all rex_episodes mentioning the old first name AND people.db speakable free text
+  (conversation summaries/topics, event names/notes, fact values, interest
+  names/notes/stories, Q&A text, relationship labels). Two guards: the sweep stays
+  scoped to the renamed person's own rows when ANOTHER person still carries the old
+  first name, and the pattern skips "`<OldFirst> <Capitalized>`" so "Brad Pitt" in a
+  fact value survives untouched.
+- **Phantom wall faces** die on pose-miss ticks; **boot filler stutter** fixed with
+  `AUDIO_PLAYBACK_BOOT_LATENCY_SECS` 1.0 → 2.5 (boot-only — the RF-DETR torch load +
+  first inference is the boot's heaviest sustained GIL/Metal burst and landed under
+  the filler's tail).
+
+### Impersonation hardening + famous voices (2026-08-03 → 08-04)
+
+The feature shipped 2026-07-19; this window made it hold up live.
+
+- **Voice drifted mid-bit** because each pipeline unit is a SEPARATE conditioning
+  pass on the reference clip and the passes don't land identically — a
+  multi-sentence parody started as the man and finished as someone else doing him.
+  Takes now render as ONE unit (`LOCAL_TTS_TAKE_WHOLE_CLIP`, default on). The cost is
+  latency (the room waits on the whole bit, not its first sentence), covered by the
+  thinking loop and bounded by capping scripts near 45 words. Pipelining is intact
+  behind the flag and its tests pin it explicitly.
+- **Every bit was about a party.** The prompt said "a room of friends" and the angles
+  said "party", and the model read that as a standing fact about the world —
+  partygoers, snacks, the dance floor — in a quiet room with one person in it. The
+  script may now assume only that a droid is doing an impression and somebody can
+  hear it; inventing an occasion is called out as a failed take.
+- **Famous mode = half the president, half the droid who took his voice.** The prompt
+  requires BOTH halves: anchor on something unmistakably him (the line every
+  impressionist does, a fixation, a verbal tic), then collide it with a droid at a
+  house party having borrowed his voice. A generic dignified statesman is called out
+  as a failed take, because that is what it kept producing. Direction had to be
+  spelled out: early takes drifted into the president calling HIMSELF a droid, which
+  inverts the joke — he may mock one or deny being one, never claim to be one.
+- Intro/bow lines CYCLE rather than picking at random (the repetition was a real bug,
+  not model temperature); no emotion chirp fires before an impersonation; head and
+  mouth animate through a cloned-voice line; "Impersonate." with nobody named ASKS
+  who instead of refusing.
+- **Voice reference clips are TRACKED in git** (14 deceased-president refs, ~13 MB,
+  trimmed to ~20s of whole sentences and transcribed with whisper-large-v3-turbo) so
+  a fresh checkout gets impressions. See `docs/presidential_voice_refs.md`.
+
 ### Phantom-wave + phantom-stranger vetoes (2026-08-05)
 
 Live-logged (session 18-31-55): a busy workshop defeated both clutter guards at
@@ -1717,6 +2001,117 @@ All in `tests/test_field_2026_08_05_night.py`:
   classification: negation over real motion clauses still refuses whole (None);
   negation over zero motion clauses is conversation ([]).
 
+### "He stops hearing me right after he speaks" (2026-08-05 → 08-06)
+
+Owner symptom: *"I pause a second after he speaks and he doesn't hear my first
+line — so I repeat myself."* Four commits, and the shape of the investigation is
+worth preserving because a **negative** telemetry result is what cracked it.
+
+- **Capture-drop telemetry first** (`interaction._capture_outcome` /
+  `_capture_dropped` / `_log_capture_session_summary`, same shape as the lull-impulse
+  telemetry): count every outcome, log TRANSITIONS at WARNING/INFO, dump one line per
+  session — grep **`[capture] session summary`**. It reported `captured=6 / dropped=0`
+  for the very run that lost three utterances. That negative result **proved the loss
+  was upstream of capture entirely**: the audio never became a segment, because the
+  mic was muted — not because the segment died.
+- **ROOT CAUSE — the mic was released by bookkeeping, not by silence.**
+  `echo_cancel.start_sequence()` defers every per-segment `set_playing(False)` until
+  `end_sequence()`, and that release sat at the END of the reply path, behind the
+  post-greet relationship ask, the curiosity routine, and pool-topic recording. The
+  mic stayed attenuated for **1-5s after Rex's last audio** (measured medians 1.0-2.0s,
+  max 8.0s; the outliers line up exactly with the owner-labelled repeats).
+  `_chunk_for_vad` flattened a reply spoken into that window to ~5%, VAD never fired,
+  and the turn left NO trace anywhere. Release now happens from the speech-queue
+  done-callback the moment the queue is **DRAINED**. Gated on the new
+  `speech_queue.is_drained()` and NOT on `not is_speaking()` — the latter is briefly
+  true BETWEEN the sentences of one streamed reply, and releasing there would re-open
+  the mic into Rex's own next sentence. A later line re-suppresses on its own
+  playback, so releasing early costs nothing. `AEC_RELEASE_ON_QUEUE_DRAIN=False`
+  restores the old behavior. Tests: `tests/test_aec_drain_release.py`.
+- **The capture floor anchored on the wrong clock** (front of fast replies clipped:
+  "I know, am I right?" heard as "Am I right?"). `_apply_post_tts_handoff` runs from
+  the done-callback, which fires 0.5-1.5s AFTER audio actually stopped (streamed-take
+  cache save, sequence bookkeeping), and it set the floor to `now - grace` — i.e.
+  AFTER words the human had already spoken into the clean post-playback buffer.
+  `echo_cancel` now stamps when sound REALLY stopped (`last_playback_ended_at()`,
+  including for the final segment, whose `set_playing(False)` the sequence hold
+  swallows) and the floor anchors there. On hardware AEC the grace still reaches back
+  PAST that end (residual is ~17dB down); on software suppression the floor sits AT
+  the end and reaches no further, because that direction is Rex at full volume.
+  Bounded by `CAPTURE_FLOOR_PLAYBACK_END_MAX_LAG_SECS` (3s) — an OLD stamp from a
+  previous line would otherwise drag the floor seconds into the past and let capture
+  reach back over unrelated audio (the suite caught this in the first cut).
+- **Software suppression flattens a fast reply's ONSET**, so VAD triggers a beat late
+  and a preroll-sized reach-back still misses the first word. When VAD fires within
+  `CAPTURE_FROM_FLOOR_NEAR_SECS` of the floor, capture now starts **AT the floor** —
+  everything after it is post-playback and clean, worst case a second of leading room
+  tone that ASR shrugs off. Tests: `tests/test_front_clip_fast_reply.py`.
+- **Bit ledger read delivery tags as content.** Five good lull lines were refused in a
+  row as "repeats a recent bit", on five unrelated subjects. `content_tokens()`
+  tokenized the inline `[curious]` DELIVERY tag as a content word — at 7 characters
+  `curious` clears `BIT_LEDGER_DISTINCTIVE_LEN`, and that rule short-circuits on a
+  single shared distinctive token, so one stored bit containing the word "curious"
+  silently blocked EVERY future line tagged `[curious]`, whatever it was about. Tags
+  say how a line is SPOKEN, never what it is about, so they never belonged in the
+  comparison; `content_tokens` now strips them via `utils.audio_tags.strip_audio_tags`
+  first. Costlier than one line each: every drop also benches its cue for
+  `LEAN_CUE_DROP_COOLDOWN_SECS`, so five false positives silenced five cues for ten
+  minutes on top of the lost lines. Tests: `tests/test_bit_ledger_tags.py`.
+- **Remaining instrumented gap:** the ACTIVE loop can `continue` without polling the
+  mic (post-TTS resume window, output busy) and those ticks were unlogged. They are
+  now counted and SPLIT — `mic_skip_output_busy_sfx` vs `mic_skip_rex_speaking` — so a
+  servo chirp landing in the human's reply window is distinguishable from Rex actually
+  talking. A sound effect is audio output, so the mic is not read while one plays, and
+  effect rate was ~1.8× higher in the worst runs than in the good one. **Suggestive,
+  not proven** — read the next session's `[capture] session summary` before acting.
+- **Methodology note worth keeping:** an earlier "not a regression" call in this
+  thread was WRONG because it compared dev-Mac runs against ROBOT runs. Those are not
+  comparable — do not mix them when bisecting.
+- `docs/revert-2026-08-05-session.env` turns off every behavior change from the
+  2026-08-05 session in one paste (eight env-overridable flags), so the whole session
+  can be A/B'd in a single run instead of one hypothesis at a time.
+
+### News timing + digest length, and the invisible searched answer (2026-08-06)
+
+- **"Did you hear about the eclipse TODAY" — the event was six days out.** The stored
+  story was correctly dated in BOTH the headline and the summary and the model still
+  said "today": **a news frame implies immediacy, so a headline handed over bare gets
+  announced as now.** This is the same failure `_build_anticipation_prompt` already
+  fixed for remembered events, and it gets the same cure — compute the delta IN CODE
+  and STATE it. Both news paths (the lull offer and the "tell me more" wrapper) now
+  carry a TIMING clause. When a story mentions several dates ("premiered July 23 …
+  finale airs August 9") it LISTS them and makes the model choose: asserting the wrong
+  one confidently is worse than the vagueness this set out to remove.
+  Date-parsing rules that a 30-agent adversarial review had to beat into the first
+  cut, all worth preserving: **exact month names only** (`(jan|…|dec)[a-z]*` made any
+  month-prefixed word a month — "Officials DEClared 6 counties" parsed as December 6,
+  replacing a safe "you don't know when" hedge with a confident falsehood); a bare
+  number before a month is NOT a day ("Pixel 9 August feature drop" → August 9) —
+  day-first needs an ordinal, an "of", or a year; and the scan must not return on the
+  first regex hit, or one bogus match suppresses a real date.
+- **Digest length: contradictory rules in one prompt.** The system prompt said "give
+  the COMPLETE answer … two to four sentences" while the user message said "three
+  max", and "tell me more" ran ~90 words and read "(esa.int)" aloud. News follow-ups
+  now carry their OWN system contract (three sentences, ~45 words, no platform lists,
+  no closing fetch-menu); every other search keeps the complete-answer one. An
+  overshoot is SHORTENED by a second cheap call rather than truncated — per the owner,
+  "don't just cut it off."
+- **The searched answer was invisible in the GUI for ~30s.** It rode the caller's
+  post-return log in `_handle_speech_segment`, but `_maybe_web_search_reply` speaks
+  through `_speak_blocking`, which returns only after PLAYBACK finishes — so the
+  longer the answer, the longer it stayed invisible, and the news digest is the
+  longest thing Rex says. (Ordinary replies look instant because the streaming path
+  logs as soon as the text exists.) The search path now writes transcript + GUI
+  **before the first word is spoken** and parks the text in a one-shot marker so the
+  caller skips its duplicate write. Deliberately NOT `conv_log.claim_rex_line()`,
+  which exists for exactly this shape — its dedupe is time-bounded at
+  `_REX_DEDUPE_WINDOW_SECS` = 30s, and a long news answer takes about that long to
+  speak, so the caller's later write would land on the boundary and duplicate roughly
+  half the time. The marker is time-independent, also covers `add_to_transcript`
+  (which `claim_rex_line` does not touch), and is cleared in `_begin_user_turn` so a
+  path that errors after logging can't suppress a legitimate write on a later turn.
+- Tests: `tests/test_news_timing_and_digest.py`, `tests/test_websearch_gui_immediacy.py`.
+
 ### A reply to Rex's NEXT topic filed as the room's name (2026-08-06)
 
 Field log 10-24-04: Rex asked "Which room is this, Bret?", Bret answered "This is the
@@ -1760,6 +2155,18 @@ defects, both fixed; either alone would have prevented it.
 
 ## Likely Future Work
 
+- **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The
+  2026-08-06 work fixed the AEC hold and the capture floor, but the ACTIVE-loop skip
+  counters were added specifically to test the remaining hypothesis — a servo chirp is
+  audio output, so the mic is not read while one plays, and effect rate was ~1.8×
+  higher in the runs that lost utterances. Read `[capture] session summary` from the
+  next field session (`mic_skip_output_busy_sfx` vs `mic_skip_rex_speaking`) BEFORE
+  changing anything. If sfx are confirmed, the fix is ducking them out of the human's
+  reply window, not disabling them.
+- **Tool router Phases 3-4** (`docs/tool_router_scope.md`): humor/character actions are
+  still shadow-only (their fast lanes work); `motion` is unchanged. Phase 4 cleanup
+  merges the per-action schemas in `tool_router._TOOL_DEFS` into `ActionSpec` itself.
+  The module docstring still describes Phase 0 and should be rewritten at that point.
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.
 - Decide whether the streaming answer path is sufficient latency cover on its own, or whether to re-enable (and tune) the slow-path ack / latency filler for the slowest paths.
 - Deeper conversation steering: detect a topic shift semantically (not just explicit "I like / I'm building X") and update/expire the active interest accordingly; today a new subject the user is clearly engaged in but doesn't name in an interest form is not picked up.
