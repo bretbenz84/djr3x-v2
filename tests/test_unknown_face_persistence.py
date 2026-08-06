@@ -58,5 +58,38 @@ class UnknownFacePersistenceTest(unittest.TestCase):
             self.assertTrue(self._tick(True))    # gate disabled → exposed immediately
 
 
+class UnknownFaceConfidenceGateTest(unittest.TestCase):
+    """Detector-confidence floor for UNKNOWN faces (live-logged 2026-08-05): a busy-room
+    shelf minted a PERSISTENT phantom face — so the confirm-frames streak couldn't help —
+    that survived the pose-face guard once the room emptied (the only remaining pose head
+    was a phantom pose on the same clutter) and got the full "what name should I save for
+    you?" prompt. An unidentified face must now also clear FACE_UNKNOWN_MIN_CONFIDENCE on
+    the detector's own score; known-face tracking (embedding-vouched) is unaffected."""
+
+    def setUp(self):
+        c._last_lowconf_face_log_at = 0.0
+
+    def test_low_score_unknown_is_ignored(self):
+        with mock.patch.object(config, "FACE_UNKNOWN_MIN_CONFIDENCE", 0.62):
+            self.assertFalse(c._unknown_face_conf_ok(
+                {"confidence": 0.55, "bounding_box": (545, 519, 60, 70)}))
+
+    def test_high_score_unknown_passes(self):
+        with mock.patch.object(config, "FACE_UNKNOWN_MIN_CONFIDENCE", 0.62):
+            self.assertTrue(c._unknown_face_conf_ok({"confidence": 0.80}))
+
+    def test_score_at_the_floor_passes(self):
+        with mock.patch.object(config, "FACE_UNKNOWN_MIN_CONFIDENCE", 0.62):
+            self.assertTrue(c._unknown_face_conf_ok({"confidence": 0.62}))
+
+    def test_dlib_detection_without_score_passes(self):
+        # The dlib backend carries no det score — the gate is insightface-only.
+        self.assertTrue(c._unknown_face_conf_ok({"bounding_box": (1, 2, 3, 4)}))
+
+    def test_floor_zero_disables_gate(self):
+        with mock.patch.object(config, "FACE_UNKNOWN_MIN_CONFIDENCE", 0.0):
+            self.assertTrue(c._unknown_face_conf_ok({"confidence": 0.10}))
+
+
 if __name__ == "__main__":
     unittest.main()

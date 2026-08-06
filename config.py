@@ -3302,6 +3302,20 @@ WAVE_BACK_CONFIRM_FRAMES = _env_int("WAVE_BACK_CONFIRM_FRAMES", 2, min_value=1, 
 WAVE_BACK_MAX_FACE_FRACTION = _env_float(
     "WAVE_BACK_MAX_FACE_FRACTION", 0.72, min_value=0.0, max_value=1.0,
 )
+# STATIC-WRIST VETO: minimum measured wrist speed (normalized-x units/sec, from
+# vision.pose.recent_wave_speed) for a 'waving' gesture to earn a wave-back. The gesture
+# check is single-frame POSTURE (wrist above shoulder + lateral offset) and cannot tell a
+# wave from a raised-but-motionless "wrist" — which in a cluttered room is usually a
+# MediaPipe keypoint planted on a chair ARMREST or shelf edge at face height (live-logged
+# 2026-08-05: ten "waves" in 90s from a seated, non-waving user, every one measuring
+# 0.05-0.09; the user's chair armrests sat at camera eye level). A real wave sweeps
+# 0.25+ (WAVE_SPEED_MIRROR_SLOW is the designed slow end), so 0.15 splits the bands
+# cleanly. Unmeasured speed (None — fewer than 3 raised-wrist samples yet) passes, since
+# the confirm streak already spans 1-2s of pose ticks. Rejections log "wave ignored ...
+# below WAVE_BACK_MIN_SPEED"; tune from the speed= value on wave-detected lines. 0 disables.
+WAVE_BACK_MIN_SPEED = _env_float(
+    "WAVE_BACK_MIN_SPEED", 0.15, min_value=0.0, max_value=2.0,
+)
 # Wave-back arm gesture: how many times the wrist (the "hand" servo) sweeps between BOTH of
 # its travel limits when Rex waves back (one sweep = to one limit and back). The elbow only
 # raises the arm; the wrist does the waving. See sequences/animations.wave_back_gesture.
@@ -3432,6 +3446,22 @@ FACE_IDENTITY_SWITCH_CONFIRM_FRAMES = 2
 # 1 disables the gate (old behavior); raise if phantom guests still slip through.
 FACE_UNKNOWN_CONFIRM_FRAMES = _env_int(
     "FACE_UNKNOWN_CONFIRM_FRAMES", 3, min_value=1, max_value=30,
+)
+
+# Minimum SCRFD detector score for a face that FAILED identification to count as an
+# unknown PERSON (vs clutter). A known face is vouched for by its embedding match; an
+# unknown has only the detector's own confidence — and SCRFD clutter false-positives hug
+# the 0.5 accept threshold (INSIGHTFACE_MIN_CONFIDENCE) while real faces score ~0.7-0.95.
+# Live-logged 2026-08-05: a busy-workshop shelf minted a PERSISTENT face (so the
+# confirm-frames gate couldn't help) that passed the pose-face guard once the room
+# emptied — the only pose head left was a phantom pose on the SAME clutter — and Rex
+# asked the shelf for its name. Sub-floor unidentified faces are dropped before they
+# feed the persistence streak or the identity prompt; the drop is logged as
+# [face_conf_gate] with the score, and accepted unknowns log det_scores=[...] on the
+# "unknown face detected" line — tune the floor from those. Known-face tracking and the
+# dlib backend (no det score) are unaffected. 0 disables.
+FACE_UNKNOWN_MIN_CONFIDENCE = _env_float(
+    "FACE_UNKNOWN_MIN_CONFIDENCE", 0.62, min_value=0.0, max_value=0.99,
 )
 
 # ── Voice embedder backend ────────────────────────────────────────────────────

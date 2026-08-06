@@ -25,11 +25,19 @@ here and has burned hours repeatedly:
 These fail on a clean checkout of main, per-module, and are NOT caused by your
 change (tracked as their own fix-up task):
 
-- `tests/test_audio_and_conversation_gating.py` — 2 failures
+- `tests/test_audio_and_conversation_gating.py` — 3 failures
   (`test_direct_shutdown_clip_leaves_leds_off`,
-  `test_existing_common_name_prompt_logs_human_turn_before_returning`; the
+  `test_existing_common_name_prompt_logs_human_turn_before_returning`,
+  `test_first_sight_sparse_profile_uses_basic_profile_question` — the third
+  verified pre-existing against clean HEAD 2026-08-05, solo run too; the
   furry-animal surprise-frame failure was fixed 2026-08-03 by the animal
   presence-ledger rework — the old species cooldown was leaking between tests)
+- `tests/test_face_tracking.py` — 4 failures
+  (`test_face_tracking_damps_direction_reversal`,
+  `test_live_tracked_edge_face_slews_neck_responsively`,
+  `test_recent_speaker_face_beats_larger_bystander`,
+  `test_single_visible_face_recenters_neck_lift_and_tilt`; verified against
+  clean HEAD 2026-08-05)
 - `tests/test_body_mood.py` — `test_visor_released_to_lens_clear_floor_when_mood_ends`
 - `tests/test_holiday_plan_cue.py` — `test_spoken_lean_holiday_cue_marks_only_that_person`
 - `tests/test_rex_supervisor.py` — 3 failures (`test_chime_uses_afplay_when_available`,

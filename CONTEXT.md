@@ -1494,6 +1494,50 @@ third-person null reports ("The person did not share...") at a hardcoded salienc
   uncalibrated magnetic readings must never steer the base. A newer motion command,
   stop, e-stop, or disconnect invalidates any delayed correction.
 
+### Phantom-wave + phantom-stranger vetoes (2026-08-05)
+
+Live-logged (session 18-31-55): a busy workshop defeated both clutter guards at
+once, from one root — MediaPipe fits phantom/mis-fitted POSES across furniture,
+and those poses then vouch for other phantoms.
+
+- **Static-wrist veto** (`WAVE_BACK_MIN_SPEED`, default 0.15): chair ARMRESTS at
+  camera eye level got "wrist" keypoints planted on them at face height, which the
+  single-frame posture check reads as 'waving' — the seated user never raised a
+  hand, yet ten wave-backs fired in 90s, every one measuring 0.05–0.09
+  normalized-x/s wrist speed (a real wave sweeps 0.25+, per
+  `WAVE_SPEED_MIRROR_SLOW`). `_step_wave_reaction` phase (A) now reads
+  `recent_wave_speed()` BEFORE latching and rejects a measured speed below the
+  floor ("wave ignored … below WAVE_BACK_MIN_SPEED"); None (no motion history
+  yet) passes for back-compat, since the confirm streak already spans 1-2s of
+  pose ticks. This kills static-wrist false waves regardless of whether the bad
+  wrist comes from a fully phantom pose or a mis-fitted pose on a real person —
+  the confirm-streak and shoulder-girdle filters can't (a persistent clutter pose
+  is stable across frames, exactly what they trust). Tune off the `speed=` value
+  now on the wave-detected log line.
+- **Unknown-face detector-confidence floor** (`FACE_UNKNOWN_MIN_CONFIDENCE`,
+  default 0.62, `consciousness._unknown_face_conf_ok`): a shelf minted a
+  PERSISTENT face at ~(545,519) all session — `FACE_UNKNOWN_CONFIRM_FRAMES`
+  can't filter what doesn't flicker. The pose-face guard dropped it while the
+  user's real pose was the only head anchor, but the moment the user left, the
+  only anchor left was a phantom pose on the SAME clutter — which vouched for
+  the phantom face (`_reject_faces_off_body` keeps any face near ANY pose head),
+  and Rex asked the shelf "what name should I save for you?", then bade it
+  farewell when the head panned away. An unidentified face must now also clear
+  the SCRFD det-score floor to count as an unknown person or feed the
+  persistence streak (real faces score ~0.7–0.95; clutter FPs hug the 0.5
+  accept threshold). Known-face tracking is embedding-vouched and unaffected;
+  dlib (no det score) passes unchanged. Calibration logging: rejected faces log
+  `[face_conf_gate]` with score+box; accepted unknowns log `det_scores=[...]`
+  on the "unknown face detected" line — raise the floor from live data if the
+  shelf still gets through.
+- The deeper root (phantom poses coasting on MediaPipe VIDEO-mode tracking for
+  minutes — "1 real pose(s)" cycling neutral/raising_hand/leaning_in in an
+  EMPTY room, even "2 real pose(s)") is deliberately NOT touched yet: tightening
+  `_is_plausible_pose`'s side-on fallback or the pose confidences risks
+  re-breaking real two-person scenes; revisit with live det-score/pose data.
+- Tests: `tests/test_wave_back.py::WaveSpeedGateTest`,
+  `tests/test_unknown_face_persistence.py::UnknownFaceConfidenceGateTest`.
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

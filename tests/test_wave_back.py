@@ -311,6 +311,65 @@ class WaveStabilityGateTest(unittest.TestCase):
             self.assertTrue(self._tick({"people": [far]}))      # streak 2 → fires
 
 
+class WaveSpeedGateTest(unittest.TestCase):
+    """Static-wrist veto (live-logged 2026-08-05): in a cluttered room MediaPipe plants
+    "wrist" keypoints on chair armrests / shelf edges at face height — the single-frame
+    posture check reads that as 'waving', but the wrist never MOVES (measured 0.05-0.09
+    normalized-x/s vs 0.25+ for a real wave). A measured speed below WAVE_BACK_MIN_SPEED
+    must not latch a wave-back; an unmeasured speed (None) still passes for back-compat
+    with a wave whose motion history hasn't accumulated yet."""
+
+    def setUp(self):
+        for d in (c._wave_reacted_keys, c._wave_escalation, c._wave_streak):
+            d.clear()
+            self.addCleanup(d.clear)
+        c._last_wave_reaction_at = 0.0
+        c._pending_wave_back = None
+        c._last_wave_static_log_at = 0.0
+        # Speed gating is orthogonal to the stability streak — pin confirm=1.
+        cf = mock.patch.object(c.config, "WAVE_BACK_CONFIRM_FRAMES", 1)
+        cf.start()
+        self.addCleanup(cf.stop)
+
+    def tearDown(self):
+        c._pending_wave_back = None
+        c._last_wave_reaction_at = 0.0
+
+    def _tick(self, speed):
+        waved = {"v": False}
+        with mock.patch.object(c, "_can_proactive_speak", return_value=True), \
+             mock.patch.object(c, "_first_name", return_value="Bret"), \
+             mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
+             mock.patch.object(c, "_speak_async", side_effect=lambda *a, **k: True), \
+             mock.patch("vision.pose.recent_wave_speed", return_value=speed), \
+             mock.patch("sequences.animations.wave_back_gesture",
+                        side_effect=lambda *a, **k: waved.update(v=True) or True):
+            c._step_wave_reaction({"people": [_waving()]}, _Profile())
+        return waved["v"]
+
+    def test_static_wrist_below_floor_never_latches(self):
+        # The logged phantom band (0.05-0.09) — an armrest, not a wave.
+        self.assertFalse(self._tick(0.07))
+        self.assertIsNone(c._pending_wave_back)   # never latched, nothing pending
+        self.assertEqual(c._wave_reacted_keys, {})  # debounce/escalation untouched
+
+    def test_moving_wave_fires(self):
+        self.assertTrue(self._tick(0.40))
+
+    def test_unmeasured_speed_still_fires(self):
+        # None = no motion history yet — must not reject a real wave (back-compat).
+        self.assertTrue(self._tick(None))
+
+    def test_floor_zero_disables_gate(self):
+        with mock.patch.object(c.config, "WAVE_BACK_MIN_SPEED", 0.0):
+            self.assertTrue(self._tick(0.05))
+
+    def test_wave_that_starts_moving_fires(self):
+        # Static at first (vetoed), then genuinely waving → fires as soon as it moves.
+        self.assertFalse(self._tick(0.07))
+        self.assertTrue(self._tick(0.35))
+
+
 class WaveSpeedMirrorTest(unittest.TestCase):
     """Map the user's measured wave speed to Rex's wave-back half-period."""
 

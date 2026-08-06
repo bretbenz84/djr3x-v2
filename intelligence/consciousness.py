@@ -316,6 +316,7 @@ _wave_escalation: dict[str, tuple[float, int]] = {}
 # wave persists across ticks; a flickering non-human blob (a pillow) does not.
 _wave_streak: dict[str, int] = {}
 _last_wave_close_log_at: float = 0.0  # throttle for the "face too close" suppression log
+_last_wave_static_log_at: float = 0.0  # throttle for the static-wrist (no-motion) veto log
 # Land-the-laugh / take-a-bow: per-session count + last-fire time (a plain dict so
 # mutation needs no `global`; reset on session reset alongside the wave state).
 _room_reacted: dict[str, float] = {"count": 0.0, "last_at": 0.0}
@@ -365,6 +366,41 @@ def _update_unknown_streak(had_raw_unknown: bool) -> int:
     global _unknown_visible_streak
     _unknown_visible_streak = (_unknown_visible_streak + 1) if had_raw_unknown else 0
     return _unknown_visible_streak
+
+
+# Throttle for the low-confidence unidentified-face veto log.
+_last_lowconf_face_log_at: float = 0.0
+
+
+def _unknown_face_conf_ok(det: dict) -> bool:
+    """True if a face that FAILED identification scores high enough on the detector to
+    count as an unknown person at all.
+
+    A KNOWN face is protected by the embedding match; an unknown has nothing but the
+    detector's own score — and SCRFD's clutter false-positives hug the 0.5 accept
+    threshold while real faces score well above it (live-logged 2026-08-05: a workshop
+    shelf minted a persistent "face" that survived the pose guard once the room emptied
+    and got the full "what name should I save for you?" treatment). Below
+    FACE_UNKNOWN_MIN_CONFIDENCE the face is presumptively clutter: it neither counts as
+    an unknown person nor feeds the persistence streak. dlib detections carry no score
+    and pass unchanged; 0 disables the gate."""
+    global _last_lowconf_face_log_at
+    conf = det.get("confidence") if isinstance(det, dict) else None
+    if not isinstance(conf, (int, float)):
+        return True  # dlib backend / no score — gate is insightface-only
+    floor = float(getattr(config, "FACE_UNKNOWN_MIN_CONFIDENCE", 0.62) or 0.0)
+    if floor <= 0.0 or float(conf) >= floor:
+        return True
+    now = time.monotonic()
+    if (now - _last_lowconf_face_log_at) > 10.0:
+        _last_lowconf_face_log_at = now
+        box = det.get("bounding_box") or ()
+        _log.info(
+            "[face_conf_gate] unidentified face det_score=%.2f below %.2f floor — "
+            "ignored as clutter (box=%s)",
+            float(conf), floor, tuple(int(v) for v in box[:4]) if box else "n/a",
+        )
+    return False
 
 # Per-person monotonic timestamp of the last departure/return reaction fired.
 _last_departure_reaction_at: dict = {}
@@ -3011,6 +3047,7 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     Diagnostic logging (info) records detect / fire / expire so a "why didn't it speak?"
     question is answerable from the log instead of guesswork."""
     global _last_wave_reaction_at, _pending_wave_back, _last_wave_close_log_at
+    global _last_wave_static_log_at
     if not bool(getattr(config, "WAVE_BACK_ENABLED", True)):
         return
     now = time.monotonic()
@@ -3069,20 +3106,39 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
             continue  # wave not yet stable across enough ticks — reject flicker
         if (now - float(_wave_reacted_keys.get(key, 0.0))) < per_person_cd:
             continue  # already waved back at this person recently
-        name = _first_name(person.get("face_id") or person.get("name"), "")
-        if not _pending_wave_back or _pending_wave_back.get("key") != key:
-            _fh = person.get("face_box_height_fraction")
-            _fh_s = f"{float(_fh):.2f}" if isinstance(_fh, (int, float)) else "n/a"
-            _log.info("consciousness: wave detected for %s — queued wave-back (face_height=%s)",
-                      key, _fh_s)
         # Capture how fast they're waving NOW (refreshed each tick while waving) so the
-        # wave-back can mirror the speed; None if it couldn't be measured.
+        # wave-back can mirror the speed; None if it couldn't be measured. Read BEFORE the
+        # latch so it can also gate:
         speed = None
         try:
             from vision import pose as pose_mod
             speed = pose_mod.recent_wave_speed()
         except Exception as exc:
             _log.debug("wave speed read failed: %s", exc)
+        # STATIC-WRIST VETO (live-logged 2026-08-05): in a cluttered room MediaPipe plants
+        # "wrist" landmarks on chair armrests / shelf edges at face height, which the
+        # single-frame posture check reads as 'waving' — but those wrists don't MOVE
+        # (measured 0.05–0.09 normalized-x/s vs the 0.25+ a real wave sweeps, per
+        # WAVE_SPEED_MIRROR_SLOW). A wave with measurable motion below the floor is
+        # furniture, not a greeting. None (no measurement yet) passes: the confirm streak
+        # already spans 1-2s of pose ticks, so a real raised hand has samples by now.
+        min_speed = float(getattr(config, "WAVE_BACK_MIN_SPEED", 0.15) or 0.0)
+        if min_speed > 0.0 and isinstance(speed, (int, float)) and speed < min_speed:
+            if (now - _last_wave_static_log_at) > 10.0:
+                _last_wave_static_log_at = now
+                _log.info(
+                    "consciousness: wave ignored for %s — wrist speed %.2f below "
+                    "WAVE_BACK_MIN_SPEED %.2f (raised-but-motionless wrist = armrest/"
+                    "clutter pose artifact, not a wave)", key, speed, min_speed,
+                )
+            continue
+        name = _first_name(person.get("face_id") or person.get("name"), "")
+        if not _pending_wave_back or _pending_wave_back.get("key") != key:
+            _fh = person.get("face_box_height_fraction")
+            _fh_s = f"{float(_fh):.2f}" if isinstance(_fh, (int, float)) else "n/a"
+            _log.info("consciousness: wave detected for %s — queued wave-back "
+                      "(face_height=%s speed=%s)", key, _fh_s,
+                      ("%.2f" % speed) if isinstance(speed, (int, float)) else "n/a")
         _pending_wave_back = {"key": key, "name": name, "at": now, "speed": speed}
         break
 
@@ -4277,6 +4333,7 @@ def _step_person_recognition(frame) -> None:
 
         recognized_names: list[str] = []
         unknown_count = 0
+        unknown_scores: list = []  # det scores of counted unknowns (floor calibration)
         had_raw_unknown = False
         # An unknown face only counts as a real person once it has PERSISTED — compute
         # this tick's exposure from the running streak (+1 for this tick if it has one).
@@ -4328,6 +4385,11 @@ def _step_person_recognition(frame) -> None:
                     # never updated because the slot kept face_id='Bro'/'Broski').
                     target_slot = people[idx] if idx < len(people) else None
             else:
+                # Detector-confidence floor: a face nothing identifies AND the detector
+                # itself only half-believes is clutter, not a stranger — drop it before
+                # it can feed the persistence streak or the identity prompt.
+                if not _unknown_face_conf_ok(det):
+                    continue
                 had_raw_unknown = True
                 # Persistence gate: a transient unknown (clutter, a shape on the wall, a
                 # glance at a messy shelf) must NOT become a visible "person" — that armed
@@ -4336,6 +4398,8 @@ def _step_person_recognition(frame) -> None:
                 if not expose_unknown:
                     continue
                 unknown_count += 1
+                _c = det.get("confidence")
+                unknown_scores.append(round(float(_c), 2) if isinstance(_c, (int, float)) else None)
 
             if target_slot is None:
                 continue
@@ -4430,7 +4494,8 @@ def _step_person_recognition(frame) -> None:
             if unknown_count > 0:
                 noun = "face" if unknown_count == 1 else "faces"
                 print(f"[FACE] Unknown {noun} detected ({unknown_count})", flush=True)
-                _log.info("consciousness: unknown %s detected (%d)", noun, unknown_count)
+                _log.info("consciousness: unknown %s detected (%d) det_scores=%s",
+                          noun, unknown_count, unknown_scores)
             _last_face_feedback_signature = signature
 
         _maybe_prompt_unknown_identity(
