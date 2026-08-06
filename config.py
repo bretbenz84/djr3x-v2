@@ -405,7 +405,7 @@ LEAN_IMPULSE_MAX_UNANSWERED = 2       # consecutive self-initiated lines w/ no u
 # (owner 2026-08-05: "he sits there quiet so much"). Sitting in plain view is soft
 # permission to keep trying; the base cap unchanged for the voice-only case, where
 # silence more plausibly means they left. 0 restores the flat cap.
-LEAN_IMPULSE_MAX_UNANSWERED_VISIBLE_BONUS = 1
+LEAN_IMPULSE_MAX_UNANSWERED_VISIBLE_BONUS = _env_int("LEAN_IMPULSE_MAX_UNANSWERED_VISIBLE_BONUS", 1, min_value=0, max_value=5)
 LEAN_IMPULSE_ESCALATION     = 1.0     # gap after n unanswered lines = COOLDOWN * (1 + ESCALATION * n)
 # A model PASS re-arms only this FRACTION of the pacing window (owner 2026-08-05, the
 # "sits there quiet" tuning). The anchor arms on every consult so the model is asked at
@@ -413,7 +413,7 @@ LEAN_IMPULSE_ESCALATION     = 1.0     # gap after n unanswered lines = COOLDOWN 
 # polite shrug used to buy a FULL window of guaranteed silence; two chained PASSes on
 # the 40s re-engage path meant 2+ minutes of dead air with the person sitting right
 # there. 0.5 = after a PASS, ask again in half the window. 1.0 restores old behavior.
-LEAN_IMPULSE_PASS_REARM_FRACTION = 0.5
+LEAN_IMPULSE_PASS_REARM_FRACTION = _env_float("LEAN_IMPULSE_PASS_REARM_FRACTION", 0.5, min_value=0.05, max_value=1.0)
 # SLOW re-engagement — after the fast lull-break yields the floor, don't let the conversation just
 # die: if the person is still HERE but it's gone truly quiet for this long (since Rex last spoke),
 # take one PATIENT swing on a genuinely NEW topic/question (bypasses the fast unanswered cap). Spaced
@@ -440,7 +440,7 @@ ENGAGEMENT_PROBE_ANSWER_WINDOW_SECS = 30.0    # how long the probe waits for any
 # Was 600 (10 min): a very long sentence for missing one 30s window — stepping out,
 # being mid-thought, or just not hearing the probe muted Rex for ten minutes (owner
 # 2026-08-05 quietness tuning). Speaking still clears it instantly.
-ENGAGEMENT_PROBE_NO_ANSWER_SNOOZE_SECS = 240.0  # silence = not interested — quiet for 4 min
+ENGAGEMENT_PROBE_NO_ANSWER_SNOOZE_SECS = _env_float("ENGAGEMENT_PROBE_NO_ANSWER_SNOOZE_SECS", 240.0, min_value=30.0, max_value=3600.0)
 ENGAGEMENT_DEFER_SNOOZE_SECS = 100.0          # "give me a few minutes" — back in ~a minute and a half
 # Cadence = quiet-threshold (measured from Rex's last line, so a natural short pause triggers it)
 # + cooldown. Each eligible window Rex consults the lean brain and either says one motivated thing
@@ -4563,7 +4563,7 @@ POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.12
 # that window, and the lost turn left no trace at all (field 2026-08-05: three
 # marked repeats in one run; the capture telemetry saw captured=6 / dropped=0).
 # False restores the old release-at-end-of-turn behavior.
-AEC_RELEASE_ON_QUEUE_DRAIN = True
+AEC_RELEASE_ON_QUEUE_DRAIN = _env_bool("AEC_RELEASE_ON_QUEUE_DRAIN", True)
 
 # Let question-answer capture reach slightly before the handoff, but only into
 # the typical silent pad at the end of TTS. 250ms can include Rex's final word.
@@ -7043,7 +7043,7 @@ REX_POV_FEEDS_MICRO_BEHAVIORS = True
 #
 # No LLM call, no network of its own: it reads signals other subsystems already
 # fetched. Kill switch: REX_MOOD_ENABLED.
-REX_MOOD_ENABLED = True
+REX_MOOD_ENABLED = _env_bool("REX_MOOD_ENABLED", True)
 
 # The authored pool. Each seed is one coherent way Rex can wake up.
 #   id      stable slug (persisted; renaming one drops it from history)
@@ -7236,7 +7236,7 @@ REX_MOOD_CHIRP_SUPPRESS_ENERGY = 0.25    # effective energy at/below this → no
 #   * on a random roll, so it isn't a scheduled broadcast.
 # It competes in the normal lull ladder, below everything about THEM (asking after
 # their weekend beats talking about yourself) and above generic news.
-REX_MOOD_SHARE_ENABLED = True
+REX_MOOD_SHARE_ENABLED = _env_bool("REX_MOOD_SHARE_ENABLED", True)
 REX_MOOD_SHARE_PROBABILITY = 0.3
 # "Notable" = |valence| at or past this, OR energy outside the band below. Against the
 # shipped pool this makes roughly 11 of 18 moods mentionable; raise it for a quieter
@@ -7259,7 +7259,7 @@ REX_MOOD_SHARE_MIN_TIERS = ("friend", "close_friend", "best_friend")
 # Only plain-hello branches carry it: a birthday, a celebration, an emotional
 # check-in, or a remembered follow-up is about THEM, and a <20-min quick return is
 # four words. See consciousness._GREETING_MOOD_ASIDE_LABELS.
-REX_MOOD_GREETING_ASIDE_ENABLED = True
+REX_MOOD_GREETING_ASIDE_ENABLED = _env_bool("REX_MOOD_GREETING_ASIDE_ENABLED", True)
 # Higher than the lull roll (0.3): the hello is a better-fitting moment, and the
 # once-per-day spend is shared with the lull cue, so this mostly decides WHICH of
 # the two gets it rather than adding a second chance to hear about his day.
@@ -7279,7 +7279,7 @@ REX_MOOD_STATE_PATH = None  # None → assets/memory/rex_mood_state.json
 # across reboots — the whole point, since a reboot was the thing re-triggering the
 # full greeting. Buckets: <SNAP = barely acknowledge; <RECENT = warm nod, no
 # wellbeing question; same local day = the existing "you're back" beat.
-GREETING_CADENCE_ENABLED = True
+GREETING_CADENCE_ENABLED = _env_bool("GREETING_CADENCE_ENABLED", True)
 GREETING_CADENCE_SNAP_SECS = 20 * 60          # 20 min — "that was quick"
 GREETING_CADENCE_RECENT_SECS = 3 * 60 * 60    # 3 h  — "back again"
 # How long a "how are you doing?" to a given person stays spent. Asking twice in

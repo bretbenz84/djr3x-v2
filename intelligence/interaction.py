@@ -26426,6 +26426,11 @@ def _loop() -> None:
                     continue
 
         if time.monotonic() < _listen_resume_at:
+            # Mic not read at all this tick. Counted so a reply spoken into this
+            # window is explainable afterwards instead of vanishing (field
+            # 2026-08-05: three marked repeats, and the capture telemetry proved
+            # the loss was upstream of capture — i.e. right here).
+            _capture_outcome("mic_skip_listen_resume")
             _situation_assessor.set_vad_active(False)
             _stop_event.wait(_CHUNK_SECS)
             continue
@@ -26441,6 +26446,13 @@ def _loop() -> None:
                 and _is_interruptible_game_audio_path(direct_audio_path)
             )
             if not interruptible_audio and not _vad_barge_in_enabled():
+                # Rex (or a sound effect / servo chirp) is producing audio, so the
+                # mic is not read. A servo sfx landing in the human's reply window
+                # mutes exactly the words they are speaking.
+                _capture_outcome(
+                    "mic_skip_output_busy_sfx"
+                    if not speech_queue.is_speaking() else "mic_skip_rex_speaking"
+                )
                 _situation_assessor.set_vad_active(False)
                 _stop_event.wait(_CHUNK_SECS)
                 continue

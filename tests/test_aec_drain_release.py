@@ -104,3 +104,34 @@ class DrainReleaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MicSkipTelemetryTests(unittest.TestCase):
+    """The last invisible link: ticks where the ACTIVE loop never reads the mic.
+
+    The capture telemetry proved the 2026-08-05 losses were upstream of capture
+    (captured=6 / dropped=0 in a run that lost three utterances), which narrows it
+    to exactly these skips — the loop `continue`s without polling audio, so a reply
+    spoken into that window is never even offered to VAD. Counted per reason so a
+    session summary can name it (notably: a servo sound effect counts as output
+    busy, and one landing mid-reply mutes the words being spoken)."""
+
+    def test_both_skip_reasons_are_instrumented(self):
+        import inspect
+        src = inspect.getsource(I._run_interaction_loop) \
+            if hasattr(I, "_run_interaction_loop") else inspect.getsource(I)
+        self.assertIn('_capture_outcome("mic_skip_listen_resume")', src)
+        self.assertIn('mic_skip_output_busy_sfx', src)
+        self.assertIn('mic_skip_rex_speaking', src)
+
+    def test_counters_land_in_the_session_summary(self):
+        I._capture_outcome_counts.clear()
+        I._capture_outcome("mic_skip_output_busy_sfx")
+        I._capture_outcome("mic_skip_output_busy_sfx")
+        I._capture_outcome("captured")
+        with mock.patch.object(I, "_log") as log:
+            I._log_capture_session_summary()
+        summary = str(log.info.call_args)
+        self.assertIn("mic_skip_output_busy_sfx=2", summary)
+        self.assertIn("captured=1", summary)
+        self.assertEqual(I._capture_outcome_counts, {})
