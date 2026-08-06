@@ -7155,6 +7155,29 @@ REX_MOOD_GOOD_CONVERSATION_TURNS = 6
 # he shouldn't claim to be wired at 1am just because he woke up wired at 9.
 REX_MOOD_LATE_HOUR_ENERGY_DROP = 0.2
 
+# ── Volunteering the mood unprompted (2026-08-05) ────────────────────────────
+# Real people mention their own day without being asked — "ugh, what a day" — and a
+# droid who only ever reveals his state under interrogation reads as a lookup table.
+# So on a lull, Rex may offer it as ONE dry aside. Every gate below is about keeping
+# that lifelike instead of turning it into a new daily ritual:
+#   * only on a NOTABLE day (nobody announces feeling exactly average),
+#   * at most ONCE PER DAY, and never if he already voiced the mood answering a
+#     question — the `spoken` flag is persisted, so a reboot doesn't re-arm it,
+#   * only to a friend or better (you don't unload on an acquaintance), and
+#   * on a random roll, so it isn't a scheduled broadcast.
+# It competes in the normal lull ladder, below everything about THEM (asking after
+# their weekend beats talking about yourself) and above generic news.
+REX_MOOD_SHARE_ENABLED = True
+REX_MOOD_SHARE_PROBABILITY = 0.3
+# "Notable" = |valence| at or past this, OR energy outside the band below. Against the
+# shipped pool this makes roughly 11 of 18 moods mentionable; raise it for a quieter
+# Rex, lower it for one who talks about himself more.
+REX_MOOD_SHARE_MIN_INTENSITY = 0.45
+REX_MOOD_SHARE_LOW_ENERGY = 0.25
+REX_MOOD_SHARE_HIGH_ENERGY = 0.85
+# Tiers he'll volunteer to. An acquaintance gets the mood in how he LANDS, not stated.
+REX_MOOD_SHARE_MIN_TIERS = ("friend", "close_friend", "best_friend")
+
 # Cross-session persistence: the mood is minted once per LOCAL day and reloaded on
 # every boot, so restarting him at 4pm resumes the mood he woke up with (plus the
 # day's accumulated drift) instead of re-rolling a brand-new personality.

@@ -1598,8 +1598,21 @@ about what he had already said to you:
   `consciousness.note_rex_utterance` (greetings/proactive) and
   `interaction._register_rex_utterance` (replies), falling back to
   `get_recent_engagement()` since only ~7 of ~25 callers pass `target_person_id`.
+- **Volunteering it unprompted** (owner follow-up, same day: "real people do that").
+  A mood only ever revealed under interrogation is still a lookup table, so
+  `interaction._lean_mood_share_cue` offers it in a lull as ONE dry aside via
+  `lean_brain._MOOD_SHARE_INSTRUCTION`. It sits BELOW every cue about them (asking
+  after someone's weekend beats talking about yourself) and ABOVE generic news.
+  Four gates keep it from becoming a new daily ritual — which would just be the
+  original complaint wearing a different hat: notable days only
+  (`rex_mood.is_notable`, ~12 of 18 shipped moods; nobody announces feeling exactly
+  average), a random roll (`REX_MOOD_SHARE_PROBABILITY`), friend tier or better,
+  and once per DAY via the persisted `spoken` flag — so answering "how are you?"
+  in the morning also spends the unprompted share, and a reboot doesn't re-arm it.
+  `rex_mood.share_cue()` deliberately owns only "is there something worth saying";
+  the roll and the social fit live in the caller, like every other lull cue.
 - Tests: `tests/test_rex_mood.py`, `tests/test_greeting_cadence.py`,
-  `tests/test_self_state_injection.py`.
+  `tests/test_self_state_injection.py`, `tests/test_mood_share_cue.py`.
 
 ## Likely Future Work
 

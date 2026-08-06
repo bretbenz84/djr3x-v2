@@ -34,6 +34,7 @@ _SCALARS = {
     "_last_user_content_at": 0.0,
     "_last_rex_line_was_question": False,
     "_lean_memory_mused_this_session": False,
+    "_lean_mood_shared_this_session": False,
     "_lean_news_mentioned_this_session": False,
     "_last_news_story_offered": None,
     "_awaiting_followup_event": None,

@@ -383,6 +383,10 @@ _celebration_unvoiced_attempts: dict[int, int] = {}
 # session_recap returns similar content within a session, so cap at one to avoid a repeat.
 # Reset in _end_session.
 _lean_memory_mused_this_session: bool = False
+# One unprompted "here's how my day's been" per session. The harder cap is the
+# persisted per-DAY `spoken` flag in rex_mood (answering "how are you?" spends the
+# unprompted share too); this is the cheap session-scoped belt. Reset in _end_session.
+_lean_mood_shared_this_session: bool = False
 # After Rex asks a real question, hold the floor until this time so he doesn't
 # jump back in with idle banter before the user has had a chance to answer.
 _floor_held_until: float = 0.0
@@ -5039,6 +5043,52 @@ def _lean_memory_musing_cue(person_id: Optional[int]) -> Optional[dict]:
     return {"recap": recap}
 
 
+def _lean_mood_share_cue(person_id: Optional[int]) -> Optional[dict]:
+    """Offer Rex's OWN day mood to the lull speaker as an unprompted aside, or ``None``.
+
+    Owner 2026-08-05: a droid who only reveals his state under interrogation reads as
+    a lookup table — real people mention their day unasked. This is the volunteering
+    half of intelligence/rex_mood.py.
+
+    Pacing and social fit live HERE (rex_mood.share_cue owns only "is there something
+    worth saying"), matching how every other lull cue splits the work:
+
+      * a random roll, so it is never a scheduled broadcast,
+      * FRIEND tier or better — you don't unload your day on an acquaintance,
+      * once per session (`_lean_mood_shared_this_session`), and beneath that the
+        persisted per-DAY `spoken` flag inside rex_mood, so answering "how are you?"
+        this morning also spends the unprompted share for the rest of the day.
+
+    Fail-safe to ``None``: a missing mood must never break the impulse.
+    """
+    if person_id is None or not bool(getattr(config, "REX_MOOD_SHARE_ENABLED", True)):
+        return None
+    if _lean_mood_shared_this_session:
+        return None
+    if random.random() >= float(getattr(config, "REX_MOOD_SHARE_PROBABILITY", 0.3) or 0.0):
+        return None
+    # Relationship gate BEFORE the mood lookup — cheaper, and it's the harder rule.
+    try:
+        tiers = tuple(getattr(config, "REX_MOOD_SHARE_MIN_TIERS", None)
+                      or ("friend", "close_friend", "best_friend"))
+        row = people_memory.get_person(int(person_id)) or {}
+        tier = str(row.get("friendship_tier") or "").strip().lower()
+        if tier not in {str(t).strip().lower() for t in tiers}:
+            # Rex's creator counts regardless of the computed tier.
+            name = str(row.get("name") or "")
+            if not (name and person_specials.is_rex_creator(name)):
+                return None
+    except Exception as exc:
+        _log.debug("[lean] mood-share tier check failed: %s", exc)
+        return None
+    try:
+        from intelligence import rex_mood
+        return rex_mood.share_cue()
+    except Exception as exc:
+        _log.debug("[lean] mood-share cue lookup failed: %s", exc)
+        return None
+
+
 def _lean_event_followup_cue(person_id: Optional[int]) -> Optional[dict]:
     """Offer ONE remembered event whose date has passed ("how did the interview go?") to
     Lean's single lull speaker, or ``None``.
@@ -5598,6 +5648,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     config (LEAN_IMPULSE_*), tuned live — the model reliably produces a good line OR passes."""
     global _last_lean_impulse_at, _last_proactive_line_at, _consecutive_lean_impulses
     global _awaiting_followup_event, _lean_memory_mused_this_session
+    global _lean_mood_shared_this_session
     global _lean_news_mentioned_this_session, _last_news_story_offered
     global _engagement_probe_at, _impulse_snooze_until, _impulse_snooze_reason
     global _impulse_snooze_person
@@ -5830,6 +5881,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     workday_checkin = None
     weekend_plans = None
     interest_discovery = None
+    mood_share = None
     news_story = None
     world = _lean_world()
     transcript = _lean_recent_transcript("")
@@ -5926,11 +5978,21 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             interest_discovery = _lean_interest_discovery_cue(person_id)
         except Exception as exc:
             _log.debug("[lean] interest-discovery cue failed: %s", exc)
+    # Rex volunteering his OWN day ("ugh, what a day") beats generic news — it's the
+    # more human thing to reach for in a lull — but loses to everything about THEM,
+    # because asking after someone's weekend always beats talking about yourself.
+    # It's a STATEMENT, so unlike the question cues above it stays available at a
+    # low-energy user; own-day-in-passing is exactly what fits a winding-down room.
+    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery:
+        try:
+            mood_share = _lean_mood_share_cue(person_id)
+        except Exception as exc:
+            _log.debug("[lean] mood-share cue lookup failed: %s", exc)
     # News beats the diary musing (fresher material) but loses to everything
     # personal. Its own session cap + spend-once live in the cue/bookkeeping.
-    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery:
+    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not mood_share:
         news_story = _lean_news_cue(person_id)
-    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not news_story:
+    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not mood_share and not news_story:
         try:
             memory_musing = _lean_memory_musing_cue(person_id)
         except Exception as exc:
@@ -5956,6 +6018,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             workday_checkin=workday_checkin,
             weekend_plans=weekend_plans,
             interest_discovery=interest_discovery,
+            mood_share=mood_share,
             news_story=news_story,
             low_energy=low_energy,
             no_questions=no_questions,
@@ -5976,6 +6039,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             ("place_question", place_question),
             ("room_question", room_question), ("visual_riff", visual_riff),
             ("weekend_plans", weekend_plans), ("interest_discovery", interest_discovery),
+            ("mood_share", mood_share),
             ("news_story", news_story), ("memory_musing", memory_musing),
         ) if cue),
         None,
@@ -6223,6 +6287,18 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                     current_events.mark_mentioned(news_story)
             except Exception as exc:
                 _log.debug("[lean] news spend failed: %s", exc)
+        if mood_share:
+            # Spend BOTH clocks. The session flag stops a second share this sitting;
+            # rex_mood.note_spoken() is the per-DAY one and is persisted, so he won't
+            # re-announce the same mood after a reboot this afternoon. Marked
+            # explicitly here rather than leaning on the text-matching detector in
+            # _register_rex_utterance — we KNOW this line was the mood.
+            _lean_mood_shared_this_session = True
+            try:
+                from intelligence import rex_mood
+                rex_mood.note_spoken()
+            except Exception as exc:
+                _log.debug("[lean] mood-share spend failed: %s", exc)
         if memory_musing:
             # One "since I was last on" musing per session — session_recap is stable within a
             # session, so a second would repeat. Reset in _end_session.
@@ -16846,6 +16922,7 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     """
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _idle_outro_spoken, _lean_memory_mused_this_session
+    global _lean_mood_shared_this_session
     global _lean_news_mentioned_this_session, _last_news_story_offered
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
@@ -16885,6 +16962,7 @@ def _end_session(*, include_consolidation: bool = True) -> None:
         _clear_anonymous_speaker_slots()
         _idle_outro_spoken = False
         _lean_memory_mused_this_session = False
+        _lean_mood_shared_this_session = False
         _lean_news_mentioned_this_session = False
         _last_news_story_offered = None
         _lean_impulse_spoken_times.clear()
@@ -17173,6 +17251,7 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     _clear_anonymous_speaker_slots()
     _idle_outro_spoken = False
     _lean_memory_mused_this_session = False
+    _lean_mood_shared_this_session = False
     _lean_news_mentioned_this_session = False
     _last_news_story_offered = None
     _lean_impulse_spoken_times.clear()

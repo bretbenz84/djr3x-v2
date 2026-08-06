@@ -454,6 +454,118 @@ class SpokenLockTests(_MoodTestCase):
         self.assertIsNone(rex_mood.current())
 
 
+class ShareCueTests(_MoodTestCase):
+    """Volunteering the mood unprompted (owner 2026-08-05: "real people do that").
+    rex_mood owns only "is there something worth saying" — the roll, the relationship
+    gate, and the session cap live in interaction._lean_mood_share_cue."""
+
+    def _force(self, seed: dict):
+        return mock.patch.object(config, "REX_MOOD_SEEDS", [seed])
+
+    def test_a_notable_mood_is_worth_mentioning(self):
+        with self._force(_TEST_SEEDS[0]):          # buoyant, valence 0.8
+            rex_mood.clear()
+            self.assertTrue(rex_mood.is_notable())
+            cue = rex_mood.share_cue()
+        self.assertIsNotNone(cue)
+        self.assertEqual(cue["label"], "buoyant")
+        self.assertIn("Annoyingly good", cue["line"])
+
+    def test_a_middling_mood_is_kept_to_himself(self):
+        # Nobody volunteers "I feel exactly average."
+        with self._force(_TEST_SEEDS[4]):          # patient, valence 0.3 / energy 0.4
+            rex_mood.clear()
+            self.assertFalse(rex_mood.is_notable())
+            self.assertIsNone(rex_mood.share_cue())
+
+    def test_low_energy_alone_makes_a_mood_mentionable(self):
+        with self._force(_TEST_SEEDS[3]):          # worn, valence -0.4 / energy 0.2
+            rex_mood.clear()
+            self.assertLess(abs(rex_mood.ensure_today().valence),
+                            float(config.REX_MOOD_SHARE_MIN_INTENSITY))
+            self.assertTrue(rex_mood.is_notable())
+
+    def test_notability_is_measured_live_so_drift_counts(self):
+        # A bland morning that the day has since ground down becomes mentionable:
+        # energy 0.55 is mid, but a very quiet afternoon takes it to the clamp at
+        # 0.20, under REX_MOOD_SHARE_LOW_ENERGY.
+        mid = {"id": "mid-day", "label": "even", "valence": 0.1, "energy": 0.55,
+               "line": "Perfectly ordinary.", "fits": ["any"]}
+        with self._force(mid):
+            rex_mood.clear()
+            self.assertFalse(rex_mood.is_notable())
+            for _ in range(10):
+                rex_mood.note("long_quiet")
+            self.assertTrue(rex_mood.is_notable())
+            self.assertIsNotNone(rex_mood.share_cue())
+
+    def test_already_voiced_today_means_no_unprompted_share(self):
+        # If he told you he was worn out when you ASKED, he doesn't then announce it.
+        with self._force(_TEST_SEEDS[0]):
+            rex_mood.clear()
+            self.assertIsNotNone(rex_mood.share_cue())
+            rex_mood.note_spoken()
+            self.assertIsNone(rex_mood.share_cue())
+
+    def test_the_spend_survives_a_restart(self):
+        # The per-DAY gate is persisted, so rebooting this afternoon does not re-arm
+        # an announcement he already made this morning.
+        day = datetime(2026, 8, 5, 9, 0, 0)
+        with self._force(_TEST_SEEDS[0]):
+            rex_mood.clear()
+            rex_mood.ensure_today(day)
+            rex_mood.note_spoken()
+            snap = rex_mood.snapshot_state()
+            rex_mood.clear()
+            self.assertTrue(rex_mood.restore_state(snap, now=day))
+            self.assertIsNone(rex_mood.share_cue(day))
+
+    def test_share_cue_carries_the_reason_and_the_shade(self):
+        def newsy(now=None, allow_blocking=False):
+            return (("chewing",), "you've had a thing rattling around all day")
+
+        with self._force(_TEST_SEEDS[0]), \
+             mock.patch.object(rex_mood, "_SIGNALS", (("news", newsy),)):
+            rex_mood.clear()
+            rex_mood.ensure_today()
+            for _ in range(3):
+                rex_mood.note("insulted")
+            cue = rex_mood.share_cue()
+        self.assertIn("rattling around", cue["because"])
+        self.assertIn("chipping away", cue["shade"])
+
+    def test_disabled_shares_nothing(self):
+        with self._force(_TEST_SEEDS[0]), \
+             mock.patch.object(config, "REX_MOOD_ENABLED", False):
+            rex_mood.clear()
+            self.assertIsNone(rex_mood.share_cue())
+            self.assertFalse(rex_mood.is_notable())
+
+    def test_thresholds_are_configurable(self):
+        with self._force(_TEST_SEEDS[4]):          # patient — not notable by default
+            rex_mood.clear()
+            self.assertFalse(rex_mood.is_notable())
+            with mock.patch.object(config, "REX_MOOD_SHARE_MIN_INTENSITY", 0.1):
+                self.assertTrue(rex_mood.is_notable())
+
+    def test_the_late_hour_taper_does_not_manufacture_notability(self):
+        # The taper is a DELIVERY adjustment (don't claim to be wired at 1am), not a
+        # property of the day. Letting it feed notability made the CLOCK a reason to
+        # talk about himself: every mid-energy mood crossed the low bar after 8pm.
+        mid = {"id": "mid-energy", "label": "even", "valence": 0.1, "energy": 0.34,
+               "line": "Perfectly ordinary.", "fits": ["any"]}
+        with self._force(mid):
+            rex_mood.clear()
+            late = datetime(2026, 8, 5, 23, 30, 0)
+            rex_mood.ensure_today(late)
+            # The taper genuinely drops the SPOKEN energy under the bar...
+            self.assertLessEqual(rex_mood.effective_energy(late),
+                                 float(config.REX_MOOD_SHARE_LOW_ENERGY))
+            # ...but the day is still an ordinary one, so he keeps it to himself.
+            self.assertFalse(rex_mood.is_notable(late))
+            self.assertIsNone(rex_mood.share_cue(late))
+
+
 class PersistenceTests(_MoodTestCase):
 
     def test_todays_mood_survives_a_restart_with_its_drift(self):

@@ -525,6 +525,61 @@ def prompt_lines(now: Optional[datetime] = None) -> list:
     ]
 
 
+def is_notable(now: Optional[datetime] = None) -> bool:
+    """True when today's mood is far enough from the middle to be worth MENTIONING.
+
+    Nobody volunteers "I feel exactly average" — the unprompted share only makes sense
+    on a day that actually has a shape to it. Baseline PLUS drift, so a bland morning
+    the day has since ground down becomes mentionable.
+
+    Measured on `mood.energy`, NOT effective_energy(): the late-hour taper is a
+    DELIVERY adjustment (don't claim to be wired at 1am), not a property of the day.
+    Letting it feed this made the clock manufacture a reason to talk about himself —
+    every mid-energy mood crossed the low bar after 8pm, taking the shipped pool from
+    12 of 18 mentionable to nearly all of them, every evening.
+    """
+    mood = ensure_today(now)
+    if mood is None:
+        return False
+    try:
+        import config
+        min_valence = abs(float(getattr(config, "REX_MOOD_SHARE_MIN_INTENSITY", 0.45)))
+        low = float(getattr(config, "REX_MOOD_SHARE_LOW_ENERGY", 0.25))
+        high = float(getattr(config, "REX_MOOD_SHARE_HIGH_ENERGY", 0.85))
+    except Exception:
+        min_valence, low, high = 0.45, 0.25, 0.85
+    energy = mood.energy
+    return abs(mood.valence) >= min_valence or energy <= low or energy >= high
+
+
+def share_cue(now: Optional[datetime] = None) -> Optional[dict]:
+    """The payload for VOLUNTEERING today's mood unprompted, or None.
+
+    Returns None unless the mood is notable AND he hasn't already voiced it today —
+    "spoken" is persisted, so telling Bret he's worn out at 9am means he won't
+    announce it again at 2pm after a reboot. That is the same "don't repeat yourself
+    at a person" instinct as greeting_cadence, applied to his own material.
+
+    Deliberately does NOT roll the dice or check the relationship — the CALLER owns
+    pacing and social fit (interaction._lean_mood_share_cue), the same split every
+    other lull cue uses.
+    """
+    if not _enabled():
+        return None
+    mood = ensure_today(now)
+    if mood is None or mood.spoken:
+        return None
+    if not is_notable(now):
+        return None
+    return {
+        "label": mood.label,
+        "line": mood.line,
+        "because": mood.because,
+        "shade": _shade(mood, effective_energy(now)),
+        "seed_id": mood.seed_id,
+    }
+
+
 def prompt_section(now: Optional[datetime] = None) -> str:
     """The classic-prompt section (llm.assemble_system_prompt). Same content as
     prompt_lines with a heading, since the classic prompt is section-structured."""

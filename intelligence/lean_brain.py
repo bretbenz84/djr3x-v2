@@ -1031,6 +1031,23 @@ _MEMORY_MUSING_INSTRUCTION = (
 )
 
 
+_MOOD_SHARE_INSTRUCTION = (
+    "[The moment is quiet, and the mood you've been in all day is close enough to the "
+    "surface that you'd actually mention it — the way a person says 'ugh, what a day' "
+    "without anyone asking.]\n"
+    "{situation}"
+    "How you've actually been today: {label}{because_clause}{shade_clause}. In your own "
+    "words that's roughly \"{line}\" — the SHAPE of it, NOT a script; say it fresh, your "
+    "way. Volunteer it in ONE short line as an offhand aside, not an announcement and "
+    "not a bid for sympathy — dry and matter-of-fact, you're mentioning it, not "
+    "performing it. Do NOT ask them anything and do NOT explain why you're bringing it "
+    "up. Never use the words 'mood', 'state', 'status', 'parameters', 'diagnostic', or "
+    "any systems/self-report framing — this is a person mentioning their day, not a "
+    "machine reporting. Then let it hang there for them to pick up or ignore. You MUST "
+    "give the one line; do not reply PASS."
+)
+
+
 _OPEN_THREAD_INSTRUCTION = (
     "[Something {who} left unresolved {when} has been quietly on your mind, and the "
     "conversation just reached a lull — a natural moment to check back in.]\n"
@@ -1471,6 +1488,7 @@ def consider_initiating(
     workday_checkin: Optional[dict] = None,
     weekend_plans: Optional[dict] = None,
     interest_discovery: Optional[dict] = None,
+    mood_share: Optional[dict] = None,
     news_story: Optional[dict] = None,
     low_energy: bool = False,
     no_questions: bool = False,
@@ -1564,6 +1582,16 @@ def consider_initiating(
                 who=who,
                 situation=situation,
                 known_part=known_part,
+            )
+        elif mood_share:
+            because = str(mood_share.get("because") or "").strip()
+            shade = str(mood_share.get("shade") or "").strip()
+            instruction = _MOOD_SHARE_INSTRUCTION.format(
+                situation=situation,
+                label=str(mood_share.get("label") or "off"),
+                because_clause=(f" — {because}" if because else ""),
+                shade_clause=(f", {shade}" if shade else ""),
+                line=str(mood_share.get("line") or "").strip(),
             )
         elif news_story and news_story.get("interest_topic"):
             instruction = _INTEREST_NEWS_INSTRUCTION.format(
