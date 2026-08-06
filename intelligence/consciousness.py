@@ -3143,9 +3143,29 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         # single-frame posture check reads as 'waving' — but those wrists don't MOVE
         # (measured 0.05–0.09 normalized-x/s vs the 0.25+ a real wave sweeps, per
         # WAVE_SPEED_MIRROR_SLOW). A wave with measurable motion below the floor is
-        # furniture, not a greeting. None (no measurement yet) passes: the confirm streak
-        # already spans 1-2s of pose ticks, so a real raised hand has samples by now.
+        # furniture, not a greeting.
+        #
+        # UNMEASURED now also fails (field 2026-08-05 21:19: FOUR wave-backs fired at
+        # a motionless arm resting on a chair, every one logged speed=n/a). The old
+        # None-passes back-compat assumed "a real raised hand has samples by now" —
+        # but a jittery clutter keypoint flickers below the visibility floor, wiping
+        # the motion history, so the phantom is precisely the case that arrives
+        # unmeasured. A real wave at ~5 Hz pose ticks measures easily; requiring the
+        # measurement costs at most one extra tick of latency.
         min_speed = float(getattr(config, "WAVE_BACK_MIN_SPEED", 0.15) or 0.0)
+        if min_speed > 0.0 and not isinstance(speed, (int, float)):
+            if bool(getattr(config, "WAVE_BACK_UNMEASURED_IS_WAVE", False)):
+                pass                            # explicit opt-in to the old behavior
+            else:
+                if (now - _last_wave_static_log_at) > 10.0:
+                    _last_wave_static_log_at = now
+                    _log.info(
+                        "consciousness: wave ignored for %s — wrist speed unmeasured "
+                        "(no stable motion history; flickering clutter keypoints "
+                        "arrive exactly this way, a real wave measures within a tick)",
+                        key,
+                    )
+                continue
         if min_speed > 0.0 and isinstance(speed, (int, float)) and speed < min_speed:
             if (now - _last_wave_static_log_at) > 10.0:
                 _last_wave_static_log_at = now

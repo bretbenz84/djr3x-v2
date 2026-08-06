@@ -1561,10 +1561,17 @@ def classify_explicit_motion_sequence(
     cleaned = _strip_trailing_vocative(cleaned)
     if not cleaned or not _MOTION_SEQUENCE_SEP_RE.search(cleaned):
         return []
-    if _MOTION_EXPLANATION_RE.search(cleaned) or (
-        _MOTION_NEGATED_RE.search(cleaned) and not _MOTION_STOP_RE.search(cleaned)
-    ):
-        return None
+    # Negation/explanation makes this NOT-a-route — but which tri-state arm depends
+    # on whether the utterance contains any actual motion clause, so the check moves
+    # BELOW clause classification. Returning None up here meant any comma-containing
+    # chatter with a "don't" in it was announced as an unparseable route (field
+    # 2026-08-05 21:23: "I don't know. Hey, I'm gonna go now. Can you shut down,
+    # please?" → "I couldn't safely parse that whole route" — the shutdown request
+    # was eaten by a rejection for a route nobody asked for).
+    negated_or_explaining = bool(
+        _MOTION_EXPLANATION_RE.search(cleaned)
+        or (_MOTION_NEGATED_RE.search(cleaned) and not _MOTION_STOP_RE.search(cleaned))
+    )
     clauses = [c.strip(" .()") for c in _MOTION_SEQUENCE_SEP_RE.split(cleaned)]
     # A LEADING/TRAILING connective leaves empty fragments ("and move backwards" ->
     # ["", "move backwards"]). Drop them; if a single real clause remains this is NOT
@@ -1593,7 +1600,14 @@ def classify_explicit_motion_sequence(
         # ZERO motion clauses: plain conversation that happens to contain a comma/'then'
         # ("yeah that sounds great, thanks") — not a sequence at all. Returning None here
         # made Rex say "I couldn't safely parse that whole route" at casual chatter.
+        # This ALSO covers the negated/explaining case: "I don't know, I'm gonna go
+        # now" has a negation and a comma but no motion clause — conversation.
         return []
+    if negated_or_explaining:
+        # A negation/explanation over an utterance that DOES contain motion clauses
+        # ("don't turn left then move forward", "why didn't you move, then turn?") —
+        # refuse the whole thing so nothing executes (the guard's original purpose).
+        return None
     if misses:
         # MIXED motion + non-motion ("turn left then sing"): refuse the whole thing so
         # no partial execution — the original purpose of the tri-state.

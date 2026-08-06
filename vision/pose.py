@@ -742,16 +742,23 @@ def _update_world_state(detected: list[dict], frame_w: int = 0, frame_h: int = 0
 
 
 def _raised_wrist_x(kp: dict) -> Optional[float]:
-    """Normalized x of the most-raised wrist (above its shoulder), or None. Tracks the
-    waving hand's lateral position across frames for speed measurement."""
+    """Lateral position of the most-raised wrist RELATIVE to its own shoulder
+    (normalized-x units), or None.
+
+    Shoulder-relative on purpose (owner field report 2026-08-05: wave-backs at a
+    motionless arm resting on a chair): Rex's own neck pans move the CAMERA, which
+    sweeps every landmark laterally in frame coordinates — absolute wrist x then
+    reads as wrist motion and can clear the wave-speed floor. A pan moves wrist and
+    shoulder together, so the difference cancels egomotion while a real wave (hand
+    sweeping over a mostly-still shoulder) keeps its full amplitude."""
     ls, rs = _get(kp, "LEFT_SHOULDER"), _get(kp, "RIGHT_SHOULDER")
     lw, rw = _get(kp, "LEFT_WRIST"), _get(kp, "RIGHT_WRIST")
-    best = None  # (height_above_shoulder, wrist_x)
+    best = None  # (height_above_shoulder, wrist_x_minus_shoulder_x)
     for shoulder, wrist in ((ls, lw), (rs, rw)):
         if shoulder and wrist and wrist[1] <= shoulder[1] - _RAISE_Y_MARGIN:
             height = shoulder[1] - wrist[1]
             if best is None or height > best[0]:
-                best = (height, wrist[0])
+                best = (height, wrist[0] - shoulder[0])
     return best[1] if best else None
 
 

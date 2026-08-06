@@ -21961,6 +21961,18 @@ def _handle_speech_segment(
             # A fresh impersonation capture slot EXPECTS the human to recite Rex's
             # own words back — never eat their recitation as echo.
             and not _impersonation_capture_fresh(_pending_impersonation_capture)
+            # A CONFIDENT voiceprint match to a known human overrides the text
+            # match: Rex's AEC residual is his own TTS voice, which comes back as
+            # unknown_voice_N (field 2026-07-23), never as a strong human match.
+            # Humans, meanwhile, echo Rex's words back at him on purpose — the
+            # field case (2026-08-05 21:19) was Bret repeating "An AWS outage?"
+            # as a follow-up question, voice-scored 0.868, and the echo rejector
+            # ate it: Rex's next line then read as ignoring him.
+            and not (
+                isinstance(speaker_score, (int, float))
+                and float(speaker_score)
+                >= float(getattr(config, "OWN_ECHO_VOICE_OVERRIDE_SCORE", 0.80))
+            )
             and _looks_like_own_echo(text)
         ):
             _log.info(

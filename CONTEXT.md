@@ -1677,6 +1677,33 @@ Two fixes from the 20:54 field log:
 - Tests: `tests/test_reaction_awareness.py`; `tests/test_smile_reaction.py` updated
   to the new default contract (+ a legacy-flag test).
 
+### Field fixes, 2026-08-05 21:18 session (five issues, one run)
+
+All in `tests/test_field_2026_08_05_night.py`:
+
+- **Phantom wave-backs at a motionless arm** — every firing logged `speed=n/a`.
+  Two fixes: (a) wrist speed is now measured RELATIVE to the wrist's own shoulder
+  (`vision/pose._raised_wrist_x`) so Rex's neck pans (camera egomotion) cancel out
+  of the measurement; (b) UNMEASURED speed now fails the veto — flickering clutter
+  keypoints wipe the motion history, so the phantom is precisely the unmeasured
+  case (`WAVE_BACK_UNMEASURED_IS_WAVE=False`; True restores the old pass).
+- **Own-echo rejector ate a human echo-question** ("An AWS outage?" repeated back
+  as a follow-up, voice-scored 0.868). A voiceprint match to a known human at
+  `OWN_ECHO_VOICE_OVERRIDE_SCORE` (0.80)+ now overrides the text match — Rex's AEC
+  residual comes back as `unknown_voice_N`, never as a confident human match.
+- **Triumphant "proud" chirp minutes after he said he felt sluggish** — celebratory
+  chirps (`proud`, `laughing`) now defer to the day mood
+  (`REX_MOOD_GATES_CELEBRATORY_CHIRPS`; suppress at valence ≤ −0.2 or effective
+  energy ≤ 0.25). Posture still shifts; only the loud fanfare is gated.
+- **"Why thank you!" → "Why? Thank you."** — ASR idiom correction in
+  `WHISPER_CORRECTIONS` (the LLM was answering the "Why?").
+- **"I don't know, … can you shut down?" → "I couldn't safely parse that whole
+  route."** — `classify_explicit_motion_sequence`'s negation/explanation guard
+  returned None (spoken route-rejection) on ANY comma-containing utterance with a
+  "don't", before classifying a single clause. The guard now applies AFTER clause
+  classification: negation over real motion clauses still refuses whole (None);
+  negation over zero motion clauses is conversation ([]).
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

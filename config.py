@@ -2151,6 +2151,12 @@ WHISPER_INITIAL_PROMPT = (
 # Applied after transcription and before the command parser.
 # Keys are lowercased misreadings; values are the correct replacements.
 WHISPER_CORRECTIONS = {
+    # ASR punctuates the "why, thank you!" idiom as a question + a sentence
+    # ("Why? Thank you."), and the LLM then answers the "Why?" (field 2026-08-05
+    # 21:21: a compliment acceptance drew an explanation of the compliment).
+    # Spoken "why thank you" is essentially always the idiom.
+    "why? thank you": "Why, thank you",
+    "why? thanks":    "Why, thanks",
     "bread":   "Bret",
     "breath":  "Bret",
     "brett":   "Bret",
@@ -4459,6 +4465,15 @@ CROSSTALK_SUPPRESSION_ENABLED = True
 # overlaps ("yeah", "okay") attributable to the human. An armed impersonation
 # capture slot is exempt — there the human is SUPPOSED to recite Rex's words.
 OWN_ECHO_REJECT_ENABLED = True
+# A voiceprint match to a known human at/above this score OVERRIDES the text match
+# and the transcript is kept. Rex's AEC residual is his own TTS voice — it comes
+# back as unknown_voice_N (the 2026-07-23 field case), never as a confident human
+# match; a human, meanwhile, will repeat Rex's words back at him on purpose (field
+# 2026-08-05 21:19: "An AWS outage?" echoed as a follow-up question, voice-scored
+# 0.868 Bret, eaten by the rejector — Rex's next line read as ignoring him).
+OWN_ECHO_VOICE_OVERRIDE_SCORE = _env_float(
+    "OWN_ECHO_VOICE_OVERRIDE_SCORE", 0.80, min_value=0.5, max_value=1.01,
+)
 OWN_ECHO_WINDOW_SECS = 12.0
 OWN_ECHO_MIN_WORDS = 3
 OWN_ECHO_SIMILARITY = 0.85
@@ -7187,6 +7202,14 @@ REX_MOOD_GOOD_CONVERSATION_TURNS = 6
 # he shouldn't claim to be wired at 1am just because he woke up wired at 9.
 REX_MOOD_LATE_HOUR_ENERGY_DROP = 0.2
 
+# Expressive congruence: on a notably low day, the CELEBRATORY sound chirps
+# (proud fanfare, laughing) stay in the drawer — a droid who just said he's
+# feeling sluggish must not play a triumphant sting two minutes later (field
+# 2026-08-05 21:20). Posture still shifts; only the loud fanfare is gated.
+REX_MOOD_GATES_CELEBRATORY_CHIRPS = True
+REX_MOOD_CHIRP_SUPPRESS_VALENCE = -0.2   # day valence at/below this → no fanfare
+REX_MOOD_CHIRP_SUPPRESS_ENERGY = 0.25    # effective energy at/below this → no fanfare
+
 # ── Volunteering the mood unprompted (2026-08-05) ────────────────────────────
 # Real people mention their own day without being asked — "ugh, what a day" — and a
 # droid who only ever reveals his state under interrogation reads as a lookup table.
@@ -8163,6 +8186,12 @@ MOTION_FLINCH_MIN_VALID_M = 0.02       # 0/1 cm reads are sensor garbage; 1 inch
 MOTION_FLINCH_BASELINE_ADAPT_M = 0.12  # max per-tick drift of the open-distance baseline
 MOTION_FLINCH_CLEAR_CONFIRM_TICKS = 3  # consecutive clear ticks before the baseline may RISE (so a
                                        # multi-frame ToF dropout can't inflate it and fake an approach)
+# True restores the pre-2026-08-05 behavior where a wave with NO measurable wrist
+# speed still fired a wave-back. Field-disproven default: four phantom wave-backs at
+# a motionless arm on a chair all arrived speed=n/a (flickering clutter keypoints
+# wipe the motion history, so the phantom is exactly the unmeasured case).
+WAVE_BACK_UNMEASURED_IS_WAVE = _env_bool("WAVE_BACK_UNMEASURED_IS_WAVE", False)
+
 MOTION_FLINCH_BACKUP_M = 0.30          # nominal retreat distance
 MOTION_FLINCH_REAR_MARGIN_M = 0.30     # clearance to keep behind him (stop short of the wall)
 MOTION_FLINCH_MIN_BACKUP_M = 0.10      # below this the retreat isn't worth it -> hold (cornered)

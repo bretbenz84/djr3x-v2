@@ -204,6 +204,31 @@ def _mood_chirp(mood: str) -> None:
         key = mapping.get(mood)
         if not key:
             return
+        # Day-mood congruence (field 2026-08-05 21:20: a triumphant "proud" chirp
+        # played minutes after Rex told Bret he was feeling sluggish and down — the
+        # expressive layer contradicted the self he'd just described out loud). On a
+        # notably low-energy or negative day, the CELEBRATORY chirps stay in the
+        # drawer; the body-mood posture itself still shifts (it's subtle), only the
+        # loud legible fanfare is suppressed.
+        if key in ("proud", "laughing") and bool(
+            getattr(config, "REX_MOOD_GATES_CELEBRATORY_CHIRPS", True)
+        ):
+            try:
+                from intelligence import rex_mood
+                day = rex_mood.current()
+                if day is not None and (
+                    day.valence <= float(getattr(
+                        config, "REX_MOOD_CHIRP_SUPPRESS_VALENCE", -0.2))
+                    or rex_mood.effective_energy() <= float(getattr(
+                        config, "REX_MOOD_CHIRP_SUPPRESS_ENERGY", 0.25))
+                ):
+                    _log.info(
+                        "[body_mood] %s chirp suppressed — day mood %r is too "
+                        "low for a fanfare", key, day.label,
+                    )
+                    return
+            except Exception:
+                pass
         from audio import sound_effects
         sound_effects.play(key)
     except Exception:
