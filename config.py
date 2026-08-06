@@ -7233,6 +7233,24 @@ REX_MOOD_SHARE_HIGH_ENERGY = 0.85
 # Tiers he'll volunteer to. An acquaintance gets the mood in how he LANDS, not stated.
 REX_MOOD_SHARE_MIN_TIERS = ("friend", "close_friend", "best_friend")
 
+# ── Volunteering it in the HELLO, not just in a lull (owner 2026-08-05) ───────
+# The usual startup shape is: boot lines → recognition chirp → "Hey Bret, <question>".
+# That hello is the single most natural place to mention your own day — "hey, ugh,
+# long one" is how people actually walk into a room — but the day-mood bullet ends
+# with "don't announce your mood unprompted", so the greeting only ever TINTED his
+# tone and the volunteering was lull-only. This adds the aside to the hello itself,
+# on the same gates as the lull share (notable day, friend+, once per DAY via the
+# persisted `spoken` flag) plus its own roll. It rides ALONGSIDE the greeting, never
+# replacing it — hello first, aside second, his question still allowed after.
+# Only plain-hello branches carry it: a birthday, a celebration, an emotional
+# check-in, or a remembered follow-up is about THEM, and a <20-min quick return is
+# four words. See consciousness._GREETING_MOOD_ASIDE_LABELS.
+REX_MOOD_GREETING_ASIDE_ENABLED = True
+# Higher than the lull roll (0.3): the hello is a better-fitting moment, and the
+# once-per-day spend is shared with the lull cue, so this mostly decides WHICH of
+# the two gets it rather than adding a second chance to hear about his day.
+REX_MOOD_GREETING_ASIDE_PROBABILITY = 0.45
+
 # Cross-session persistence: the mood is minted once per LOCAL day and reloaded on
 # every boot, so restarting him at 4pm resumes the mood he woke up with (plus the
 # day's accumulated drift) instead of re-rolling a brand-new personality.

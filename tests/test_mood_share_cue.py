@@ -269,6 +269,142 @@ class LadderPriorityTests(_CueTestCase):
         self.assertIn('("mood_share", mood_share)', src)
 
 
+class GreetingAsideTests(_CueTestCase):
+    """Owner 2026-08-05: "Can his opening line to a recognized person ever offer up
+    his current emotional state? Or does it only fire during lulls?" It was lull-only
+    — the greeting received the mood but the day-mood bullet ends with "don't
+    announce your mood unprompted", so it only tinted his tone. The hello now carries
+    an optional aside on the same gates, sharing the one-per-day spend."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from intelligence import consciousness
+        self.c = consciousness
+        p = mock.patch.object(config, "REX_MOOD_GREETING_ASIDE_PROBABILITY", 1.0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _person(self, tier="close_friend", name="Bret Benziger"):
+        from memory import people as pm
+        return mock.patch.object(
+            pm, "get_person",
+            return_value={"id": 1, "name": name, "friendship_tier": tier},
+        )
+
+    def test_plain_hello_branches_carry_the_aside(self):
+        for label in (
+            "first-sight warm greeting for Bret",
+            "startup same-day return (#2) for Bret",
+            "startup quick-return (recent) for Bret",
+            "startup cadence (streak) for Bret",
+            "startup long-absence for Bret",
+            "startup recent-return for Bret",
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.c._greeting_allows_mood_aside(label))
+
+    def test_branches_about_THEM_never_carry_it(self):
+        # Turning a birthday or a grief check-in toward his own day is exactly the
+        # self-absorption the mood gates exist to prevent.
+        for label in (
+            "startup birthday (T-0) for Bret",
+            "startup celebration check-in for Bret",
+            "startup emotional check-in for Bret",
+            "startup milestone for Bret",
+            "startup anticipation for Bret",
+            "startup followup for Bret",
+            "startup continuity (thing) for Bret",
+        ):
+            with self.subTest(label=label):
+                self.assertFalse(self.c._greeting_allows_mood_aside(label))
+
+    def test_the_snap_quick_return_never_carries_it(self):
+        # Its whole contract is under eight words and no additions.
+        self.assertFalse(
+            self.c._greeting_allows_mood_aside("startup quick-return (snap) for Bret"))
+        self.assertTrue(
+            self.c._greeting_allows_mood_aside("startup quick-return (recent) for Bret"))
+
+    def test_the_clause_overrides_the_standing_no_announce_rule(self):
+        # The system prompt's day-mood bullet says "don't announce your mood
+        # unprompted" on EVERY call; without an explicit override the greeting
+        # aside and that rule contradict each other.
+        rex_mood.ensure_today()
+        with self._person():
+            clause = self.c._greeting_mood_aside(1)
+        self.assertIn("OVERRIDES", clause)
+        self.assertIn("don't announce your mood", clause)
+
+    def test_the_clause_keeps_the_hello_primary(self):
+        rex_mood.ensure_today()
+        with self._person():
+            clause = self.c._greeting_mood_aside(1)
+        self.assertIn("hello FIRST, aside second", clause)
+        self.assertIn("do not let it replace the greeting", clause)
+        self.assertIn("NOT a script", clause)
+        # Same systems-language ban as the lull share.
+        for banned in ('"mood"', '"state"', '"status"'):
+            self.assertIn(banned, clause)
+
+    def test_gates_match_the_lull_share(self):
+        rex_mood.ensure_today()
+        # Roll can decline.
+        with self._person(), mock.patch.object(
+            config, "REX_MOOD_GREETING_ASIDE_PROBABILITY", 0.0
+        ):
+            self.assertEqual(self.c._greeting_mood_aside(1), "")
+        # Acquaintances don't get your day.
+        with self._person(tier="acquaintance", name="Someone Else"):
+            self.assertEqual(self.c._greeting_mood_aside(1), "")
+        # A bland day has nothing worth mentioning.
+        with self._person(), mock.patch.object(config, "REX_MOOD_SEEDS", [_BLAND]):
+            rex_mood.clear()
+            self.assertEqual(self.c._greeting_mood_aside(1), "")
+        # Feature flag.
+        with self._person(), mock.patch.object(
+            config, "REX_MOOD_GREETING_ASIDE_ENABLED", False
+        ):
+            self.assertEqual(self.c._greeting_mood_aside(1), "")
+
+    def test_the_creator_qualifies_regardless_of_tier(self):
+        rex_mood.ensure_today()
+        with self._person(tier="acquaintance"), \
+             mock.patch.object(self.c.person_specials, "is_rex_creator", return_value=True):
+            self.assertNotEqual(self.c._greeting_mood_aside(1), "")
+
+    def test_greeting_and_lull_share_ONE_spend_per_day(self):
+        # The point of sharing the persisted `spoken` flag: hearing about his day at
+        # the hello must mean not hearing about it again in a lull that evening.
+        rex_mood.ensure_today()
+        with self._person():
+            self.assertNotEqual(self.c._greeting_mood_aside(1), "")
+            rex_mood.note_spoken()                      # the greeting was dispatched
+            self.assertEqual(self.c._greeting_mood_aside(1), "")
+            self.assertIsNone(I._lean_mood_share_cue(1))
+
+    def test_bad_person_id_is_safe(self):
+        for bad in (None, "Bret"):
+            self.assertEqual(self.c._greeting_mood_aside(bad), "")
+
+    def test_a_broken_lookup_never_breaks_the_greeting(self):
+        rex_mood.ensure_today()
+        with mock.patch.object(rex_mood, "share_cue", side_effect=RuntimeError("boom")), \
+             self._person():
+            self.assertEqual(self.c._greeting_mood_aside(1), "")
+
+    def test_the_ladder_appends_it_last_and_spends_on_dispatch(self):
+        # Structural guard: the clause must be appended AFTER the wellbeing-ask
+        # clause (so it is the last word on mood), gated on the label whitelist,
+        # and spent inside the `if queued:` side-effect block.
+        import inspect
+        src = inspect.getsource(self.c._step_presence_tracking)
+        self.assertIn("_greeting_allows_mood_aside(label)", src)
+        self.assertIn("_greeting_mood_aside(person_db_id)", src)
+        self.assertIn("_mood_aside_used", src)
+        self.assertLess(src.index("_wellbeing_ask_clause(person_db_id)"),
+                        src.index("_greeting_mood_aside(person_db_id)"))
+
+
 class ShippedDefaultsTests(unittest.TestCase):
 
     def test_probability_leaves_room_for_it_not_to_happen(self):

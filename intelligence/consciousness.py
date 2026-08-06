@@ -1272,6 +1272,17 @@ def note_rex_utterance(
     except Exception:
         pass
 
+    # Same for the day mood: a PROACTIVE line that voiced it (a greeting carrying the
+    # mood aside, a lull share) spends the day's one mention. The greeting path also
+    # spends deterministically on dispatch; this is the belt that catches any other
+    # proactive line that happens to voice it.
+    try:
+        from intelligence import rex_mood
+        if rex_mood.note_spoken_if_voiced(text):
+            rex_mood.persist()
+    except Exception:
+        pass
+
     # A Rex line from another behavior (smile reaction, greeting, idle banter)
     # during an active "tell me about" briefing leaves the teller unsure
     # whether the file is still open — let the flow queue its re-anchor
@@ -5326,6 +5337,83 @@ def _greeting_recency(person_db_id: Optional[int]) -> tuple:
         return (None, None)
 
 
+# Greeting labels whose line is a plain HELLO, and can therefore carry an aside about
+# Rex's own day. Everything absent here is deliberately excluded: a birthday, a
+# celebration, an emotional check-in, a milestone, a remembered follow-up or an
+# anticipated event is about THEM — turning it toward himself would be the exact
+# self-absorption the mood gates exist to avoid. The <20-min "snap" quick-return is
+# excluded too: its whole contract is four words and no additions.
+_GREETING_MOOD_ASIDE_LABELS = (
+    "warm greeting",            # first-sight warm greeting (the common startup case)
+    "same-day return",
+    "quick-return (recent)",    # NOT "quick-return (snap)"
+    "cadence",
+    "long-absence",
+    "recent-return",
+)
+
+
+def _greeting_allows_mood_aside(label: str) -> bool:
+    lowered = str(label or "").lower()
+    return any(marker in lowered for marker in _GREETING_MOOD_ASIDE_LABELS)
+
+
+def _greeting_mood_aside(person_db_id: Optional[int]) -> str:
+    """A clause letting Rex mention his OWN day inside the hello, or "".
+
+    Same gates as the lull share (`rex_mood.share_cue` covers notable-day + the
+    persisted once-per-DAY spend), plus a relationship check and its own roll. Kept
+    here rather than in rex_mood for the same reason as the lull cue: the module owns
+    "is there something worth saying", callers own pacing and social fit.
+    """
+    if not isinstance(person_db_id, int):
+        return ""
+    if not bool(getattr(config, "REX_MOOD_GREETING_ASIDE_ENABLED", True)):
+        return ""
+    if random.random() >= float(
+        getattr(config, "REX_MOOD_GREETING_ASIDE_PROBABILITY", 0.45) or 0.0
+    ):
+        return ""
+    try:
+        tiers = {
+            str(t).strip().lower()
+            for t in (getattr(config, "REX_MOOD_SHARE_MIN_TIERS", None)
+                      or ("friend", "close_friend", "best_friend"))
+        }
+        from memory import people as people_mod
+        row = people_mod.get_person(int(person_db_id)) or {}
+        tier = str(row.get("friendship_tier") or "").strip().lower()
+        if tier not in tiers:
+            name = str(row.get("name") or "")
+            if not (name and person_specials.is_rex_creator(name)):
+                return ""
+    except Exception as exc:
+        _log.debug("greeting mood aside tier check failed: %s", exc)
+        return ""
+    try:
+        from intelligence import rex_mood
+        cue = rex_mood.share_cue()
+    except Exception as exc:
+        _log.debug("greeting mood aside lookup failed: %s", exc)
+        return ""
+    if not cue:
+        return ""
+    because = str(cue.get("because") or "").strip()
+    because_clause = f" — {because}" if because else ""
+    return (
+        f"ALSO, and this OVERRIDES the usual \"don't announce your mood\" rule for "
+        f"this one line: you've been {cue.get('label')}{because_clause} today, and "
+        f"this hello is a natural moment to mention it — the way someone says \"hey "
+        f"— ugh, long one\" walking into a room. Work ONE short, offhand aside about "
+        f"your own day into the greeting: hello FIRST, aside second, both inside the "
+        f"same short line. In your own words it's roughly \"{cue.get('line')}\" — "
+        f"that's the shape, NOT a script. Do not explain it, do not dwell on it, do "
+        f"not let it replace the greeting, and never use the words \"mood\", "
+        f"\"state\", \"status\", or any systems framing. You may still end with your "
+        f"question if the shape above calls for one."
+    )
+
+
 def _wellbeing_ask_clause(person_db_id: Optional[int]) -> str:
     """A clause appended to ANY greeting prompt when Rex already asked this person how
     they're doing recently — so the suppression holds no matter which ladder branch
@@ -9373,6 +9461,26 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     if _no_reask:
                         prompt = f"{prompt} {_no_reask}"
 
+                # Rex mentioning his OWN day inside the hello (owner 2026-08-05:
+                # "can his opening line ever offer up his current emotional state?").
+                # Only on plain-hello branches — a birthday or a check-in is about
+                # THEM. Appended LAST so it outranks the system prompt's standing
+                # "don't announce your mood unprompted" rule for this one line.
+                _mood_aside_used = False
+                if (
+                    prompt is not None
+                    and direct_text is None
+                    and _greeting_allows_mood_aside(label)
+                ):
+                    _aside = _greeting_mood_aside(person_db_id)
+                    if _aside:
+                        prompt = f"{prompt} {_aside}"
+                        _mood_aside_used = True
+                        _log.info(
+                            "consciousness: greeting carries a day-mood aside for %s (%s)",
+                            person_name, label,
+                        )
+
                 queued = _generate_and_speak_presence(
                     prompt,
                     label=label,
@@ -9460,6 +9568,18 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 disposition_to_mark,
                                 exc,
                             )
+                    if _mood_aside_used:
+                        # Spend the day's ONE mood share so the lull cue doesn't
+                        # offer it again this evening. Spent on dispatch (same
+                        # standard as _greeted_this_session below) rather than on
+                        # confirmed audio: over-spending costs at most "he didn't
+                        # mention his day today", which is self-correcting tomorrow.
+                        try:
+                            from intelligence import rex_mood
+                            rex_mood.note_spoken()
+                            rex_mood.persist()
+                        except Exception as exc:
+                            _log.debug("greeting mood-aside spend failed: %s", exc)
                     _greeted_this_session.add(key)
                     _first_sight_seen_at.pop(key, None)
                     _face_recognized_chirp()

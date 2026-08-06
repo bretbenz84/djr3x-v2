@@ -1611,6 +1611,19 @@ about what he had already said to you:
   in the morning also spends the unprompted share, and a reboot doesn't re-arm it.
   `rex_mood.share_cue()` deliberately owns only "is there something worth saying";
   the roll and the social fit live in the caller, like every other lull cue.
+- **Also in the HELLO** (owner follow-up: "can his opening line ever offer up his
+  current emotional state, or does it only fire during lulls?"). It was lull-only —
+  the greeting directive already received the mood, but the day-mood bullet ends with
+  "don't announce your mood unprompted", so the hello only TINTED his tone.
+  `consciousness._greeting_mood_aside` now appends an aside to plain-hello branches
+  (`_GREETING_MOOD_ASIDE_LABELS`), appended LAST so it explicitly overrides that
+  standing rule for the one line. Excluded: anything about THEM (birthday,
+  celebration, emotional check-in, milestone, follow-up, anticipation) and the
+  <20-min "snap" quick-return (whose contract is four words). Shares the same
+  once-per-DAY `spoken` spend as the lull cue, so it decides WHICH of the two gets
+  it, never both — spent on dispatch inside the `if queued:` block, with a
+  text-match belt in `note_rex_utterance`. Measured over 80 simulated days: ~31% of
+  days at the hello, ~20% in a lull, ~49% not at all.
 - Tests: `tests/test_rex_mood.py`, `tests/test_greeting_cadence.py`,
   `tests/test_self_state_injection.py`, `tests/test_mood_share_cue.py`.
 
