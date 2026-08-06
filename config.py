@@ -5975,6 +5975,14 @@ SPEAKER_ID_ECAPA_TRUST_ENABLED = _env_bool("SPEAKER_ID_ECAPA_TRUST_ENABLED", Tru
 # off-screen instead. Confident voice matches and short one-word turns are
 # exempt (a brief "Yep" can slip between the detector's 0.25s samples).
 SPEAKER_ID_MOUTH_STILL_VETO_ENABLED = _env_bool("SPEAKER_ID_MOUTH_STILL_VETO_ENABLED", True)
+# A laugh is not speech: ECAPA embeds speech, so laughter lands ~0.4 on the laugher's
+# OWN print, and the active-speaker detector (VAD-gated jaw articulation) reads "mouth
+# still" through it. Both signals fail for the same reason and compound into an identity
+# challenge — field 2026-08-06: Bret laughed at Rex's joke, on camera and recognized,
+# and got "Nice laugh, mystery voice—who are you, exactly?". With this on, a
+# laughter-only turn can't mint a stranger when the visible face is the voice's own best
+# candidate. It never refreshes the voiceprint. False restores the old behavior.
+LAUGH_NOT_A_STRANGER_ENABLED = True
 SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE = _env_float("SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE", 0.50, min_value=0.0, max_value=1.0)
 SPEAKER_ID_ECAPA_TRUST_FLOOR_VOICE_ONLY = _env_float("SPEAKER_ID_ECAPA_TRUST_FLOOR_VOICE_ONLY", 0.55, min_value=0.0, max_value=1.0)
 # A person-linked voice signature resolves the speaker outright at the strict cold bar

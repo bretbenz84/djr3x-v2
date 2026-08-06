@@ -2231,6 +2231,41 @@ than the mic-side gate above: **don't play effects while a reply is expected.**
   13:07:10 servo incident stands on its own timeline; the aggregate does not.
 - Tests: `tests/test_field_2026_08_06_sfx_echo.py`.
 
+### A laugh is not a stranger (2026-08-06, session 16-23-25)
+
+Bret laughed at Rex's own joke — face recognized, on camera, confident voice 16 s
+earlier — and got "Nice laugh, mystery voice—who are you, exactly?".
+
+- **Root cause: a laugh defeats BOTH identity signals, for the same reason.** ECAPA
+  embeds SPEECH, so laughter lands ~0.44 on the laugher's own print (below the 0.50
+  genuine band); and `vision/active_speaker.py` measures VAD-gated jaw ARTICULATION, so
+  it reports `visual_mouth_still` straight through a laugh. Neither is a bug on its own —
+  both are speech models being handed something that isn't speech.
+- **They compound because of decision ORDER.** In `_voice_primary_face_decision`, the
+  mouth-still veto sits ABOVE the `voice_continuity` check, so the confident anchor from
+  his turn 16 s earlier was never consulted. (Proof it was live: the very next two turns,
+  0.730 and 0.538, both resolved "accepted via voice continuity".) The `short_utterance`
+  branch — which already encodes exactly the right rule, "an unscoreable clip is not
+  evidence of a stranger", and deliberately carries no mouth-still veto — sits lower
+  still and was never reached.
+- **Fix:** `_is_non_speech_vocalization(text)` flags a laughter-ONLY transcript
+  (whole-transcript token match, ≤6 tokens, so "Haha, that is funny" and "Hannah" are
+  normal turns). It (a) exempts the turn from the mouth-still veto, which lets continuity
+  resolve it, and (b) adds a last-resort branch for a laugh with NO continuity — e.g. the
+  first thing someone does is laugh at his greeting — gated on the voice's own best
+  candidate BEING the visible face and the camera not naming anyone else. Always
+  `voice_agrees_no_refresh`: folding laughter into a speech voiceprint would corrupt it.
+  Kill switch `LAUGH_NOT_A_STRANGER_ENABLED`.
+- **The JT hole stays closed.** The veto still fires for short SPOKEN turns — only
+  laughter is exempt — so the 2026-08-02 case (JT at ~20 ft cross-matching Bret's print
+  at 0.455 while Bret sat silently on camera) is unchanged. Pinned by
+  `test_a_short_spoken_turn_is_still_vetoed`.
+- **The poisoned signature made it worse:** the laugh matched `voice_signatures` id=15 at
+  0.863 — the same row that matched Rex's own echo at 0.990 in session 13-20-57. That row
+  behaves like a junk non-speech cluster and is still present (see the previous entry).
+- Tests: `tests/test_voice_primary_identity.py::LaughIsNotAStrangerTest` /
+  `LaughterDetectionTest`.
+
 ## Likely Future Work
 
 - **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The

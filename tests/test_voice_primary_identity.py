@@ -18,6 +18,7 @@ from unittest import mock
 
 import numpy as np
 
+import config
 from intelligence import interaction as I
 
 
@@ -624,6 +625,107 @@ class MouthStillVetoTest(unittest.TestCase):
                          engaged_is_visible=False),
             "short_face_wins",
         )
+
+
+class LaughIsNotAStrangerTest(unittest.TestCase):
+    """Field 2026-08-06 16:24:46: Bret laughed at Rex's own joke — face recognized,
+    on camera, confident voice 16 s earlier — and was answered "Nice laugh, mystery
+    voice—who are you, exactly?", then matched against the persisted echo signature.
+
+    A laugh defeats BOTH identity signals for the same reason: ECAPA embeds SPEECH,
+    so laughter lands ~0.44 on the laugher's own print, and the active-speaker
+    detector measures VAD-gated jaw articulation, so it reads "mouth still" through
+    a laugh. The mouth-still veto then fires ahead of the continuity check."""
+
+    def _decide(self, **kw):
+        base = dict(
+            person_id=1,
+            raw_best_id=1,
+            speaker_score=0.443,
+            ws_pid=1,
+            single_visible=True,
+            engaged_is_visible=True,
+            unknown_visible=False,
+            other_known_recently=False,
+            visual_mouth_still=True,
+            voice_continuity=True,
+            score_genuine_band=False,
+            short_utterance=True,
+        )
+        base.update(kw)
+        return I._voice_primary_face_decision(**base)
+
+    def test_the_field_case_now_attributes(self):
+        """Exempting the laugh from the mouth-still veto lets the continuity anchor
+        from his confident turn 16 s earlier do its job."""
+        self.assertEqual(self._decide(non_speech_vocalization=True),
+                         "voice_agrees_no_refresh")
+
+    def test_unflagged_the_old_behavior_stands(self):
+        self.assertEqual(self._decide(non_speech_vocalization=False),
+                         "challenge_identity")
+
+    def test_a_first_laugh_with_no_continuity_still_attributes(self):
+        """The dedicated branch, for a laugh before any confident turn exists —
+        e.g. the first thing someone does is laugh at his greeting."""
+        self.assertEqual(
+            self._decide(non_speech_vocalization=True, voice_continuity=False),
+            "voice_agrees_no_refresh",
+        )
+
+    def test_never_refreshes_the_print(self):
+        """Folding laughter into a speech voiceprint would corrupt it — the
+        attribute-without-refresh branch is the only acceptable outcome."""
+        for continuity in (True, False):
+            with self.subTest(continuity=continuity):
+                self.assertNotIn(
+                    self._decide(non_speech_vocalization=True,
+                                 voice_continuity=continuity),
+                    ("voice_agrees", "corroborate"),
+                )
+
+    def test_a_laugh_pointing_at_someone_else_still_challenges(self):
+        # The voice's own best candidate is NOT the visible face — no free pass.
+        self.assertEqual(
+            self._decide(non_speech_vocalization=True, voice_continuity=False,
+                         raw_best_id=7),
+            "challenge_identity",
+        )
+
+    def test_camera_naming_another_talker_still_wins(self):
+        self.assertEqual(
+            self._decide(non_speech_vocalization=True, voice_continuity=False,
+                         visual_speaker_pid=9),
+            "challenge_identity",
+        )
+
+    def test_a_short_spoken_turn_is_still_vetoed(self):
+        """The JT-at-20ft hole this veto exists for must stay closed: only
+        laughter is exempt, not short speech."""
+        self.assertEqual(
+            self._decide(non_speech_vocalization=False, speaker_score=0.455),
+            "challenge_identity",
+        )
+
+
+class LaughterDetectionTest(unittest.TestCase):
+
+    def test_laughter_transcripts(self):
+        for text in ("Hahahahahahahahahah.", "haha", "Ha ha ha", "hehehe",
+                     "lol", "Heh.", "HAHA!", "ah ah ah"):
+            with self.subTest(text):
+                self.assertTrue(I._is_non_speech_vocalization(text))
+
+    def test_real_speech_is_not_laughter(self):
+        for text in ("You know who I am.", "Shut down.", "Haha, that is funny",
+                     "Hannah", "ah, I see what you did", "", "   ",
+                     "no", "aha moment"):
+            with self.subTest(text):
+                self.assertFalse(I._is_non_speech_vocalization(text))
+
+    def test_kill_switch(self):
+        with mock.patch.object(config, "LAUGH_NOT_A_STRANGER_ENABLED", False):
+            self.assertFalse(I._is_non_speech_vocalization("hahaha"))
 
 
 if __name__ == "__main__":

@@ -1982,6 +1982,7 @@ def _voice_primary_face_decision(
     voice_continuity: bool = False,
     score_genuine_band: bool = False,
     short_utterance: bool = False,
+    non_speech_vocalization: bool = False,
 ) -> str:
     """Voice-primary attribution decision when exactly one known face (``ws_pid``)
     is visible. Pure (no side effects) so it is directly unit-testable.
@@ -2029,7 +2030,7 @@ def _voice_primary_face_decision(
             return "voice_agrees"            # the voice stands on its own
         if vis is not None and vis == ws:
             return "voice_agrees"            # camera positively confirms they're talking
-        if visual_mouth_still and not score_genuine_band:
+        if visual_mouth_still and not score_genuine_band and not non_speech_vocalization:
             # POSITIVE mouth-still evidence: the active-speaker detector was
             # running and nobody visible articulated near end-of-turn — the
             # visible face was NOT the talker (field 2026-08-02 12:37: JT at
@@ -2051,6 +2052,22 @@ def _voice_primary_face_decision(
             # stops the first short turn of every session being challenged
             # (live-logged 2026-07-07: "yup, I'm back" at 0.597, face on camera,
             # answered with "who's speaking?"). Attribute, never touch the print.
+            return "voice_agrees_no_refresh"
+        if non_speech_vocalization and (raw_id is None or raw_id == ws) and (
+            vis is None or vis == ws
+        ):
+            # A LAUGH is not speech, and every identity signal here assumes it is:
+            # ECAPA embeds speech, so laughter lands ~0.4 on the laugher's own print,
+            # and the active-speaker detector measures VAD-gated jaw articulation, so
+            # it reports "mouth still" through a laugh. Both fail for the SAME reason,
+            # then compound into "who are you?" — field 2026-08-06 16:24:46: Bret
+            # laughed at Rex's own joke, face recognized and on camera, confident voice
+            # 16 s earlier, and was answered "Nice laugh, mystery voice—who are you,
+            # exactly?". Same shape as the short_utterance branch below: an unscoreable
+            # clip is not evidence of a stranger. Fires only when the voice's own best
+            # candidate IS the visible face (or there is no candidate) and the camera
+            # doesn't contradict it; never refreshes the print, since folding laughter
+            # into a speech voiceprint would corrupt it.
             return "voice_agrees_no_refresh"
         return "challenge_identity"           # marginal + no credibility: never assume the face
     if pid is not None:
@@ -8668,6 +8685,32 @@ def _audio_duration_secs(audio_array: Optional[np.ndarray]) -> float:
     if rate <= 0:
         return 0.0
     return float(len(audio_array)) / rate
+
+
+# A transcript made ENTIRELY of laughter tokens. Whisper/Qwen render a laugh as runs of
+# ha/he/ah plus the odd "lol"; anything with real words in it is a normal turn and must
+# not qualify (a laugh followed by speech is speech the embedder CAN score).
+_LAUGH_TOKEN_RE = re.compile(
+    r"^(?:h[aeu](?:h?[aeu])*h?|(?:ah)+|(?:eh)+|lol|lmao|hehe|haha|heh|hah|ha)$",
+    re.IGNORECASE,
+)
+
+
+def _is_non_speech_vocalization(transcript_text: Optional[str]) -> bool:
+    """Whether the whole turn is laughter rather than speech.
+
+    Laughter is acoustically unlike the speech an ECAPA print is built from, so its
+    score carries no identity information — see the decision branch that consumes this.
+    """
+    if not bool(getattr(config, "LAUGH_NOT_A_STRANGER_ENABLED", True)):
+        return False
+    cleaned = re.sub(r"[^\w\s]", " ", str(transcript_text or "")).strip()
+    if not cleaned:
+        return False
+    tokens = cleaned.split()
+    if not tokens or len(tokens) > 6:
+        return False
+    return all(_LAUGH_TOKEN_RE.match(tok) for tok in tokens)
 
 
 def _is_short_utterance(
@@ -22622,6 +22665,7 @@ def _handle_speech_segment(
                 # scored 0.232, was ruled off-camera, and the gaze search that
                 # followed broke the face lock come-here depends on).
                 short_utterance=_is_short_utterance(audio_array, text),
+                non_speech_vocalization=_is_non_speech_vocalization(text),
             )
             if decision == "voice_agrees":
                 _note_confident_voice(person_id, speaker_score)
