@@ -74,6 +74,23 @@ def _cooldown_days() -> float:
 
 
 def content_tokens(text: str) -> set[str]:
+    """Content words of a Rex line, for the repeat check.
+
+    Inline delivery tags are stripped FIRST (field 2026-08-05: five lull lines
+    dropped in a row as "repeats a recent bit", three of them wrongly). A line
+    carrying "[curious]" tokenized `curious` as CONTENT — and at 7 characters that
+    clears BIT_LEDGER_DISTINCTIVE_LEN, whose rule is "one shared distinctive word
+    = same bit". So a single stored bit containing the word "curious" silently
+    blocked EVERY future line tagged [curious], regardless of subject: a news
+    offer about an AWS outage and a question about the best thing they'd eaten
+    were both refused as repeats of each other. Tags describe how a line is
+    SPOKEN, never what it is about, so they must never reach the comparison.
+    """
+    try:
+        from utils.audio_tags import strip_audio_tags
+        text = strip_audio_tags(text or "")
+    except Exception:
+        text = re.sub(r"\[[^\]]{1,32}\]", " ", str(text or ""))
     return {
         t.strip("'")
         for t in _TOKEN_PAT.findall((text or "").lower())
