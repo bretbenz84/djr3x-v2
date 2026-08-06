@@ -2720,9 +2720,33 @@ def _end_response_sequence_for_text(text: Optional[str]) -> None:
 
 def _arm_post_tts_window(item=None) -> None:
     """Arm the post-TTS deaf window. Registered with speech_queue so it fires
-    after every queue item — not just items played via _speak_blocking."""
+    after every queue item — not just items played via _speak_blocking.
+
+    ALSO releases the AEC sequence hold once the queue is genuinely drained.
+    THE FIX for "I pause a second after he speaks and he doesn't hear my first
+    line" (field 2026-08-05, three marked repeats in one run): start_sequence()
+    defers every per-segment set_playing(False) until end_sequence(), and
+    end_sequence lived at the END of the reply path — behind the post-greet
+    relationship ask, the curiosity routine, and pool-topic recording. So the
+    mic stayed attenuated for 1-5s AFTER Rex's last audio (measured across five
+    runs), `_chunk_for_vad` flattened the human's reply, VAD never fired, and the
+    turn left NO trace anywhere — not even in the capture telemetry, which
+    reported captured=6 / dropped=0 for a run containing three lost utterances.
+    Suppression must end when the SOUND ends, not when the bookkeeping does.
+
+    Gated on is_drained() rather than `not is_speaking()`: the latter is briefly
+    true between the sentences of one streamed reply, and releasing there would
+    re-open the mic into Rex's own next sentence. A later line re-suppresses on
+    its own playback, so releasing early costs nothing.
+    """
     text = getattr(item, "text", None)
     _apply_post_tts_handoff(text, source="speech_queue")
+    try:
+        if bool(getattr(config, "AEC_RELEASE_ON_QUEUE_DRAIN", True)) and \
+                speech_queue.is_drained():
+            _end_response_sequence_for_text(text)
+    except Exception as exc:
+        _log.debug("[aec] drain-release skipped: %s", exc)
 
 
 # ── Own-echo (reference-text) rejection ───────────────────────────────────────

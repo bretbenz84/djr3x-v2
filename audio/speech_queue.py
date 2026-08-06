@@ -313,6 +313,18 @@ class _SpeechQueue:
         with self._lock:
             return self._speaking
 
+    def is_drained(self) -> bool:
+        """True when nothing is playing AND nothing is waiting to play.
+
+        Distinct from `not is_speaking()`, which is briefly true between the
+        sentences of one streamed reply. Callers use this to tell "Rex has
+        genuinely stopped talking" from "Rex is between sentences" — see
+        interaction._arm_post_tts_window, which releases the mic suppression on
+        the former only.
+        """
+        with self._lock:
+            return not self._speaking and not self._heap
+
     def current_audio_path(self) -> Optional[str]:
         """Return the direct audio file currently playing, if any."""
         with self._lock:
@@ -736,6 +748,11 @@ def drop_by_tag(tag: str) -> int:
 def has_waiting_with_tag(tag: str) -> bool:
     """True if any waiting item has this tag."""
     return _queue.has_waiting_with_tag(tag)
+
+
+def is_drained() -> bool:
+    """Module-level wrapper — see SpeechQueue.is_drained."""
+    return _queue.is_drained()
 
 
 def is_speaking() -> bool:

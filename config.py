@@ -4555,6 +4555,15 @@ POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 # Rex's own tail at full volume → self-transcription / dropped segment → the user
 # gets cut off. Keep this SMALL when there is no AEC.
 POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.12
+# Release the AEC sequence hold as soon as the speech queue is DRAINED, instead of
+# waiting for the reply path's bookkeeping to reach end_sequence(). start_sequence()
+# defers every per-segment set_playing(False), and the release sat behind the
+# post-greet ask / curiosity routine / pool-topic recording — so the mic stayed
+# attenuated 1-5s after Rex's last audio, VAD never fired on a reply spoken into
+# that window, and the lost turn left no trace at all (field 2026-08-05: three
+# marked repeats in one run; the capture telemetry saw captured=6 / dropped=0).
+# False restores the old release-at-end-of-turn behavior.
+AEC_RELEASE_ON_QUEUE_DRAIN = True
 
 # Let question-answer capture reach slightly before the handoff, but only into
 # the typical silent pad at the end of TTS. 250ms can include Rex's final word.
