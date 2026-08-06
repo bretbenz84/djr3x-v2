@@ -471,6 +471,10 @@ def _begin_user_turn() -> None:
     _idle_banter_count = 0
     _idle_banter_threshold = None  # roll a fresh random nudge delay for the next stretch
     _last_proactive_line_at = 0.0
+    # A new turn owns its own logging: drop any pre-logged marker a previous turn
+    # left behind (e.g. one whose reply path errored before the caller consumed it),
+    # so it can never suppress a legitimate transcript write later.
+    _prelogged_response.clear()
     # The user re-engaged: reset the lean-impulse pile-on run AND clear the cooldown anchor so the
     # NEXT silence's first line is gated only by the quiet threshold (fast), not last lull's cooldown.
     _consecutive_lean_impulses = 0
@@ -13131,12 +13135,24 @@ def _maybe_web_search_reply(
     if result.citations:
         _log.info("[web_search] sources: %s", ", ".join(result.citations[:5]))
 
-    # log_text=False: we RETURN answer_text, and the caller (_handle_speech_segment)
-    # logs the returned response once (conv_log.log_rex + add_to_transcript) — exactly
-    # like the normal streaming reply. Logging here too double-prints in the file AND the
-    # GUI: conv_log only dedupes CONSECUTIVE identical lines within a short window, and
-    # the multi-second answer playback (plus the interleaved stall line) blows past it,
-    # so the caller's later log isn't coalesced.
+    # Write the answer to the transcript + GUI NOW, before a single word is spoken.
+    # It used to ride the caller's post-return log, but _speak_blocking returns only
+    # after PLAYBACK finishes — so a ~30s news answer sat invisible until Rex stopped
+    # talking (owner 2026-08-06). The streaming reply path logs as soon as the text
+    # exists; this matches it.
+    #
+    # NOT conv_log.claim_rex_line(), which exists for exactly this shape: its dedupe
+    # is TIME-BOUNDED (_REX_DEDUPE_WINDOW_SECS = 30s) and a long news answer takes
+    # about that long to speak, so the caller's later write would land right on the
+    # boundary and duplicate roughly half the time. The one-shot marker is
+    # time-independent, and also covers add_to_transcript (which claim_rex_line
+    # does not touch).
+    try:
+        conv_memory.add_to_transcript("Rex", answer_text)
+        conv_log.log_rex(answer_text)
+        _note_prelogged_response(answer_text)
+    except Exception as exc:
+        _log.debug("[web_search] pre-speak transcript write failed: %s", exc)
     _speak_blocking(answer_text, emotion="neutral", priority=1, log_text=False)
     try:
         _apply_post_tts_handoff(answer_text, source="web_search")
@@ -13160,6 +13176,27 @@ def _maybe_web_search_reply(
 # caller to stamp final_executed_path="tool_router.<action>" instead of
 # "llm.stream" (the report joins on executed paths).
 _tool_routed_path: "list[str]" = []
+
+# One-shot holder: a reply this turn already wrote to the transcript + GUI itself.
+# The streaming reply path logs when the TEXT is ready and returns immediately, so
+# the caller's single log lands fast. _speak_blocking, by contrast, returns only
+# after PLAYBACK finishes — so a web-search answer that takes ~30s to speak did not
+# reach the GUI until it had finished being spoken (owner 2026-08-06: "the GUI shows
+# the text only after TTS has spoken"). Those paths now log up front and park the
+# text here so the caller skips its duplicate write.
+_prelogged_response: "list[str]" = []
+
+
+def _note_prelogged_response(text: str) -> None:
+    """Record that `text` has ALREADY been written to the transcript + GUI."""
+    _prelogged_response.clear()
+    if text and text.strip():
+        _prelogged_response.append(text)
+
+
+def _consume_prelogged_response() -> "Optional[str]":
+    """Take the pre-logged text (one-shot). None when the caller still owns the log."""
+    return _prelogged_response.pop() if _prelogged_response else None
 
 
 def _consume_tool_routed_path() -> Optional[str]:
@@ -25988,8 +26025,9 @@ def _handle_speech_segment(
                 final_executed_path or "response_text.unknown",
                 spoken_text=response_text,
             )
-            conv_memory.add_to_transcript("Rex", response_text)
-            conv_log.log_rex(response_text)
+            if _consume_prelogged_response() != response_text:
+                conv_memory.add_to_transcript("Rex", response_text)
+                conv_log.log_rex(response_text)
             _session_exchange_count += 1
             _register_rex_utterance(response_text)
             assistant_asked_question = _assistant_asked_question(response_text)
