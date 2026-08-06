@@ -341,6 +341,19 @@ def _mood_lines() -> list[str]:
         return []
 
 
+def _reaction_lines(person_id: Optional[int]) -> list[str]:
+    """"Your last line just LANDED — you saw them smile" (reaction_awareness).
+
+    Shared-builder placement for the same reason as _mood_lines: it must reach the
+    direct REPLY (their next words usually come right after the smile) and the
+    proactive/directive path alike. Rendering here is what arms the one-shot spend."""
+    try:
+        from intelligence import reaction_awareness
+        return reaction_awareness.prompt_lines(person_id)
+    except Exception:
+        return []
+
+
 def _cadence_lines(person_id: Optional[int]) -> list[str]:
     """"You already asked them how they're doing" — persisted per person, so it
     survives the restart that used to reset every anti-repeat guard Rex had."""
@@ -364,6 +377,7 @@ def _system_prompt(
         + _scene_lines(world)
         + _room_belief_lines()
         + _mood_lines()
+        + _reaction_lines(person_id)
         + _cadence_lines(person_id)
         + list(extra_lines or [])
     )

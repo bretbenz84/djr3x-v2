@@ -1644,6 +1644,30 @@ visibility into which gate was doing the silencing.
   numbers actually blame — don't blanket-loosen (the gates each trace to a real
   dated over-talking field report).
 
+### Reaction awareness + spoken news digest (2026-08-05 evening session)
+
+Two fixes from the 20:54 field log:
+
+- **First-person reaction awareness** (`intelligence/reaction_awareness.py`). The
+  smile reaction used to speak a canned interjection ("Oh look, I made the lifeform
+  smile") — a sensor report wearing a joke, and it over-triggered. The DETECTION
+  pipeline (quip arms a watch, adaptive-baseline smile confirm, cooldown, diary
+  hook, giddy body mood) is unchanged; the confirm now records awareness instead of
+  speaking. That awareness rides in the live prompt (lean `_reaction_lines` +
+  classic section) so Rex's NEXT line can own that the joke landed in first person
+  — or not mention it and just let it color his tone. One-shot spend on his next
+  finalized line after injection (both seams: `_register_rex_utterance` and
+  `consciousness.note_rex_utterance`), TTL 90s, per-person isolation (Bret's smile
+  never colors a reply to JT), newest reaction replaces the old. Legacy canned path
+  is behind `SMILE_REACTION_CANNED_LINES_ENABLED` (ships False).
+- **Spoken news digest contract.** "Tell me more" about an offered story produced a
+  ~150-word press release read aloud (platform roll-calls, "if you want, I can also
+  pull the submission rules…"). `_compose_news_search_input` now demands three
+  short sentences max, friend-relaying-news register, no platform lists /
+  submission mechanics / marketing phrasing, and no closing fetch-menu.
+- Tests: `tests/test_reaction_awareness.py`; `tests/test_smile_reaction.py` updated
+  to the new default contract (+ a legacy-flag test).
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

@@ -4224,6 +4224,13 @@ def _register_rex_utterance(
     except Exception:
         pass
     try:
+        # One-shot spend of the "they smiled at my last line" awareness: this line's
+        # prompt had its beat to use it (or not) — either way the moment has passed.
+        from intelligence import reaction_awareness
+        reaction_awareness.note_rex_spoke()
+    except Exception:
+        pass
+    try:
         # Same idea for the wellbeing ritual: if this line asked them how they are,
         # spend it so he doesn't ask again in twenty minutes. Only ~7 of the ~25
         # callers pass target_person_id, so fall back to whoever he's engaged with.
@@ -12851,10 +12858,21 @@ def _compose_news_search_input(text: str, story: dict) -> str:
     headline = str(story.get("headline") or "").strip()
     summary = str(story.get("summary") or "").strip()
     detail = f" ({summary})" if summary else ""
+    # SPOKEN-digest contract (field 2026-08-05 20:59: "tell me more" produced a
+    # ~150-word press release read aloud — platform roll-calls, brand phrasing, and
+    # a closing menu of further fetches). "Give them the concrete details" with no
+    # ceiling reads, to the model, as an invitation to file a report; a friend
+    # relaying a story picks the two or three bits worth saying and stops.
     return (
         f"{text}\n\n[They are asking about the news story you just mentioned: "
-        f'"{headline}"{detail}. Search the web for that story and give them the '
-        "concrete details — what, when, where — in your own voice.]"
+        f'"{headline}"{detail}. Search the web for that story, then TELL it the '
+        "way a friend relays news out loud, in your own voice: THREE short "
+        "sentences MAXIMUM. Pick only the two or three details that would "
+        "actually interest THEM — skip official-channel names, platform lists "
+        "(no 'Instagram, TikTok, YouTube' roll-calls), submission mechanics, and "
+        "marketing phrasing. Do NOT end with an offer to fetch more (no 'if you "
+        "want, I can also pull…') — if they want more, they'll ask. End plainly, "
+        "or with ONE short dry aside.]"
     )
 
 

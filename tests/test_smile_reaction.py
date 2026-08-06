@@ -81,7 +81,44 @@ class SmileReactionTests(unittest.TestCase):
 
         self.assertIsNone(c._smile_reaction_watch)
 
-    def test_smile_after_rex_speaks_triggers_reaction(self):
+    def test_smile_after_rex_speaks_feeds_reaction_awareness(self):
+        # Owner rework 2026-08-05: the DEFAULT confirmed-smile path no longer speaks
+        # a canned interjection — it records first-person awareness so Rex's NEXT
+        # generated line can enjoy that the joke landed. The canned speaker must
+        # stay silent, the watch must clear, and the cooldown must still arm (a
+        # held smile must not re-mint the awareness every tick).
+        from intelligence import reaction_awareness
+        c = self.c
+        item = self._quip_item()
+        c.world_state.update("people", [self._person("neutral", 0.92)])
+        c._note_rex_speech_item_started(item)
+        c._note_rex_speech_item_done(item)
+
+        c.world_state.update("people", [self._person("smile", 0.76)])
+        snapshot = c.world_state.snapshot()
+
+        reaction_awareness.clear()
+        self.addCleanup(reaction_awareness.clear)
+        saved_cooldown = c._last_smile_reaction_at
+        self.addCleanup(lambda: setattr(c, "_last_smile_reaction_at", saved_cooldown))
+        c._last_smile_reaction_at = 0.0
+        with (
+            mock.patch.object(c.config, "SMILE_REACTION_MIN_DELAY_SECS", 0.0),
+            mock.patch.object(c, "_speak_smile_reaction", return_value=True) as speak,
+        ):
+            c._step_smile_reaction(snapshot, mock.Mock())
+
+        speak.assert_not_called()
+        active = reaction_awareness.active()
+        self.assertIsNotNone(active)
+        self.assertEqual(active["kind"], "smile")
+        self.assertEqual(active["person_id"], 1)
+        # The quip that landed rides along so the awareness can reference it.
+        self.assertIn("flawless decision", active["trigger_text"])
+        self.assertIsNone(c._smile_reaction_watch)
+        self.assertGreater(c._last_smile_reaction_at, 0.0)
+
+    def test_legacy_flag_restores_the_canned_interjection(self):
         c = self.c
         item = self._quip_item()
         c.world_state.update("people", [self._person("neutral", 0.92)])
@@ -93,6 +130,7 @@ class SmileReactionTests(unittest.TestCase):
 
         with (
             mock.patch.object(c.config, "SMILE_REACTION_MIN_DELAY_SECS", 0.0),
+            mock.patch.object(c.config, "SMILE_REACTION_CANNED_LINES_ENABLED", True),
             mock.patch.object(c, "_speak_smile_reaction", return_value=True) as speak,
         ):
             c._step_smile_reaction(snapshot, mock.Mock())

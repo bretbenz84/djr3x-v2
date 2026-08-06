@@ -1263,6 +1263,15 @@ def note_rex_utterance(
     except Exception:
         pass
 
+    # One-shot spend of the landed-reaction awareness for PROACTIVE lines too (the
+    # reply path spends via interaction._register_rex_utterance) — a lull line whose
+    # prompt carried the "they smiled" beat uses it up the same as a reply would.
+    try:
+        from intelligence import reaction_awareness
+        reaction_awareness.note_rex_spoke()
+    except Exception:
+        pass
+
     # A Rex line from another behavior (smile reaction, greeting, idle banter)
     # during an active "tell me about" briefing leaves the teller unsure
     # whether the file is still open — let the flow queue its re-anchor
@@ -3676,13 +3685,40 @@ def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
 
     if _smile_reaction_cooldown_active(now):
         return
-    line = _choose_expression_reaction_line("smile", _SMILE_REACTION_LINES)
-    if _speak_smile_reaction(line):
+    # Owner rework 2026-08-05: a confirmed landed smile no longer SPEAKS a canned
+    # interjection ("Oh look, I made the lifeform smile" — a sensor report wearing
+    # a joke, and it over-triggered). It feeds reaction_awareness instead, so Rex's
+    # NEXT generated line knows the joke landed and can enjoy it in first person —
+    # or not mention it at all. Everything downstream (diary hook, giddy body mood,
+    # the cooldown) is shared by both paths.
+    fired = False
+    if bool(getattr(config, "SMILE_REACTION_CANNED_LINES_ENABLED", False)):
+        line = _choose_expression_reaction_line("smile", _SMILE_REACTION_LINES)
+        fired = _speak_smile_reaction(line)
+    else:
+        try:
+            from intelligence import reaction_awareness
+            reaction_awareness.note_reaction(
+                _person_db_id(person) if person else None,
+                _first_name((person or {}).get("face_id"), "them"),
+                "smile",
+                trigger_text=str(watch.get("trigger_text") or ""),
+            )
+            # The awareness path never enqueues audio, so arm the cooldown here
+            # (the canned path arms it inside _speak_smile_reaction) — otherwise
+            # a held smile would re-mint the awareness every tick.
+            global _last_smile_reaction_at
+            _last_smile_reaction_at = now
+            fired = True
+        except Exception as exc:
+            _log.debug("smile reaction awareness note failed: %s", exc)
+    if fired:
         _log.info(
-            "consciousness: smile reaction fired person=%s baseline=%s current=%s",
+            "consciousness: smile reaction fired person=%s baseline=%s current=%s canned=%s",
             watch.get("person_key"),
             watch.get("baseline_expression"),
             _person_expression_label(person),
+            bool(getattr(config, "SMILE_REACTION_CANNED_LINES_ENABLED", False)),
         )
         # "I made <name> smile" → rex.db. person_key is a STRING ("db:123"), so pull
         # the int id from the person dict instead. Tag it with the live topic so the

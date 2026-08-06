@@ -1270,6 +1270,16 @@ def assemble_system_prompt(
     except Exception as exc:
         _log.debug("day-mood section injection skipped: %s", exc)
 
+    # 3b2. A reaction Rex just caused (they smiled at his last line) — first-person
+    # awareness for the classic fallback, mirroring lean_brain._reaction_lines.
+    try:
+        from intelligence import reaction_awareness as _reaction_awareness
+        reaction_section = _reaction_awareness.prompt_section(person_id)
+        if reaction_section:
+            sections.append(reaction_section)
+    except Exception as exc:
+        _log.debug("reaction awareness section injection skipped: %s", exc)
+
     # 3c. "You already asked them how they're doing" — persisted per person, so a
     # restart no longer resets the guard (intelligence/greeting_cadence.py).
     try:

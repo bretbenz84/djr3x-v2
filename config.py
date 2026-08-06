@@ -1089,6 +1089,23 @@ ACTIVE_SPEAKER_LOG_SCOREBOARD = _env_bool("ACTIVE_SPEAKER_LOG_SCOREBOARD", False
 # Smile reaction: after Rex delivers a short joke/snarky line, consciousness can
 # watch for a visible person's expression shifting into a smile and answer it.
 SMILE_REACTION_ENABLED = _env_bool("SMILE_REACTION_ENABLED", True)
+# What a CONFIRMED landed smile does (owner rework 2026-08-05). The old behavior
+# spoke a canned interjection ("Oh look, I made the lifeform smile") — a sensor
+# report wearing a joke, and it over-triggered. Now the confirmation feeds
+# intelligence/reaction_awareness.py instead: Rex's NEXT generated line knows his
+# joke landed and can enjoy it in first person, woven in ("I like making you
+# smile — means my jokes are landing, unlike the StarSpeeder") or not mentioned
+# at all. Detection, cooldowns, diary hook, and giddy body-mood all unchanged.
+REACTION_AWARENESS_ENABLED = _env_bool("REACTION_AWARENESS_ENABLED", True)
+# How long the landed-reaction awareness stays injectable before it expires as a
+# moment that passed (it also spends one-shot on Rex's next line either way).
+REACTION_AWARENESS_TTL_SECS = _env_float(
+    "REACTION_AWARENESS_TTL_SECS", 90.0, min_value=5.0, max_value=600.0,
+)
+# True restores the legacy canned spoken interjection (for A/B or revert).
+SMILE_REACTION_CANNED_LINES_ENABLED = _env_bool(
+    "SMILE_REACTION_CANNED_LINES_ENABLED", False,
+)
 SMILE_REACTION_WINDOW_SECS = _env_float(
     "SMILE_REACTION_WINDOW_SECS",
     5.0,
