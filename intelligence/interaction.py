@@ -4216,9 +4216,11 @@ def _register_rex_utterance(
     try:
         # If this line VOICED today's mood, lock its framing — the background enrich
         # pass must not go back and attach a different reason to a mood he has already
-        # explained out loud.
+        # explained out loud. Persist on a match (once/day at most) so a crash before
+        # session end doesn't lose the spend and re-arm the unprompted share.
         from intelligence import rex_mood
-        rex_mood.note_spoken_if_voiced(text)
+        if rex_mood.note_spoken_if_voiced(text):
+            rex_mood.persist()
     except Exception:
         pass
     try:
@@ -5064,6 +5066,11 @@ def _lean_mood_share_cue(person_id: Optional[int]) -> Optional[dict]:
     if person_id is None or not bool(getattr(config, "REX_MOOD_SHARE_ENABLED", True)):
         return None
     if _lean_mood_shared_this_session:
+        return None
+    # Honor the drop-bench: if a generated share was dropped (near-duplicate, banned
+    # topic), don't re-offer the same cue for the cooldown — _strike_lean_cue records
+    # the bench, but it only works if the builder actually consults it.
+    if _lean_cue_blocked("mood_share"):
         return None
     if random.random() >= float(getattr(config, "REX_MOOD_SHARE_PROBABILITY", 0.3) or 0.0):
         return None
@@ -6297,6 +6304,11 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             try:
                 from intelligence import rex_mood
                 rex_mood.note_spoken()
+                # Persist NOW, not just at session end: a crash or hard power-off
+                # before _end_session would lose the spend, and the next boot would
+                # cheerfully re-announce the same mood. The write is a tiny atomic
+                # tmp+replace — cheap enough to pay per share (once a day at most).
+                rex_mood.persist()
             except Exception as exc:
                 _log.debug("[lean] mood-share spend failed: %s", exc)
         if memory_musing:

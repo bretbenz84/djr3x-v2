@@ -189,6 +189,8 @@ class AskDetectionTests(unittest.TestCase):
             "I'm contemplative today, since you ask.",
             "You never ask how are you, and it shows.",   # no question mark
             "How does that thing even work?",             # a question, not about them
+            "How is it powered?",                         # about a THING (review find:
+            "How was it?",                                # bare "it" used to match)
             "What's the capital of Peru?",
             "",
         ):

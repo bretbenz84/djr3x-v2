@@ -447,6 +447,32 @@ class SpokenLockTests(_MoodTestCase):
         self.assertFalse(rex_mood.note_spoken_if_voiced("The bass on that track is criminal."))
         self.assertEqual(rex_mood.current().spoken, 0)
 
+    def test_label_matches_whole_tokens_only(self):
+        # Review find 2026-08-05: the first cut substring-matched the label against a
+        # sorted word-soup, so "worn" inside "sworn" locked the spoken flag off an
+        # unrelated line — silently killing the unprompted share AND the enrich pass
+        # for the rest of the day.
+        worn = {"id": "worn", "label": "worn", "valence": -0.4, "energy": 0.2,
+                "line": "Worn down, and awake for all of it.", "fits": ["any"]}
+        with mock.patch.object(config, "REX_MOOD_SEEDS", [worn]):
+            rex_mood.clear()
+            rex_mood.ensure_today()
+            self.assertFalse(
+                rex_mood.note_spoken_if_voiced("I could have sworn you said Tuesday."))
+            self.assertEqual(rex_mood.current().spoken, 0)
+            self.assertTrue(
+                rex_mood.note_spoken_if_voiced("Honestly? Worn out, since you ask."))
+
+    def test_multi_word_labels_require_every_token(self):
+        keyed = {"id": "keyed-up", "label": "keyed-up", "valence": 0.25, "energy": 0.95,
+                 "line": "Something's about to happen and my systems have opinions.",
+                 "fits": ["any"]}
+        with mock.patch.object(config, "REX_MOOD_SEEDS", [keyed]):
+            rex_mood.clear()
+            rex_mood.ensure_today()
+            self.assertFalse(rex_mood.note_spoken_if_voiced("The keyed lock jammed again."))
+            self.assertTrue(rex_mood.note_spoken_if_voiced("Bit keyed up today, honestly."))
+
     def test_note_spoken_if_voiced_never_mints(self):
         # An idle line must not create the day's mood as a side effect.
         self.assertIsNone(rex_mood.current())

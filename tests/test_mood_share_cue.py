@@ -171,6 +171,59 @@ class InstructionTests(_CueTestCase):
         self.assertNotIn(", .", text)
 
 
+class AddendumConflictTests(_CueTestCase):
+    """Review find 2026-08-05: the mood-share instruction ends "You MUST give the one
+    line; do not reply PASS", and the generic low-energy/no-questions addenda append
+    "just reply PASS — PASS is genuinely good here" straight after. A contradictory
+    instruction pair resolves unpredictably; the share now gets tailored addenda."""
+
+    def _instruction(self, **kw) -> str:
+        captured = {}
+
+        def fake_create(client, **k):
+            captured["m"] = k["messages"]
+            return iter([NS(choices=[NS(delta=NS(content="PASS"))])])
+
+        with mock.patch.object(lean_brain.llm_compat, "create", side_effect=fake_create):
+            lean_brain.consider_initiating(None, transcript=[], **kw)
+        return captured["m"][-1]["content"]
+
+    def test_low_energy_share_never_contradicts_itself(self):
+        rex_mood.ensure_today()
+        text = self._instruction(mood_share=rex_mood.share_cue(), low_energy=True)
+        self.assertIn("do not reply PASS", text)
+        self.assertNotIn("PASS is a genuinely", text)
+        self.assertNotIn("just reply PASS", text)
+        # It still adapts to the tired room instead of ignoring it.
+        self.assertIn("low-key", text)
+        self.assertIn("needs no response", text)
+
+    def test_no_questions_share_never_contradicts_itself(self):
+        rex_mood.ensure_today()
+        text = self._instruction(mood_share=rex_mood.share_cue(), no_questions=True)
+        self.assertIn("do not reply PASS", text)
+        self.assertNotIn("observation, or PASS", text)
+
+    def test_other_cues_keep_the_generic_addenda(self):
+        text = self._instruction(low_energy=True)
+        self.assertIn("PASS is a genuinely", text)
+
+
+class DropBenchTests(_CueTestCase):
+
+    def test_a_benched_mood_share_is_not_reoffered(self):
+        # _strike_lean_cue records the bench when a generated share gets dropped
+        # (near-duplicate, banned topic); the builder must actually consult it or the
+        # bench does nothing and the ladder regenerates the same doomed line.
+        import time as _time
+        with self._person():
+            self.assertIsNotNone(I._lean_mood_share_cue(1))
+            I._strike_lean_cue("mood_share")
+            self.assertIsNone(I._lean_mood_share_cue(1))
+            I._lean_cue_cooldowns["mood_share"] = _time.monotonic() - 1.0
+            self.assertIsNotNone(I._lean_mood_share_cue(1))
+
+
 class LadderPriorityTests(_CueTestCase):
     """Placement: below everything about THEM (asking after someone's weekend beats
     talking about yourself), above generic news."""

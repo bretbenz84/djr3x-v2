@@ -1632,7 +1632,18 @@ def consider_initiating(
         # Impulse discipline (owner field report 2026-07-18: six engagement-demanding
         # lines in three minutes at a TIRED user): a low-energy read or an exhausted
         # question budget converts the impulse to statement-or-pass — never another ask.
-        if low_energy:
+        # The mood share gets a TAILORED low-energy note instead of the generic one:
+        # its instruction ends "You MUST give the one line; do not reply PASS", and
+        # appending "just reply PASS — PASS is genuinely good here" straight after
+        # is a contradiction the model resolves unpredictably. The share is already
+        # a no-question statement — at a tired user it just gets quieter.
+        if low_energy and mood_share:
+            instruction += (
+                "\nIMPORTANT: {who} is clearly low-energy right now (tired, winding "
+                "down). Keep the aside extra low-key — quiet, half-volume, something "
+                "that needs no response at all."
+            ).format(who=who)
+        elif low_energy:
             instruction += (
                 "\nIMPORTANT: {who} is clearly low-energy right now (tired, winding down, "
                 "or giving short answers). Do NOT ask them a question or demand engagement "
@@ -1640,7 +1651,9 @@ def consider_initiating(
                 "or just reply PASS and let the quiet be comfortable. PASS is a genuinely "
                 "good choice here."
             ).format(who=who)
-        elif no_questions:
+        elif no_questions and not mood_share:
+            # (The mood share is already a no-question statement by construction, and
+            # this addendum's "or PASS" would contradict its "do not reply PASS".)
             instruction += (
                 "\nIMPORTANT: you've already asked plenty of questions this session. Do "
                 "NOT ask another one — make it a statement, an observation, or PASS."

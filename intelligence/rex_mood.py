@@ -649,13 +649,15 @@ def _line_voices_mood(line: str, mood: DayMood) -> bool:
     example's distinctive words. Biased toward detecting — a false positive only stops
     a `because` from being upgraded, while a false negative lets him get retconned.
     """
-    words = set(re.findall(r"[a-z']{3,}", (line or "").lower()))
+    words = set(re.findall(r"[a-z']+", (line or "").lower()))
     if not words:
         return False
-    label = (mood.label or "").lower().strip()
-    if label and label.replace("-", " ") in " ".join(sorted(words)):
-        return True
-    if label and label in words:
+    # Label match on WHOLE TOKENS only. The first cut used a substring test against a
+    # sorted word-soup, and "worn" inside "sworn" locked the spoken flag off a totally
+    # unrelated line — which silently killed the unprompted share AND the enrich pass
+    # for the rest of the day. Multi-word labels ("keyed-up") require every token.
+    label_tokens = set((mood.label or "").lower().replace("-", " ").split())
+    if label_tokens and label_tokens <= words:
         return True
     example = set(re.findall(r"[a-z']{5,}", (mood.line or "").lower())) - _STOPWORDS
     if len(example) < 3:

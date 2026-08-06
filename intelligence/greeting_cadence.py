@@ -145,9 +145,12 @@ def describe_gap(age_secs: Optional[float]) -> str:
 # a statement ("you never ask how are you") isn't an ask.
 _WELLBEING_ASK_PAT = re.compile(
     r"\b(?:"
+    # NOTE: "it" needs "going" after it — a bare "it" made "How is it powered?"
+    # (a question about a THING) count as a check-in and suppress the real one
+    # for the whole cooldown. "How's it going?" still matches via `it\s+going`.
     r"how(?:'s|\s+is|\s+are|\s+have|'ve|\s+has|\s+was|\s+were)?\s+"
-    r"(?:you|ya|things|it|everything|life|your\s+day|your\s+week|your\s+weekend|"
-    r"your\s+evening|your\s+morning|your\s+night)\b"
+    r"(?:you|ya|things|it\s+going|everything|life|your\s+day|your\s+week|"
+    r"your\s+weekend|your\s+evening|your\s+morning|your\s+night)\b"
     r"|how\s+(?:you\s+)?(?:doing|holding\s+up|feeling|been|goes\s+it|'?re\s+you)\b"
     r"|how'?d\s+your\s+(?:day|week|weekend|night|evening)\b"
     r"|what'?s\s+(?:up|new|good|going\s+on)\b"
