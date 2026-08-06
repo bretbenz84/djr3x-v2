@@ -6841,6 +6841,39 @@ WEB_SEARCH_STALL_LINES = [
 # a web lookup needs room to actually answer, so without this override the searched
 # result gets compressed to a single clause (the feature searches the web, then
 # throws most of it away). It stays bounded because Rex speaks the answer aloud.
+# Contract for a "tell me more" about a story REX offered — replaces the general
+# addendum below on that path only. The general one opens "THIS REPLY IS THE
+# EXCEPTION to your usual one-sentence limit ... give the COMPLETE answer", which
+# is right for "what's the capital of Peru" and directly fights the short spoken
+# digest a news follow-up wants. Two contradictory length rules in one prompt is
+# how the field answer ran ~90 words with a "(esa.int)" citation read aloud
+# (2026-08-06 00:29). Owner: "shorten it, or ask the LLM to shorten it — don't
+# just cut it off."
+WEB_SEARCH_NEWS_DIGEST_ADDENDUM = (
+    "You just looked this story up. Relay it OUT LOUD the way a friend relays "
+    "news across a room: THREE SHORT SENTENCES MAXIMUM, roughly 45 words total, "
+    "and stop. Pick only the two or three details that would actually interest "
+    "THEM and drop everything else — no exhaustive place lists, no official "
+    "channel or platform roll-calls, no submission mechanics, no marketing "
+    "phrasing, no historical footnotes unless one IS the interesting bit. "
+    "Getting the timing right matters: never call a future event 'today' or "
+    "'tonight'. You are SPEAKING, so never include a URL, web address, domain, "
+    "or parenthetical source — no '(esa.int)', no 'according to'. Do NOT end by "
+    "offering to fetch more ('if you want, I can also pull...'); if they want "
+    "more they will ask. End plainly, or with ONE short dry aside."
+)
+
+# Safety net for the news digest: if the search answer overshoots this by more than
+# WEB_SEARCH_CONDENSE_SLACK, ONE extra cheap call shortens it in Rex's voice. Never a
+# truncation — a reply cut mid-sentence sounds like Rex being interrupted by his own
+# robot (owner 2026-08-06: "shorten it, or ask the LLM to shorten it").
+WEB_SEARCH_NEWS_MAX_WORDS = _env_int("WEB_SEARCH_NEWS_MAX_WORDS", 55, min_value=15, max_value=200)
+WEB_SEARCH_CONDENSE_SLACK = _env_float("WEB_SEARCH_CONDENSE_SLACK", 1.4, min_value=1.0, max_value=3.0)
+WEB_SEARCH_CONDENSE_MODEL = "gpt-4o-mini"
+WEB_SEARCH_CONDENSE_MAX_TOKENS = 220
+# Kill switch for the story TIMING clause (awareness/current_events.story_timing_clause).
+NEWS_TIMING_CLAUSE_ENABLED = _env_bool("NEWS_TIMING_CLAUSE_ENABLED", True)
+
 WEB_SEARCH_PERSONA_ADDENDUM = (
     "You just looked this up on the web in real time. THIS REPLY IS THE EXCEPTION to "
     "your usual one-sentence limit: give the COMPLETE answer the question actually "

@@ -76,6 +76,178 @@ def is_fresh() -> bool:
     return _load().get("date") == _today()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Story timing — "did you hear about the eclipse TODAY" when it's next week
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Field 2026-08-06 00:28: the stored story was "Total solar eclipse viewing push
+# for August 12, 2026" and the summary said "August 12, 2026" twice — and Rex
+# still opened with "did you hear about the eclipse today". A news frame implies
+# immediacy, so a model handed a headline will reach for "today" unless the
+# relative day is spelled out for it. Exactly the failure `_build_anticipation_
+# prompt` already fixed for remembered events (a July-4 event opened as happening
+# "tonight" on July 3), so it gets the same treatment: compute the delta HERE and
+# state it, rather than trusting the model to subtract dates.
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+# EXACT month names — full or standard abbreviation. An earlier cut spelled these
+# as `(jan|feb|...)[a-z]*`, which made any ordinary word starting with a month
+# prefix into a month: "Officials **dec**lared 6 counties" parsed as December 6,
+# "3 **sep**arate failures" as September 3, "4 **dec**ades" as December 4. On an
+# otherwise undated story that REPLACED the safe "you don't know when" hedge with
+# a confident, wrong date — strictly worse than the vagueness this fix removes.
+_MONTH_RE = (
+    r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?"
+    r"|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+_DATE_MDY = re.compile(rf"\b{_MONTH_RE}\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(\d{{4}}))?\b",
+                       re.IGNORECASE)
+# Day-first needs DATE-ISH CONTEXT — an ordinal suffix, an "of", or a trailing
+# year. A bare number before a month name is usually a version or a count, not a
+# day: "Pixel 9 August feature drop" is not August 9th, and "Season 3 September
+# premiere" is not September 3rd.
+_DATE_DMY_PATS = (
+    re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)\s+(?:of\s+)?{_MONTH_RE}\b(?:,?\s+(\d{{4}}))?",
+               re.IGNORECASE),
+    re.compile(rf"\b(\d{{1,2}})\s+of\s+{_MONTH_RE}\b(?:,?\s+(\d{{4}}))?", re.IGNORECASE),
+    re.compile(rf"\b(\d{{1,2}})\s+{_MONTH_RE},?\s+(\d{{4}})\b", re.IGNORECASE),
+)
+_DATE_ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+
+
+def _candidates(blob: str, today):
+    """Every (date) candidate in `blob`, in the order found. Invalid calendar days
+    are SKIPPED rather than ending the scan: an earlier cut returned on the first
+    regex hit, so one bogus match ("Star Trek **mar**ks 60 years") suppressed a
+    genuine date later in the same summary."""
+    from datetime import date as _date
+    out = []
+
+    def _mk(y, m, d):
+        try:
+            return _date(int(y), int(m), int(d))
+        except (ValueError, TypeError):
+            return None
+
+    def _month(tok):
+        return _MONTHS.get(str(tok)[:3].lower())
+
+    def _resolve(month, day, year):
+        if not month:
+            return None
+        if year:
+            return _mk(year, month, day)
+        best = None
+        for y in (today.year - 1, today.year, today.year + 1):
+            cand = _mk(y, month, day)
+            if cand and (best is None or abs((cand - today).days) < abs((best - today).days)):
+                best = cand
+        return best
+
+    for m in _DATE_ISO.finditer(blob):
+        d = _mk(m.group(1), m.group(2), m.group(3))
+        if d:
+            out.append((m.start(), d))
+    for m in _DATE_MDY.finditer(blob):
+        d = _resolve(_month(m.group(1)), m.group(2), m.group(3))
+        if d:
+            out.append((m.start(), d))
+    for pat in _DATE_DMY_PATS:
+        for m in pat.finditer(blob):
+            d = _resolve(_month(m.group(2)), m.group(1), m.group(3))
+            if d:
+                out.append((m.start(), d))
+    return [d for _, d in sorted(out, key=lambda pair: pair[0])]
+
+
+def story_event_date(text: str, today=None):
+    """First calendar date mentioned in `text` as a `date`, or None.
+
+    A bare "August 12" (no year) resolves to whichever year puts it nearest today,
+    so a story read in late December about "January 3" doesn't land eleven months
+    in the past. Returns None rather than guessing when nothing parses.
+    """
+    from datetime import date as _date
+    cands = _candidates(str(text or ""), today or _date.today())
+    return cands[0] if cands else None
+
+
+def story_event_dates(text: str, today=None) -> list:
+    """EVERY distinct calendar date in `text`, ascending. Drives the multi-date
+    branch of story_timing_clause — see there for why picking one would be worse."""
+    from datetime import date as _date
+    seen = _candidates(str(text or ""), today or _date.today())
+    out = []
+    for d in sorted(set(seen)):
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def story_timing_clause(story, today=None) -> str:
+    """A prompt clause pinning WHEN the story's event happens, or "".
+
+    Handed to every path that speaks about a story so the relative day is stated
+    rather than inferred. Empty when no date parses — better silent than wrong.
+    """
+    if not isinstance(story, dict):
+        return ""
+    if not bool(getattr(config, "NEWS_TIMING_CLAUSE_ENABLED", True)):
+        return ""
+    from datetime import date as _date
+    today = today or _date.today()
+    blob = f"{story.get('headline') or ''} {story.get('summary') or ''}"
+    when = story_event_date(blob, today=today)
+    if when is None:
+        # No parseable date: still stop the reflexive "today", since a story can
+        # be a day or two old by the time it is offered.
+        return (
+            "TIMING: the story gives no date, so you do NOT know when it happened "
+            "or will happen. Do NOT say \"today\", \"tonight\", \"just now\", or "
+            "imply it is happening as you speak."
+        )
+    # MULTIPLE dates ("Season 3 premiered July 23 and the finale airs August 9"):
+    # the first one is not reliably the event being discussed, and asserting the
+    # wrong date confidently is WORSE than the vague "today" this fix set out to
+    # remove. List them and make the model pick, still banning the reflex.
+    all_dates = story_event_dates(blob, today=today)
+    if len(all_dates) > 1:
+        parts = []
+        for d in all_dates:
+            delta = (d - today).days
+            rel = ("today" if delta == 0 else "tomorrow" if delta == 1
+                   else "yesterday" if delta == -1
+                   else f"in {delta} days" if delta > 1 else f"{abs(delta)} days ago")
+            parts.append(f"{d.strftime('%B %-d, %Y')} ({rel})")
+        return (
+            "TIMING: this story mentions more than one date — "
+            + "; ".join(parts)
+            + ". Work out which one the thing you are actually mentioning happens "
+            "on, and phrase it accordingly. If you are not sure, do NOT state a "
+            "day at all — and never call a future event \"today\" or \"tonight\"."
+        )
+    days = (when - today).days
+    pretty = when.strftime("%B %-d, %Y")
+    if days == 0:
+        rel = "TODAY"
+    elif days == 1:
+        rel = "TOMORROW"
+    elif days == -1:
+        rel = "YESTERDAY"
+    elif days > 1:
+        rel = f"in {days} days — it has NOT happened yet"
+    else:
+        rel = f"{abs(days)} days ago — it is already past"
+    return (
+        f"TIMING: the event this story describes is on {pretty}, which is {rel}. "
+        f"Phrase every time reference accordingly and never guess a different day; "
+        f"in particular do NOT call a future event \"today\" or \"tonight\"."
+    )
+
+
 def stories() -> list:
     """Today's (or the most recent) story list; [] when never fetched."""
     return list(_load().get("stories") or [])

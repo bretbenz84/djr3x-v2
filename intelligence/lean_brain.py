@@ -1111,7 +1111,7 @@ _INTEREST_NEWS_INSTRUCTION = (
     "news about it. The conversation just hit a lull — the perfect moment to "
     "bring THEM something on THEIR topic.]\n"
     "{situation}"
-    "The story: {headline} — {summary} Bring it up in ONE short in-character line "
+    "The story: {headline} — {summary} {timing}Bring it up in ONE short in-character line "
     "aimed at {who} PERSONALLY (\"have you seen the new ...\" / \"did you catch "
     "...\" energy — you remembered their interest and found them something). "
     "Tease the concrete detail and invite them in; do NOT recite the whole "
@@ -1137,7 +1137,7 @@ _NEWS_INSTRUCTION = (
     "[You read some news earlier and the conversation just hit a lull — a natural "
     "moment to bring it up, the way anyone mentions something they read.]\n"
     "{situation}"
-    "The story: {headline} — {summary} Bring it up in ONE short in-character line that "
+    "The story: {headline} — {summary} {timing}Bring it up in ONE short in-character line that "
     "INVITES {who} into the topic ('hey, did you hear about ...' energy) — tease the "
     "interesting part and let them ask; do NOT recite the whole summary or turn into a "
     "news anchor. Tell THIS story faithfully — do NOT substitute a different story, "
@@ -1483,6 +1483,21 @@ def _event_followup_clause(cue: Optional[dict]) -> str:
     )
 
 
+def _story_timing(story: Optional[dict]) -> str:
+    """Relative-day clause for a news story, with a trailing space (or "").
+
+    Computed here rather than trusted to the model: a news frame implies immediacy,
+    so a headline dated a week out gets announced as "today" (field 2026-08-06 —
+    the eclipse story was correctly dated in BOTH headline and summary and Rex
+    still said "the eclipse today")."""
+    try:
+        from awareness import current_events
+        clause = current_events.story_timing_clause(story)
+        return (clause + " ") if clause else ""
+    except Exception:
+        return ""
+
+
 def consider_initiating(
     person_id: Optional[int] = None,
     transcript: Optional[list[dict]] = None,
@@ -1614,6 +1629,7 @@ def consider_initiating(
                 interest_topic=str(news_story.get("interest_topic")),
                 headline=str(news_story.get("headline") or "something in the news"),
                 summary=str(news_story.get("summary") or ""),
+                timing=_story_timing(news_story),
             )
         elif news_story:
             instruction = _NEWS_INSTRUCTION.format(
@@ -1621,6 +1637,7 @@ def consider_initiating(
                 situation=situation,
                 headline=str(news_story.get("headline") or "something in the news"),
                 summary=str(news_story.get("summary") or ""),
+                timing=_story_timing(news_story),
             )
         elif memory_musing:
             instruction = _MEMORY_MUSING_INSTRUCTION.format(

@@ -314,11 +314,19 @@ def clear_recent_search(min_age_secs: float = 0.0) -> None:
 # The search call (OpenAI Responses API + hosted web_search tool)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_instructions(person_id: Optional[int]) -> str:
+def _build_instructions(person_id: Optional[int], addendum: Optional[str] = None) -> str:
     """Rex's full persona prompt (so the answer stays in voice) plus a short addendum
     telling him he just looked it up. Falls back to the bare addendum if prompt
-    assembly fails."""
-    addendum = getattr(config, "WEB_SEARCH_PERSONA_ADDENDUM", "")
+    assembly fails.
+
+    `addendum` overrides the default contract. The news-follow-up path passes its own:
+    the general one opens "THIS REPLY IS THE EXCEPTION to your usual one-sentence
+    limit — give the COMPLETE answer ... two to four sentences", which is right for
+    "what's the capital of Peru" and directly fights the short spoken digest a
+    "tell me more about that story" wants. Two contradictory length rules in one
+    prompt is how the field answer ran ~90 words (2026-08-06 00:29)."""
+    if addendum is None:
+        addendum = getattr(config, "WEB_SEARCH_PERSONA_ADDENDUM", "")
     try:
         from intelligence import llm
         base = llm.assemble_system_prompt(person_id)
@@ -353,8 +361,27 @@ _SOURCE_PAREN_RE = re.compile(
 )
 _BARE_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.I)    # http(s):// or www. ...
 _BARE_DOMAIN_RE = re.compile(                                 # espn.com, reuters.com/world/...
-    r"\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|gov|edu|co|news|tv|me|uk|us|ai|app|dev|info|biz)\b"
+    r"\b(?:[a-z0-9-]+\.)+"
+    r"(?:com|org|net|io|gov|edu|co|news|tv|me|uk|us|ai|app|dev|info|biz"
+    r"|int|eu|ca|au|de|fr|jp|nl|se|no|es|it|ch|space|science|online|site|xyz)\b"
     r"(?:/\S*)?",
+    re.I,
+)
+# A parenthetical whose entire contents is a dotted hostname — "(esa.int)",
+# "(nasa.gov)", "(apnews.com)". Matched by SHAPE rather than by TLD because the
+# TLD allow-list below missed .int and read "(esa.int)" aloud mid-answer (field
+# 2026-08-06 00:29); a new TLD would just reopen the same hole.
+_PAREN_DOMAIN_RE = re.compile(
+    # The final segment must be an ALPHABETIC TLD. `[a-z0-9-]{2,}` also matched
+    # "(7.24)" and ate a magnitude reading out of a sentence.
+    r"\s*[\(\[]\s*(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\s*[\)\]]",
+    re.I,
+)
+# "According to esa.int," / "per reuters.com," — strip the WHOLE attribution, not
+# just the domain, or the leftover reads aloud as "According to, the eclipse is...".
+_ATTRIB_DOMAIN_RE = re.compile(
+    r"\b(?:according to|per|via|from|reported by|source[sd]?\s*:?)\s+"
+    r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\s*[,:]?\s*",
     re.I,
 )
 _CITE_MARK_RE = re.compile(r"\s*\[\d+\]")                     # footnote markers [1]
@@ -390,6 +417,8 @@ def strip_links(text: str) -> str:
     out = _MD_LINK_RE.sub(r"\1", text)
     out = _SOURCE_PAREN_RE.sub("", out)
     out = _BARE_URL_RE.sub("", out)
+    out = _ATTRIB_DOMAIN_RE.sub("", out)
+    out = _PAREN_DOMAIN_RE.sub("", out)
     out = _BARE_DOMAIN_RE.sub("", out)
     out = _CITE_MARK_RE.sub("", out)
     out = _EMPTY_BRACKET_RE.sub("", out)
@@ -397,7 +426,13 @@ def strip_links(text: str) -> str:
     out = re.sub(r"\s+([,.;:!?])", r"\1", out)
     out = re.sub(r"\(\s*\)|\[\s*\]", "", out)
     out = re.sub(r"\s{2,}", " ", out)
-    return out.strip(" \t\n,;:")
+    out = out.strip(" \t\n,;:")
+    # Removing a leading attribution ("According to esa.int, the eclipse...") can
+    # leave the sentence starting lowercase. Rex speaks this, so it only matters
+    # in the transcript — but a lowercase opener there reads like a bug.
+    if out and out[0].islower() and (text or "").strip()[:1].isupper():
+        out = out[0].upper() + out[1:]
+    return out
 
 
 def _extract_citations(response) -> List[str]:
@@ -461,11 +496,60 @@ def _create_search_response(model: str, *, instructions: str, user_input: str, f
         raise
 
 
-def answer(text: str, person_id: Optional[int] = None, forced: bool = False) -> SearchResult:
+def _condense(text: str, max_words: int) -> Optional[str]:
+    """Ask the model to SHORTEN an over-long spoken answer. Returns None on any
+    failure or if the answer is already short enough.
+
+    A second call rather than a truncation, per the owner (2026-08-06): "shorten
+    it, or ask the LLM to shorten it — don't just cut it off." Cutting mid-sentence
+    is worse than long: the listener hears Rex get interrupted by his own robot.
+    This is a SAFETY NET — the digest addendum is what should normally keep the
+    answer short, and this only fires when the model overshoots badly.
+    """
+    words = len(str(text or "").split())
+    slack = float(getattr(config, "WEB_SEARCH_CONDENSE_SLACK", 1.4))
+    if words <= max_words * slack:
+        return None
+    try:
+        resp = _client.chat.completions.create(
+            model=getattr(config, "WEB_SEARCH_CONDENSE_MODEL", "gpt-4o-mini"),
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Shorten this spoken reply to at most {max_words} words and "
+                    f"three short sentences, keeping the SAME voice, the most "
+                    f"interesting facts, and any date. Drop exhaustive lists, "
+                    f"source names, and offers to fetch more. Do not add anything. "
+                    f"Reply with only the shortened text.\n\n{text}"
+                ),
+            }],
+            temperature=0.3,
+            max_tokens=int(getattr(config, "WEB_SEARCH_CONDENSE_MAX_TOKENS", 220)),
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        # Must actually LAND near the target — "shorter than the 90-word original"
+        # still passes at 85 words, which is the problem we are solving.
+        if out and len(out.split()) <= max_words * slack:
+            _log.info(
+                "[web_search] condensed answer %d -> %d words", words, len(out.split()),
+            )
+            return out
+    except Exception as exc:
+        _log.debug("[web_search] condense failed: %s", exc)
+    return None
+
+
+def answer(
+    text: str,
+    person_id: Optional[int] = None,
+    forced: bool = False,
+    addendum: Optional[str] = None,
+    max_words: Optional[int] = None,
+) -> SearchResult:
     """Run the hosted web search and return Rex's spoken answer. Never raises — on any
     failure returns ``SearchResult(ok=False, ...)`` so the caller falls through to a
-    normal reply."""
-    instructions = _build_instructions(person_id)
+    normal reply. `addendum` overrides the default length/style contract."""
+    instructions = _build_instructions(person_id, addendum=addendum)
     user_input = text
     if forced:
         user_input = (
@@ -512,5 +596,8 @@ def answer(text: str, person_id: Optional[int] = None, forced: bool = False) -> 
     if not answer_text.strip():
         # Nothing left after stripping (e.g. a bare-link "answer") — fall through.
         return SearchResult(False, "", [])
+
+    if max_words:
+        answer_text = _condense(answer_text, int(max_words)) or answer_text
 
     return SearchResult(True, answer_text, _extract_citations(response))

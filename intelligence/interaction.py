@@ -12981,25 +12981,28 @@ def _parse_text_tool_call(raw: str) -> Optional[tuple]:
 def _compose_news_search_input(text: str, story: dict) -> str:
     """Search input for a follow-up about the story Rex just offered: the user's
     words alone ("tell me more about that") carry no topic, so the cached
-    headline + summary ride along as the grounding."""
+    headline + summary ride along as the grounding.
+
+    Length/style now live in config.WEB_SEARCH_NEWS_DIGEST_ADDENDUM (the SYSTEM
+    contract for this path) rather than here — stating them in the user message
+    while the system prompt said "give the COMPLETE answer" produced a ~90-word
+    reply (field 2026-08-06 00:29). What stays here is grounding: which story,
+    and WHEN its event actually is.
+    """
     headline = str(story.get("headline") or "").strip()
     summary = str(story.get("summary") or "").strip()
     detail = f" ({summary})" if summary else ""
-    # SPOKEN-digest contract (field 2026-08-05 20:59: "tell me more" produced a
-    # ~150-word press release read aloud — platform roll-calls, brand phrasing, and
-    # a closing menu of further fetches). "Give them the concrete details" with no
-    # ceiling reads, to the model, as an invitation to file a report; a friend
-    # relaying a story picks the two or three bits worth saying and stops.
+    timing = ""
+    try:
+        from awareness import current_events
+        clause = current_events.story_timing_clause(story)
+        timing = f" {clause}" if clause else ""
+    except Exception:
+        timing = ""
     return (
         f"{text}\n\n[They are asking about the news story you just mentioned: "
-        f'"{headline}"{detail}. Search the web for that story, then TELL it the '
-        "way a friend relays news out loud, in your own voice: THREE short "
-        "sentences MAXIMUM. Pick only the two or three details that would "
-        "actually interest THEM — skip official-channel names, platform lists "
-        "(no 'Instagram, TikTok, YouTube' roll-calls), submission mechanics, and "
-        "marketing phrasing. Do NOT end with an offer to fetch more (no 'if you "
-        "want, I can also pull…') — if they want more, they'll ask. End plainly, "
-        "or with ONE short dry aside.]"
+        f'"{headline}"{detail}.{timing} Search the web for that story and tell '
+        "them about it in your own voice.]"
     )
 
 
@@ -13082,7 +13085,21 @@ def _maybe_web_search_reply(
         _compose_news_search_input(text, news_story) if news_story is not None else text
     )
     try:
-        result = web_search.answer(search_text, person_id, forced=decision.forced)
+        result = web_search.answer(
+            search_text, person_id, forced=decision.forced,
+            # News follow-ups get the short spoken-digest contract; every other
+            # search keeps the general "complete answer" one.
+            addendum=(
+                getattr(config, "WEB_SEARCH_NEWS_DIGEST_ADDENDUM", None)
+                if news_story is not None else None
+            ),
+            # Safety net only: if the model overshoots the digest contract badly,
+            # a second call SHORTENS it (never a mid-sentence truncation).
+            max_words=(
+                int(getattr(config, "WEB_SEARCH_NEWS_MAX_WORDS", 55))
+                if news_story is not None else None
+            ),
+        )
     except Exception as exc:
         _log.warning("[web_search] answer failed: %s", exc)
         return None

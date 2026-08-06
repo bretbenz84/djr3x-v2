@@ -203,9 +203,14 @@ class StripLinksTest(unittest.TestCase):
         self.assertEqual(out, "The Lakers won.")
 
     def test_removes_bare_domain(self):
+        # The WHOLE attribution goes now, not just the domain: leaving "According
+        # to the vote passed" (or "According to, ...") reads aloud as a stumble,
+        # and the sentence is re-capitalized (2026-08-06 citation cleanup).
         out = web_search.strip_links("According to reuters.com the vote passed.")
         self.assertNotIn("reuters.com", out)
-        self.assertIn("the vote passed", out)
+        self.assertIn("vote passed", out)
+        self.assertNotIn("According to", out)
+        self.assertEqual(out, "The vote passed.")
 
     def test_removes_source_parenthetical(self):
         out = web_search.strip_links("It rained today (source: weather.com).")
