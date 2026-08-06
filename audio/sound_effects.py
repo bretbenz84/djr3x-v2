@@ -382,6 +382,41 @@ except Exception:  # circular-import safety in odd tool contexts; wiring is best
 
 # ── Public API ────────────────────────────────────────────────────────────────────
 
+def _in_reply_window(family: str) -> bool:
+    """True while Rex has finished speaking and is waiting for someone to answer.
+
+    An effect fired here lands squarely on the person's opening words: the mic reopens
+    ~0.1 s after playback ends and these clips run ~1.5 s, which is a whole short reply.
+    Two field failures on 2026-08-06, both one second after he stopped talking:
+    a `servo` whir at 13:07:10 swallowed "This is the workshop room" outright (no VAD,
+    no segment, no transcript), and a `proud` chirp at 13:21:50 was itself transcribed
+    as "Naturally." and answered as a mystery voice.
+
+    Deliberately scoped to the gap AFTER his own line. `is_drained()` is False between
+    the sentences of one reply and while anything is still queued, so chirps that ride
+    his own speech — including the `play_for_speech` emotion chirp covering the
+    synthesis gap — are untouched. Reacting to a HUMAN turn is fine for the same
+    reason: that path fires with a reply already queued.
+
+    `motion` is exempt by default: those whirs accompany a physical move the person
+    just asked for, they are expected feedback rather than decoration, and dropping
+    them re-opens the 2026-07-24 "he does not play the sound effects" complaint.
+    """
+    if str(family) in (getattr(config, "SOUND_EFFECTS_REPLY_WINDOW_EXEMPT_FAMILIES", None)
+                       or ()):
+        return False
+    secs = float(getattr(config, "SOUND_EFFECTS_REPLY_WINDOW_SECS", 3.0) or 0.0)
+    if secs <= 0.0:
+        return False
+    try:
+        from audio import speech_queue
+        if not speech_queue.is_drained():
+            return False          # mid-reply, or more lines queued — not a reply window
+        return speech_queue.seconds_since_last_speech() < secs
+    except Exception:
+        return False              # fail OPEN: never silence effects on a lookup error
+
+
 def play(key: str, *, force: bool = False, concurrent: bool = False,
          overlay: bool = False) -> bool:
     """Fire effect ``key`` asynchronously. Returns True when a playback thread was
@@ -402,6 +437,9 @@ def play(key: str, *, force: bool = False, concurrent: bool = False,
             return False
         family = _family(key)
         if not force and not _family_allowed(family):
+            return False
+        if not force and _in_reply_window(family):
+            _log.debug("[sfx] reply window — holding %s (%s)", key, family)
             return False
         stems = _stems_for(key)
         if not stems:

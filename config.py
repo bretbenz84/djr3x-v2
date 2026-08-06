@@ -8736,6 +8736,16 @@ SOUND_EFFECTS_ENABLED        = True
 # unheard while a realign loop retried every ~10 s. Speech and music still
 # suppress; motor noise does not.
 SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC = False
+# No-effects window after Rex stops talking, while he waits for an answer. His clips
+# run ~1.5 s and the mic reopens ~0.1 s after playback, so an effect fired here covers
+# a whole short reply. Field 2026-08-06: a servo whir one second after his question ate
+# "This is the workshop room" entirely, and a proud chirp two seconds after a line was
+# transcribed as "Naturally." and answered as a mystery voice. Only applies once the
+# speech queue is DRAINED, so chirps riding his own speech are unaffected. 0 disables.
+SOUND_EFFECTS_REPLY_WINDOW_SECS = 3.0
+# Families exempt from that window. Motion whirs are feedback for a move the person
+# just asked for, not decoration — muting them re-opens the 2026-07-24 complaint.
+SOUND_EFFECTS_REPLY_WINDOW_EXEMPT_FAMILIES = ("motion",)
 SOUND_EFFECTS_DIR            = "assets/audio/sound_effects"
 SOUND_EFFECTS_VOLUME         = 0.8    # 0..1 gain applied to every clip
 # Gain for OVERLAY clips only — the drive sounds on a voice-COMMANDED move, which

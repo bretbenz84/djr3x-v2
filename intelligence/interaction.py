@@ -2817,6 +2817,43 @@ def note_external_tts(text: Optional[str]) -> None:
     _note_rex_spoke(text)
 
 
+# Short words that really are far likelier to be the human than an echo, even verbatim.
+# Backchannels and answers carry no information about WHO said them, so they keep the
+# original min-words protection; a distinctive word like "naturally" does not.
+_ECHO_SHORT_COMMON_WORDS = frozenset({
+    "yeah", "yes", "yep", "no", "nope", "okay", "ok", "sure", "right", "hmm", "huh",
+    "oh", "ah", "uh", "um", "well", "hi", "hey", "hello", "bye", "thanks", "please",
+    "what", "why", "how", "who", "when", "where", "stop", "wait", "sorry", "cool",
+    "nice", "good", "great", "true", "exactly", "maybe", "nothing", "everything",
+})
+
+
+def _looks_like_short_own_echo(norm: str) -> bool:
+    """A 1-2 word transcript that is verbatim the opening of a line Rex JUST spoke.
+
+    Deliberately narrow: inside the post-TTS capture seam only, whole-word prefix match
+    only, and never for a common backchannel. See the caller for the field case.
+    """
+    if not bool(getattr(config, "OWN_ECHO_SHORT_PREFIX_ENABLED", True)):
+        return False
+    words = norm.split()
+    if not words or len(words) > 2:
+        return False
+    if any(w in _ECHO_SHORT_COMMON_WORDS for w in words):
+        return False
+    seam_secs = float(getattr(config, "OWN_ECHO_SEAM_SECS", 8.0))
+    now = time.monotonic()
+    with _recent_rex_lines_lock:
+        recent = [(line, now - at) for line, at in _recent_rex_lines]
+    for line, age in recent:
+        if not line or age > seam_secs:
+            continue
+        line_words = line.split()
+        if line_words[:len(words)] == words:
+            return True
+    return False
+
+
 def _looks_like_own_echo(text: str) -> bool:
     """True when a transcript near-matches something Rex himself just said."""
     if not bool(getattr(config, "OWN_ECHO_REJECT_ENABLED", True)):
@@ -2824,8 +2861,14 @@ def _looks_like_own_echo(text: str) -> bool:
     norm = _normalize_echo_text(text)
     min_words = int(getattr(config, "OWN_ECHO_MIN_WORDS", 3))
     if not norm or len(norm.split()) < min_words:
-        # 1-2 word overlaps ("yeah", "okay") are far likelier to be the human.
-        return False
+        # 1-2 word overlaps ("yeah", "okay") are far likelier to be the human — EXCEPT
+        # a distinctive word that is verbatim how Rex just opened a line. Field
+        # 2026-08-06: his own "Naturally. The outage got a vote of no confidence…" came
+        # back as a bare "Naturally." from the capture seam, sailed under this floor,
+        # and was answered as a mystery voice ("who are you?"). A confident voiceprint
+        # match to a real human still overrides this at the call site
+        # (OWN_ECHO_VOICE_OVERRIDE_SCORE), so a person genuinely saying it is safe.
+        return _looks_like_short_own_echo(norm)
     window = float(getattr(config, "OWN_ECHO_WINDOW_SECS", 12.0))
     ratio_floor = float(getattr(config, "OWN_ECHO_SIMILARITY", 0.85))
     # Inside the capture seam right after a line played, the AEC residual garbles

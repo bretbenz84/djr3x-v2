@@ -2187,6 +2187,50 @@ channel was not Rex speaking — it was his own **decorative sound effects**.
 - Tests: `tests/test_sound_effects.py` (flag set/cleared per family, cleared on
   exception, and the interaction-side gate for whir / chirp / TTS / idle).
 
+### No-effects reply window + one-word own-echo hole (2026-08-06, session 13-20-57)
+
+Rex played a triumphant chirp two seconds after finishing a line, the chirp was captured
+and transcribed as "Naturally." — the first word of the line he had just spoken — and he
+answered his own echo as a stranger ("who are you?"). Owner's call, and the better fix
+than the mic-side gate above: **don't play effects while a reply is expected.**
+
+- **`sound_effects._in_reply_window(family)`** (`SOUND_EFFECTS_REPLY_WINDOW_SECS`, 3.0)
+  holds effects once the speech queue is DRAINED and Rex stopped talking within the
+  window. This attacks the CAUSE that both 2026-08-06 failures share — an effect firing
+  into the gap where the person is answering — rather than the symptom. Scoping matters:
+  `is_drained()` is False between the sentences of one reply and while anything is
+  queued, so chirps riding his own speech (including `play_for_speech`'s synthesis-gap
+  chirp) and reactions to a HUMAN turn are untouched. `motion` is exempt
+  (`SOUND_EFFECTS_REPLY_WINDOW_EXEMPT_FAMILIES`) — motor sound is feedback for a move
+  the person just asked for, and muting it re-opens the 2026-07-24 complaint. Fails OPEN
+  and `force=True` still bypasses, so nothing can be silenced by a bookkeeping error.
+- **`OWN_ECHO_MIN_WORDS` (3) let a one-word echo straight through.** The floor exists
+  because "yeah"/"okay" are likelier to be the human — true for backchannels, false for
+  a distinctive word that is verbatim how Rex JUST opened a line.
+  `_looks_like_short_own_echo` now rejects a 1–2 word transcript that whole-word-prefixes
+  a line spoken inside the capture seam, excluding `_ECHO_SHORT_COMMON_WORDS`. The
+  confident-voiceprint override (`OWN_ECHO_VOICE_OVERRIDE_SCORE`, 0.80) still wins, so a
+  human genuinely saying it is safe — today's echo scored 0.407.
+- **This is also the voice-signature poisoning fix.** Echo rejection returns UPSTREAM of
+  person resolution and `_resolve_anonymous_speaker_slot`, so a rejected echo never
+  reaches `voice_signatures`. It had been reaching it: signature id=15 matched the
+  phantom at 0.990 and had grown to **14 turns across sessions since 2026-08-02** — Rex
+  learning his own AEC residual as a recurring person. A pinned regression test asserts
+  the ordering. Existing poisoned rows are NOT auto-cleaned (all are `person_id=None`
+  anonymous slots and some may be real unnamed guests — owner's call).
+- **Relationship to the mic-gate change (a09960d):** verified inert here — the `proud`
+  chirp is speech-family with `_suppresses_mic=True`, so the mic was skipped during it
+  exactly as before; the capture had already begun in the post-TTS seam BEFORE the chirp
+  and pulled the chirp in via the rolling buffer. a09960d is kept because it still covers
+  the case this window does not: a LOOPING motion whir during a long manoeuvre
+  (2026-07-25), which is not a reply window at all.
+- **Caveat on that earlier diagnosis:** `mic_skip_output_busy_sfx` counts any non-speech
+  gate holder, and the counter name is picked by `speech_queue.is_speaking()` — the
+  13-04-31 session logged 0 `mic_skip_rex_speaking` despite ~11.5 s of TTS, so the
+  148 figure likely folds in TTS playback and overstates the effects share. The specific
+  13:07:10 servo incident stands on its own timeline; the aggregate does not.
+- Tests: `tests/test_field_2026_08_06_sfx_echo.py`.
+
 ## Likely Future Work
 
 - **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The
