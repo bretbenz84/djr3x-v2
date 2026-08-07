@@ -198,5 +198,166 @@ class GuiCategoriesReminderTest(unittest.TestCase):
             self.assertIn("SCIENCE", games._jeopardy_categories_reminder())
 
 
+class BoardRepeatRequestTest(unittest.TestCase):
+    """The categories are announced once when a round loads. A voice-only player
+    who missed them must be able to ask for them back — the old selection parser
+    answered "pick a dollar value too", which reads as being ignored."""
+
+    def _board(self, uneven: bool = False):
+        history = {200: {}, 400: {}} if not uneven else {400: {}}
+        return {
+            "categories": [
+                {"name": "SCIENCE", "clues": {200: {}, 400: {}}},
+                {"name": "HISTORY", "clues": history},
+            ],
+            "remaining": 4 if not uneven else 3,
+        }
+
+    def setUp(self):
+        games._active_game = "jeopardy"
+        games._game_state = {
+            "phase": "selecting",
+            "players": [{"name": "Bret", "score": 0}],
+            "current_player_idx": 0,
+            "board": self._board(),
+        }
+
+    def tearDown(self):
+        games._game_state = {}
+        games._active_game = None
+
+    def test_request_phrasings_detected(self):
+        for text in [
+            "what are the categories",
+            "what's on the board",
+            "what were the categories again",
+            "repeat the categories",
+            "read me the board",
+            "remind me of the categories",
+            "the categories one more time",
+            "what categories are left",
+            "what's still available",
+            "say that again",
+            "can you repeat the clue",
+        ]:
+            self.assertTrue(jeopardy.is_board_request(text), text)
+
+    def test_a_real_selection_is_never_a_board_request(self):
+        # A dollar value means they are picking a square, not asking.
+        for text in [
+            "science for 400",
+            "I'll take history for two hundred",
+            "same category for 400",
+            "give me the science category for 200",
+        ]:
+            self.assertFalse(jeopardy.is_board_request(text), text)
+
+    def test_selection_phase_reads_the_board_back(self):
+        resp, done = games._jeopardy_handle_selection("what are the categories", None)
+        self.assertFalse(done)
+        self.assertIn("SCIENCE", resp)
+        self.assertIn("HISTORY", resp)
+        self.assertIn("pick a category", resp)
+        # Asking costs nothing: no square consumed, still their turn to select.
+        self.assertEqual(games._game_state["board"]["remaining"], 4)
+        self.assertEqual(games._game_state["phase"], "selecting")
+
+    def test_explicit_ask_answers_even_with_the_gui_up(self):
+        # The GUI mutes the per-turn reminder, not a direct question.
+        with mock.patch.object(config, "GUI_ENABLED", True, create=True):
+            resp, _done = games._jeopardy_handle_selection("what are the categories", None)
+        self.assertIn("SCIENCE", resp)
+
+    def test_even_board_collapses_to_one_value_list(self):
+        readout = jeopardy.format_board_readout(self._board())
+        self.assertIn("SCIENCE. HISTORY", readout)
+        self.assertIn("Each one still has $200, $400", readout)
+
+    def test_uneven_board_itemizes_values_per_category(self):
+        readout = jeopardy.format_board_readout(self._board(uneven=True))
+        self.assertIn("SCIENCE for $200, $400", readout)
+        self.assertIn("HISTORY for $400", readout)
+
+    def test_empty_board_reads_back_as_empty(self):
+        self.assertEqual(jeopardy.format_board_readout({"categories": []}), "")
+
+
+class ClueRepeatRequestTest(unittest.TestCase):
+    """Asking to hear a live clue again must not be scored as a wrong answer."""
+
+    _CLUE = {
+        "category": "NFL", "value": 400, "effective_value": 400,
+        "clue": "This team won Super Bowl XXIX", "answer": "the 49ers",
+    }
+
+    def setUp(self):
+        games._active_game = "jeopardy"
+        games._game_state = {
+            "phase": "awaiting_answer",
+            "current_clue": dict(self._CLUE),
+            "players": [{"name": "Bret", "score": 0}],
+            "current_player_idx": 0,
+            "board": {
+                "remaining": 2,
+                "categories": [{"name": "NFL", "clues": {200: {}}}],
+            },
+        }
+
+    def tearDown(self):
+        games._game_state = {}
+        games._active_game = None
+
+    def _handle(self, text):
+        with mock.patch.object(games, "_body_beat"), \
+             mock.patch.object(games, "_jeopardy_queue_clip"), \
+             mock.patch.object(games, "_jeopardy_cancel_timeout"), \
+             mock.patch.object(games, "_jeopardy_llm_judge", return_value=False):
+            return games._jeopardy_handle_answer(text, None)
+
+    def test_repeat_request_rereads_the_clue_without_scoring(self):
+        resp, done = self._handle("can you repeat the clue")
+        self.assertFalse(done)
+        self.assertIn("Super Bowl XXIX", resp)
+        self.assertEqual(games._game_state["players"][0]["score"], 0)
+        # Clue stays live and the answer window restarts.
+        self.assertEqual(games._game_state["phase"], "awaiting_answer")
+        self.assertTrue(games._game_state["awaiting_prompt_delivery"])
+        self.assertTrue(games._game_state.get("current_clue"))
+
+    def test_repeat_request_never_reaches_the_llm_judge(self):
+        with mock.patch.object(games, "_body_beat"), \
+             mock.patch.object(games, "_jeopardy_queue_clip"), \
+             mock.patch.object(games, "_jeopardy_cancel_timeout"), \
+             mock.patch.object(games, "_jeopardy_llm_judge") as judge:
+            games._jeopardy_handle_answer("say that again", None)
+        judge.assert_not_called()
+
+    def test_categories_asked_mid_clue_costs_nothing(self):
+        resp, done = self._handle("wait what are the categories")
+        self.assertFalse(done)
+        self.assertIn("Still on the board", resp)
+        self.assertIn("Super Bowl XXIX", resp)  # the live clue is re-read too
+        self.assertEqual(games._game_state["players"][0]["score"], 0)
+
+    def test_a_correct_answer_is_still_scored_not_intercepted(self):
+        with mock.patch.object(games, "_body_beat"), \
+             mock.patch.object(games, "_jeopardy_queue_clip"), \
+             mock.patch.object(games, "_jeopardy_cancel_timeout"):
+            _resp, _done = games._jeopardy_handle_answer("what is the 49ers", None)
+        self.assertEqual(games._game_state["players"][0]["score"], 400)
+
+    def test_repeat_shapes_do_not_swallow_jeopardy_style_answers(self):
+        # "What is the board?" is a legal response phrasing — the mid-clue
+        # interceptor must not treat it as a request to re-read.
+        for text in [
+            "what is the board",
+            "what are the options",
+            "who is Bill Board",
+            "the board of directors",
+            "a repeat offender",
+        ]:
+            self.assertFalse(jeopardy.is_clue_repeat_request(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()

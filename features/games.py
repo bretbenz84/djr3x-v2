@@ -1471,6 +1471,34 @@ def _jeopardy_categories_reminder() -> str:
     return f"Remaining categories: {categories}. "
 
 
+def _jeopardy_board_text() -> str:
+    """The live board spoken aloud, or "" if nothing is left.
+
+    Unlike _jeopardy_categories_reminder this ignores the GUI mute: the mute
+    exists so the board is not re-read EVERY turn, but an explicit "what are
+    the categories?" always deserves an answer.
+    """
+    board = _game_state.get("board") or {}
+    try:
+        from features import jeopardy as jeopardy_bank
+        return jeopardy_bank.format_board_readout(board)
+    except Exception as exc:
+        _log.debug("[jeopardy] board readout failed: %s", exc)
+        return ""
+
+
+def _jeopardy_repeat_clue_reply(clue: dict, player: dict, prefix: str = "") -> str:
+    """Re-read the live clue and restart the answer window, scoring nothing."""
+    _game_state["phase"] = "awaiting_answer"
+    _game_state["awaiting_prompt_delivery"] = True
+    if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
+        _game_state["pending_after_response_clip"] = "theme"
+    return (
+        f"{prefix}{player['name']}, {clue.get('category')} for ${clue.get('value')}. "
+        f"Clue: {clue.get('clue')}."
+    )
+
+
 def _jeopardy_offer_rebound() -> Optional[dict]:
     """Give the same clue to the next player who has not tried it yet."""
     players = _game_state.get("players") or []
@@ -1800,6 +1828,19 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
     try:
         from features import jeopardy as jeopardy_bank
         board = _game_state.get("board") or {}
+        # The categories are announced once when the round loads. A voice-only
+        # player who missed them had no way to get them back — the old path fell
+        # through to "pick a dollar value too", which reads as being ignored.
+        if jeopardy_bank.is_board_request(text):
+            readout = _jeopardy_board_text()
+            player = _jeopardy_current_player()
+            if not readout:
+                return ("The board is picked clean. Nothing left to read back.", False)
+            return (
+                f"Still on the board: {readout}. "
+                f"{player['name']}, pick a category and dollar value.",
+                False,
+            )
         clue, error = jeopardy_bank.parse_selection(
             text,
             board,
@@ -1864,12 +1905,30 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     value = int(clue.get("effective_value", clue.get("value", 0)) or 0)
     correct_response = _jeopardy_correct_response_text(clue)
 
+    # "Say that again" is a request, not a guess. These shapes are never a valid
+    # "What is X?" response, so they are safe to intercept before scoring.
+    if jeopardy_bank is not None and jeopardy_bank.is_clue_repeat_request(text):
+        return (_jeopardy_repeat_clue_reply(clue, player, prefix="Once more. "), False)
+
     passed = bool(jeopardy_bank and jeopardy_bank.is_pass_or_timeout(text))
     correct = bool(jeopardy_bank and jeopardy_bank.is_correct(text, answer))
     if not correct and not passed and jeopardy_bank is not None:
         # Speech-transcript fallback: give a borderline miss one strict LLM look
         # before the deduction (phonetic mangling the lexical matcher can't score).
         correct = _jeopardy_llm_judge(text, answer, clue)
+
+    # "What are the categories?" asked a beat late — a question, not a wrong
+    # answer. Checked only AFTER is_correct and the judge both said no, so it can
+    # never swallow a legitimate response like "What is the board of directors?".
+    if (
+        not correct
+        and not passed
+        and jeopardy_bank is not None
+        and jeopardy_bank.is_board_request(text)
+    ):
+        readout = _jeopardy_board_text()
+        prefix = f"Still on the board: {readout}. Now, back to your square. " if readout else ""
+        return (_jeopardy_repeat_clue_reply(clue, player, prefix=prefix), False)
 
     done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
     if passed:

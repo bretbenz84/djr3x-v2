@@ -282,6 +282,30 @@ def format_categories(
     )
 
 
+def format_board_readout(board: dict) -> str:
+    """Speak the squares that are still live: categories plus their values.
+
+    Collapses to one shared value list while the board is still even (most of a
+    round), and only itemizes per category once squares disappear unevenly.
+    """
+    entries: list[tuple[str, list[int]]] = []
+    for category in board.get("categories") or []:
+        values = sorted(int(value) for value in (category.get("clues") or {}).keys())
+        if values:
+            entries.append((str(category.get("name") or "Potpourri"), values))
+    if not entries:
+        return ""
+
+    if len({tuple(values) for _name, values in entries}) == 1:
+        names = ". ".join(name for name, _values in entries)
+        values_text = ", ".join(f"${value}" for value in entries[0][1])
+        return f"{names}. Each one still has {values_text}"
+    return ". ".join(
+        f"{name} for {', '.join(f'${value}' for value in values)}"
+        for name, values in entries
+    )
+
+
 def format_scores(players: list[dict]) -> str:
     if not players:
         return "no players"
@@ -851,6 +875,64 @@ def format_correct_response(answer: str, clue: str = "", category: str = "") -> 
     if _needs_indefinite_article(subject, prefix, clue=clue):
         subject = f"{_indefinite_article_for(subject)} {subject}"
     return f"{prefix} {subject}?"
+
+
+def _spoken(text: str) -> str:
+    """Lowercase words with contractions closed up ("what's" -> "whats")."""
+    lowered = (text or "").lower().replace("’", "'")
+    lowered = re.sub(r"[^a-z0-9\s']", " ", lowered)
+    return " ".join(lowered.replace("'", "").split())
+
+
+_BOARD_NOUN = r"(?:categor(?:y|ies)|board|squares?|options|choices)"
+
+_BOARD_REQUEST_RES = [
+    # "what are the categories", "whats on the board", "what categories are left"
+    re.compile(rf"\bwhat(?:s|\s+(?:is|are|was|were))?\b.{{0,40}}\b{_BOARD_NOUN}\b"),
+    # "repeat the categories", "read me the board", "remind me of the categories"
+    re.compile(
+        rf"\b(?:repeat|reread|read|list|name|say|give\s+me|tell\s+me|remind\s+me)\b"
+        rf".{{0,40}}\b{_BOARD_NOUN}\b"
+    ),
+    # "the categories again", "board one more time"
+    re.compile(rf"\b{_BOARD_NOUN}\b.{{0,30}}\b(?:again|one\s+more\s+time)\b"),
+    # "whats left", "what is still available"
+    re.compile(r"\bwhat(?:s|\s+(?:is|was))\s+(?:still\s+)?(?:left|available|open|remaining)\b"),
+]
+
+# Meta shapes only — never a plausible "What is X?" response, so these are safe
+# to intercept while a clue is live and an answer is on the line.
+_CLUE_REPEAT_RES = [
+    re.compile(r"^(?:hey\s+rex\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:repeat|say|read)\b"),
+    re.compile(r"^(?:please\s+)?(?:repeat|reread|read)\s+(?:the\s+|that\s+|it\s+)?(?:clue|question|that|it)?\s*(?:again)?$"),
+    re.compile(r"\b(?:say|read|repeat)\s+(?:that|it|the\s+(?:clue|question))\s+again\b"),
+    re.compile(r"^(?:repeat|come\s+again|one\s+more\s+time|again\s+please|say\s+again)$"),
+    re.compile(r"\bwhat\s+was\s+the\s+(?:clue|question)\b"),
+    re.compile(r"\b(?:sorry\s+)?what\s+was\s+that\b"),
+    re.compile(r"\b(?:didnt|did\s+not)\s+(?:hear|catch)\b"),
+]
+
+
+def is_board_request(text: str) -> bool:
+    """True when the player is asking to hear the board again, not picking.
+
+    A dollar value means they are picking a square, so it always wins — the
+    "not that category" error already lists what is available at that value.
+    """
+    if _mentioned_any_value(text) is not None:
+        return False
+    spoken = _spoken(text)
+    if not spoken:
+        return False
+    return any(pattern.search(spoken) for pattern in _BOARD_REQUEST_RES) or is_clue_repeat_request(text)
+
+
+def is_clue_repeat_request(text: str) -> bool:
+    """True for "say that again" shapes — a request to re-hear, not an answer."""
+    spoken = _spoken(text)
+    if not spoken:
+        return False
+    return any(pattern.search(spoken) for pattern in _CLUE_REPEAT_RES)
 
 
 def is_pass_or_timeout(text: str) -> bool:
