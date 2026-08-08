@@ -369,7 +369,8 @@ class LocomotionTests(unittest.TestCase):
     def test_travel_issues_turn_and_move(self):
         sess = _new_session()
         sess.last_open_direction = "left"
-        with mock.patch.object(ex, "base_available", return_value=True), \
+        with mock.patch.object(config, "EXPLORE_LEG_SEGMENTS_MAX", 1), \
+                mock.patch.object(ex, "base_available", return_value=True), \
                 mock.patch("intelligence.motion_controller.turn", return_value=11) as turn, \
                 mock.patch("intelligence.motion_controller.move", return_value=12) as move, \
                 mock.patch.object(ex, "_tof_mm", return_value={"fl": 2000, "fr": 1900, "lf": 2500}), \
@@ -379,6 +380,49 @@ class LocomotionTests(unittest.TestCase):
         move.assert_called_once()
         self.assertEqual(sess.legs_done, 1)
         self.assertEqual(sess.blocked_legs, 0)
+
+    def test_leg_chains_segments_while_front_stays_open(self):
+        # Owner 2026-08-08: cross the room, don't inch across it. With the front ToF
+        # staying open after each move, one leg chains up to EXPLORE_LEG_SEGMENTS_MAX
+        # forward segments before stopping to survey.
+        sess = _new_session()
+        sess.last_open_direction = "center"
+        with mock.patch.object(config, "EXPLORE_LEG_SEGMENTS_MAX", 3), \
+                mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch("intelligence.motion_controller.turn", return_value=11), \
+                mock.patch("intelligence.motion_controller.move", return_value=12) as move, \
+                mock.patch.object(ex, "_tof_mm", return_value={"fl": 2500, "fr": 2400}), \
+                mock.patch("hardware.motion.wait_done", return_value={"result": "completed", "odom": {"x": 0, "y": 0, "theta": 0}}):
+            ex._travel_one_leg(sess)
+        self.assertEqual(move.call_count, 3)
+        self.assertEqual(sess.legs_done, 3)
+        self.assertEqual(sess.blocked_legs, 0)
+
+    def test_leg_chain_stops_when_clearance_shrinks(self):
+        # The chain continues only while the next planned segment is a real stride
+        # (>= EXPLORE_LEG_CONTINUE_MIN_M); a shrinking opening ends the leg cleanly.
+        sess = _new_session()
+        with mock.patch.object(config, "EXPLORE_LEG_SEGMENTS_MAX", 3), \
+                mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch.object(ex, "_plan_leg_heading", return_value=0.0), \
+                mock.patch.object(ex, "_plan_leg_distance", side_effect=[1.2, 0.3]), \
+                mock.patch("intelligence.motion_controller.move", return_value=12) as move, \
+                mock.patch("hardware.motion.wait_done", return_value={"result": "completed", "odom": {"x": 0, "y": 0, "theta": 0}}):
+            ex._travel_one_leg(sess)
+        self.assertEqual(move.call_count, 1)
+        self.assertEqual(sess.legs_done, 1)
+
+    def test_blocked_segment_ends_the_chain(self):
+        sess = _new_session()
+        with mock.patch.object(config, "EXPLORE_LEG_SEGMENTS_MAX", 3), \
+                mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch.object(ex, "_plan_leg_heading", return_value=0.0), \
+                mock.patch.object(ex, "_plan_leg_distance", return_value=1.2), \
+                mock.patch("intelligence.motion_controller.move", return_value=12) as move, \
+                mock.patch("hardware.motion.wait_done", return_value={"result": "blocked", "odom": {"x": 0, "y": 0, "theta": 0}}):
+            ex._travel_one_leg(sess)
+        self.assertEqual(move.call_count, 1)
+        self.assertEqual(sess.blocked_legs, 1)
 
     def test_blocked_leg_marks_dead_heading(self):
         sess = _new_session()
@@ -516,26 +560,66 @@ class LocomotionTests(unittest.TestCase):
         ):
             self.assertEqual(ex._normalize_floor_hazard(text), text, text)
 
-    def test_opening_turn_answers_the_invite_with_the_base(self):
-        # First stop: no forward move (no vision read yet), but a chassis turn of at
-        # least EXPLORE_OPENING_TURN_MIN_DEG fires so the invite visibly moves him.
+    def test_opening_leg_answers_the_invite_with_the_base(self):
+        # First beat: a chassis turn of at least EXPLORE_OPENING_TURN_MIN_DEG fires
+        # so the invite visibly moves him (no forward move when ToF shows no room).
         sess = _new_session()
         with mock.patch.object(ex, "base_available", return_value=True), \
                 mock.patch.object(ex, "_plan_leg_heading", return_value=0.0), \
+                mock.patch.object(ex, "_plan_leg_distance", return_value=None), \
                 mock.patch.object(ex, "_wait_leg_done", return_value="completed"), \
+                mock.patch.object(ex, "_start_travel_gaze", return_value=None), \
+                mock.patch("intelligence.motion_controller.is_moving", return_value=False), \
+                mock.patch("intelligence.motion_controller.move") as move, \
                 mock.patch("intelligence.motion_controller.turn", return_value=5) as turn:
-            ex._opening_turn(sess)
+            ex._opening_leg(sess)
         turn.assert_called_once()
         self.assertGreaterEqual(
             abs(turn.call_args[0][0]),
             float(config.EXPLORE_OPENING_TURN_MIN_DEG),
         )
+        move.assert_not_called()  # no ToF clearance → opening turn only
 
-    def test_opening_turn_skips_without_base(self):
+    def test_opening_leg_drives_when_tof_shows_room(self):
+        # Owner 2026-08-08: the invite needs real driving. With front clearance the
+        # opening beat turns AND drives a capped, ToF-planned forward move — the one
+        # deliberate exception to the vision gate (no vision read exists yet).
+        sess = _new_session(appraise_ok=False)  # pre-vision by definition
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch.object(ex, "_plan_leg_heading", return_value=45.0), \
+                mock.patch.object(ex, "_plan_leg_distance", return_value=1.4), \
+                mock.patch.object(ex, "_wait_leg_done", return_value="completed"), \
+                mock.patch.object(ex, "_start_travel_gaze", return_value=None), \
+                mock.patch("intelligence.motion_controller.is_moving", return_value=False), \
+                mock.patch("intelligence.motion_controller.turn", return_value=5), \
+                mock.patch("intelligence.motion_controller.move", return_value=6) as move:
+            ex._opening_leg(sess)
+        move.assert_called_once()
+        self.assertLessEqual(
+            move.call_args[0][0], float(config.EXPLORE_OPENING_LEG_MAX_M),
+        )  # opening move stays shorter than a normal leg
+        self.assertEqual(sess.legs_done, 1)
+
+    def test_invite_mid_drive_rides_out_the_current_motion(self):
+        # "Feel free to look around" while he's already driving straight: don't yank
+        # the base — sweep the head until the in-flight command finishes on its own.
+        sess = _new_session()
+        moving = iter([True, True, False])
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch.object(ex, "_start_travel_gaze", return_value=None), \
+                mock.patch("intelligence.motion_controller.is_moving",
+                           side_effect=lambda: next(moving, False)), \
+                mock.patch("intelligence.motion_controller.turn") as turn, \
+                mock.patch("intelligence.motion_controller.move") as move:
+            ex._opening_leg(sess)
+        turn.assert_not_called()
+        move.assert_not_called()
+
+    def test_opening_leg_skips_without_base(self):
         sess = _new_session()
         with mock.patch.object(ex, "base_available", return_value=False), \
                 mock.patch("intelligence.motion_controller.turn") as turn:
-            ex._opening_turn(sess)
+            ex._opening_leg(sess)
         turn.assert_not_called()
 
     def test_travel_gaze_spans_the_turn_and_move(self):
@@ -552,7 +636,8 @@ class LocomotionTests(unittest.TestCase):
             events.append("move")
             return 12
 
-        with mock.patch.object(ex, "base_available", return_value=True), \
+        with mock.patch.object(config, "EXPLORE_LEG_SEGMENTS_MAX", 1), \
+                mock.patch.object(ex, "base_available", return_value=True), \
                 mock.patch.object(
                     ex, "_start_travel_gaze",
                     side_effect=lambda s: events.append("gaze_start") or gaze_handle,
@@ -569,6 +654,50 @@ class LocomotionTests(unittest.TestCase):
 
         self.assertEqual(events, ["gaze_start", "turn", "move", "gaze_stop"])
         stop_gaze.assert_called_once_with(gaze_handle)
+
+
+# ── 6b. Travel-gaze sweep (head motion while driving) ─────────────────────────
+
+
+class TravelGazeSweepTests(unittest.TestCase):
+    def test_sweep_alternates_sides_and_settles_center(self):
+        # Owner 2026-08-08: head turns left and right back and forth while he
+        # drives, then settles in the middle when he stops.
+        import threading as _threading
+        sess = _new_session()
+        calls = []
+        stop_event = _threading.Event()
+
+        def _pose(side, pitch):
+            calls.append((side, pitch))
+            if len(calls) >= 5:
+                stop_event.set()
+
+        with mock.patch("sequences.animations.travel_glance_pose", side_effect=_pose), \
+                mock.patch.object(config, "EXPLORE_TRAVEL_GAZE_HOLD_SECS", 0.1):
+            ex._travel_gaze_loop(sess, stop_event)
+
+        self.assertGreaterEqual(len(calls), 2)
+        sweep = calls[:-1]
+        sides = [s for s, _ in sweep]
+        self.assertTrue(all(s in ("left", "right") for s in sides))
+        for a, b in zip(sides, sides[1:]):
+            self.assertNotEqual(a, b)  # strict back-and-forth, no random darting
+        # Each swing draws its pitch from the configured pool (down/level/up).
+        pool = set(config.EXPLORE_TRAVEL_GAZE_PITCHES)
+        self.assertTrue(all(p in pool for _, p in sweep))
+        # Settles in the middle when the leg ends.
+        self.assertEqual(calls[-1], ("center", "level"))
+
+    def test_sweep_recenters_even_on_session_halt(self):
+        import threading as _threading
+        sess = _new_session()
+        sess.abort.set()  # halt already requested — loop must not sweep
+        calls = []
+        with mock.patch("sequences.animations.travel_glance_pose",
+                        side_effect=lambda s, p: calls.append((s, p))):
+            ex._travel_gaze_loop(sess, _threading.Event())
+        self.assertEqual(calls, [("center", "level")])
 
 
 # ── 7. Invite dispatch (interaction wiring) ───────────────────────────────────

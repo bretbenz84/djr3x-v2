@@ -8444,6 +8444,18 @@ EXPLORE_TURN_RATE_DEG_S = _env_float(
 EXPLORE_OPENING_TURN_MIN_DEG = _env_float(
     "EXPLORE_OPENING_TURN_MIN_DEG", 30.0, min_value=0.0, max_value=120.0,
 )  # accepting an invite opens with at least this chassis turn (before the first survey)
+EXPLORE_OPENING_LEG_MAX_M = _env_float(
+    "EXPLORE_OPENING_LEG_MAX_M", 0.8, min_value=0.0, max_value=2.0,
+)  # after the opening turn, a short ToF-planned forward move so the invite is
+#    answered with real driving (0 = opening turn only; runs before the first
+#    vision read, on ToF authority alone — deliberately shorter than a normal leg)
+EXPLORE_LEG_SEGMENTS_MAX = _env_int(
+    "EXPLORE_LEG_SEGMENTS_MAX", 3, min_value=1, max_value=6,
+)  # while the front ToF stays open, a leg chains up to this many forward moves
+#    before stopping to survey — cross a room, don't inch across it
+EXPLORE_LEG_CONTINUE_MIN_M = _env_float(
+    "EXPLORE_LEG_CONTINUE_MIN_M", 0.40, min_value=0.1, max_value=1.5,
+)  # chain another segment only when the next ToF-planned move is at least this long
 EXPLORE_TETHER_RADIUS_M = _env_float(
     "EXPLORE_TETHER_RADIUS_M", 3.0, min_value=0.5, max_value=10.0,  # odometry leash from start pose
 )
@@ -8462,6 +8474,8 @@ EXPLORE_TRAVEL_GAZE_ENABLED = _env_bool("EXPLORE_TRAVEL_GAZE_ENABLED", True)
 EXPLORE_TRAVEL_GAZE_HOLD_SECS = _env_float(
     "EXPLORE_TRAVEL_GAZE_HOLD_SECS", 0.8, min_value=0.1, max_value=4.0,
 )  # independent head glances continue while the base is turning/driving
+EXPLORE_TRAVEL_GAZE_PITCHES = ("down", "level", "up")  # each travel swing draws a
+#    pitch from this pool with equal weight — he looks down as much as level and up
 EXPLORE_FIXATE_MIN_SCORE = _env_float(
     "EXPLORE_FIXATE_MIN_SCORE", 0.75, min_value=0.0, max_value=1.0,  # interest to fixate
 )

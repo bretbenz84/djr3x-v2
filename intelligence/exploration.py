@@ -452,18 +452,18 @@ def _explore_loop(sess: "_Session") -> bool:
             return False
 
         # PLAN_LEG + TRAVEL (a no-op entirely when locomotion is disabled / no base).
-        # The very first stop surveys where he is instead of driving (no vision read
-        # yet — never drive blind), but it OPENS with a chassis turn toward the most
-        # open ToF direction: an invite should visibly answer with the body, not a
-        # camera pan (owner 2026-07-23: "when I invite him to look around, he needs
-        # to first move — turn, then drive"). Turning in place is blind-safe; the
-        # firmware permits it even while front-blocked.
+        # The very first beat OPENS with a chassis turn toward the most open ToF
+        # direction plus a short capped ToF-planned move: an invite should visibly
+        # answer with the body, not a camera pan (owner 2026-07-23: "when I invite
+        # him to look around, he needs to first move — turn, then drive"; 2026-08-08:
+        # "needs more autonomous driving"). Normal legs stay vision-gated; only the
+        # bounded opening move runs pre-vision on ToF authority.
         if sess.stops_done > 0:
             _travel_one_leg(sess)
             if not _check_can_continue(sess):
                 return False
         else:
-            _opening_turn(sess)
+            _opening_leg(sess)
             if not _check_can_continue(sess):
                 return False
 
@@ -1038,11 +1038,21 @@ def _should_fixate(sess: "_Session") -> bool:
 # ── LOCOMOTION (PLAN_LEG + TRAVEL) ────────────────────────────────────────────
 
 
-def _opening_turn(sess: "_Session") -> None:
-    """First-beat chassis turn toward the most open ToF direction (no forward move).
+def _opening_leg(sess: "_Session") -> None:
+    """First-beat chassis motion: turn toward the most open ToF direction, then a
+    short capped forward move when the front ToF shows room.
 
     Runs before the first survey so accepting an invite LOOKS like exploring from
-    the first second. Blind-safe: rotation only, firmware retains the reflexes.
+    the first second — and answers it with real driving, not just a pan (owner
+    2026-08-08: "an invitation to look around the room needs more autonomous
+    driving"). No vision read exists yet, so the opening move deliberately runs on
+    ToF authority alone: distance is planned from the live fl/fr clearance, capped
+    at EXPLORE_OPENING_LEG_MAX_M (shorter than a normal leg), and the firmware
+    reflex still guards the path. The vision floor-gate picks up from stop 1.
+
+    Invited while the base is ALREADY moving (e.g. mid "drive forward"): leave the
+    in-flight command alone — the travel gaze sweeps the head until the base
+    stops, which is exactly the "look around while you drive" the invite asked for.
     """
     if not bool(getattr(config, "EXPLORE_LOCOMOTION_ENABLED", True)):
         return
@@ -1052,19 +1062,65 @@ def _opening_turn(sess: "_Session") -> None:
         from intelligence import motion_controller
     except Exception:
         return
-    deg = _plan_leg_heading(sess)
-    min_deg = float(getattr(config, "EXPLORE_OPENING_TURN_MIN_DEG", 30.0))
-    if abs(deg) < min_deg:
-        # An open corridor straight ahead plans ~0° — still make the invite visibly
-        # physical with a modest scan turn toward the wider ToF side.
-        deg = min_deg if deg >= 0.0 else -min_deg
-    rate = float(getattr(config, "EXPLORE_TURN_RATE_DEG_S", 70.0))
-    seq = motion_controller.turn(deg, rate=rate)
-    if seq is None:
-        _log.info("[explore] opening turn suppressed (gated)")
+    gaze = _start_travel_gaze(sess)
+    try:
+        if motion_controller.is_moving():
+            _ride_out_current_motion(sess)
+            return
+        deg = _plan_leg_heading(sess)
+        min_deg = float(getattr(config, "EXPLORE_OPENING_TURN_MIN_DEG", 30.0))
+        if abs(deg) < min_deg:
+            # An open corridor straight ahead plans ~0° — still make the invite
+            # visibly physical with a modest scan turn toward the wider ToF side.
+            deg = min_deg if deg >= 0.0 else -min_deg
+        rate = float(getattr(config, "EXPLORE_TURN_RATE_DEG_S", 70.0))
+        seq = motion_controller.turn(deg, rate=rate)
+        if seq is None:
+            _log.info("[explore] opening turn suppressed (gated)")
+            return
+        _log.info("[explore] opening turn %+.0f deg (invite answered with the base)", deg)
+        if not _wait_leg_done(sess, seq) or sess.halt_requested():
+            return
+
+        cap = float(getattr(config, "EXPLORE_OPENING_LEG_MAX_M", 0.8))
+        if cap <= 0.0:
+            return
+        dist = _plan_leg_distance()
+        if dist is None:
+            _log.info("[explore] no forward ToF clearance — opening turn only")
+            return
+        dist = min(dist, cap)
+        speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.32))
+        seq = motion_controller.move(dist, speed=speed)
+        if seq is None:
+            return
+        _log.info("[explore] opening move %.2fm (ToF-planned, pre-vision)", dist)
+        result = _wait_leg_done(sess, seq)
+        sess.legs_done += 1
+        if result == "blocked":
+            sess.blocked_legs += 1
+            sess.dead_headings.add(_heading_bucket(sess))
+        elif result:
+            sess.blocked_legs = 0
+        _note_tether(sess)
+    finally:
+        _stop_travel_gaze(gaze)
+
+
+def _ride_out_current_motion(sess: "_Session") -> None:
+    """Wait (bounded) for an in-flight base command to finish on its own."""
+    try:
+        from intelligence import motion_controller
+    except Exception:
         return
-    _log.info("[explore] opening turn %+.0f deg (invite answered with the base)", deg)
-    _wait_leg_done(sess, seq)
+    _log.info("[explore] invited mid-drive — sweeping the head until the base stops")
+    deadline = time.monotonic() + float(
+        getattr(config, "EXPLORE_LEG_DONE_TIMEOUT_SECS", 12.0)
+    )
+    while time.monotonic() < deadline:
+        if sess.halt_requested() or not motion_controller.is_moving():
+            return
+        time.sleep(0.1)
 
 
 def _travel_one_leg(sess: "_Session") -> None:
@@ -1121,26 +1177,42 @@ def _travel_one_leg(sess: "_Session") -> None:
         # Re-read the now-forward ToF pair after the turn. The front matrix is
         # min-combined into fl/fr by firmware, so this clearance includes both the
         # radial beams and all floor-rejected 8x8 zones. Travel a fraction of the
-        # measured opening, leaving a fixed body margin; repeated legs naturally
-        # continue through open space until the distances shrink.
+        # measured opening, leaving a fixed body margin — and while the front STAYS
+        # open after a move, chain further segments (up to EXPLORE_LEG_SEGMENTS_MAX)
+        # before stopping to survey: a look-around should cross the room, not inch
+        # across it one vision call at a time.
         dist = _plan_leg_distance()
         if dist is None:
             _log.info("[explore] no safe forward ToF clearance — holding position")
             return
         speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.32))
-        seq = motion_controller.move(dist, speed=speed)
-        if seq is None:
-            _log.info("[explore] move suppressed (gated)")
-            return
-        result = _wait_leg_done(sess, seq)
-        sess.legs_done += 1
-        if result == "blocked":
-            sess.blocked_legs += 1
-            sess.dead_headings.add(_heading_bucket(sess))
-            _log.info("[explore] leg blocked — heading marked dead")
-        elif result:
+        max_segments = int(getattr(config, "EXPLORE_LEG_SEGMENTS_MAX", 3))
+        continue_min = float(getattr(config, "EXPLORE_LEG_CONTINUE_MIN_M", 0.40))
+        segments = 0
+        while True:
+            seq = motion_controller.move(dist, speed=speed)
+            if seq is None:
+                _log.info("[explore] move suppressed (gated)")
+                return
+            result = _wait_leg_done(sess, seq)
+            sess.legs_done += 1
+            segments += 1
+            _note_tether(sess)
+            if result == "blocked":
+                sess.blocked_legs += 1
+                sess.dead_headings.add(_heading_bucket(sess))
+                _log.info("[explore] leg blocked — heading marked dead")
+                return
+            if not result:
+                return
             sess.blocked_legs = 0
-        _note_tether(sess)
+            if segments >= max_segments or sess.halt_requested() or _beyond_tether(sess):
+                return
+            nxt = _plan_leg_distance()
+            if nxt is None or nxt < continue_min:
+                return
+            dist = nxt
+            _log.info("[explore] front still open (%.2fm planned) — continuing the leg", nxt)
     finally:
         _stop_travel_gaze(gaze)
 
@@ -1383,25 +1455,42 @@ def _start_travel_gaze(
 
 
 def _travel_gaze_loop(sess: "_Session", stop_event: threading.Event) -> None:
-    """Look around independently until the current travel leg ends."""
-    views = [
-        str(v).lower()
-        for v in getattr(config, "EXPLORE_GAZE_VIEWS", ("left", "center", "right"))
-        if str(v).lower() in ("left", "right", "up", "down", "center")
-    ]
-    if not views:
-        views = ["left", "right"]
-    # Avoid a predictable synchronized sweep: the base and head should read as two
-    # independently curious systems. Do not repeat one pose back-to-back.
-    last = "center"  # guarantee the first travel gesture is a real side/up/down look
+    """Sweep the head left-right while the base drives; settle center at the stop.
+
+    The sweep alternates sides deterministically — a back-and-forth watch of the
+    room while he rolls, not random darting (per-glance randomness read as
+    stutter). Each swing draws a pitch with equal weight from
+    EXPLORE_TRAVEL_GAZE_PITCHES, so he looks down (floor/low shelves) as often as
+    level and up. When the leg ends the head settles back to center — the
+    stationary survey scan then starts from a composed pose.
+    """
+    try:
+        from sequences import animations
+    except Exception:
+        return
+    pitches = [
+        str(p).lower()
+        for p in getattr(config, "EXPLORE_TRAVEL_GAZE_PITCHES", ("down", "level", "up"))
+        if str(p).lower() in ("down", "level", "up")
+    ] or ["level"]
     hold = float(getattr(config, "EXPLORE_TRAVEL_GAZE_HOLD_SECS", 0.8))
-    while not stop_event.is_set() and not sess.halt_requested():
-        choices = [v for v in views if v != last] or views
-        view = random.choice(choices)
-        _glance(view)
-        last = view
-        if stop_event.wait(max(0.1, hold)):
-            break
+    side = random.choice(("left", "right"))
+    try:
+        while not stop_event.is_set() and not sess.halt_requested():
+            try:
+                animations.travel_glance_pose(side, random.choice(pitches))
+            except Exception as exc:
+                _log.debug("[explore] travel glance failed: %s", exc)
+                return
+            side = "right" if side == "left" else "left"
+            if stop_event.wait(max(0.1, hold)):
+                break
+    finally:
+        # Settle in the middle when the base stops.
+        try:
+            animations.travel_glance_pose("center", "level")
+        except Exception:
+            pass
 
 
 def _stop_travel_gaze(
