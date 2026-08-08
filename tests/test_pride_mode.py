@@ -88,6 +88,25 @@ class ActivationTest(PrideTestCase):
             self.assertEqual(pride.prompt_lines(now=1000.0), [])
 
 
+class BaselineTest(PrideTestCase):
+    """Every reply is a LITTLE gay (owner 2026-08-08, after the first field run:
+    the trigger answer landed queeny but the very next replies went neutral).
+    The baseline lives in REX_CORE_PROMPT so it reaches both voices always —
+    queeny mode is the turned-up overlay, not the only source."""
+
+    def test_core_prompt_carries_the_baseline(self) -> None:
+        self.assertIn("You are gay", config.REX_CORE_PROMPT)
+        for token in ("honey", "sis", "queen", "SUBTLE"):
+            self.assertIn(token, config.REX_CORE_PROMPT)
+
+    def test_baseline_reaches_lean_voice_without_trigger(self) -> None:
+        self.assertIn("You are gay", lean_brain._system_prompt(None, None))
+
+    def test_baseline_reaches_classic_voice_without_trigger(self) -> None:
+        from intelligence import llm
+        self.assertIn("You are gay", llm.assemble_system_prompt(None))
+
+
 class PromptSurfaceTest(PrideTestCase):
     def test_prompt_lines_carry_the_register(self) -> None:
         pride.maybe_trigger("are you gay?")
