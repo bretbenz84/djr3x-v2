@@ -22140,6 +22140,68 @@ def _looks_like_third_party_crosstalk(text: str) -> bool:
     return False
 
 
+def _crosstalk_second_person_evidence(raw_best_id: Optional[int] = None) -> bool:
+    """True when someone besides the (raw-candidate) speaker is plausibly around
+    for an endearment to be aimed at — the ONLY situation the third-party filter
+    exists for. A sole-person room returns False, so a lone owner saying
+    "I love you" to Rex's face gets answered, never eaten (field 2026-08-08
+    11:19: exactly that line, voice-matched to the only person present two
+    seconds after Rex's own turn, matched the endearment regex and vanished
+    without a sound — the owner read the next minute as total deafness).
+
+    The off-camera partner (the case the filter was built for) stays covered by
+    the recent-second-voice signal: a partner talking in another room leaves an
+    anonymous speaker slot or a second known voice in the session within the
+    CROSSTALK_SECOND_VOICE_RECENT_SECS window.
+    """
+    try:
+        people = world_state.get("people") or []
+    except Exception:
+        people = []
+    if len(people) >= 2:
+        return True
+    if _has_unknown_visible_or_recent():
+        return True
+    # Another KNOWN face besides the presumed speaker just visible — only
+    # meaningful when the voice actually matched someone, otherwise the one
+    # visible known face is most likely the speaker themselves.
+    if raw_best_id is not None and _other_known_visible_recently(raw_best_id):
+        return True
+    window = float(getattr(config, "CROSSTALK_SECOND_VOICE_RECENT_SECS", 180.0))
+    if window > 0.0:
+        now = time.monotonic()
+        try:
+            if any(
+                (now - float(slot.last_seen_at)) <= window
+                for slot in _anonymous_speaker_slots
+            ):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _crosstalk_suppression_context_ok(raw_best_id: Optional[int] = None) -> bool:
+    """Context gate for the third-party crosstalk filter — True only when
+    suppressing this turn is actually defensible. Two vetoes:
+
+    1. Reply window: a line landing within CROSSTALK_REPLY_WINDOW_SECS of Rex
+       finishing his own line is plausibly a reply to HIM whatever its shape.
+    2. Second person: with CROSSTALK_REQUIRE_SECOND_PERSON, the room must show
+       evidence of someone else to address (see _crosstalk_second_person_evidence).
+    """
+    reply_window = float(getattr(config, "CROSSTALK_REPLY_WINDOW_SECS", 10.0))
+    if reply_window > 0.0:
+        try:
+            if speech_queue.seconds_since_last_speech() <= reply_window:
+                return False
+        except Exception:
+            pass
+    if not bool(getattr(config, "CROSSTALK_REQUIRE_SECOND_PERSON", True)):
+        return True
+    return _crosstalk_second_person_evidence(raw_best_id)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Low-trust reprompt — handle a garbled decode the way a human would
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22373,19 +22435,37 @@ def _handle_speech_segment(
             and not _game_suppresses_conversation()
             and _looks_like_third_party_crosstalk(text)
         ):
-            _log.info(
-                "[interaction] suppressed overheard crosstalk (not addressed to Rex): %r",
-                text,
-            )
-            final_executed_path = "ignored.crosstalk"
-            completed = False
-            if from_idle_activation:
-                # Don't camp in ACTIVE on speech that was not even meant for Rex.
-                try:
-                    state_module.set_state(State.IDLE)
-                except Exception:
-                    pass
-            return
+            if not _crosstalk_suppression_context_ok(raw_best_id):
+                # Nobody else around to say it to, and/or it landed right after
+                # Rex's own line: treat it as directed at HIM and answer it
+                # (field 2026-08-08 11:19: a solo "I love you." was eaten here).
+                _log.info(
+                    "[interaction] crosstalk-shaped line KEPT — no second-person "
+                    "context / inside Rex's reply window: %r",
+                    text,
+                )
+            else:
+                _log.info(
+                    "[interaction] suppressed overheard crosstalk (not addressed to Rex): %r",
+                    text,
+                )
+                # Being deliberately ignored must never be indistinguishable from
+                # deafness — leave a soft audible tell that Rex noticed the voice.
+                if bool(getattr(config, "CROSSTALK_SUPPRESS_TELL_ENABLED", True)):
+                    try:
+                        from audio import sound_effects
+                        sound_effects.play("curious", concurrent=True)
+                    except Exception:
+                        pass
+                final_executed_path = "ignored.crosstalk"
+                completed = False
+                if from_idle_activation:
+                    # Don't camp in ACTIVE on speech that was not even meant for Rex.
+                    try:
+                        state_module.set_state(State.IDLE)
+                    except Exception:
+                        pass
+                return
 
         # Own-echo rejection: the transcript near-matches a line Rex JUST spoke —
         # his AEC residual crossed the VAD during/after playback and Whisper heard

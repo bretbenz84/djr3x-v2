@@ -4507,6 +4507,22 @@ IDLE_LISTEN_WITHOUT_WAKE_WORD = True
 # so it won't make Rex ignore real input. If it false-activated Rex from IDLE he
 # drops straight back to IDLE instead of camping in ACTIVE on the crosstalk.
 CROSSTALK_SUPPRESSION_ENABLED = True
+# Context gate on the filter (field 2026-08-08 11:19: "I love you." said TO Rex —
+# sole person in the room, seconds after his own line — matched the endearment
+# regex and was silently dropped; the owner spent the next minute reading the
+# silence as total deafness). An endearment can only be couple-talk when there is
+# someone ELSE to say it to, so suppression now additionally requires evidence of
+# a second person: another face visible, an unknown face seen recently, or a
+# second distinct voice heard within the window below. And it never fires inside
+# the short reply window right after Rex finishes speaking — speech landing there
+# is plausibly a reply to HIM whatever its shape.
+CROSSTALK_REQUIRE_SECOND_PERSON = True
+CROSSTALK_REPLY_WINDOW_SECS = 10.0
+CROSSTALK_SECOND_VOICE_RECENT_SECS = 180.0
+# When a line IS suppressed, fire a soft curious chirp (concurrent — never blocks
+# or delays speech) so being deliberately ignored is never indistinguishable from
+# not being heard at all.
+CROSSTALK_SUPPRESS_TELL_ENABLED = True
 
 # Own-echo (reference-text) rejection. With hardware AEC the mic stays live while
 # Rex plays; his ~-17 dB residual can still cross the VAD and Whisper transcribes
