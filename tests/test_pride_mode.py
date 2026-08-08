@@ -95,8 +95,11 @@ class BaselineTest(PrideTestCase):
     queeny mode is the turned-up overlay, not the only source."""
 
     def test_core_prompt_carries_the_baseline(self) -> None:
+        # Owner 2026-08-08 (second pass): "each reply should be a little more
+        # campy/sis/spill the tea" — campy is the DEFAULT register on every
+        # reply, not a subtle one-touch seasoning.
         self.assertIn("You are gay", config.REX_CORE_PROMPT)
-        for token in ("sis", "queen", "SUBTLE"):
+        for token in ("CAMPY", "every reply", "sis", "queen", "spill the tea"):
             self.assertIn(token, config.REX_CORE_PROMPT)
         # "sis" is his signature address, explicitly preferred over "honey"
         # (owner 2026-08-08: "call people sis instead of honey").
