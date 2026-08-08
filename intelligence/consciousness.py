@@ -11127,6 +11127,23 @@ def _drive_idle_head_wander(servo_mod, now: float) -> None:
         _finish_idle_head_wander(now, allow_regreet=False)
 
 
+def _lift_match_ceiling_qus() -> Optional[int]:
+    """Ceiling (q-µs) for eye-level MATCHING on the head-lift, or None when disabled.
+
+    Rex sits on the floor, so matching a standing adult's eye level parked the lift
+    near max for whole interactions — the neck read as over-extended and left zero
+    headroom for expressive pops (excitement/alarm). Matching a face may still pull
+    the lift DOWN freely (children, seated people), but never above this ceiling;
+    the tilt supplies the upward gaze instead. Expressive moves (body beats, moods,
+    speech motion) are not routed through this and keep the full range."""
+    frac = float(getattr(config, "FACE_TRACKING_LIFT_MATCH_CEILING_FRAC", 0.5) or 1.0)
+    if frac >= 1.0:
+        return None
+    cfg = config.SERVO_CHANNELS["headlift"]
+    lo, hi = int(cfg["min"]), int(cfg["max"])
+    return int(lo + max(0.0, min(1.0, frac)) * (hi - lo))
+
+
 def _adaptive_head_rest_enabled() -> bool:
     return bool(getattr(config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True)) and bool(
         getattr(config, "FACE_TRACKING_VERTICAL_ENABLED", True)
@@ -11225,6 +11242,11 @@ def _note_adaptive_head_rest(
         alpha = max(alpha, 0.35)
     new_lift = _adaptive_head_rest_limit("headlift", old_lift + alpha * (int(lift) - old_lift))
     new_tilt = _adaptive_head_rest_limit("headtilt", old_tilt + alpha * (int(tilt) - old_tilt))
+    # The learned rest is pure eye-level matching — it obeys the lift match ceiling
+    # (a tall face teaches an upward TILT rest instead of a stretched neck).
+    lift_ceiling = _lift_match_ceiling_qus()
+    if lift_ceiling is not None:
+        new_lift = min(new_lift, lift_ceiling)
     _adaptive_head_rest.update({
         "lift": new_lift,
         "tilt": new_tilt,
@@ -11259,6 +11281,11 @@ def _step_adaptive_head_rest_return(
         return False
 
     target_lift, target_tilt = _adaptive_head_rest_target()
+    # The matching part of the rest target obeys the lift ceiling; the mood bias is
+    # EXPRESSIVE posture and may ride above it (that's what the headroom is for).
+    lift_ceiling = _lift_match_ceiling_qus()
+    if lift_ceiling is not None:
+        target_lift = min(target_lift, lift_ceiling)
     # Compose the mood posture onto the settling target (clamped to servo limits).
     target_lift = _clamp_servo("headlift", target_lift + bias_lift)
     target_tilt = _clamp_servo("headtilt", target_tilt + bias_tilt)
@@ -12894,10 +12921,23 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
                 # a built-in overshoot that kept the vertical axis hunting (and shook
                 # the fragile tilt linkage hardest).
                 tilt_share = max(0.0, min(1.0, float(getattr(config, "FACE_TRACKING_TILT_SHARE", 0.35))))
+                # Eye-level matching never lifts the head above the match ceiling
+                # (see _lift_match_ceiling_qus). When the face is above center and
+                # the lift is at/over the ceiling, the TILT takes the full vertical
+                # gain so Rex still looks up — with his eyes, not his neck.
+                lift_ceiling = _lift_match_ceiling_qus()
+                gazing_up = error_y < 0
+                lift_at_ceiling = lift_ceiling is not None and current_lift >= lift_ceiling
+                if gazing_up and lift_at_ceiling:
+                    tilt_share = 1.0
                 target_lift = _clamp_servo(
                     "headlift",
                     current_lift - (error_y / frame_cy) * lift_span * vertical_gain * (1.0 - tilt_share),
                 )
+                if lift_ceiling is not None and gazing_up:
+                    # Cap at the ceiling; if an expressive move left the lift above
+                    # it, hold rather than yank down (the rest return settles it).
+                    target_lift = min(target_lift, max(lift_ceiling, current_lift))
                 target_tilt = _clamp_servo(
                     "headtilt",
                     current_tilt + (error_y / frame_cy) * tilt_span * vertical_gain * tilt_share,

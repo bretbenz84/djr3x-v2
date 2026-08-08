@@ -250,15 +250,18 @@ class ConsciousnessMoodRestBiasTest(unittest.TestCase):
         servo.speech_motion_active.return_value = False
         servo.listening_motion_active.return_value = False
         lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
-        neutral_lift = int(config.SERVO_CHANNELS["headlift"]["neutral"])
-        with mock.patch.object(c, "_current_servo_position", return_value=neutral_lift):
+        # The matching rest base is capped at the eye-level match ceiling; the mood
+        # bias is EXPRESSIVE and composes on top of that capped base — from the
+        # ceiling, a proud mood still raises the head.
+        ceiling = int(c._lift_match_ceiling_qus())
+        with mock.patch.object(c, "_current_servo_position", return_value=ceiling):
             moved = c._step_adaptive_head_rest_return(servo, now=1000.0, lost_age_secs=5.0)
         self.assertTrue(moved)
         servo.set_servos.assert_called_once()
         updates = servo.set_servos.call_args.args[0]
-        # Proud → head raised above neutral on the rest pose.
+        # Proud → head raised above the (capped) rest base.
         self.assertIn(lift_ch, updates)
-        self.assertGreater(updates[lift_ch], neutral_lift)
+        self.assertGreater(updates[lift_ch], ceiling)
 
     def test_rest_return_noop_when_no_mood_and_no_learned_rest(self):
         from intelligence import consciousness as c

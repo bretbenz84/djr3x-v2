@@ -227,7 +227,10 @@ class FaceTrackingTests(unittest.TestCase):
         # Corrections are relative to the STARTING pose (_set_servo_positions: neck 6000),
         # not the configured neutral — a left-of-center face pulls the neck below 6000.
         self.assertLess(updates[neck_ch], 6000)
-        self.assertGreater(updates[lift_ch], c.config.SERVO_CHANNELS["headlift"]["neutral"])
+        # The face sits above center, but the lift starts (6000) above the eye-level
+        # match ceiling — so the lift HOLDS (no update) and the TILT alone supplies
+        # the upward gaze. Matching never stretches the neck above the ceiling.
+        self.assertNotIn(lift_ch, updates)
         self.assertLess(updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"])
         self.assertLessEqual(
             abs(updates[neck_ch] - 6000),
@@ -239,7 +242,7 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertIn(tilt_ch, set_profile.call_args_list[1].args[0])
         set_baseline.assert_called_once_with(
             neck=updates[neck_ch],
-            lift=updates[lift_ch],
+            lift=6000,  # held — no lift update above the match ceiling
             tilt=updates[tilt_ch],
         )
 
@@ -425,8 +428,84 @@ class FaceTrackingTests(unittest.TestCase):
         ):
             c._step_face_tracking(self.frame)
 
-        self.assertGreater(c._adaptive_head_rest["lift"], lift_neutral)
+        # A high face teaches an upward TILT rest, but the LIFT rest is capped at the
+        # eye-level match ceiling — Rex looks up with his eyes, not a stretched neck.
+        ceiling = c._lift_match_ceiling_qus()
+        self.assertIsNotNone(ceiling)
+        self.assertLessEqual(c._adaptive_head_rest["lift"], ceiling)
         self.assertLess(c._adaptive_head_rest["tilt"], tilt_neutral)
+
+    def _run_vertical_tick(self, *, face_y, lift_start, ceiling_frac=None):
+        """One tracking tick against a vertically-offset face; returns set_servos updates."""
+        c = self.consciousness
+        self._set_servo_positions()
+        self_state = c.world_state.get("self_state")
+        self_state["servo_positions"]["headlift"] = lift_start
+        c.world_state.update("self_state", self_state)
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (580, face_y, 120, 120),
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE))
+            stack.enter_context(mock.patch.object(c.time, "monotonic", return_value=250.0))
+            set_servos = stack.enter_context(mock.patch("hardware.servos.set_servos"))
+            stack.enter_context(mock.patch("hardware.servos.set_motion_profile"))
+            stack.enter_context(mock.patch("hardware.servos.set_face_tracking_baseline"))
+            stack.enter_context(mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True))
+            if ceiling_frac is not None:
+                stack.enter_context(mock.patch.object(
+                    c.config, "FACE_TRACKING_LIFT_MATCH_CEILING_FRAC", ceiling_frac
+                ))
+            c._step_face_tracking(self.frame)
+        return set_servos.call_args.args[0] if set_servos.call_args else {}
+
+    def test_lift_matching_capped_at_ceiling_high_face(self):
+        # Standing adult (face high in frame) with the lift already at the match
+        # ceiling: the lift must NOT rise further; the tilt supplies the upward gaze.
+        c = self.consciousness
+        ceiling = c._lift_match_ceiling_qus()
+        updates = self._run_vertical_tick(face_y=60, lift_start=ceiling)
+        lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
+        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
+        self.assertNotIn(lift_ch, updates)  # held at the ceiling
+        self.assertLess(  # tilt looks up (inverted: lower = up)
+            updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"]
+        )
+
+    def test_lift_matching_below_ceiling_may_still_rise_to_it(self):
+        # From well below the ceiling, an above-center face may raise the lift — but
+        # only up to the ceiling, never past it.
+        c = self.consciousness
+        ceiling = c._lift_match_ceiling_qus()
+        start = ceiling - 120
+        updates = self._run_vertical_tick(face_y=60, lift_start=start)
+        lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
+        self.assertIn(lift_ch, updates)
+        self.assertGreater(updates[lift_ch], start)
+        self.assertLessEqual(updates[lift_ch], ceiling)
+
+    def test_lift_matching_downward_is_unrestricted(self):
+        # A low face (child / seated person) still pulls the lift DOWN freely.
+        c = self.consciousness
+        updates = self._run_vertical_tick(face_y=560, lift_start=6000)
+        lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
+        self.assertIn(lift_ch, updates)
+        self.assertLess(updates[lift_ch], 6000)
+
+    def test_lift_ceiling_disabled_restores_upward_matching(self):
+        # frac >= 1.0 turns the ceiling off: a high face raises the lift as before.
+        c = self.consciousness
+        updates = self._run_vertical_tick(face_y=60, lift_start=6000, ceiling_frac=1.0)
+        lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
+        self.assertIn(lift_ch, updates)
+        self.assertGreater(updates[lift_ch], 6000)
 
     def test_speaker_gaze_center_search_uses_adaptive_vertical_rest(self):
         c = self.consciousness

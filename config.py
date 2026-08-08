@@ -3020,6 +3020,17 @@ FACE_TRACKING_VERTICAL_GAIN = _env_float(
     min_value=0.0,
     max_value=2.0,
 )
+# Eye-level MATCHING ceiling for the head-lift, as a fraction of its travel (0.5 =
+# the midpoint; >= 1.0 disables). Rex sits on the floor, so matching a standing
+# adult's eye level parked the lift near max for entire interactions — the neck
+# read as over-extended and left no headroom for expressive pops (excitement,
+# alarm, surprise). Above this ceiling the TILT supplies the upward gaze instead
+# (he looks up with his eyes, not his neck). Matching DOWNWARD (children, seated
+# people) is unrestricted, and expressive motion (body beats, moods, speech
+# gestures) does not pass through this cap — the reserved upper range is theirs.
+FACE_TRACKING_LIFT_MATCH_CEILING_FRAC = _env_float(
+    "FACE_TRACKING_LIFT_MATCH_CEILING_FRAC", 0.5, min_value=0.1, max_value=1.0,
+)
 FACE_TRACKING_ADAPTIVE_REST_ENABLED = _env_bool("FACE_TRACKING_ADAPTIVE_REST_ENABLED", True)
 FACE_TRACKING_REST_ADAPT_ALPHA = _env_float(
     "FACE_TRACKING_REST_ADAPT_ALPHA",
