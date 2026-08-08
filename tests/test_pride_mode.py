@@ -96,8 +96,11 @@ class BaselineTest(PrideTestCase):
 
     def test_core_prompt_carries_the_baseline(self) -> None:
         self.assertIn("You are gay", config.REX_CORE_PROMPT)
-        for token in ("honey", "sis", "queen", "SUBTLE"):
+        for token in ("sis", "queen", "SUBTLE"):
             self.assertIn(token, config.REX_CORE_PROMPT)
+        # "sis" is his signature address, explicitly preferred over "honey"
+        # (owner 2026-08-08: "call people sis instead of honey").
+        self.assertIn('"sis" is YOUR word', config.REX_CORE_PROMPT)
 
     def test_baseline_reaches_lean_voice_without_trigger(self) -> None:
         self.assertIn("You are gay", lean_brain._system_prompt(None, None))
