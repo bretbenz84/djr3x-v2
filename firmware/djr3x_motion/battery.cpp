@@ -96,6 +96,19 @@ void battery_init() {
              s_soc_mah, 100.0f * s_soc_mah / (float)BATT_CAPACITY_MAH);
     emit_log("info", buf);
   }
+  // Restore the charging latch — it must survive a reboot (USB serial opens
+  // reset this board on the host Mac). A full pack on a tapered/finished
+  // charger presents ~0 mA and sub-14V at the pack node (bad ~160 mΩ junction),
+  // so a rebooted board could NOT re-detect the cable and released the drive
+  // while plugged in. Restoring the latch keeps drive locked; a genuine unplug
+  // still releases via the sustained-discharge exit proof.
+  s_charging = s_prefs.getBool("chg", false);
+  if (s_charging) {
+    emit_log("info", "battery: charging latch restored - drive stays locked");
+    LOCK_STATE();
+    g_ctx.charging = true;
+    UNLOCK_STATE();
+  }
 #endif
 }
 
@@ -279,8 +292,12 @@ void battery_tick() {
   //   - taper current near 0 mA looks identical plugged and unplugged-at-rest,
   //     which is why the release needs positive discharge, not merely "no
   //     charge current".
-  // A servo sag while plugged is transient and cannot sustain EXIT_TICKS (~8 s)
-  // of apparent discharge, so the debounce still guards the 2026-07-23 flap.
+  // A load spike while plugged (servo sag, even the whole host STARTUP burst —
+  // field 2026-08-07, which out-drew the charger for 8+ s and faked an unplug)
+  // is bounded and cannot sustain EXIT_TICKS (~90 s) of apparent discharge; the
+  // moment charger current catches back up to the load, net flow returns to ~0
+  // and the consecutive counter resets. Only a genuine unplug keeps the pack
+  // sourcing the electronics for minutes on end.
   const bool discharge_proof = s_ma_ema >= (float)BATT_CHARGE_EXIT_DISCHARGE_MA;
   const bool chg_now = s_charging
       ? !discharge_proof
@@ -291,6 +308,8 @@ void battery_tick() {
     if (s_chg_ticks >= need) {
       s_charging = chg_now;
       s_chg_ticks = 0;
+      s_prefs.putBool("chg", s_charging);   // latch survives reboot (wear-safe:
+                                            // writes only on plug/unplug edges)
       emit_event_kv("charging", "state", s_charging ? "on" : "off");
       emit_log("info", s_charging
                ? "battery: charger detected - drive locked out"

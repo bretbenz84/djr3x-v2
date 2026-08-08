@@ -454,8 +454,19 @@
 #define BATT_CHARGE_EXIT_DISCHARGE_MA 100 // sustained discharge >= this = unplugged
                                           // (was 250 — above the ESP32+sensors idle
                                           // draw, so a resting unplug never released)
-#define BATT_CHARGE_EXIT_TICKS     8   // ~8 s of sustained discharge before releasing —
-                                       // rides out a multi-second servo sag transient
+#define BATT_CHARGE_EXIT_TICKS    90   // ~90 s of sustained discharge before releasing.
+                                       // Was 8 s — field 2026-08-07 18:19: the host's
+                                       // STARTUP burst (servos+audio) out-drew the bench
+                                       // supply through the ~160 mΩ junction for 8+ s,
+                                       // faking an unplug while the cable was attached;
+                                       // 3 min later the flinch reflex rolled the base
+                                       // on the cord. A plugged pack can only sustain
+                                       // apparent discharge as long as a load spike
+                                       // lasts; a REAL unplug discharges for minutes.
+                                       // Cost: after a genuine unplug the drive stays
+                                       // locked ~90 s. The counter needs CONSECUTIVE
+                                       // discharge ticks, so equilibrium (net ~0 mA,
+                                       // charger carrying the load) resets it.
 
 // ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
 // The front/rear pairs are angled ±22.5° off the travel axis, so at RANGE they see
