@@ -3,7 +3,8 @@ from unittest import mock
 
 
 class ListeningTargetsTests(unittest.TestCase):
-    """Gentle listening pose targets must stay in range and orbit the gaze."""
+    """Smooth listening pose targets: in range, orbiting the gaze, and CONTINUOUS —
+    consecutive ticks may only differ by small deltas (the anti-stutter property)."""
 
     def setUp(self):
         from hardware import servos
@@ -21,46 +22,71 @@ class ListeningTargetsTests(unittest.TestCase):
             self._lift: servos.config.SERVO_CHANNELS["headlift"]["neutral"],
             self._tilt: servos.config.SERVO_CHANNELS["headtilt"]["neutral"],
         }
+        servos._listening_session.clear()
+        self.addCleanup(servos._listening_session.clear)
 
     def _patch_baseline(self):
         return mock.patch.object(self.servos, "_face_tracking_baseline", dict(self._baseline))
 
     def test_targets_stay_within_channel_limits(self):
         with self._patch_baseline():
-            for beat in range(1, 9):
-                targets = self.servos._listening_targets(beat)
+            self.servos._begin_listening_session(100.0)
+            for i in range(0, 200):
+                targets = self.servos._listening_targets(100.0 + i * 0.12)
                 for ch, pos in targets.items():
                     name = self.servos._CHANNEL_TO_NAME[ch]
                     cfg = self.servos.config.SERVO_CHANNELS[name]
-                    self.assertGreaterEqual(pos, cfg["min"], f"{name} below min on beat {beat}")
-                    self.assertLessEqual(pos, cfg["max"], f"{name} above max on beat {beat}")
+                    self.assertGreaterEqual(pos, cfg["min"], f"{name} below min at tick {i}")
+                    self.assertLessEqual(pos, cfg["max"], f"{name} above max at tick {i}")
 
-    def test_head_and_visor_present_every_beat(self):
+    def test_all_channels_present_every_tick(self):
         with self._patch_baseline():
-            for beat in range(1, 6):
-                t = self.servos._listening_targets(beat)
-                for ch in (self._neck, self._lift, self._tilt, self._visor):
+            self.servos._begin_listening_session(50.0)
+            for i in range(5):
+                t = self.servos._listening_targets(50.0 + i * 0.12)
+                for ch in (self._neck, self._lift, self._tilt, self._visor,
+                           self._elbow, self._hand, self._hero):
                     self.assertIn(ch, t)
 
-    def test_non_nod_beat_returns_head_to_gaze_baseline(self):
-        # nod_every defaults to 2, so an odd beat eases back to baseline (no random).
+    def test_consecutive_ticks_move_smoothly(self):
+        # The anti-stutter property: at the streaming tick rate, no channel may jump
+        # more than a small glide step between consecutive targets.
         with self._patch_baseline():
-            t = self.servos._listening_targets(1)
-        self.assertEqual(t[self._lift], self._baseline[self._lift])
-        self.assertEqual(t[self._neck], self._baseline[self._neck])
-        self.assertEqual(t[self._tilt], self._baseline[self._tilt])
-        # Arms move on a 2-beat cadence → not on beat 1.
-        self.assertNotIn(self._elbow, t)
+            self.servos._begin_listening_session(200.0)
+            prev = None
+            for i in range(0, 120):
+                t = self.servos._listening_targets(200.0 + i * 0.12)
+                if prev is not None:
+                    for ch, pos in t.items():
+                        name = self.servos._CHANNEL_TO_NAME[ch]
+                        self.assertLessEqual(
+                            abs(pos - prev[ch]), 90,
+                            f"{name} jumped {abs(pos - prev[ch])} qus between ticks",
+                        )
+                prev = t
 
-    def test_nod_beat_dips_head_lift_down(self):
-        # On a nod beat the head lift biases DOWN (lower qus) relative to gaze.
-        with self._patch_baseline(), mock.patch.object(
-            self.servos.random, "randint", return_value=150
-        ):
-            t = self.servos._listening_targets(2)
-        self.assertLess(t[self._lift], self._baseline[self._lift])
-        # Arms shift on the 2-beat cadence.
-        self.assertIn(self._hand, t)
+    def test_nod_dips_head_lift_down_and_tilts_down(self):
+        # Force a nod mid-flight: at the nod's midpoint the lift is well below the
+        # gaze baseline and the (inverted) tilt biases toward looking down.
+        with self._patch_baseline():
+            self.servos._begin_listening_session(300.0)
+            s = self.servos._listening_session
+            s["nod_started_at"] = 300.0
+            nod_mid = 300.0 + float(self.servos.config.SERVO_LISTENING_NOD_SECS) / 2.0
+            t = self.servos._listening_targets(nod_mid)
+        self.assertLess(t[self._lift], self._baseline[self._lift] - 50)
+        self.assertGreater(t[self._tilt], self._baseline[self._tilt])
+
+    def test_nod_schedule_advances(self):
+        # A completed nod clears its start and books the next one in the future.
+        with self._patch_baseline():
+            self.servos._begin_listening_session(400.0)
+            s = self.servos._listening_session
+            s["nod_started_at"] = 400.0
+            done_at = 400.0 + float(self.servos.config.SERVO_LISTENING_NOD_SECS) + 0.1
+            self.servos._listening_targets(done_at)
+        self.assertIsNone(s["nod_started_at"])
+        self.assertGreater(s["next_nod_at"], done_at)
 
 
 class ListeningLifecycleTests(unittest.TestCase):

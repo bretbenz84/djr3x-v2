@@ -2513,21 +2513,28 @@ SERVO_SPEECH_POKER_INTERVAL_MAX_SECS = 1.7
 
 # Listening motion: gentle "I'm hearing you / thinking" body language that runs
 # from speech onset through transcription→LLM→TTS so Rex isn't frozen while he
-# processes. Deliberately subtler and slower than the speech wobbles above —
-# small nods, a slow visor flutter, occasional small arm shifts. All quarter-
-# microseconds. Set SERVO_LISTENING_MOTION_ENABLED=False to disable entirely.
+# processes. CONTINUOUS eased motion: every channel follows a slow sine drift
+# (per-session random phase/period) and the head periodically dips through a
+# smooth raised-cosine "mhm" nod. The old design commanded a small RANDOM jump
+# every 0.45-0.85s beat — twitch, freeze, twitch — which read as stuttering
+# (field 2026-08-07). All amplitudes in quarter-microseconds.
+# Set SERVO_LISTENING_MOTION_ENABLED=False to disable entirely.
 SERVO_LISTENING_MOTION_ENABLED = True
 SERVO_LISTENING_SPEED = 22            # slow, calm slew (speech head speed is 45)
 SERVO_LISTENING_ACCELERATION = 6
-SERVO_LISTENING_BEAT_MIN_SECS = 0.45  # randomized cadence between listening beats
-SERVO_LISTENING_BEAT_MAX_SECS = 0.85
-SERVO_LISTENING_NOD_EVERY_BEATS = 2   # how often a head nod lands (vs. easing back)
+SERVO_LISTENING_TICK_SECS = 0.12      # target-stream tick; small deltas = smooth glide
+SERVO_LISTENING_NOD_SECS = 1.4        # duration of one smooth nod (down and back)
+SERVO_LISTENING_NOD_MIN_GAP_SECS = 2.5   # pause between nods (randomized in range)
+SERVO_LISTENING_NOD_MAX_GAP_SECS = 6.0
 SERVO_LISTENING_LIFT_NOD_QUS = 240    # downward head-lift nod depth
 SERVO_LISTENING_TILT_QUS = 80         # head-tilt nod (inverted: + = looking down)
-SERVO_LISTENING_NECK_QUS = 110        # small neck sway around the tracked gaze
+SERVO_LISTENING_NECK_QUS = 110        # neck sway amplitude around the tracked gaze
+SERVO_LISTENING_NECK_PERIOD_SECS = 7.0
+SERVO_LISTENING_LIFT_SWAY_QUS = 90    # gentle breathing-like lift sway between nods
+SERVO_LISTENING_LIFT_PERIOD_SECS = 5.2
 SERVO_LISTENING_VISOR_QUS = 220       # slow visor flutter swing
-SERVO_LISTENING_ARM_EVERY_BEATS = 2   # how often the arms shift
-SERVO_LISTENING_ELBOW_QUS = 110
+SERVO_LISTENING_VISOR_PERIOD_SECS = 4.5
+SERVO_LISTENING_ELBOW_QUS = 110       # arm sway amplitudes (periods ~6.5-8.5s)
 SERVO_LISTENING_HAND_QUS = 380
 SERVO_LISTENING_HERO_QUS = 300
 SERVO_LISTENING_MAX_SECS = 20.0       # safety: auto-stop if a stop is ever missed

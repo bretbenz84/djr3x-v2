@@ -937,12 +937,83 @@ def listening_motion_active() -> bool:
     return _listening_active.is_set()
 
 
-def _listening_targets(beat: int) -> dict[int, int]:
-    """One beat of gentle listening pose targets, orbiting the current gaze.
+# Per-listening-session motion plan: random phases/periods for the slow sine drifts and
+# the schedule of the next smooth nod. Seeded by start_listening_motion() so every
+# session sways a little differently without any per-tick randomness (per-tick random
+# jumps are exactly what read as "stuttering").
+_listening_session: dict = {}
 
-    Pure-ish helper (reads config + the face-tracking baseline) so it can be unit
-    tested without hardware. Head nods/visor every beat; arms on a slower cadence.
+
+def _begin_listening_session(now: float) -> None:
+    def _period(base: float) -> float:
+        return base * random.uniform(0.8, 1.2)
+
+    _listening_session.clear()
+    _listening_session.update({
+        "t0": now,
+        "phase_neck": random.uniform(0.0, math.tau),
+        "phase_lift": random.uniform(0.0, math.tau),
+        "phase_visor": random.uniform(0.0, math.tau),
+        "phase_elbow": random.uniform(0.0, math.tau),
+        "phase_hand": random.uniform(0.0, math.tau),
+        "phase_hero": random.uniform(0.0, math.tau),
+        "period_neck": _period(_get_config_float("SERVO_LISTENING_NECK_PERIOD_SECS", 7.0)),
+        "period_lift": _period(_get_config_float("SERVO_LISTENING_LIFT_PERIOD_SECS", 5.2)),
+        "period_visor": _period(_get_config_float("SERVO_LISTENING_VISOR_PERIOD_SECS", 4.5)),
+        "period_elbow": _period(6.5),
+        "period_hand": _period(8.5),
+        "period_hero": _period(7.5),
+        "next_nod_at": now + random.uniform(
+            _get_config_float("SERVO_LISTENING_NOD_MIN_GAP_SECS", 2.5),
+            _get_config_float("SERVO_LISTENING_NOD_MAX_GAP_SECS", 6.0),
+        ),
+        "nod_started_at": None,
+    })
+
+
+def _listening_nod_progress(now: float) -> float:
+    """0..1 progress through the current smooth nod, or 0.0 when not nodding.
+
+    Advances the session's nod schedule as a side effect: starts a nod when its
+    time arrives and books the next one when it completes.
     """
+    s = _listening_session
+    if not s:
+        return 0.0
+    dur = max(0.2, _get_config_float("SERVO_LISTENING_NOD_SECS", 1.4))
+    started = s.get("nod_started_at")
+    if started is None:
+        if now >= float(s.get("next_nod_at") or 0.0):
+            s["nod_started_at"] = now
+            return 0.0
+        return 0.0
+    u = (now - float(started)) / dur
+    if u >= 1.0:
+        s["nod_started_at"] = None
+        s["next_nod_at"] = now + random.uniform(
+            _get_config_float("SERVO_LISTENING_NOD_MIN_GAP_SECS", 2.5),
+            _get_config_float("SERVO_LISTENING_NOD_MAX_GAP_SECS", 6.0),
+        )
+        return 0.0
+    return max(0.0, min(1.0, u))
+
+
+def _listening_targets(now: float) -> dict[int, int]:
+    """One tick of smooth listening pose targets, orbiting the current gaze.
+
+    Continuous, eased motion: every channel follows a slow sine drift (per-session
+    random phase/period), and the head periodically dips through a smooth
+    raised-cosine "mhm" nod. No per-tick randomness — the old random micro-jumps
+    every beat read as stuttering, not attentiveness. Pure-ish helper (reads config,
+    the face-tracking baseline, and the session plan) so it unit-tests without
+    hardware.
+    """
+    s = _listening_session
+    if not s:
+        _begin_listening_session(now)
+        s = _listening_session
+    t = now - float(s.get("t0") or now)
+
     neck_ch = _channel("neck")
     lift_ch = _channel("headlift")
     tilt_ch = _channel("headtilt")
@@ -957,58 +1028,65 @@ def _listening_targets(beat: int) -> dict[int, int]:
     base_lift = _clamp(lift_ch, base.get(lift_ch, _baseline_position(lift_ch)))
     base_tilt = _clamp(tilt_ch, base.get(tilt_ch, _baseline_position(tilt_ch)))
 
-    targets: dict[int, int] = {}
+    def _sway(amp: int, period_key: str, phase_key: str) -> float:
+        period = max(0.5, float(s.get(period_key) or 1.0))
+        return amp * math.sin(math.tau * t / period + float(s.get(phase_key) or 0.0))
 
-    # Head: gentle downward "mhm" nod every few beats, easing back to the tracked
-    # gaze in between. headlift lower = head down; headtilt is inverted (higher =
-    # looking down), so a nod biases lift DOWN and tilt slightly DOWN.
-    nod_every = max(1, _get_config_int("SERVO_LISTENING_NOD_EVERY_BEATS", 2))
-    if beat % nod_every == 0:
-        lift_amp = _get_config_int("SERVO_LISTENING_LIFT_NOD_QUS", 240)
-        tilt_amp = _get_config_int("SERVO_LISTENING_TILT_QUS", 80)
-        neck_amp = _get_config_int("SERVO_LISTENING_NECK_QUS", 110)
-        targets[lift_ch] = _clamp(lift_ch, base_lift - random.randint(int(lift_amp * 0.3), lift_amp))
-        targets[tilt_ch] = _clamp(tilt_ch, base_tilt + random.randint(0, tilt_amp))
-        targets[neck_ch] = _clamp(neck_ch, base_neck + random.randint(-neck_amp, neck_amp))
-    else:
-        targets[lift_ch] = base_lift
-        targets[tilt_ch] = base_tilt
-        targets[neck_ch] = base_neck
+    # Smooth "mhm" nod: a raised-cosine dip (sin² easing — zero velocity at both
+    # ends). headlift lower = head down; headtilt is inverted (higher = looking
+    # down), so the nod biases lift DOWN and tilt slightly DOWN, then eases back.
+    nod = math.sin(math.pi * _listening_nod_progress(now)) ** 2
+    lift_nod = _get_config_int("SERVO_LISTENING_LIFT_NOD_QUS", 240)
+    tilt_amp = _get_config_int("SERVO_LISTENING_TILT_QUS", 80)
+    neck_amp = _get_config_int("SERVO_LISTENING_NECK_QUS", 110)
+    lift_sway = _get_config_int("SERVO_LISTENING_LIFT_SWAY_QUS", 90)
+
+    targets: dict[int, int] = {
+        neck_ch: _clamp(neck_ch, int(base_neck + _sway(neck_amp, "period_neck", "phase_neck"))),
+        lift_ch: _clamp(
+            lift_ch,
+            int(base_lift + _sway(lift_sway, "period_lift", "phase_lift") - nod * lift_nod),
+        ),
+        tilt_ch: _clamp(tilt_ch, int(base_tilt + nod * tilt_amp)),
+    }
 
     # Visor: slow, shallow flutter around a slightly-open resting position.
     visor_cfg = config.SERVO_CHANNELS["visor"]
     visor_swing = _get_config_int("SERVO_LISTENING_VISOR_QUS", 220)
-    wave = 0.5 + 0.5 * math.sin(beat * 0.9)
     targets[visor_ch] = _clamp(
         visor_ch,
-        int(visor_cfg["neutral"] - visor_swing * 0.4 + wave * visor_swing) + random.randint(-30, 30),
+        int(
+            visor_cfg["neutral"]
+            - visor_swing * 0.4
+            + visor_swing * (0.5 + 0.5 * math.sin(math.tau * t / max(0.5, float(s.get("period_visor") or 4.5)) + float(s.get("phase_visor") or 0.0)))
+        ),
     )
 
-    # Arms: small, occasional shifts so the hand/arm look alive, not twitchy.
-    arm_every = max(1, _get_config_int("SERVO_LISTENING_ARM_EVERY_BEATS", 2))
-    if beat % arm_every == 0:
-        elbow_cfg = config.SERVO_CHANNELS["elbow"]
-        hand_cfg = config.SERVO_CHANNELS["hand"]
-        hero_cfg = config.SERVO_CHANNELS["heroarm"]
-        elbow_amp = _get_config_int("SERVO_LISTENING_ELBOW_QUS", 110)
-        hand_amp = _get_config_int("SERVO_LISTENING_HAND_QUS", 380)
-        hero_amp = _get_config_int("SERVO_LISTENING_HERO_QUS", 300)
-        targets[elbow_ch] = _clamp(elbow_ch, elbow_cfg["neutral"] + random.randint(-elbow_amp, elbow_amp))
-        targets[hand_ch] = _clamp(hand_ch, hand_cfg["neutral"] + random.randint(-hand_amp, hand_amp))
-        targets[hero_ch] = _clamp(hero_ch, hero_cfg["neutral"] + random.randint(-hero_amp, hero_amp))
+    # Arms: slow continuous sways on their own (longer) periods — alive, never twitchy.
+    elbow_cfg = config.SERVO_CHANNELS["elbow"]
+    hand_cfg = config.SERVO_CHANNELS["hand"]
+    hero_cfg = config.SERVO_CHANNELS["heroarm"]
+    elbow_amp = _get_config_int("SERVO_LISTENING_ELBOW_QUS", 110)
+    hand_amp = _get_config_int("SERVO_LISTENING_HAND_QUS", 380)
+    hero_amp = _get_config_int("SERVO_LISTENING_HERO_QUS", 300)
+    targets[elbow_ch] = _clamp(elbow_ch, int(elbow_cfg["neutral"] + _sway(elbow_amp, "period_elbow", "phase_elbow")))
+    targets[hand_ch] = _clamp(hand_ch, int(hand_cfg["neutral"] + _sway(hand_amp, "period_hand", "phase_hand")))
+    targets[hero_ch] = _clamp(hero_ch, int(hero_cfg["neutral"] + _sway(hero_amp, "period_hero", "phase_hero")))
 
     return targets
 
 
 def _listening_loop() -> None:
-    """Background loop: emit gentle listening beats until stop_listening_motion()."""
-    beat = 0
+    """Background loop: stream smooth listening targets until stop_listening_motion()."""
     started = time.monotonic()
+    _begin_listening_session(started)
     # Safety net: never let a missed stop strand listening motion (which would
     # also keep face tracking yielded). Auto-stop after a generous ceiling.
     max_secs = _get_config_float("SERVO_LISTENING_MAX_SECS", 20.0)
+    tick = max(0.05, _get_config_float("SERVO_LISTENING_TICK_SECS", 0.12))
     while _listening_active.is_set() and not _stop_breathing.is_set():
-        if time.monotonic() - started >= max_secs:
+        now = time.monotonic()
+        if now - started >= max_secs:
             _log.debug("listening motion hit max duration — auto-stopping.")
             stop_listening_motion()
             return
@@ -1020,14 +1098,11 @@ def _listening_loop() -> None:
         ):
             time.sleep(0.1)
             continue
-        beat += 1
         try:
-            set_servos(_listening_targets(beat))
+            set_servos(_listening_targets(now))
         except Exception as exc:
-            _log.debug("listening beat failed: %s", exc)
-        lo = _get_config_float("SERVO_LISTENING_BEAT_MIN_SECS", 0.45)
-        hi = _get_config_float("SERVO_LISTENING_BEAT_MAX_SECS", 0.85)
-        time.sleep(random.uniform(min(lo, hi), max(lo, hi)))
+            _log.debug("listening tick failed: %s", exc)
+        time.sleep(tick)
 
 
 def start_listening_motion() -> None:

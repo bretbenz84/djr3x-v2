@@ -35,6 +35,12 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_tracking_pending_center = consciousness._face_tracking_pending_center
         consciousness._face_tracking_last_center = None
         consciousness._face_tracking_pending_center = None
+        # The persistent reversal-damping deadlines compare against mocked clocks that
+        # move backward between tests — reset them so damping can't leak across tests.
+        self.old_damped_x_until = consciousness._face_tracking_damped_x_until
+        self.old_damped_y_until = consciousness._face_tracking_damped_y_until
+        consciousness._face_tracking_damped_x_until = 0.0
+        consciousness._face_tracking_damped_y_until = 0.0
         self.old_adaptive_head_rest = dict(consciousness._adaptive_head_rest)
         with consciousness._speaker_gaze_lock:
             self.old_speaker_gaze_intent = dict(consciousness._speaker_gaze_intent)
@@ -64,6 +70,8 @@ class FaceTrackingTests(unittest.TestCase):
         c._face_tracking_last_error_at = self.old_tracking_error_at
         c._face_tracking_last_center = self.old_tracking_last_center
         c._face_tracking_pending_center = self.old_tracking_pending_center
+        c._face_tracking_damped_x_until = self.old_damped_x_until
+        c._face_tracking_damped_y_until = self.old_damped_y_until
         c._adaptive_head_rest.clear()
         c._adaptive_head_rest.update(self.old_adaptive_head_rest)
         with c._speaker_gaze_lock:
@@ -793,10 +801,9 @@ class FaceTrackingTests(unittest.TestCase):
         updates = set_servos.call_args.args[0]
         neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
         damped_step = int(c.config.FACE_TRACKING_NECK_MAX_STEP_QUS * c.config.FACE_TRACKING_REVERSAL_DAMPING)
-        self.assertLessEqual(
-            abs(updates[neck_ch] - c.config.SERVO_CHANNELS["neck"]["neutral"]),
-            damped_step,
-        )
+        # A sign-reversed error must move at most the damped step off the STARTING pose
+        # (6000) — and the edge boost must not re-inflate a reversal-damped cap.
+        self.assertLessEqual(abs(updates[neck_ch] - 6000), damped_step)
 
     def test_live_tracked_edge_face_slews_neck_responsively(self):
         # Guard the responsiveness fix: an optical-flow (live_tracked) box at the
@@ -832,10 +839,10 @@ class FaceTrackingTests(unittest.TestCase):
 
         updates = set_servos.call_args.args[0]
         neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
-        neutral = c.config.SERVO_CHANNELS["neck"]["neutral"]
-        neck_move = abs(updates[neck_ch] - neutral)
-        # Left-edge face → neck turns left (below neutral).
-        self.assertLess(updates[neck_ch], neutral)
+        start = 6000  # the starting neck pose from _set_servo_positions
+        neck_move = abs(updates[neck_ch] - start)
+        # Left-edge face → neck turns left (below the starting pose).
+        self.assertLess(updates[neck_ch], start)
         # Responsive: comfortably more than the old ~54 qus/tick crawl, and never
         # beyond the per-tick step cap — which at the frame edge is scaled up by
         # the edge boost (2026-07-31: a flat cap made a lateral re-face take ~5s).

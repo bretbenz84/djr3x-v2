@@ -32,12 +32,9 @@ change (tracked as their own fix-up task):
   verified pre-existing against clean HEAD 2026-08-05, solo run too; the
   furry-animal surprise-frame failure was fixed 2026-08-03 by the animal
   presence-ledger rework — the old species cooldown was leaking between tests)
-- `tests/test_face_tracking.py` — 4 failures
-  (`test_face_tracking_damps_direction_reversal`,
-  `test_live_tracked_edge_face_slews_neck_responsively`,
-  `test_recent_speaker_face_beats_larger_bystander`,
-  `test_single_visible_face_recenters_neck_lift_and_tilt`; verified against
-  clean HEAD 2026-08-05)
+- `tests/test_face_tracking.py` — FIXED 2026-08-07 (the 4 failures were test rot:
+  assertions compared against the neck neutral 5472 while `_set_servo_positions`
+  starts the head at 6000 — updated alongside the head-tilt anti-hunting work)
 - `tests/test_body_mood.py` — `test_visor_released_to_lens_clear_floor_when_mood_ends`
 - `tests/test_holiday_plan_cue.py` — `test_spoken_lean_holiday_cue_marks_only_that_person`
 - `tests/test_rex_supervisor.py` — 3 failures (`test_chime_uses_afplay_when_available`,

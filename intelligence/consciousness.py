@@ -13288,6 +13288,7 @@ def start() -> None:
     global _last_weather_reaction_at
     global _face_tracking_last_error_key, _face_tracking_last_error_x
     global _face_tracking_last_error_y, _face_tracking_last_error_at
+    global _face_tracking_damped_x_until, _face_tracking_damped_y_until
     global _last_face_seen_at
     global _smile_reaction_watch, _last_smile_reaction_at
     global _last_facial_expression_reaction_at
@@ -13362,6 +13363,8 @@ def start() -> None:
     _face_tracking_last_error_x = None
     _face_tracking_last_error_y = None
     _face_tracking_last_error_at = 0.0
+    _face_tracking_damped_x_until = 0.0
+    _face_tracking_damped_y_until = 0.0
     with _speaker_gaze_lock:
         _speaker_gaze_intent.clear()
     gaze_engine.reset()
@@ -13462,6 +13465,7 @@ def stop() -> None:
     global _startup_presence_evidence_reason
     global _face_tracking_last_error_key, _face_tracking_last_error_x
     global _face_tracking_last_error_y, _face_tracking_last_error_at
+    global _face_tracking_damped_x_until, _face_tracking_damped_y_until
     global _last_face_seen_at
     global _smile_reaction_watch
     global _pending_wave_back
@@ -13496,6 +13500,8 @@ def stop() -> None:
     _face_tracking_last_error_x = None
     _face_tracking_last_error_y = None
     _face_tracking_last_error_at = 0.0
+    _face_tracking_damped_x_until = 0.0
+    _face_tracking_damped_y_until = 0.0
     with _speaker_gaze_lock:
         _speaker_gaze_intent.clear()
     gaze_engine.reset()
