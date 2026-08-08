@@ -2162,7 +2162,11 @@ def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None
         "open_threads: 0-3 SHORT items I could naturally ask about next time "
         '("whether the dentist appointment happened"). Only real ones; usually empty. '
         "An open thread must come from something the HUMAN actually stated or "
-        "committed to. NEVER open one on a topic they denied, corrected, or said they "
+        "committed to — a concrete unresolved EVENT, PLAN, or DECISION, phrased "
+        "close to their own words. Idle curiosity about a person, pet, or object "
+        "('what Max is like', 'whether Max caused any mischief', 'where Max "
+        "usually sits') is NOT a thread — if nothing was left pending, there is "
+        "nothing to ask. Never build a thread from your own joke or metaphor. NEVER open one on a topic they denied, corrected, or said they "
         "knew nothing about — if they told you something did not happen, that thread "
         "is CLOSED, not reopened, and 'whether they will do it after all' is not a "
         "thread. Never open one on something only you brought up. Bookkeeping is not "

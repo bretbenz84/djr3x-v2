@@ -3043,6 +3043,16 @@ def _pet_directed_speech(text: str) -> Optional[str]:
         ):
             return f"pet_name:{name}"
     if _PET_ONLY_COMMAND_RE.match(cleaned):
+        # Rex just asked a question and the reply window is open — a bare "No."
+        # is almost certainly the ANSWER, not someone scolding the dog (field
+        # 2026-08-07 18:20: "did you land on one?" → "No." was eaten as
+        # pet_only_command and Bret had to repeat himself). The pet-name branch
+        # above still fires — "Max, no" stays ignored even mid-question.
+        try:
+            if consciousness.is_waiting_for_response():
+                return None
+        except Exception:
+            pass
         return "pet_only_command"
     return None
 
@@ -5534,6 +5544,15 @@ def _lean_interest_discovery_cue(person_id: Optional[int]) -> Optional[dict]:
 # make the "doesn't always trigger" knob meaningless).
 _workday_checkin_rolls: dict = {}
 
+# Work/day talk already happened this session → the evening check-in would be a
+# re-ask. Matches either party's turns: the human volunteering ("got home from
+# work") or Rex having already asked about their day.
+_WORKDAY_TOPIC_RE = re.compile(
+    r"\b(?:work|worked|working|job|office|shift|meetings?|workday|"
+    r"how\s+was\s+your\s+day|how'?s\s+your\s+day)\b",
+    re.IGNORECASE,
+)
+
 
 def _person_profession(person_id: int) -> str:
     """The person's stored job/profession ('trainer'), or ''. Facts with
@@ -5543,14 +5562,34 @@ def _person_profession(person_id: int) -> str:
     except Exception:
         return ""
     job_keys = {"job_title", "job", "profession", "occupation", "career", "works_as"}
+    # A shaky inferred guess must not become how Rex ADDRESSES someone — the
+    # job_title='trainer' fact (conf 0.55, inferred from Bret training the
+    # robot) produced "How was work today, trainer?" (field 2026-08-07).
+    # Below the floor the cue quietly falls back to the plain "how was your
+    # day?" variant, which is always safe.
+    min_conf = float(getattr(config, "WORKDAY_CHECKIN_PROFESSION_MIN_CONFIDENCE", 0.75))
+
+    def _usable(row: dict) -> str:
+        value = str(row.get("value") or "").strip()
+        if not value:
+            return ""
+        conf = row.get("confidence")
+        if conf is not None:
+            try:
+                if float(conf) < min_conf:
+                    return ""
+            except (TypeError, ValueError):
+                pass
+        return value
+
     for row in rows:
         if str(row.get("category") or "").lower() in ("job", "work", "career"):
-            value = str(row.get("value") or "").strip()
+            value = _usable(row)
             if value:
                 return value
     for row in rows:
         if str(row.get("key") or "").lower() in job_keys:
-            value = str(row.get("value") or "").strip()
+            value = _usable(row)
             if value:
                 return value
     return ""
@@ -5588,6 +5627,19 @@ def _lean_workday_checkin_cue(
             return None
     except Exception:
         return None
+    # Already talked about work/their day this session? Then the check-in is a
+    # re-ask, not a sparker (field 2026-08-07: "I just got home from work" →
+    # "How bad was it?" → two minutes later the cue asked "How was work
+    # today?"). Session-scoped on purpose — the durable mark stays reserved
+    # for a check-in Rex actually spoke.
+    try:
+        if any(
+            _WORKDAY_TOPIC_RE.search(str(turn.get("text") or ""))
+            for turn in conv_memory.get_session_transcript() or []
+        ):
+            return None
+    except Exception:
+        pass
     roll_key = (int(person_id), day_key)
     if roll_key not in _workday_checkin_rolls:
         _workday_checkin_rolls[roll_key] = (

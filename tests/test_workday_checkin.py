@@ -42,6 +42,11 @@ class _CueCase(unittest.TestCase):
         self._roll = mock.patch.object(interaction.random, "random", return_value=0.0)
         self._roll.start()
         self.addCleanup(self._roll.stop)
+        self._session = mock.patch.object(
+            interaction.conv_memory, "get_session_transcript", return_value=[]
+        )
+        self._session.start()
+        self.addCleanup(self._session.stop)
 
     def _cue(self, now=_TUE_EVENING, person_id=1):
         return interaction._lean_workday_checkin_cue(person_id, now=now)
@@ -94,6 +99,38 @@ class WorkdayCheckinGatesTest(_CueCase):
             self.assertIsNone(self._cue())
             self.assertIsNone(self._cue())   # later lull, same day
         self.assertEqual(len(rolls), 1, "one roll per (person, day), memoized")
+
+    def test_low_confidence_inferred_profession_falls_back_to_day_variant(self):
+        # job_title='trainer' at conf 0.55 (inferred from Bret training the
+        # robot) produced "How was work today, trainer?" — field 2026-08-07.
+        with mock.patch.object(
+            interaction.facts_memory, "get_facts",
+            return_value=[{"category": "job", "key": "job_title",
+                          "value": "trainer", "confidence": 0.55}],
+        ):
+            cue = self._cue()
+        self.assertIsNotNone(cue)
+        self.assertEqual(cue["kind"], "day")
+
+    def test_confident_profession_still_offers_work_variant(self):
+        with mock.patch.object(
+            interaction.facts_memory, "get_facts",
+            return_value=[{"category": "job", "key": "job_title",
+                          "value": "welder", "confidence": 0.95}],
+        ):
+            cue = self._cue()
+        self.assertEqual(cue["kind"], "work")
+        self.assertEqual(cue["profession"], "welder")
+
+    def test_work_already_discussed_this_session_does_not_fire(self):
+        # "I just got home from work" → Rex asked about it → the evening cue
+        # must not re-ask "how was work today?" minutes later (field 2026-08-07).
+        with mock.patch.object(
+            interaction.conv_memory, "get_session_transcript",
+            return_value=[{"speaker": "Bret Benziger",
+                          "text": "I just got home from work."}],
+        ):
+            self.assertIsNone(self._cue())
 
     def test_profession_from_key_when_category_differs(self):
         with mock.patch.object(

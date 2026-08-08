@@ -5657,6 +5657,11 @@ WORKDAY_CHECKIN_START_HOUR = _env_int("WORKDAY_CHECKIN_START_HOUR", 17, min_valu
 WORKDAY_CHECKIN_END_HOUR = _env_int("WORKDAY_CHECKIN_END_HOUR", 23, min_value=1, max_value=24)
 WORKDAY_CHECKIN_WEEKDAYS = (0, 1, 2, 3, 4)  # Mon-Fri (Monday=0)
 WORKDAY_CHECKIN_PROBABILITY = _env_float("WORKDAY_CHECKIN_PROBABILITY", 0.8, min_value=0.0, max_value=1.0)
+# The "work" variant only uses a stored profession this confident — a shaky
+# inferred job fact must not become how Rex addresses someone.
+WORKDAY_CHECKIN_PROFESSION_MIN_CONFIDENCE = _env_float(
+    "WORKDAY_CHECKIN_PROFESSION_MIN_CONFIDENCE", 0.75, min_value=0.0, max_value=1.0
+)
 # Rich-share follow-up: a substantive answer to Rex's question earns one
 # concrete follow-up question in the same reply (the inverse of the flat-
 # answer probe). Cooldown keeps consecutive turns from becoming an interview.

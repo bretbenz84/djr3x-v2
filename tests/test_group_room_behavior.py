@@ -44,6 +44,27 @@ class PetDirectedSpeechTest(unittest.TestCase):
         ):
             self.assertIsNone(I._pet_directed_speech("Lay down. Lay down."))
 
+    def test_bare_no_passes_while_rex_awaits_an_answer(self):
+        # Field 2026-08-07 18:20: "did you land on one?" → "No." was eaten as
+        # pet_only_command — the answer to Rex's own question.
+        with mock.patch.object(
+            I.consciousness, "is_waiting_for_response", return_value=True
+        ):
+            self.assertIsNone(I._pet_directed_speech("No."))
+            self.assertIsNone(I._pet_directed_speech("Sit."))
+
+    def test_bare_no_is_pet_directed_outside_the_window(self):
+        with mock.patch.object(
+            I.consciousness, "is_waiting_for_response", return_value=False
+        ):
+            self.assertEqual(I._pet_directed_speech("No."), "pet_only_command")
+
+    def test_pet_name_branch_still_fires_inside_the_window(self):
+        with mock.patch.object(
+            I.consciousness, "is_waiting_for_response", return_value=True
+        ):
+            self.assertIsNotNone(I._pet_directed_speech("Max, come here."))
+
 
 class GroupChatterDirectedEvidenceTest(unittest.TestCase):
     def test_directed_turns_get_replies(self):
