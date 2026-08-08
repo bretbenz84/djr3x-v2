@@ -26,6 +26,7 @@ import config
 from audio import voice_score as _voice_score
 from memory import database as db
 from memory.name_validation import (
+    full_names_are_similar,
     names_are_similar,
     normalize_person_name,
     normalized_name_key,
@@ -412,10 +413,15 @@ def find_potential_person_match(name: str) -> Optional[dict]:
                     "candidate_name": clean,
                 }
 
+    # Two similarity lenses: whole-string ratio, plus the token-aware check for
+    # multi-token names whose garbled surname drags the whole-string ratio just
+    # under threshold ("Bret Bender" vs "Bret Benziger" = 0.833, field
+    # 2026-08-08 — the eating-voice session that nearly minted a phantom).
     fuzzy = [
         person
         for person in candidates
         if names_are_similar(clean, person.get("name") or "")
+        or full_names_are_similar(clean, person.get("name") or "")
     ]
     if len(fuzzy) == 1:
         return {"match_type": "fuzzy", "person": fuzzy[0], "candidate_name": clean}

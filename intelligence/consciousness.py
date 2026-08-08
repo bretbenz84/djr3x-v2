@@ -3573,6 +3573,14 @@ def _step_room_change(snapshot: dict, profile: SituationProfile) -> None:
         room_questions.note_room_remark(label)
     except Exception:
         pass
+    if person_name is not None:
+        # He asked a question about the object — record it in the shared ask
+        # ledger so the answer is captured and no generator re-asks.
+        try:
+            from intelligence import object_qa
+            object_qa.note_asked(label, source="room_change")
+        except Exception:
+            pass
     _log.info(
         "consciousness: room-change remark — %s (sightings=%d, count=%d/%s, asked=%s)",
         label, counts.get(label, 0), int(_room_change_state["count"]),
@@ -3611,9 +3619,20 @@ def _step_held_object_remark(snapshot: dict, profile: SituationProfile) -> None:
         _held_object_first_seen.setdefault(label, now)
 
     min_hold = float(getattr(config, "HELD_OBJECT_REMARK_MIN_HOLD_SECS", 5.0))
+
+    def _already_covered(label: str) -> bool:
+        # Cross-generator ledger: another generator (visual curiosity, room
+        # change) may have asked about this object already this session.
+        try:
+            from intelligence import object_qa
+            return object_qa.was_asked(label)
+        except Exception:
+            return False
+
     ready = [
         label for label, seen_at in _held_object_first_seen.items()
         if label not in _held_object_remarked and (now - seen_at) >= min_hold
+        and not _already_covered(label)
     ]
     if not ready:
         return
@@ -3652,6 +3671,11 @@ def _step_held_object_remark(snapshot: dict, profile: SituationProfile) -> None:
         return
     _held_object_state["last_at"] = now
     _held_object_state["count"] = _held_object_state.get("count", 0.0) + 1
+    try:
+        from intelligence import object_qa
+        object_qa.note_asked(label, source="held_object")
+    except Exception:
+        pass
     _log.info(
         "consciousness: held-object remark — %s (holder=%s, count=%d/%s)",
         label, holder, int(_held_object_state["count"]),
@@ -7523,7 +7547,37 @@ def _visual_curiosity_objects_line() -> str:
         if isinstance(o, dict) and o.get("label")
         and float(o.get("confidence") or 0.0) >= min_conf
     ]
+    # Cross-generator ask ledger (field 2026-08-08: "what's in the bowl?" asked
+    # twice, two minutes apart, the answer forgotten): objects he already asked
+    # about this session must not be re-asked. Answered ones stay in the prompt
+    # WITH the answer — riff material; asked-but-unanswered ones drop out so he
+    # doesn't badger.
+    answered_notes: list[str] = []
+    try:
+        from intelligence import object_qa
+        fresh = []
+        for o in keep:
+            label = str(o.get("label") or "").strip().lower()
+            answer = object_qa.known_answer(label)
+            if answer:
+                answered_notes.append(f'{label} (answer: "{answer}")')
+            elif not object_qa.was_asked(label):
+                fresh.append(o)
+        keep = fresh
+    except Exception:
+        pass
+    answered_line = (
+        " He ALREADY asked about these and got an answer — do NOT ask about "
+        "them again; build on or riff off the known answer instead: "
+        + "; ".join(answered_notes) + "."
+        if answered_notes else ""
+    )
     if not keep:
+        if answered_line:
+            return (
+                "Confirmed objects in view he already covered this "
+                f"session:{answered_line}\n\n"
+            )
         return ""
     keep.sort(key=lambda o: float(o.get("confidence") or 0.0), reverse=True)
     cap = int(getattr(config, "VISUAL_CURIOSITY_OBJECTS_MAX", 6))
@@ -7582,7 +7636,7 @@ def _visual_curiosity_objects_line() -> str:
     return (
         "Confirmed objects in view (a local object detector verified these are really "
         f"there — safe to name; USE the they-call-it name where one is given): "
-        f"{items}.{held_note or novel_note}\n\n"
+        f"{items}.{held_note or novel_note}{answered_line}\n\n"
     )
 
 
@@ -7765,6 +7819,19 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
                     quiet_for,
                 )
                 _speak_async(text, emotion="curious", wait_secs=wait, governed=False)
+                # Ledger: the LLM chose freely which object to ask about — detect
+                # which detector labels the spoken question names and record the
+                # ask, so the answer gets captured and the object never re-asked.
+                try:
+                    from intelligence import object_qa
+                    labels = [
+                        str(o.get("label") or "")
+                        for o in (world_state.get("objects") or [])
+                        if isinstance(o, dict) and o.get("label")
+                    ]
+                    object_qa.mark_asked_labels(text, labels, source="visual_curiosity")
+                except Exception:
+                    pass
         except Exception as exc:
             _log.debug("visual curiosity step error: %s", exc)
         finally:
@@ -12372,6 +12439,205 @@ def _drive_gaze_return(servo_mod, now: float) -> bool:
     return bool(reached or stalled)
 
 
+# ── Object-directed glance ───────────────────────────────────────────────────
+# "Ask about what you're looking AT" (owner 2026-08-08: asking about the model
+# train on the wall while staring at the person next to it reads as robotic):
+# when any generator asks about a seen object, the head turns briefly toward
+# that object's last detection box while the question is spoken, then returns
+# to the conversation anchor. The bearing mapping is the same frame-fraction
+# convention the listener include-sweep uses, and every move rides the ramped
+# gaze stepper — the 5 lb head must glide, never snap.
+_object_glance: dict = {"phase": "idle"}
+_object_glance_lock = threading.Lock()
+
+
+def request_object_glance(label: str, *, source: str = "") -> bool:
+    """Arm a glance toward ``label``'s last-seen detection box. Returns True when
+    a fresh box was found and the glance armed; False means no glance (object
+    unseen, stale, or another owner holds the head) and the head stays put."""
+    if not bool(getattr(config, "OBJECT_GLANCE_ENABLED", True)):
+        return False
+    key = str(label or "").strip().lower()
+    if not key:
+        return False
+    try:
+        if directed_gaze_hold_active():
+            return False
+    except Exception:
+        pass
+    try:
+        from intelligence import exploration
+        if exploration.active():
+            return False  # exploration does its own fixation glances
+    except Exception:
+        pass
+    try:
+        objects = world_state.get("objects") or []
+    except Exception:
+        return False
+    record = next(
+        (
+            o for o in objects
+            if isinstance(o, dict)
+            and str(o.get("label") or "").strip().lower() == key
+            and o.get("box")
+        ),
+        None,
+    )
+    if record is None:
+        return False
+    # The camera rides the head: a box recorded long ago (or after a big head
+    # move) no longer points at the object, so only a recent sighting is usable.
+    max_age = float(getattr(config, "OBJECT_GLANCE_MAX_BOX_AGE_SECS", 20.0))
+    age = time.time() - float(record.get("last_seen") or 0.0)
+    if age > max_age:
+        return False
+    try:
+        x, y, w, h = (float(v) for v in record["box"])
+    except (TypeError, ValueError):
+        return False
+    frame_w = float(getattr(config, "CAMERA_WIDTH", 1920) or 1920)
+    frame_h = float(getattr(config, "CAMERA_HEIGHT", 1080) or 1080)
+    cx = (x + w / 2.0) / max(1.0, frame_w)
+    cy = (y + h / 2.0) / max(1.0, frame_h)
+    max_yaw = float(getattr(config, "OBJECT_GLANCE_MAX_BEARING_DEG", 26.0))
+    max_pitch = float(getattr(config, "OBJECT_GLANCE_MAX_PITCH_DEG", 14.0))
+    # +yaw => RIGHT of frame => neck toward max (validated _face_x_to_neck_target
+    # convention); +pitch => UP (tilt is inverted, gaze cfg handles that).
+    yaw = max(-max_yaw, min(max_yaw, (cx - 0.5) * 2.0 * max_yaw))
+    pitch = max(-max_pitch, min(max_pitch, (0.5 - cy) * 2.0 * max_pitch))
+    with _object_glance_lock:
+        _object_glance.clear()
+        _object_glance.update({
+            "phase": "away",
+            "label": key,
+            "yaw_deg": yaw,
+            "pitch_deg": pitch,
+            "armed_at": time.monotonic(),
+            "moved": False,
+            "source": source,
+        })
+    _log.info(
+        "[object_glance] armed toward %r (yaw=%.1f° pitch=%.1f° box_age=%.1fs source=%s)",
+        key, yaw, pitch, age, source or "?",
+    )
+    return True
+
+
+def _object_glance_release() -> None:
+    with _object_glance_lock:
+        _object_glance.clear()
+        _object_glance["phase"] = "idle"
+
+
+def _drive_object_glance(servo_mod, now: float) -> bool:
+    """One tick of an armed object glance. Returns True while it owns the head.
+    Mirrors the gaze-aversion driver: capture anchor → ramped turn to the object
+    → short hold → ramped return with a stall deadline, so the head can never
+    get stuck looking away from the person."""
+    with _object_glance_lock:
+        state = dict(_object_glance)
+    phase = state.get("phase")
+    if phase in (None, "idle"):
+        return False
+    if bool(getattr(servo_mod, "manual_override_enabled", lambda: False)()):
+        _object_glance_release()
+        return False
+    if directed_gaze_hold_active(now):
+        _object_glance_release()
+        return False
+
+    armed_at = float(state.get("armed_at") or now)
+    # Another owner held the head past the ask — the moment is gone; a late
+    # glance at nothing would just look broken. Stand down without moving.
+    if not state.get("moved") and (now - armed_at) > float(
+        getattr(config, "OBJECT_GLANCE_ARM_STALE_SECS", 4.0)
+    ):
+        _object_glance_release()
+        return False
+
+    anchor = state.get("anchor")
+    if anchor is None:
+        # Adopt an in-flight gaze aversion's anchor (that's where the person is);
+        # otherwise the current pose IS the on-person pose.
+        anchor = (
+            _gaze_drive.get("anchor")
+            if _gaze_drive.get("phase") != "idle" and _gaze_drive.get("anchor")
+            else (
+                _current_servo_position("neck"),
+                _current_servo_position("headlift"),
+                _current_servo_position("headtilt"),
+            )
+        )
+        _gaze_release()
+        with _object_glance_lock:
+            _object_glance["anchor"] = anchor
+
+    try:
+        cfg = gaze_engine.get_engine().cfg
+    except Exception:
+        _object_glance_release()
+        return False
+    anchor_neck, anchor_lift, _anchor_tilt = anchor
+    neck_off = cfg.yaw_deg_to_neck_qus(float(state.get("yaw_deg") or 0.0)) - cfg.neck_neutral
+    target_neck = _clamp_servo("neck", anchor_neck + neck_off)
+    target_tilt = _clamp_servo(
+        "headtilt", cfg.pitch_deg_to_tilt_qus(float(state.get("pitch_deg") or 0.0))
+    )
+    target_lift = int(anchor_lift)
+
+    neck_step = int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 240))
+    lift_step = int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 70))
+    tilt_step = int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 130))
+    tolerance = int(getattr(config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420))
+    hold_secs = float(getattr(config, "OBJECT_GLANCE_HOLD_SECS", 2.6))
+    max_secs = float(getattr(config, "OBJECT_GLANCE_MAX_SECS", 7.0))
+
+    if phase == "away":
+        if not state.get("moved"):
+            with _object_glance_lock:
+                _object_glance["moved"] = True
+            _gaze_drive["vel"] = {}  # soft ease-in from rest
+        reached = _step_gaze_targets(
+            servo_mod, target_neck, target_lift, target_tilt,
+            neck_step=neck_step, lift_step=lift_step, tilt_step=tilt_step,
+            tolerance=tolerance,
+        )
+        _record_face_tracking_state(locked=False, visible=False)
+        if reached or (now - armed_at) > max_secs:
+            with _object_glance_lock:
+                _object_glance["phase"] = "hold"
+                _object_glance["hold_until"] = now + hold_secs
+        return True
+
+    if phase == "hold":
+        _step_gaze_targets(
+            servo_mod, target_neck, target_lift, target_tilt,
+            neck_step=neck_step, lift_step=lift_step, tilt_step=tilt_step,
+            tolerance=tolerance,
+        )
+        _record_face_tracking_state(locked=False, visible=False)
+        if now >= float(state.get("hold_until") or 0.0) or (now - armed_at) > max_secs:
+            with _object_glance_lock:
+                _object_glance["phase"] = "returning"
+                _object_glance["return_since"] = now
+            _gaze_drive["vel"] = {}  # ease back in from rest too
+        return True
+
+    # returning
+    reached = _step_gaze_targets(
+        servo_mod, int(anchor_neck), int(anchor_lift), int(_anchor_tilt),
+        neck_step=neck_step, lift_step=lift_step, tilt_step=tilt_step,
+        tolerance=tolerance,
+    )
+    _record_face_tracking_state(locked=False, visible=False)
+    stalled = (now - float(state.get("return_since") or now)) >= 1.5
+    if reached or stalled:
+        _object_glance_release()
+        return False
+    return True
+
+
 def _gaze_ramped_step(name: str, current: int, target: int, max_vel: int, accel: float) -> tuple[int, float]:
     """One velocity+acceleration-limited tick toward ``target`` (qus). Returns
     (next_position, velocity). The per-axis velocity is carried in ``_gaze_drive['vel']``
@@ -12607,6 +12873,12 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             wander_active = bool(_idle_wander.get("active"))
         if wander_active:
             _drive_idle_head_wander(servo_mod, now)
+            return
+
+        # Object-directed glance ("what's in the bowl?" spoken AT the bowl):
+        # like the wander it needs no frame and must be able to finish its
+        # return leg, so it runs before the frame/listening early-returns.
+        if _drive_object_glance(servo_mod, now):
             return
 
         if frame is None:
@@ -13454,6 +13726,11 @@ def start() -> None:
     except Exception:
         pass
     try:
+        from intelligence import object_qa
+        object_qa.reset()
+    except Exception:
+        pass
+    try:
         from intelligence import end_thread
         end_thread.clear()
     except Exception:
@@ -13584,6 +13861,11 @@ def stop() -> None:
     try:
         from intelligence import question_budget
         question_budget.clear()
+    except Exception:
+        pass
+    try:
+        from intelligence import object_qa
+        object_qa.reset()
     except Exception:
         pass
     try:

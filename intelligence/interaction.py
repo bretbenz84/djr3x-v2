@@ -8963,6 +8963,31 @@ def _handle_pending_offscreen_identify_reply(
             return True, ack_text
         return True, None
 
+    # A name that is a near-miss of someone Rex already knows ("Bret Bender"
+    # for Bret Benziger, garbled by an eating-voice ASR turn) must not silently
+    # fail enrollment — ask the did-you-mean question instead. The existing
+    # confirmation flow then aliases + re-enrolls on "yes" or forks a genuinely
+    # new person on "no". first_name matches stay frictionless (reused below).
+    try:
+        near_miss = people_memory.find_potential_person_match(intro_name)
+    except Exception:
+        near_miss = None
+    if (
+        near_miss
+        and near_miss.get("match_type") in {"fuzzy", "fuzzy_first_name"}
+        and isinstance(audio_array, np.ndarray)
+        and _maybe_ask_identity_match_confirmation(
+            intro_name,
+            audio_array,
+            anonymous_speaker_label=(
+                pending.get("anonymous_speaker_label") or anonymous_speaker_label
+            ),
+            source="offscreen_identify",
+        )
+    ):
+        _pending_offscreen_identify = None
+        return True, None
+
     new_pid = None
     try:
         new_pid, created = people_memory.find_or_create_person(intro_name)
@@ -23718,15 +23743,26 @@ def _handle_speech_segment(
         # real question/comment (pause the walk + release the turn to normal routing).
         # Consume it here before routers so a "stop" ends the whole mode, not just the
         # current leg, and encouragement doesn't get misrouted.
-        if not game_conversation_lock and exploration_flow_active():
-            # Passive room-question answer capture (never consumes the turn):
-            # if Rex just asked "what's that X?", watch this reply for an identity.
+        # Passive object-answer capture (never consumes the turn). Two ledgers:
+        # room_questions extracts an object IDENTITY ("that's my sourdough
+        # starter"); object_qa stores the raw ANSWER to any object question
+        # ("what's in the bowl?" → "frosted mini wheats"). This used to run only
+        # during a room-exploration walk, so answers to lull/lean-cue/visual-
+        # curiosity object questions were never captured and Rex re-asked
+        # (field 2026-08-08: the bowl, twice in three minutes).
+        if not game_conversation_lock:
             try:
                 from intelligence import room_questions
                 room_questions.maybe_capture_answer(text)
             except Exception:
                 pass
+            try:
+                from intelligence import object_qa
+                object_qa.maybe_capture_answer(text)
+            except Exception:
+                pass
 
+        if not game_conversation_lock and exploration_flow_active():
             exploration_response = _handle_exploration_turn(text, person_id)
             if exploration_response:
                 _record_heard_turn_once()

@@ -260,3 +260,37 @@ def names_are_similar(left: str, right: str, *, threshold: float = 0.84) -> bool
     if not left_key or not right_key or left_key == right_key:
         return False
     return SequenceMatcher(None, left_key, right_key).ratio() >= threshold
+
+
+def full_names_are_similar(
+    left: str,
+    right: str,
+    *,
+    first_threshold: float = 0.84,
+    surname_threshold: float = 0.6,
+) -> bool:
+    """Token-aware near-match for two multi-token names.
+
+    The whole-string ratio misses ASR-garbled surnames: "Bret Bender" vs
+    "Bret Benziger" scores 0.833, just under the 0.84 bar, so no fuzzy tier
+    fires and a phantom person gets minted. Compare the first token and the
+    surname remainder separately instead — the first name must match (exactly
+    or fuzzily) and the surnames must be clearly related, while genuinely
+    different surnames ("Bret Smith" vs "Bret Jones") stay well apart.
+    """
+    left_key = normalized_name_key(left)
+    right_key = normalized_name_key(right)
+    if not left_key or not right_key or left_key == right_key:
+        return False
+    left_tokens = left_key.split()
+    right_tokens = right_key.split()
+    if len(left_tokens) < 2 or len(right_tokens) < 2:
+        return False
+    if (
+        left_tokens[0] != right_tokens[0]
+        and SequenceMatcher(None, left_tokens[0], right_tokens[0]).ratio() < first_threshold
+    ):
+        return False
+    left_rest = " ".join(left_tokens[1:])
+    right_rest = " ".join(right_tokens[1:])
+    return SequenceMatcher(None, left_rest, right_rest).ratio() >= surname_threshold

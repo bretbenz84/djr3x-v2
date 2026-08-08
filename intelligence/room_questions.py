@@ -123,6 +123,11 @@ def note_asked(label: str) -> None:
         room_model.note_question_asked(label)
     except Exception as exc:
         _log.debug("[room_questions] note_question_asked failed: %s", exc)
+    try:
+        from intelligence import object_qa
+        object_qa.note_asked(label, source="room_question")
+    except Exception:
+        pass
 
 
 def note_room_remark(label: str) -> None:
