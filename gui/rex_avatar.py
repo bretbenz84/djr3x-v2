@@ -365,7 +365,6 @@ class RexAvatar(QWidget):
         step = int(tick * p["rate"]) if p["rate"] > 0 else 0
         flash_step = int(tick * 6)
         b = p["brightness"] if p["on"] else 0.0
-        pr, pg, pb = p["primary"]
         for idx, cx in enumerate((-70.0, 0.0, 70.0)):
             rect = QRectF(cx - 24, 380, 48, 42)
             painter.setPen(QPen(_NEAR_BLACK, 2))
@@ -376,25 +375,35 @@ class RexAvatar(QWidget):
             painter.setBrush(QColor("#31363b"))
             painter.drawRoundedRect(inner, 3, 3)
 
-            # Vertical ladder of 7 round LEDs — amber up top shading to red below,
-            # like the photo. fill (charge meter / startup sweep) lights from the
-            # bottom; otherwise each LED flickers firmware-random-blocks style.
+            # Vertical ladder of 7 round LEDs. fill (charge meter / startup
+            # sweep) lights from the bottom; otherwise each LED flickers in a
+            # color drawn from the firmware's SmallLEDColors palette. The charge
+            # gauge colors each LED by its own position along the red→blue
+            # gradient, exactly like the firmware's 24-LED meter, with the cyan
+            # chase pixel walking above the fill while actually charging.
             lx = rect.left() + 8.0
             painter.setPen(Qt.PenStyle.NoPen)
+            lit_count = int(round(p["fill"] * 7)) if p["fill"] is not None else 0
+            chase_row = None
+            if p["gauge"] and p["charging"] and b > 0.0 and lit_count < 7:
+                chase_row = lit_count + step % max(1, 7 - lit_count)
             for i in range(7):
                 ly = rect.top() + 7.0 + i * 4.6
-                # Meter modes (charge/startup fill) light in the mode's color;
-                # flicker modes keep the photo's amber-top/red-bottom ladder.
-                if p["fill"] is not None:
-                    base = p["primary"]
+                row = 6 - i   # 0 = bottom LED
+                if p["gauge"]:
+                    base = _chest_gauge_color(row / 6.0)
+                elif p["fill"] is not None:
+                    base = _pick(p["ladder"], _prand(idx, i))
                 else:
-                    base = (255, 150, 46) if i < 3 else (232, 48, 36)
+                    base = _pick(p["ladder"], _prand(step, idx * 13, i + 60))
                 if b <= 0.0:
                     lit = False
                 elif p["fill"] is not None:
-                    lit = (6 - i) < p["fill"] * 7.001
+                    lit = row < lit_count
                 else:
                     lit = _prand(step, idx * 13, i) < 0.55
+                if chase_row is not None and row == chase_row:
+                    lit, base = True, _CHEST_CHARGE_CHASE
                 if lit:
                     r, g, bl = (int(v * b) for v in base)
                     painter.setBrush(QColor(r, g, bl, 90))
@@ -416,15 +425,17 @@ class RexAvatar(QWidget):
                         QColor(240, 246, 255) if (flash_step + idx) % 2 else QColor(80, 145, 255)
                     )
                 elif kind == "lit" and b > 0.0 and p["fill"] is None:
+                    sr, sg, sb = _pick(p["squares"], _prand(step // 3, idx * 7, 5))
                     dim = b * (0.75 + 0.25 * _prand(step, idx * 7, 99))
-                    lit_color = QColor(int(pr * dim), int(pg * dim), int(pb * dim))
+                    lit_color = QColor(int(sr * dim), int(sg * dim), int(sb * dim))
                 elif (
                     kind == "plain"
                     and b > 0.0
                     and p["fill"] is None
                     and _prand(step, idx * 29, int(dx)) < 0.22
                 ):
-                    lit_color = QColor(int(pr * b * 0.55), int(pg * b * 0.55), int(pb * b * 0.55))
+                    sr, sg, sb = _pick(p["squares"], _prand(step, idx * 31, int(dy)))
+                    lit_color = QColor(int(sr * b * 0.7), int(sg * b * 0.7), int(sb * b * 0.7))
                 if lit_color is not None:
                     glow = QColor(lit_color)
                     glow.setAlpha(80)
@@ -888,16 +899,54 @@ _CHEST_SQUARES: tuple[tuple[tuple[float, float, float, str], ...], ...] = (
     ((18, 5, 8, "plain"), (27, 9, 8, "plain"), (20, 18, 10, "lit")),
 )
 
-# SPEAK:<emotion> hero-square colors, echoing the firmware patterns (excited=racing
-# gold/red pops, sad=slow blue sighs, angry=red alert, happy=bouncing gold).
-_CHEST_EMOTION_PRIMARY: dict[str, tuple[int, int, int]] = {
-    "excited": (255, 150, 40),
-    "happy": (255, 190, 60),
-    "sad": (70, 130, 235),
-    "angry": (235, 40, 30),
+# Palettes lifted from arduino/chest_nano/chest_nano.ino so the avatar shows the
+# SAME colors the physical panels do (screen-brightened where the firmware runs
+# LEDs dim). SmallLEDColors: dim red x3 / dim white x4 / dim blue x2 — the ladder
+# flicker. BlockLEDColors: cRED / cWHITE / cGOLD / cBLUE — the square blocks.
+_CHEST_SMALL_COLORS: tuple[tuple[int, int, int], ...] = (
+    (208, 44, 40), (208, 44, 40), (208, 44, 40),            # cRED2 (x3 weight)
+    (196, 205, 210), (196, 205, 210), (196, 205, 210), (196, 205, 210),  # cWHITE2 (x4)
+    (64, 88, 224), (64, 88, 224),                           # cBLUE2 (x2)
+)
+_CHEST_BLOCK_COLORS: tuple[tuple[int, int, int], ...] = (
+    (255, 56, 40),      # cRED
+    (235, 240, 245),    # cWHITE
+    (255, 221, 136),    # cGOLD
+    (80, 120, 255),     # cBLUE
+)
+# SPEAK:<emotion> palettes (ladder, squares), matching the firmware patterns:
+# excited = racing red-orange bars/blocks, sad = slow blue sighs, angry = solid
+# red alert, happy = gold/white confetti over the normal blocks.
+_CHEST_EMOTION_PALETTES: dict[str, tuple[tuple, tuple]] = {
+    "excited": (((255, 70, 16), (255, 120, 30)), ((255, 90, 0), (255, 40, 20))),
+    "sad": (((40, 70, 220), (25, 45, 170)), ((40, 70, 220), (25, 45, 170))),
+    "angry": (((255, 42, 30),), ((255, 42, 30),)),
+    "happy": (((255, 200, 80), (255, 255, 255)), _CHEST_BLOCK_COLORS),
 }
-_CHEST_DEFAULT_PRIMARY = (224, 46, 34)
+# Charge-gauge gradient anchors (gaugeAnchorColor, screen-brightened ~1.8x):
+# red at empty through orange/yellow/green to blue at full.
+_CHEST_GAUGE_ANCHORS: tuple[tuple[int, int, int], ...] = (
+    (234, 0, 0), (234, 40, 0), (234, 81, 0), (216, 180, 0),
+    (108, 198, 27), (0, 216, 54), (0, 148, 162), (0, 81, 255),
+)
+_CHEST_CHARGE_CHASE = (80, 190, 255)   # the charging animation's chase pixel
 _CHEST_FLASH_SECS = 2.2
+
+
+def _chest_gauge_color(frac: float) -> tuple[int, int, int]:
+    """Color at 0..1 along the charge gauge (blend between gradient anchors)."""
+    frac = max(0.0, min(1.0, frac))
+    pos = frac * (len(_CHEST_GAUGE_ANCHORS) - 1)
+    i = int(pos)
+    if i >= len(_CHEST_GAUGE_ANCHORS) - 1:
+        return _CHEST_GAUGE_ANCHORS[-1]
+    f = pos - i
+    a, b = _CHEST_GAUGE_ANCHORS[i], _CHEST_GAUGE_ANCHORS[i + 1]
+    return tuple(int(a[c] + (b[c] - a[c]) * f) for c in range(3))  # type: ignore[return-value]
+
+
+def _pick(palette: tuple, rnd: float) -> tuple[int, int, int]:
+    return palette[min(len(palette) - 1, int(rnd * len(palette)))]
 
 
 def _prand(step: int, *salts: int) -> float:
@@ -913,7 +962,9 @@ def chest_render_state(state: dict[str, Any], now: float) -> dict[str, Any]:
     """Pure mapping: mirrored chest-LED mode → render parameters.
 
     Returns {on, brightness 0..1, rate (flicker steps/sec; 0 = static), fill
-    (None, or 0..1 lighting the ladders bottom-up), primary (r,g,b), flash}.
+    (None, or 0..1 lighting the ladders bottom-up), ladder/squares (color
+    palettes the lit LEDs draw from — the firmware's own colors), gauge (True →
+    ladder LEDs use the charge-gauge gradient by position), charging, flash}.
     `now` is wall-clock time.time() — bridge timestamps are wall-clock.
     """
     mode = str(state.get("mode") or "off").strip().lower()
@@ -925,7 +976,10 @@ def chest_render_state(state: dict[str, Any], now: float) -> dict[str, Any]:
         "brightness": 1.0,
         "rate": 1.5,
         "fill": None,
-        "primary": _CHEST_DEFAULT_PRIMARY,
+        "ladder": _CHEST_SMALL_COLORS,
+        "squares": _CHEST_BLOCK_COLORS,
+        "gauge": False,
+        "charging": False,
         "flash": 0.0 < (now - flash_at) < _CHEST_FLASH_SECS,
     }
     if mode == "off":
@@ -942,14 +996,21 @@ def chest_render_state(state: dict[str, Any], now: float) -> dict[str, Any]:
     elif mode == "startup":
         out.update(rate=6.0, fill=(now * 1.5) % 1.0)
     elif mode == "speak":
-        out["primary"] = _CHEST_EMOTION_PRIMARY.get(emotion, _CHEST_DEFAULT_PRIMARY)
-        out["rate"] = 2.5 if emotion == "sad" else 9.0
+        ladder, squares = _CHEST_EMOTION_PALETTES.get(
+            emotion, (_CHEST_SMALL_COLORS, _CHEST_BLOCK_COLORS)
+        )
+        out.update(
+            ladder=ladder,
+            squares=squares,
+            rate=2.5 if emotion == "sad" else 9.0,
+        )
     elif mode == "charge":
         soc = state.get("soc")
         out.update(
-            rate=0.4,
+            rate=1.0,
             fill=max(0.0, min(1.0, (int(soc) if soc is not None else 0) / 100.0)),
-            primary=(70, 220, 90) if state.get("charging") else (255, 170, 40),
+            gauge=True,
+            charging=bool(state.get("charging")),
         )
     # any unknown mode (incl. "idle") keeps the idle defaults above
     return out

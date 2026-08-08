@@ -104,16 +104,37 @@ class RenderStateTest(unittest.TestCase):
         self.assertGreater(p["rate"], 0)
         self.assertIsNone(p["fill"])
 
+    def test_idle_uses_firmware_palettes(self) -> None:
+        # Ladder = SmallLEDColors (dim red/white/blue, weighted 3:4:2); squares =
+        # BlockLEDColors (red/white/gold/blue) — straight from chest_nano.ino.
+        p = chest_render_state(self._state(mode="idle"), 1000.0)
+        self.assertEqual(len(p["ladder"]), 9)
+        self.assertEqual(len(p["squares"]), 4)
+
     def test_speak_sad_is_blue_and_slow(self) -> None:
         sad = chest_render_state(self._state(mode="speak", emotion="sad"), 1000.0)
         excited = chest_render_state(self._state(mode="speak", emotion="excited"), 1000.0)
-        self.assertGreater(sad["primary"][2], sad["primary"][0])   # blue-dominant
+        for r, g, b in sad["ladder"]:
+            self.assertGreater(b, r)                               # blue-dominant
+        for r, g, b in excited["ladder"]:
+            self.assertGreater(r, b)                               # red-orange
         self.assertLess(sad["rate"], excited["rate"])
 
-    def test_charge_fills_ladder_to_soc(self) -> None:
+    def test_speak_angry_is_all_red(self) -> None:
+        p = chest_render_state(self._state(mode="speak", emotion="angry"), 1000.0)
+        for palette in (p["ladder"], p["squares"]):
+            for r, g, b in palette:
+                self.assertGreater(r, max(g, b))
+
+    def test_charge_fills_ladder_to_soc_with_gauge_gradient(self) -> None:
         p = chest_render_state(self._state(mode="charge", soc=55, charging=True), 1000.0)
         self.assertAlmostEqual(p["fill"], 0.55)
-        self.assertGreater(p["primary"][1], p["primary"][0])       # green while charging
+        self.assertTrue(p["gauge"])
+        self.assertTrue(p["charging"])
+        from gui.rex_avatar import _chest_gauge_color
+        empty, full = _chest_gauge_color(0.0), _chest_gauge_color(1.0)
+        self.assertGreater(empty[0], empty[2])                     # red at the bottom
+        self.assertGreater(full[2], full[0])                       # blue at the top
 
     def test_fadeoff_decays_to_dark(self) -> None:
         st = self._state(mode="fadeoff", updated_at=1000.0)
