@@ -448,10 +448,9 @@ def _launch_controller() -> Optional[subprocess.Popen]:
     child_stdout = child_log if child_log is not None else subprocess.DEVNULL
     try:
         return subprocess.Popen(
-            # Launch with --gui so the dashboard opens immediately on every
-            # wake (main._run_gui_mode shows the maximized window while the
-            # controller boots on its background thread).
-            [str(_VENV_PYTHON), str(_PROJECT_ROOT / "main.py"), "--gui"],
+            # Headless launch — no dashboard on wake (owner 2026-08-08; was
+            # --gui, which opened the maximized window on every wake).
+            [str(_VENV_PYTHON), str(_PROJECT_ROOT / "main.py")],
             cwd=str(_PROJECT_ROOT),
             stdout=child_stdout,
             stderr=subprocess.STDOUT,  # fold the controller's stderr into the same file
