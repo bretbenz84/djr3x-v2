@@ -90,6 +90,7 @@ void emit_hello() {
   caps.add("drive"); caps.add("turn"); caps.add("move"); caps.add("come"); caps.add("stop");
   if (battery_gauge_available()) caps.add("batt_full");
   if (battery_gauge_available()) caps.add("batt_soc");
+  if (battery_gauge_available()) caps.add("chg_assert");
   doc["boot_id"] = bid;
   tx_line(doc);
 }
@@ -334,6 +335,17 @@ static void dispatch(const char* cmd, JsonDocument& doc, uint32_t seq) {
     const float pct = doc["pct"].as<float>();
     if (!(pct >= 0.0f && pct <= 100.0f)) { emit_ack(seq, false, R_BAD_FIELD); return; }
     battery_request_set_soc(pct);
+    emit_ack(seq, true, ACK_OK);
+    return;
+  }
+  if (!strcmp(cmd, "chg_assert")) {
+    // Operator states the charge cable is on/off (docs §5.11). Never gated for
+    // the same reason as batt_full: it cannot move the base by itself — "off"
+    // merely releases the charging lock (and is sanity-refused in battery_tick
+    // while charge current is measurably flowing). Requires an explicit bool.
+    if (!battery_gauge_available()) { emit_ack(seq, false, R_UNSUPPORTED_CAP); return; }
+    if (!doc["on"].is<bool>()) { emit_ack(seq, false, R_BAD_FIELD); return; }
+    battery_request_charge_assert(doc["on"].as<bool>());
     emit_ack(seq, true, ACK_OK);
     return;
   }

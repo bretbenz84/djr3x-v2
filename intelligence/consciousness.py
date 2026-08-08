@@ -84,6 +84,11 @@ _face_tracking_last_error_key: Optional[str] = None
 _face_tracking_last_error_x: Optional[float] = None
 _face_tracking_last_error_y: Optional[float] = None
 _face_tracking_last_error_at: float = 0.0
+# Oscillation guard: once a tracking-error sign reversal is seen on an axis, damping
+# stays applied until this deadline (not just the single reversal tick) so the head
+# settles instead of hunting back and forth around the face at full gain.
+_face_tracking_damped_x_until: float = 0.0
+_face_tracking_damped_y_until: float = 0.0
 # Jump-rejection state: the last ACCEPTED face-box center (so a spurious teleport can be
 # measured against it) and a pending position being confirmed as a genuine fast move.
 _face_tracking_last_center: Optional[dict] = None
@@ -12545,6 +12550,7 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
     global _face_tracking_last_error_key, _face_tracking_last_error_x
     global _face_tracking_last_error_y, _face_tracking_last_error_at
     global _face_tracking_last_center, _face_tracking_pending_center
+    global _face_tracking_damped_x_until, _face_tracking_damped_y_until
 
     if state_module.get_state() == State.SLEEP:
         return
@@ -12804,6 +12810,11 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             neck_max_step = max(1, int(neck_max_step * live_damping))
             lift_max_step = max(1, int(lift_max_step * live_damping))
             tilt_max_step = max(1, int(tilt_max_step * live_damping))
+        # Reversal damping is PERSISTENT: one damped tick per sign flip never stopped
+        # the hunt (full gain resumed the very next tick, overshot again, flipped
+        # again — the head visibly shook, worst on the fragile tilt linkage). A
+        # reversal now arms a hold window during which the axis stays damped.
+        damp_hold = max(0.0, float(getattr(config, "FACE_TRACKING_REVERSAL_HOLD_SECS", 0.6)))
         if _tracking_error_reversed(
             key=candidate_key,
             previous_key=_face_tracking_last_error_key,
@@ -12813,8 +12824,7 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             now=now,
             previous_at=_face_tracking_last_error_at,
         ):
-            gain *= reversal_damping
-            neck_max_step = max(1, int(neck_max_step * reversal_damping))
+            _face_tracking_damped_x_until = now + damp_hold
         if _tracking_error_reversed(
             key=candidate_key,
             previous_key=_face_tracking_last_error_key,
@@ -12824,15 +12834,23 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             now=now,
             previous_at=_face_tracking_last_error_at,
         ):
+            _face_tracking_damped_y_until = now + damp_hold
+        damped_x = now < _face_tracking_damped_x_until
+        damped_y = now < _face_tracking_damped_y_until
+        if damped_x:
+            gain *= reversal_damping
+            neck_max_step = max(1, int(neck_max_step * reversal_damping))
+        if damped_y:
             vertical_gain *= reversal_damping
             lift_max_step = max(1, int(lift_max_step * reversal_damping))
             tilt_max_step = max(1, int(tilt_max_step * reversal_damping))
         # Edge boost: the flat per-tick cap made a face far off-centre re-face in
         # ~5s (cap 180 x live damping 0.45 = 81 qus/tick). Scale the cap with the
         # error so big lateral moves sweep fast while near-centre behavior — dead
-        # zone, damping, small caps — is untouched. Applied AFTER the damping
-        # above so oscillation guards still bite first.
-        if frame_cx > 0:
+        # zone, damping, small caps — is untouched. Skipped entirely while the
+        # x-axis is reversal-damped: boosting a damped cap re-arms the oscillation
+        # the damping just caught.
+        if frame_cx > 0 and not damped_x:
             _boost_frac = float(getattr(config, "FACE_TRACKING_EDGE_BOOST_ERROR_FRAC", 0.30))
             _boost_max = float(getattr(config, "FACE_TRACKING_EDGE_BOOST_MULT", 2.5))
             _err_frac = min(1.0, abs(error_x) / frame_cx)
@@ -12871,13 +12889,18 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             if abs(error_y) > dead_zone and frame_cy > 0:
                 lift_span = (int(lift_cfg["max"]) - int(lift_cfg["min"])) / 2.0
                 tilt_span = (int(tilt_cfg["max"]) - int(tilt_cfg["min"])) / 2.0
+                # Split the vertical error between lift and tilt instead of letting
+                # BOTH correct the full error — that summed to ~2x the intended gain,
+                # a built-in overshoot that kept the vertical axis hunting (and shook
+                # the fragile tilt linkage hardest).
+                tilt_share = max(0.0, min(1.0, float(getattr(config, "FACE_TRACKING_TILT_SHARE", 0.35))))
                 target_lift = _clamp_servo(
                     "headlift",
-                    current_lift - (error_y / frame_cy) * lift_span * vertical_gain,
+                    current_lift - (error_y / frame_cy) * lift_span * vertical_gain * (1.0 - tilt_share),
                 )
                 target_tilt = _clamp_servo(
                     "headtilt",
-                    current_tilt + (error_y / frame_cy) * tilt_span * vertical_gain,
+                    current_tilt + (error_y / frame_cy) * tilt_span * vertical_gain * tilt_share,
                 )
                 next_lift = _clamp_servo(
                     "headlift",
@@ -12928,11 +12951,18 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             )
         if updates:
             try:
-                channels = [neck_ch, lift_ch, tilt_ch]
                 servo_mod.set_motion_profile(
-                    channels,
+                    [neck_ch, lift_ch],
                     speed=int(getattr(config, "FACE_TRACKING_SERVO_SPEED", 140)),
                     acceleration=int(getattr(config, "FACE_TRACKING_SERVO_ACCELERATION", 16)),
+                )
+                # The tilt linkage carries the whole head on a thin rod — give it its
+                # own slower, softer profile so its (small, capped) corrections glide
+                # instead of snapping at the shared head speed.
+                servo_mod.set_motion_profile(
+                    [tilt_ch],
+                    speed=int(getattr(config, "FACE_TRACKING_TILT_SERVO_SPEED", 24)),
+                    acceleration=int(getattr(config, "FACE_TRACKING_TILT_SERVO_ACCELERATION", 10)),
                 )
             except Exception as exc:
                 _log.debug("face tracking motion profile update failed: %s", exc)

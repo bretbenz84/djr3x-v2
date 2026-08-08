@@ -1615,10 +1615,10 @@ def wave_back_gesture(
 ) -> bool:
     """Camera wave-back gesture.
 
-    Raises the arm to present the hand, then waves by sweeping the WRIST (the ``hand``
-    servo) between BOTH of its travel limits ``count`` times — a clear hand wave, distinct
-    from the compact elbow-driven wake-word ack. The elbow only raises the arm; the wrist
-    does the waving.
+    Eases the arm up to present the hand (a smooth, speed-limited raise from wherever
+    the arm currently is — never a snap), then waves by sweeping the WRIST (the
+    ``hand`` servo) between BOTH of its travel limits ``count`` times while the ELBOW
+    bobs gently in sync — a clear hand wave, distinct from the compact wake-word ack.
 
     ``half_period`` (seconds per swing) overrides the configured default — used to mirror
     the user's wave speed (a smaller value = a faster wave-back).
@@ -1684,10 +1684,26 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
     step_delay = float(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_STEP_DELAY_SECS", 0.010))
     snapshot = _current_body_pose((4, 5, 7))
 
+    # Raise profile: a moderate, acceleration-limited glide from wherever the arm is up
+    # to the presenting pose. The old code raised at the WAVE speed with accel 0
+    # (unlimited) — the arm snapped to the pose from any starting position, which is the
+    # hard jerk that opened every wave.
+    raise_speed = max(1, int(getattr(config, "WAVE_BACK_RAISE_SPEED", 55)))
+    raise_accel = int(getattr(config, "WAVE_BACK_RAISE_ACCEL", 14))
+    # Elbow wave: bob between ELBOW_UP and ELBOW_UP + amplitude in sync with the wrist,
+    # at its own speed sized to its (much smaller) travel so it eases rather than snaps.
+    elbow_amp = max(0, int(getattr(config, "WAVE_BACK_ELBOW_WAVE_QUS", 340)))
+    elbow_cfg = config.SERVO_CHANNELS.get("elbow", {})
+    elbow_hi = min(int(elbow_cfg.get("max", ELBOW_DOWN)), ELBOW_UP + elbow_amp)
+    elbow_speed = max(1, round(max(1, elbow_hi - ELBOW_UP) / (max(0.05, half_period) * 100.0)))
+    elbow_accel = int(getattr(config, "WAVE_BACK_ELBOW_ACCEL", 20))
+
     _log.info(
         "[animations] wave-back gesture start: wrist(ch5) %d↔%d x%d, speed=%d accel=%d "
-        "half_period=%.2fs servos_enabled=%s start_pose=%s",
+        "half_period=%.2fs elbow %d↔%d speed=%d raise speed=%d accel=%d "
+        "servos_enabled=%s start_pose=%s",
         hand_min, hand_max, count, wave_speed, wave_accel, half_period,
+        ELBOW_UP, elbow_hi, elbow_speed, raise_speed, raise_accel,
         getattr(servos, "SERVOS_ENABLED", "?"), snapshot,
     )
     arm_channels = (4, 5, 7)
@@ -1699,24 +1715,34 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
     servos.begin_arm_gesture()
     try:
         with _motion_lock:
-            # Speed up the arm channels so the raise and (especially) the wrist wave are
-            # crisp; restored in the finally below.
-            for ch in arm_channels:
-                servos.set_acceleration(ch, wave_accel)
-                servos.set_speed(ch, wave_speed)
             try:
-                # Raise the arm so the hand is up and visible (elbow up, hero arm forward).
-                servos.set_servo(7, HEROARM_FORWARD)
-                servos.set_servo(4, ELBOW_UP)
-                servos.set_servo(5, HAND_NEUTRAL)
-                time.sleep(half_period)
-                # Wave: wrist to one limit then the other, `count` times.
+                # Phase 1 — smooth raise: glide the arm up at a moderate, accel-limited
+                # profile, sleeping the actual travel time (Maestro speed unit ≈ 100
+                # quarter-µs/s) so the wave starts only once the hand is presented.
+                for ch in arm_channels:
+                    servos.set_acceleration(ch, raise_accel)
+                    servos.set_speed(ch, raise_speed)
+                raise_targets = {7: HEROARM_FORWARD, 4: ELBOW_UP, 5: HAND_NEUTRAL}
+                servos.set_servos(raise_targets)
+                max_travel = max(
+                    abs(int(raise_targets[ch]) - int(snapshot.get(ch, raise_targets[ch])))
+                    for ch in raise_targets
+                )
+                raise_secs = max_travel / (raise_speed * 100.0) + 0.20
+                time.sleep(min(1.5, max(0.25, raise_secs)))
+
+                # Phase 2 — the wave: fast wrist sweeps limit-to-limit, elbow bobbing in
+                # sync at its own gentler speed.
+                servos.set_acceleration(5, wave_accel)
+                servos.set_speed(5, wave_speed)
+                servos.set_acceleration(4, elbow_accel)
+                servos.set_speed(4, elbow_speed)
                 for _ in range(count):
-                    servos.set_servo(5, hand_max)
+                    servos.set_servos({5: hand_max, 4: elbow_hi})
                     time.sleep(half_period)
-                    servos.set_servo(5, hand_min)
+                    servos.set_servos({5: hand_min, 4: ELBOW_UP})
                     time.sleep(half_period)
-                servos.set_servo(5, HAND_NEUTRAL)
+                servos.set_servos({5: HAND_NEUTRAL, 4: ELBOW_UP})
                 time.sleep(half_period)
             finally:
                 # Restore the channels' normal (slow, smooth) speed/accel.

@@ -823,6 +823,7 @@ def status() -> "dict | None":
 
 
 _charging_last_true_at = 0.0   # monotonic ts of the last positive charging reading
+_charge_asserted_off_at = 0.0  # monotonic ts of the operator's last "you're unplugged"
 
 
 def charging() -> bool:
@@ -840,21 +841,57 @@ def charging() -> bool:
     locked for MOTION_CHARGING_RELEASE_GRACE_SECS after the LAST positive reading; a
     genuine unplug is sustained and releases after the grace, a flap is not.
     """
-    global _charging_last_true_at
+    global _charging_last_true_at, _charge_asserted_off_at
     snapshot = motion.telemetry() or {}
-    raw = bool(snapshot.get("charging"))
-    if not raw:
-        try:
-            raw = float(snapshot.get("batt_mv")) >= _get_float(
-                "MOTION_CHARGER_VOLTAGE_LOCKOUT_MV", 14000.0)
-        except (TypeError, ValueError):
-            raw = False
     now = time.monotonic()
+    fw_flag = bool(snapshot.get("charging"))
+    if fw_flag:
+        # The firmware SEES the charger again — any standing operator unplug
+        # assertion is stale, drop it so the voltage backstop is re-armed.
+        _charge_asserted_off_at = 0.0
+    raw = fw_flag
+    if not raw:
+        # Voltage backstop — but the operator's explicit "you're unplugged"
+        # outranks it: a freshly-topped pack's surface charge floats above the
+        # lockout voltage for many minutes after a genuine unplug, and holding
+        # the wheels through that window is exactly the wait the assertion
+        # exists to skip. The mute lasts until the firmware sees the charger
+        # again (above) or the mute window expires (surface charge is long
+        # decayed by then, so the backstop means something again).
+        mute = _get_float("MOTION_CHARGE_ASSERT_VOLTAGE_MUTE_SECS", 1800.0)
+        asserted_off = (_charge_asserted_off_at > 0.0
+                        and (now - _charge_asserted_off_at) < mute)
+        if not asserted_off:
+            try:
+                raw = float(snapshot.get("batt_mv")) >= _get_float(
+                    "MOTION_CHARGER_VOLTAGE_LOCKOUT_MV", 14000.0)
+            except (TypeError, ValueError):
+                raw = False
     if raw:
         _charging_last_true_at = now
         return True
     grace = _get_float("MOTION_CHARGING_RELEASE_GRACE_SECS", 20.0)
     return _charging_last_true_at > 0.0 and (now - _charging_last_true_at) < grace
+
+
+def charge_assert(on: bool) -> "int | None":
+    """Relay the operator's spoken word about the charge cable to the firmware
+    ("chg_assert"). The firmware owns the sanity check (an "off" is refused
+    while charge current measurably flows); here we just mirror the assertion
+    into the host-side sticky timestamp so `charging()` agrees immediately
+    instead of waiting out the release grace."""
+    global _charging_last_true_at, _charge_asserted_off_at
+    if not motion.connected():
+        return None
+    seq = motion.send({"cmd": "chg_assert", "on": bool(on)})
+    if seq is not None:
+        if on:
+            _charging_last_true_at = time.monotonic()
+            _charge_asserted_off_at = 0.0
+        else:
+            _charging_last_true_at = 0.0
+            _charge_asserted_off_at = time.monotonic()
+    return seq
 
 
 def is_moving() -> bool:

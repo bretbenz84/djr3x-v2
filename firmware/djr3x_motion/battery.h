@@ -45,3 +45,10 @@ void battery_request_mark_full();
 // pct is clamped to 0..100. Values below 100 also clear the full-anchor latch so the
 // rest-voltage anchor can legitimately re-arm.
 void battery_request_set_soc(float pct);
+
+// Host command "chg_assert": the operator states the cable is on/off — the
+// escape hatch for charger states the gauge cannot measure (a finished supply
+// at ~0 mA on a full pack reads identical to unplugged). Locking is always
+// applied; unlocking is refused while definite charge current is flowing in.
+// Applied by the next 1 Hz battery_tick, persisted like the detected latch.
+void battery_request_charge_assert(bool on);

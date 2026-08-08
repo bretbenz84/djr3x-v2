@@ -2901,6 +2901,29 @@ FACE_TRACKING_REVERSAL_DAMPING = _env_float(
     min_value=0.05,
     max_value=1.0,
 )
+# How long an axis STAYS damped after a tracking-error sign reversal. Damping only the
+# single reversal tick never stopped the hunt: full gain resumed the next tick, overshot,
+# and reversed again — a visible head shake, worst on the fragile tilt linkage
+# (field 2026-08-07). The hold lets the axis settle before full gain returns.
+FACE_TRACKING_REVERSAL_HOLD_SECS = _env_float(
+    "FACE_TRACKING_REVERSAL_HOLD_SECS", 0.6, min_value=0.0, max_value=5.0,
+)
+# Fraction of the vertical centering error corrected by the TILT servo; the lift takes the
+# rest. Before this split, lift AND tilt each corrected the FULL error (an effective ~2x
+# vertical gain) — a built-in overshoot that kept the vertical axis oscillating.
+FACE_TRACKING_TILT_SHARE = _env_float(
+    "FACE_TRACKING_TILT_SHARE", 0.35, min_value=0.0, max_value=1.0,
+)
+# Dedicated Maestro profile for the head-tilt channel during face tracking. The tilt
+# linkage holds the 5 lb head on a thin rod and must never snap — a slow speed +
+# soft acceleration makes its small capped corrections glide. (Speed unit ≈ 100 q-µs/s;
+# the tilt per-tick cap tops out around ~1200 q-µs/s of commanded motion, so 24 keeps up.)
+FACE_TRACKING_TILT_SERVO_SPEED = _env_int(
+    "FACE_TRACKING_TILT_SERVO_SPEED", 24, min_value=0, max_value=255,
+)
+FACE_TRACKING_TILT_SERVO_ACCELERATION = _env_int(
+    "FACE_TRACKING_TILT_SERVO_ACCELERATION", 10, min_value=0, max_value=255,
+)
 
 # ── Calmer head during speech + at the servo rails ───────────────────────────
 # While Rex is SPEAKING, the speaker-gaze "look at the listener" pose and the
@@ -3357,9 +3380,20 @@ WAVE_BACK_MIN_SPEED = _env_float(
     "WAVE_BACK_MIN_SPEED", 0.15, min_value=0.0, max_value=2.0,
 )
 # Wave-back arm gesture: how many times the wrist (the "hand" servo) sweeps between BOTH of
-# its travel limits when Rex waves back (one sweep = to one limit and back). The elbow only
-# raises the arm; the wrist does the waving. See sequences/animations.wave_back_gesture.
+# its travel limits when Rex waves back (one sweep = to one limit and back). The elbow
+# raises the arm and then bobs gently in sync with the wrist during the wave.
+# See sequences/animations.wave_back_gesture.
 WAVE_BACK_WRIST_SWEEPS = _env_int("WAVE_BACK_WRIST_SWEEPS", 4, min_value=1, max_value=8)
+# The raise from the current pose to the presenting pose is a smooth, accel-limited glide
+# at this speed/accel (Maestro units: speed ≈ 100 q-µs/s per unit) — never the wave speed,
+# which used to snap the arm up hard from wherever it was resting.
+WAVE_BACK_RAISE_SPEED = _env_int("WAVE_BACK_RAISE_SPEED", 55, min_value=1, max_value=16383)
+WAVE_BACK_RAISE_ACCEL = _env_int("WAVE_BACK_RAISE_ACCEL", 14, min_value=0, max_value=255)
+# Elbow bob during the wave: amplitude below ELBOW_UP (q-µs; 0 = wrist-only wave) and the
+# elbow's acceleration while bobbing. Its speed is auto-sized so the bob spans the
+# amplitude in one wrist half-period (eased, not snapped).
+WAVE_BACK_ELBOW_WAVE_QUS = _env_int("WAVE_BACK_ELBOW_WAVE_QUS", 340, min_value=0, max_value=1260)
+WAVE_BACK_ELBOW_ACCEL = _env_int("WAVE_BACK_ELBOW_ACCEL", 20, min_value=0, max_value=255)
 # The wave drives the wrist channel with DIRECT Maestro targets at a fast speed (the global
 # SERVO_DEFAULT_SPEED=40 is far too slow — a full wrist sweep takes ~2s at that rate, so the
 # rapid back-and-forth never completes). The channel is set to this speed/accel for the wave,
@@ -8316,6 +8350,17 @@ MOTION_CHARGING_RELEASE_GRACE_SECS = 20.0
 # Debounce for the spoken/chirped charger plug/unplug notice — a transition must persist
 # this long before Rex announces it, so a voltage-sag flap never spams the audio.
 MOTION_CHARGER_NOTICE_DEBOUNCE_SECS = 12.0
+# Spoken charge-cable declarations ("you're unplugged" / "I plugged you in") relay the
+# operator's word to the firmware charging latch — the escape hatch for charger states
+# the gauge cannot measure (a finished supply at ~0 mA on a full pack reads identical
+# to unplugged; field 2026-08-07). An unplug declaration is contradicted (and refused
+# with a spoken meter reading) while charge current at/above this is visibly flowing in.
+MOTION_CHARGE_CURRENT_VISIBLE_MA = 250.0
+# After a spoken unplug declaration, mute the host voltage backstop for this long —
+# surface charge floats above MOTION_CHARGER_VOLTAGE_LOCKOUT_MV for many minutes after
+# a genuine unplug, and that hold is exactly the wait the declaration exists to skip.
+# Any firmware charging=true reading un-mutes immediately.
+MOTION_CHARGE_ASSERT_VOLTAGE_MUTE_SECS = 1800.0
 
 # ── Room exploration mode (intelligence/exploration.py) ───────────────────────
 # An INVITED, self-directed wander: someone says "feel free to explore" / "look

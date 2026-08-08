@@ -48,6 +48,8 @@ static volatile bool  s_set_soc_req = false;   // "batt_soc" flag (same handoff)
 static volatile float s_set_soc_pct = -1.0f;   // 0..100, valid while s_set_soc_req
 static bool s_charging = false;    // debounced on-charger state (calib.h knobs)
 static int  s_chg_ticks = 0;       // consecutive ticks toward the pending edge
+static volatile bool s_chg_assert_req = false;  // "chg_assert" flag (same handoff
+static volatile bool s_chg_assert_on  = false;  // as batt_full/batt_soc)
 
 static const uint16_t REG_CONFIG = 0x00;
 static const uint16_t REG_SHUNT  = 0x01;
@@ -147,6 +149,11 @@ bool battery_gauge_available() {
 }
 
 void battery_request_mark_full() { s_mark_full_req = true; }
+
+void battery_request_charge_assert(bool on) {
+  s_chg_assert_on = on;      // value BEFORE arming (same ordering as batt_soc)
+  s_chg_assert_req = true;
+}
 
 void battery_request_set_soc(float pct) {
   if (pct < 0.0f) pct = 0.0f;
@@ -277,6 +284,31 @@ void battery_tick() {
 #endif
 
 #if BATT_SHUNT_MICROOHM > 0
+  // Host-asserted charging state (chg_assert): the OPERATOR says the cable is
+  // on/off — the escape hatch for the states this gauge cannot see (a finished
+  // supply at ~0 mA on a full pack is electrically identical to unplugged;
+  // field 2026-08-07, the flinch-on-the-cord rollback). Locking is always
+  // accepted. Unlocking is sanity-checked: with definite charge current
+  // flowing in, the cable is demonstrably attached and the word is refused.
+  if (s_chg_assert_req) {
+    s_chg_assert_req = false;
+    const bool want = s_chg_assert_on;
+    if (want != s_charging) {
+      if (!want && s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA) {
+        emit_log("warn", "battery: unplug asserted but charge current is "
+                         "flowing - keeping drive locked");
+      } else {
+        s_charging = want;
+        s_chg_ticks = 0;
+        s_prefs.putBool("chg", s_charging);
+        emit_event_kv("charging", "state", s_charging ? "on" : "off");
+        emit_log("info", s_charging
+                 ? "battery: host asserted on-charger - drive locked out"
+                 : "battery: host asserted unplugged - drive released");
+      }
+    }
+  }
+
   // ---- Charging detection (debounced both ways; see calib.h) ----
   // Enter on definite current flowing into the pack. Once latched, do NOT release
   // merely because a full charger's taper/cutoff falls near 0 mA — that was letting

@@ -19056,6 +19056,61 @@ def _start_motion_sequence(decisions: list[action_router.ActionDecision]) -> boo
         return False
 
 
+# The operator telling Rex the charge cable's state ("you're unplugged" /
+# "I plugged you in") — the escape hatch for charger states the battery gauge
+# cannot measure (a finished supply at ~0 mA on a full pack reads identical to
+# unplugged; field 2026-08-07, the flinch-on-the-cord rollback). Deterministic
+# captures like the drive-rule declarations: standing statements about the
+# hardware, never routed to the LLM.
+_CHG_UNPLUGGED_RE = re.compile(
+    r"\b(?:you(?:'re| are)\s+(?:unplugged|off\s+the\s+(?:charger|cord|cable))|"
+    r"i(?:'ve| have)?\s+(?:just\s+)?unplugged\s+you|"
+    r"(?:the\s+)?(?:cable|cord|charger)(?:'s| is)\s+"
+    r"(?:off|out|unplugged|disconnected))\b",
+    re.IGNORECASE,
+)
+_CHG_PLUGGED_RE = re.compile(
+    r"\b(?:you(?:'re| are)\s+(?:plugged\s+(?:in|back\s+in)|"
+    r"(?:back\s+)?on\s+the\s+(?:charger|cord)|charging\s+now)|"
+    r"i(?:'ve| have)?\s+(?:just\s+)?plugged\s+you\s+(?:back\s+)?in)\b",
+    re.IGNORECASE,
+)
+
+
+def _charging_declaration(text: str) -> "Optional[bool]":
+    """True = they say he's plugged in, False = unplugged, None = not about that."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    if _CHG_UNPLUGGED_RE.search(cleaned):
+        return False
+    if _CHG_PLUGGED_RE.search(cleaned):
+        return True
+    return None
+
+
+def _handle_charging_declaration(plugged: bool) -> str:
+    """Relay the operator's word to the firmware; return the spoken ack."""
+    if not motion_controller.available():
+        return "Noted, but my drive base isn't even connected right now."
+    if not plugged:
+        # If the meter can SEE charge current, the cable is demonstrably still
+        # attached — say so instead of pretending to unlock (the firmware would
+        # refuse the assert anyway).
+        try:
+            snapshot = motion_controller.status() or {}
+            ma = float(snapshot.get("batt_ma"))
+            if ma <= -float(getattr(config, "MOTION_CHARGE_CURRENT_VISIBLE_MA", 250.0)):
+                return ("My meter says current's still flowing into me — "
+                        "check the cable before I trust my wheels.")
+        except (TypeError, ValueError):
+            pass
+        motion_controller.charge_assert(False)
+        return "Copy, cable's off — wheels back online."
+    motion_controller.charge_assert(True)
+    return "Copy, I'm on the cord — wheels locked."
+
+
 def _handle_router_motion_action(
     decision: Optional[action_router.ActionDecision],
 ) -> Optional[str]:
@@ -23561,6 +23616,23 @@ def _handle_speech_segment(
         # directly and never misrouted as a person introduction. Conservative: an
         # unprompted line only enrolls when it names a known room word (place_questions).
         if not game_conversation_lock:
+            # A CHARGE-CABLE declaration ("you're unplugged" / "I plugged you in")
+            # is a standing statement about the hardware, handled deterministically —
+            # it releases/sets the firmware charging latch, so it must never drift
+            # into the LLM as chit-chat.
+            _chg_decl = _charging_declaration(text)
+            if _chg_decl is not None:
+                _record_heard_turn_once()
+                line = _handle_charging_declaration(_chg_decl)
+                _log.info("[interaction] charge-cable declaration: plugged=%s (%r)",
+                          _chg_decl, text)
+                _speak_blocking(line, emotion="neutral", pre_beat_ms=100,
+                                post_beat_ms_override=200)
+                conv_memory.add_to_transcript("Rex", line)
+                conv_log.log_rex(line)
+                _session_exchange_count += 1
+                _register_rex_utterance(line, source="charging_declaration")
+                return
             # A DENIAL runs first: "this is not the workshop" must drop the belief, not
             # be mined for a room name. Field 2026-07-24: Rex answered a correction with
             # "Yep, the workshop. I recognize it." — a person standing in the room

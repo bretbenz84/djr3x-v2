@@ -820,10 +820,15 @@ def speech_reactive_move(intensity: float) -> None:
         * (0.35 + expressive_intensity)
     )
 
+    # Tilt rides a smooth sine rather than a fresh random jump every update: the tilt
+    # linkage carries the whole head on a thin rod, and rapid random reversals there
+    # read as shaking (and stress the servo). Neck/lift are sturdier and keep the
+    # lively random wobble.
+    tilt_sway = math.sin(now * 2.4)
     targets: dict[int, int] = {
         neck_ch: _clamp(neck_ch, base_neck + random.randint(-neck_wobble, neck_wobble)),
         lift_ch: _clamp(lift_ch, base_lift + random.randint(-lift_wobble, lift_wobble)),
-        tilt_ch: _clamp(tilt_ch, base_tilt + random.randint(-tilt_wobble, tilt_wobble)),
+        tilt_ch: _clamp(tilt_ch, base_tilt + int(tilt_wobble * tilt_sway)),
     }
 
     visor_cfg = config.SERVO_CHANNELS["visor"]

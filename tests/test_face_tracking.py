@@ -216,15 +216,19 @@ class FaceTrackingTests(unittest.TestCase):
         neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
         tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
-        self.assertLess(updates[neck_ch], c.config.SERVO_CHANNELS["neck"]["neutral"])
+        # Corrections are relative to the STARTING pose (_set_servo_positions: neck 6000),
+        # not the configured neutral — a left-of-center face pulls the neck below 6000.
+        self.assertLess(updates[neck_ch], 6000)
         self.assertGreater(updates[lift_ch], c.config.SERVO_CHANNELS["headlift"]["neutral"])
         self.assertLess(updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"])
         self.assertLessEqual(
-            abs(updates[neck_ch] - c.config.SERVO_CHANNELS["neck"]["neutral"]),
-            c.config.FACE_TRACKING_NECK_MAX_STEP_QUS,
+            abs(updates[neck_ch] - 6000),
+            c.config.FACE_TRACKING_NECK_MAX_STEP_QUS * c.config.FACE_TRACKING_EDGE_BOOST_MULT,
         )
-        set_profile.assert_called_once()
-        self.assertIn(neck_ch, set_profile.call_args.args[0])
+        # Two profile writes: neck+lift at tracking speed, tilt on its own softer profile.
+        self.assertEqual(set_profile.call_count, 2)
+        self.assertIn(neck_ch, set_profile.call_args_list[0].args[0])
+        self.assertIn(tilt_ch, set_profile.call_args_list[1].args[0])
         set_baseline.assert_called_once_with(
             neck=updates[neck_ch],
             lift=updates[lift_ch],
@@ -507,7 +511,8 @@ class FaceTrackingTests(unittest.TestCase):
         updates = set_servos.call_args.args[0]
         neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
         self.assertEqual(c._face_tracking_lock.get("key"), "db:1")
-        self.assertLess(updates[neck_ch], c.config.SERVO_CHANNELS["neck"]["neutral"])
+        # Relative to the STARTING neck pose (6000), the speaker's left-side face pulls left.
+        self.assertLess(updates[neck_ch], 6000)
 
     def test_search_holds_each_waypoint_still_before_advancing(self):
         c = self.consciousness
