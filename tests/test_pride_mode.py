@@ -95,15 +95,18 @@ class BaselineTest(PrideTestCase):
     queeny mode is the turned-up overlay, not the only source."""
 
     def test_core_prompt_carries_the_baseline(self) -> None:
-        # Owner 2026-08-08 (second pass): "each reply should be a little more
-        # campy/sis/spill the tea" — campy is the DEFAULT register on every
-        # reply, not a subtle one-touch seasoning.
+        # Owner 2026-08-08 (third pass): the baseline stays SUBTLE — the
+        # turned-up campy register belongs ONLY to triggered queeny mode
+        # ("I wanted him to be more gay only when you activate gay mode").
         self.assertIn("You are gay", config.REX_CORE_PROMPT)
-        for token in ("CAMPY", "every reply", "sis", "queen", "spill the tea"):
+        for token in ("sis", "queen", "SUBTLE"):
             self.assertIn(token, config.REX_CORE_PROMPT)
         # "sis" is his signature address, explicitly preferred over "honey"
         # (owner 2026-08-08: "call people sis instead of honey").
         self.assertIn('"sis" is YOUR word', config.REX_CORE_PROMPT)
+        # The escalated register must NOT leak into the always-on baseline.
+        for token in ("spill the tea", "I am LIVING", "DRAMA"):
+            self.assertNotIn(token, config.REX_CORE_PROMPT)
 
     def test_baseline_reaches_lean_voice_without_trigger(self) -> None:
         self.assertIn("You are gay", lean_brain._system_prompt(None, None))
@@ -118,7 +121,12 @@ class PromptSurfaceTest(PrideTestCase):
         pride.maybe_trigger("are you gay?")
         lines = pride.prompt_lines()
         self.assertEqual(len(lines), 1)
-        for token in ("GAY", "Yasss queen!", "You go girl!", "sis"):
+        # The turned-up register lives HERE, not in the baseline: full camp on
+        # every line, tea demanded by name, theatrical drama.
+        for token in (
+            "GAY", "Yasss queen!", "You go girl!", "sis", "spill the tea",
+            "DRAMA", "I am LIVING", "every single reply",
+        ):
             self.assertIn(token, lines[0])
 
     def test_prompt_section_mirrors_lines(self) -> None:
