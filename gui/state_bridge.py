@@ -37,6 +37,16 @@ class GUIDashboardBridge:
             "audio_path": None,
             "updated_at": time.time(),
         }
+        # Chest-panel LED state mirrored from hardware/leds_chest commands (mode-level:
+        # the Arduino animates autonomously, so the avatar re-creates the pattern).
+        self._chest_led_state: dict[str, Any] = {
+            "mode": "off",
+            "emotion": None,
+            "soc": None,
+            "charging": False,
+            "flash_at": 0.0,
+            "updated_at": time.time(),
+        }
         # Live camera telemetry for the vision panel's meta line (measured FPS +
         # freshness), so it stops claiming a hardcoded rate. Monotonic clock is
         # shared across this process's threads, so last_frame_monotonic is
@@ -137,6 +147,31 @@ class GUIDashboardBridge:
             if eyes_active is not None:
                 self._head_led_state["eyes_active"] = bool(eyes_active)
             self._head_led_state["updated_at"] = time.time()
+            self._updated_at = time.time()
+
+    def update_chest_led_state(
+        self,
+        *,
+        mode: Optional[str] = None,
+        emotion: Optional[str] = None,
+        soc: Optional[int] = None,
+        charging: Optional[bool] = None,
+        flash: bool = False,
+    ) -> None:
+        """Mirror mode-level chest LED state for the Qt avatar. `flash` marks the
+        one-shot COMPLIMENT overlay without disturbing the underlying mode."""
+        with self._lock:
+            if mode is not None:
+                self._chest_led_state["mode"] = str(mode)
+            if emotion is not None:
+                self._chest_led_state["emotion"] = str(emotion).strip().lower() or None
+            if soc is not None:
+                self._chest_led_state["soc"] = max(0, min(100, int(soc)))
+            if charging is not None:
+                self._chest_led_state["charging"] = bool(charging)
+            if flash:
+                self._chest_led_state["flash_at"] = time.time()
+            self._chest_led_state["updated_at"] = time.time()
             self._updated_at = time.time()
 
     def update_speech_state(self, *, speaking: bool, audio_path: Optional[str] = None) -> None:
@@ -285,6 +320,7 @@ class GUIDashboardBridge:
                 "servo_positions": dict(self._servo_positions),
                 "manual_servo_override": self._manual_servo_override,
                 "head_led_state": copy.deepcopy(self._head_led_state),
+                "chest_led_state": copy.deepcopy(self._chest_led_state),
                 "speech_state": copy.deepcopy(self._speech_state),
                 "scene_description": self._scene_description,
                 "conversation_lines": list(self._conversation_lines),

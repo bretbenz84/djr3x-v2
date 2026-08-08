@@ -30,6 +30,34 @@ def _cmd_family(cmd: str) -> str:
     return (cmd.split(":", 1)[0].strip().upper() or "UNKNOWN")
 
 
+def _mirror_gui_chest_led_state(cmd: str) -> None:
+    """Best-effort mode-level mirror for the GUI avatar's chest panels.
+
+    Runs BEFORE the enabled/connected checks: the avatar shows intended state
+    even on a dev Mac with no chest Arduino (mirrors leds_head's GUI bridge).
+    NEXT is a pattern cycle within the current mode, so it changes nothing here;
+    COMPLIMENT is a one-shot flash overlay that keeps the underlying mode.
+    """
+    try:
+        from gui.state_bridge import gui_bridge
+
+        family = _cmd_family(cmd)
+        parts = [p.strip() for p in cmd.split(":")]
+        if family in {"STARTUP", "IDLE", "ACTIVE", "SLEEP", "OFF", "FADEOFF"}:
+            gui_bridge.update_chest_led_state(mode=family.lower())
+        elif family == "SPEAK":
+            emotion = parts[1].lower() if len(parts) > 1 and parts[1] else "neutral"
+            gui_bridge.update_chest_led_state(mode="speak", emotion=emotion)
+        elif family == "CHARGE":
+            soc = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            charging = len(parts) > 2 and parts[2] == "1"
+            gui_bridge.update_chest_led_state(mode="charge", soc=soc, charging=charging)
+        elif family == "COMPLIMENT":
+            gui_bridge.update_chest_led_state(flash=True)
+    except Exception:
+        pass
+
+
 def _report_drops_if_due(now: float) -> None:
     global _dropped_counts, _drop_window_started_at, _next_drop_report_at
     if not _dropped_counts or now < _next_drop_report_at:
@@ -122,6 +150,7 @@ def connected() -> bool:
 
 def send_command(cmd: str) -> None:
     """Send a newline-terminated command string to the chest Arduino."""
+    _mirror_gui_chest_led_state(cmd)
     if not CHEST_LEDS_ENABLED:
         _log.debug("send_command no-op: CHEST_LEDS_ENABLED=False (cmd=%r)", cmd)
         return

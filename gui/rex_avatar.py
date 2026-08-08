@@ -5,7 +5,11 @@ orange dome visor that slides over the eyes, blue carry handle and ear pods,
 binocular LED eyes, ribbed vocoder chin, coil-spring neck on a lift pole, the
 orange ring / black bellows / ribbed drum / flared bell torso stack on a domed
 base — plus the two articulated arms (hero arm with elbow+claw at the top of the
-torso, poker arm at the base).
+torso, poker arm at the base). The three chest LED pods on the drum band mirror
+the real chest Arduino at mode level (hardware/leds_chest → gui bridge): the
+firmware animates autonomously, so the avatar re-creates each mode's pattern —
+random blocks in idle, emotion-colored flicker while speaking, a bottom-up sweep
+at startup, the contiguous charge meter, and the one-shot compliment flash.
 """
 
 from __future__ import annotations
@@ -123,6 +127,16 @@ class RexAvatar(QWidget):
             "audio_path": None,
             "updated_at": 0.0,
         }
+        # Chest-panel LED mirror (mode-level; see chest_render_state). Boot state
+        # matches the powered-off robot: panels dark until the STARTUP command.
+        self._chest_state: dict[str, Any] = {
+            "mode": "off",
+            "emotion": None,
+            "soc": None,
+            "charging": False,
+            "flash_at": 0.0,
+            "updated_at": 0.0,
+        }
         self._last_eye_event_at = 0.0
         self._blink_state = "open"
         self._blink_timer = time.monotonic()
@@ -169,6 +183,9 @@ class RexAvatar(QWidget):
         speech_state = snapshot.get("speech_state") or {}
         if speech_state:
             self._speech_state.update(speech_state)
+        chest_state = snapshot.get("chest_led_state") or {}
+        if chest_state:
+            self._chest_state.update(chest_state)
         self.update()
 
     # ── Painting ────────────────────────────────────────────────────────────
@@ -301,9 +318,8 @@ class RexAvatar(QWidget):
         painter.setPen(QPen(QColor("#c9cdd1"), 4))
         for x in range(-88, 89, 16):
             painter.drawLine(QPointF(x, 386), QPointF(x, 418))
-        painter.setPen(QPen(QColor("#2c3034"), 2))
-        painter.setBrush(QColor("#787f86"))
-        painter.drawRoundedRect(QRectF(54, 388, 34, 28), 4, 4)
+        # Three chest LED pods riding on the drum band (see the real robot).
+        self._draw_chest_panels(painter)
 
         # Black accordion bellows.
         painter.setPen(Qt.PenStyle.NoPen)
@@ -339,6 +355,88 @@ class RexAvatar(QWidget):
         painter.drawEllipse(QPointF(0, 296), 92, 15)
         painter.setBrush(QColor("#6d7378"))
         painter.drawEllipse(QPointF(0, 292), 70, 10)
+
+    def _draw_chest_panels(self, painter: QPainter) -> None:
+        """The three chest LED pods: each a grey bezel with a vertical ladder of
+        small round LEDs on the left and a cluster of square lamps to the right,
+        matching the physical build. Pattern comes from chest_render_state."""
+        p = chest_render_state(self._chest_state, time.time())
+        tick = time.monotonic()
+        step = int(tick * p["rate"]) if p["rate"] > 0 else 0
+        flash_step = int(tick * 6)
+        b = p["brightness"] if p["on"] else 0.0
+        pr, pg, pb = p["primary"]
+        for idx, cx in enumerate((-70.0, 0.0, 70.0)):
+            rect = QRectF(cx - 24, 380, 48, 42)
+            painter.setPen(QPen(_NEAR_BLACK, 2))
+            painter.setBrush(QColor("#50565c"))
+            painter.drawRoundedRect(rect, 4, 4)
+            inner = rect.adjusted(3.5, 3.5, -3.5, -3.5)
+            painter.setPen(QPen(QColor("#22262a"), 1.5))
+            painter.setBrush(QColor("#31363b"))
+            painter.drawRoundedRect(inner, 3, 3)
+
+            # Vertical ladder of 7 round LEDs — amber up top shading to red below,
+            # like the photo. fill (charge meter / startup sweep) lights from the
+            # bottom; otherwise each LED flickers firmware-random-blocks style.
+            lx = rect.left() + 8.0
+            painter.setPen(Qt.PenStyle.NoPen)
+            for i in range(7):
+                ly = rect.top() + 7.0 + i * 4.6
+                # Meter modes (charge/startup fill) light in the mode's color;
+                # flicker modes keep the photo's amber-top/red-bottom ladder.
+                if p["fill"] is not None:
+                    base = p["primary"]
+                else:
+                    base = (255, 150, 46) if i < 3 else (232, 48, 36)
+                if b <= 0.0:
+                    lit = False
+                elif p["fill"] is not None:
+                    lit = (6 - i) < p["fill"] * 7.001
+                else:
+                    lit = _prand(step, idx * 13, i) < 0.55
+                if lit:
+                    r, g, bl = (int(v * b) for v in base)
+                    painter.setBrush(QColor(r, g, bl, 90))
+                    painter.drawEllipse(QPointF(lx, ly), 3.2, 3.2)
+                    painter.setBrush(QColor(r, g, bl))
+                    painter.drawEllipse(QPointF(lx, ly), 1.7, 1.7)
+                else:
+                    painter.setBrush(QColor(58, 44, 40))
+                    painter.drawEllipse(QPointF(lx, ly), 1.6, 1.6)
+
+            # Square lamps: silver tiles that occasionally light, plus each pod's
+            # big "hero" square in the primary color. COMPLIMENT flashes them all
+            # white<->blue for a couple seconds, mirroring the firmware one-shot.
+            for dx, dy, size, kind in _CHEST_SQUARES[idx]:
+                sq = QRectF(rect.left() + dx, rect.top() + dy, size, size)
+                lit_color: QColor | None = None
+                if b > 0.0 and p["flash"]:
+                    lit_color = (
+                        QColor(240, 246, 255) if (flash_step + idx) % 2 else QColor(80, 145, 255)
+                    )
+                elif kind == "lit" and b > 0.0 and p["fill"] is None:
+                    dim = b * (0.75 + 0.25 * _prand(step, idx * 7, 99))
+                    lit_color = QColor(int(pr * dim), int(pg * dim), int(pb * dim))
+                elif (
+                    kind == "plain"
+                    and b > 0.0
+                    and p["fill"] is None
+                    and _prand(step, idx * 29, int(dx)) < 0.22
+                ):
+                    lit_color = QColor(int(pr * b * 0.55), int(pg * b * 0.55), int(pb * b * 0.55))
+                if lit_color is not None:
+                    glow = QColor(lit_color)
+                    glow.setAlpha(80)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(glow)
+                    painter.drawRoundedRect(sq.adjusted(-2, -2, 2, 2), 3, 3)
+                    painter.setPen(QPen(QColor("#22262a"), 1.2))
+                    painter.setBrush(lit_color)
+                else:
+                    painter.setPen(QPen(QColor("#22262a"), 1.2))
+                    painter.setBrush(QColor(186, 186, 178))
+                painter.drawRoundedRect(sq, 1.5, 1.5)
 
     # ── Neck + head ─────────────────────────────────────────────────────────
 
@@ -779,6 +877,82 @@ class RexAvatar(QWidget):
         cfg = config.SERVO_CHANNELS[name]
         norm = self._current.get(name, 0.5)
         return int(cfg["min"] + (cfg["max"] - cfg["min"]) * norm)
+
+
+# Square-lamp layout per pod (dx, dy, size, kind) relative to the pod's top-left,
+# loosely matching the photo: two silver tiles + one big "hero" square each, in a
+# slightly different arrangement per pod.
+_CHEST_SQUARES: tuple[tuple[tuple[float, float, float, str], ...], ...] = (
+    ((17, 6, 8, "plain"), (27, 6, 8, "plain"), (19, 20, 11, "lit")),
+    ((28, 8, 9, "plain"), (28, 19, 9, "plain"), (16, 21, 11, "lit")),
+    ((18, 5, 8, "plain"), (27, 9, 8, "plain"), (20, 18, 10, "lit")),
+)
+
+# SPEAK:<emotion> hero-square colors, echoing the firmware patterns (excited=racing
+# gold/red pops, sad=slow blue sighs, angry=red alert, happy=bouncing gold).
+_CHEST_EMOTION_PRIMARY: dict[str, tuple[int, int, int]] = {
+    "excited": (255, 150, 40),
+    "happy": (255, 190, 60),
+    "sad": (70, 130, 235),
+    "angry": (235, 40, 30),
+}
+_CHEST_DEFAULT_PRIMARY = (224, 46, 34)
+_CHEST_FLASH_SECS = 2.2
+
+
+def _prand(step: int, *salts: int) -> float:
+    """Deterministic 0..1 pseudo-random per (time-step, salts) — gives the panels
+    firmware-style random-block flicker without per-LED state."""
+    x = (step * 2654435761) & 0xFFFFFFFF
+    for s in salts:
+        x ^= (s * 40503 + 0x9E3779B9 + ((x << 6) & 0xFFFFFFFF) + (x >> 2)) & 0xFFFFFFFF
+    return ((x >> 8) & 1023) / 1023.0
+
+
+def chest_render_state(state: dict[str, Any], now: float) -> dict[str, Any]:
+    """Pure mapping: mirrored chest-LED mode → render parameters.
+
+    Returns {on, brightness 0..1, rate (flicker steps/sec; 0 = static), fill
+    (None, or 0..1 lighting the ladders bottom-up), primary (r,g,b), flash}.
+    `now` is wall-clock time.time() — bridge timestamps are wall-clock.
+    """
+    mode = str(state.get("mode") or "off").strip().lower()
+    emotion = str(state.get("emotion") or "").strip().lower()
+    updated = float(state.get("updated_at") or 0.0)
+    flash_at = float(state.get("flash_at") or 0.0)
+    out: dict[str, Any] = {
+        "on": True,
+        "brightness": 1.0,
+        "rate": 1.5,
+        "fill": None,
+        "primary": _CHEST_DEFAULT_PRIMARY,
+        "flash": 0.0 < (now - flash_at) < _CHEST_FLASH_SECS,
+    }
+    if mode == "off":
+        out["on"] = False
+    elif mode == "fadeoff":
+        # Firmware ramps brightness to black over ~4s autonomously.
+        remaining = 1.0 - (now - updated) / 4.0
+        out["brightness"] = max(0.0, min(1.0, remaining))
+        out["on"] = out["brightness"] > 0.0
+    elif mode == "sleep":
+        out.update(brightness=0.3, rate=0.3, fill=0.15)
+    elif mode == "active":
+        out["rate"] = 3.5
+    elif mode == "startup":
+        out.update(rate=6.0, fill=(now * 1.5) % 1.0)
+    elif mode == "speak":
+        out["primary"] = _CHEST_EMOTION_PRIMARY.get(emotion, _CHEST_DEFAULT_PRIMARY)
+        out["rate"] = 2.5 if emotion == "sad" else 9.0
+    elif mode == "charge":
+        soc = state.get("soc")
+        out.update(
+            rate=0.4,
+            fill=max(0.0, min(1.0, (int(soc) if soc is not None else 0) / 100.0)),
+            primary=(70, 220, 90) if state.get("charging") else (255, 170, 40),
+        )
+    # any unknown mode (incl. "idle") keeps the idle defaults above
+    return out
 
 
 def _neutral_norms() -> dict[str, float]:
