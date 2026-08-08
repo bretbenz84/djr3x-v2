@@ -13632,6 +13632,13 @@ def _stream_llm_response(
     Collecting before speaking keeps AEC suppression as one continuous window
     per response. At max_tokens=150 the added latency is negligible.
     """
+    # Queeny-mode trigger (intelligence/pride.py): "are you gay?" arms the overlay
+    # BEFORE any reply tokens stream, so the answer itself is already in register.
+    try:
+        from intelligence import pride as _pride
+        _pride.maybe_trigger(text)
+    except Exception as exc:
+        _log.debug("[pride] trigger hook skipped: %s", exc)
     # Current-info web search branch: when the turn needs live data (explicit ask or
     # autonomous gate), Rex looks it up and speaks the answer here, skipping the normal
     # reply. Failure-safe — on no-trigger / no-result it returns None and we proceed.

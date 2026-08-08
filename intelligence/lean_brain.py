@@ -341,6 +341,18 @@ def _mood_lines() -> list[str]:
         return []
 
 
+def _pride_lines() -> list[str]:
+    """Queeny-mode overlay (intelligence/pride.py) while armed by a sexuality
+    question. Shared-builder placement for the same reason as _mood_lines: the
+    answering reply AND any proactive line inside the TTL should both land in
+    register."""
+    try:
+        from intelligence import pride
+        return pride.prompt_lines()
+    except Exception:
+        return []
+
+
 def _reaction_lines(person_id: Optional[int]) -> list[str]:
     """"Your last line just LANDED — you saw them smile" (reaction_awareness).
 
@@ -377,6 +389,7 @@ def _system_prompt(
         + _scene_lines(world)
         + _room_belief_lines()
         + _mood_lines()
+        + _pride_lines()
         + _reaction_lines(person_id)
         + _cadence_lines(person_id)
         + list(extra_lines or [])

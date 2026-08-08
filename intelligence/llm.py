@@ -1270,6 +1270,17 @@ def assemble_system_prompt(
     except Exception as exc:
         _log.debug("day-mood section injection skipped: %s", exc)
 
+    # 3b1. Queeny-mode overlay (intelligence/pride.py) — classic-fallback mirror of
+    # lean_brain._pride_lines, so the answering reply lands in register on this
+    # path too.
+    try:
+        from intelligence import pride as _pride
+        pride_section = _pride.prompt_section()
+        if pride_section:
+            sections.append(pride_section)
+    except Exception as exc:
+        _log.debug("pride section injection skipped: %s", exc)
+
     # 3b2. A reaction Rex just caused (they smiled at his last line) — first-person
     # awareness for the classic fallback, mirroring lean_brain._reaction_lines.
     try:

@@ -7392,6 +7392,14 @@ REX_MOOD_SHARE_MIN_TIERS = ("friend", "close_friend", "best_friend")
 # check-in, or a remembered follow-up is about THEM, and a <20-min quick return is
 # four words. See consciousness._GREETING_MOOD_ASIDE_LABELS.
 REX_MOOD_GREETING_ASIDE_ENABLED = _env_bool("REX_MOOD_GREETING_ASIDE_ENABLED", True)
+
+# ── Pride / queeny mode (intelligence/pride.py) ──────────────────────────────
+# Rex is gay. Asking him ("are you gay?", "do you like men?", "are you a
+# homosexual?") gets a proud emphatic yes and arms QUEENY MODE — a decaying
+# delivery overlay ("Yasss queen!", "You go girl!", "sis") injected into both
+# voices. Re-asking refreshes the TTL.
+PRIDE_MODE_ENABLED = _env_bool("PRIDE_MODE_ENABLED", True)
+PRIDE_MODE_TTL_SECS = 600.0
 # Higher than the lull roll (0.3): the hello is a better-fitting moment, and the
 # once-per-day spend is shared with the lull cue, so this mostly decides WHICH of
 # the two gets it rather than adding a second chance to hear about his day.
