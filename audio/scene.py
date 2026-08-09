@@ -112,11 +112,14 @@ def _analyze_cycle(audio: np.ndarray) -> None:
     chatter   = _detect_group_chatter(audio, music=music, laughter=laughter, applause=applause)
     # Classifier events (YAMNet families, [] when disabled/unavailable). Runs
     # behind the same self-noise gate as the heuristics above. Confident
-    # classifier laughter CORROBORATES the burst heuristic (better detector,
-    # same downstream behavior); the other families publish as discrete events.
+    # classifier laughter/applause CORROBORATE the burst/flatness heuristics
+    # (better detectors, same downstream behavior); the other families publish
+    # as discrete events.
     events    = sound_events.classify_events(audio)
     if any(e["family"] == "laughter" for e in events):
         laughter = True
+    if any(e["family"] == "applause" for e in events):
+        applause = True
     now_ts    = time.time()
 
     scene = world_state.get("audio_scene")

@@ -7731,12 +7731,13 @@ SOUND_EVENT_FAMILY_CLASSES = {
     "dog_bark":    ("Dog", "Bark", "Howl", "Growling", "Whimper (dog)"),
     "cat":         ("Cat", "Meow"),
     "laughter":    ("Laughter", "Baby laughter", "Giggle", "Chuckle, chortle", "Belly laugh"),
+    "applause":    ("Applause", "Clapping"),
 }
 # When several families fire in one window, this order picks what Rex reacts to
 # (and what last_sound_event reports): urgent things first.
 SOUND_EVENT_PRIORITY = (
     "scream", "glass_break", "bang", "alarm", "siren", "baby_cry",
-    "doorbell", "knock", "dog_bark", "cat", "laughter",
+    "doorbell", "knock", "dog_bark", "cat", "laughter", "applause",
 )
 # Score floor a family's best class must clear (YAMNet scores are ~0..1 but NOT
 # calibrated probabilities — 0.3 is already a confident detection for many
@@ -7747,6 +7748,7 @@ SOUND_EVENT_FAMILY_THRESHOLDS = {
     "glass_break": 0.45,
     "scream": 0.45,       # excited speech can brush Yell/Shout
     "laughter": 0.5,      # only confident laughs corroborate the heuristic
+    "applause": 0.5,      # same corroboration-only role as laughter
 }
 # One event per family per this window — a barking dog is ONE dog_bark event,
 # not a reaction per bark.

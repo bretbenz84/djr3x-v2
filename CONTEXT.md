@@ -2305,7 +2305,7 @@ YAMNet (Google's AudioSet classifier; Apache-2.0 waveform-in ONNX export, ~16MB,
 521 classes, ~3-4ms per window on the onnxruntime the face stack already ships)
 inside the scene loop and maps classes onto behavior FAMILIES: scream,
 glass_break, bang, alarm, siren, baby_cry, doorbell, knock, dog_bark, cat,
-laughter.
+laughter, applause.
 
 - **Placement:** called from `scene._analyze_cycle`, so it sits behind the
   existing self-noise gate (`_should_skip_cycle`) — it never hears Rex's own
@@ -2321,9 +2321,9 @@ laughter.
   NOT bump seq (they'd re-fire every cycle of a sustained scream); their
   original value-change semantics are preserved, and they remain the working
   fallback whenever the model is missing/broken (module disables itself with
-  one warning; nothing else changes). Confident classifier laughter CORROBORATES
-  the burst heuristic (sets `laughter_detected`) rather than adding a second
-  laughter path.
+  one warning; nothing else changes). Confident classifier laughter/applause CORROBORATE
+  the burst/flatness heuristics (set `laughter_detected`/`applause_detected`)
+  rather than adding second paths.
 - **Reactions** (`consciousness._step_proactive_reactions`): scream/glass_break/
   bang joined `STARTLE_SOUND_EVENTS` (yelp path, surprise frame —
   `emotion_orchestrator.frame_for_event` learned the two new keys). The other

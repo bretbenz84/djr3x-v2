@@ -203,6 +203,13 @@ class ScenePublicationTest(unittest.TestCase):
         self.assertEqual(state["last_sound_event"], "laughter")
         self.assertEqual(int(state["last_sound_event_seq"] or 0), before)
 
+    def test_classifier_applause_corroborates_heuristic_without_seq_bump(self):
+        before = int(self._old_scene.get("last_sound_event_seq") or 0)
+        state = self._run_cycle([{"family": "applause", "score": 0.9, "top_class": "Clapping"}])
+        self.assertTrue(state["applause_detected"])
+        self.assertEqual(state["last_sound_event"], "applause")
+        self.assertEqual(int(state["last_sound_event_seq"] or 0), before)
+
     def test_no_events_leaves_heuristic_chain_untouched(self):
         state = self._run_cycle([])
         self.assertEqual(
