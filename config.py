@@ -1573,6 +1573,13 @@ EPISODIC_RECALL_SENSITIVE_KINDS = ("emotional_checkin", "boundary")
 # surfaces ONE experiential shared-memory callback ("I made you laugh last time"). Kept
 # low so it stays a spice; counts against the one-callback-per-reply budget.
 EPISODIC_RECALL_PERSON_CALLBACK_PROBABILITY = 0.25
+# Surface the shared-memory callback on the LEAN reply path too (the live voice).
+# Until 2026-08-08 the hook was injected only by llm.assemble_system_prompt, so under
+# the lean brain the diary reached replies only on the classic FALLBACK path — the
+# feature almost never fired live. Same roll + same once-per-session dedup as the
+# classic path (both call llm._pick_episodic_callback), so the two paths can't
+# double-surface a memory. Kill switch for the lean injection only.
+LEAN_EPISODIC_CALLBACK_ENABLED = True
 # Topic relevance for episodic callbacks: when the live topic is known, lift episodes
 # whose summary connects to what was JUST said (per matching stemmed word, capped at
 # MEMORY_TOPIC_RELEVANCE_MAX_MATCHES) so Rex recalls "we played trivia" while trivia is

@@ -270,6 +270,27 @@ def _person_lines(person_id: Optional[int], user_text: str = "") -> list[str]:
             "PROACTIVELY dredge them up unprompted or re-ask as if it's new (the 'same thing every "
             "run' problem): " + " | ".join(topics) + "."
         )
+    # Episodic shared-memory callback (rex.db) — the "we have history" beat. The classic
+    # prompt has carried this since recall Phase 2, but the lean rebuild dropped it, so
+    # under the live lean brain the diary reached replies only via the classic FALLBACK
+    # path. Reuses llm._pick_episodic_callback so the probability roll AND the
+    # once-per-session dedup set are shared with the classic path — a memory surfaced on
+    # either path can never repeat on the other. Reply turns only (user_text is "" on the
+    # directive path, whose cue owns the turn and must not compete with a memory hook).
+    if user_text.strip() and bool(getattr(config, "LEAN_EPISODIC_CALLBACK_ENABLED", True)):
+        cb = None
+        try:
+            cb = llm._pick_episodic_callback(int(person_id), topic_tokens=topic_tokens)
+        except Exception as exc:
+            _log.debug("[lean] episodic callback skipped: %s", exc)
+        if cb:
+            _log.info("[lean] episodic shared-memory callback for %s — %r", who, cb)
+            out.append(
+                "SHARED-MEMORY HOOK: you and " + who + " have history — you remember: \""
+                + cb + "\". If it fits naturally, weave ONE short, specific callback to "
+                "that shared moment into your reply — warm and dry. Don't force it or "
+                "announce it as a memory; just let it surface like a passing thought."
+            )
     return out
 
 
