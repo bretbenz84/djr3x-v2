@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 import config
-from audio import stream, output_gate, speech_queue, echo_cancel
+from audio import stream, output_gate, speech_queue, echo_cancel, sound_events
 from world_state import world_state
 
 logger = logging.getLogger(__name__)
@@ -110,6 +110,13 @@ def _analyze_cycle(audio: np.ndarray) -> None:
     scream    = _detect_scream(audio)
     sudden    = _detect_sudden_loud_sound(audio)
     chatter   = _detect_group_chatter(audio, music=music, laughter=laughter, applause=applause)
+    # Classifier events (YAMNet families, [] when disabled/unavailable). Runs
+    # behind the same self-noise gate as the heuristics above. Confident
+    # classifier laughter CORROBORATES the burst heuristic (better detector,
+    # same downstream behavior); the other families publish as discrete events.
+    events    = sound_events.classify_events(audio)
+    if any(e["family"] == "laughter" for e in events):
+        laughter = True
     now_ts    = time.time()
 
     scene = world_state.get("audio_scene")
@@ -129,7 +136,23 @@ def _analyze_cycle(audio: np.ndarray) -> None:
         scene["group_chatter_reason"] = None
     scene["last_updated"]       = datetime.now(timezone.utc).isoformat()
 
-    if scream:
+    # Event publication. Classifier events (already priority-sorted, cooldown-
+    # gated) win over the legacy heuristic chain: they carry a NAMED cause where
+    # the heuristics only know "loud"/"burst". `last_sound_event_seq` bumps on
+    # every fresh occurrence so a REPEAT of the same family (dog barks again
+    # after the cooldown) is distinguishable downstream from a stale value.
+    spoken_families = set(getattr(config, "SOUND_EVENT_REACTION_PROMPTS", {}) or {})
+    startle_families = set(getattr(config, "STARTLE_SOUND_EVENTS", ()) or ())
+    reactable = [
+        e for e in events
+        if e["family"] in spoken_families or e["family"] in startle_families
+    ]
+    if events:
+        scene["sound_events"] = events
+    if reactable:
+        scene["last_sound_event"] = reactable[0]["family"]
+        scene["last_sound_event_seq"] = int(scene.get("last_sound_event_seq") or 0) + 1
+    elif scream:
         scene["last_sound_event"] = "scream"
     elif sudden:
         scene["last_sound_event"] = "sudden_loud_sound"

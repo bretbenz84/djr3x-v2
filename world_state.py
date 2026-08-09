@@ -36,6 +36,8 @@ _DEFAULTS = {
         "group_chatter_until": None,
         "group_chatter_reason": None,
         "last_sound_event": None,
+        "last_sound_event_seq": 0,
+        "sound_events": [],
         "last_updated": None,
     },
     "self_state": {

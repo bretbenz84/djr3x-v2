@@ -196,6 +196,9 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # WEB_SEARCH_ENABLED = True              # answer current-info questions via web search
 # IMPERSONATION_ENABLED = True           # "do an impersonation of me/<person>" (needs local TTS)
 # ANIMAL_DETECTION_ENABLED = True        # react to pets / animals
+# SOUND_AWARENESS_ENABLED = True         # classify non-speech sounds (barks, doorbells, glass…)
+# SOUND_AWARENESS_REACTIONS_ENABLED = True  # …and react out loud to the notable ones
+# SOUND_EVENT_REACTION_COOLDOWN_SECS = 90.0 # min gap between spoken sound reactions
 # VISUAL_CURIOSITY_ENABLED = True        # camera-grounded riffs / questions
 # SPEAKER_GAZE_ENABLED = True            # env: turn head toward whoever is speaking
 # BOREDOM_ENABLED = True                 # env: bored-in-empty-room → doze to sleep

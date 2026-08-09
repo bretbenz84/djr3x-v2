@@ -386,7 +386,7 @@ def frame_for_empathy_mode(mode: str | None) -> EmotionFrame:
 
 def frame_for_event(event: str, **context: Any) -> EmotionFrame:
     key = "_".join(str(event or "").strip().lower().replace("-", "_").replace(".", "_").split())
-    if key in {"surprise", "startle", "startled", "scream", "sudden_scream", "crash", "sudden_loud_sound"}:
+    if key in {"surprise", "startle", "startled", "scream", "sudden_scream", "crash", "sudden_loud_sound", "glass_break", "bang"}:
         return frame_for_emotion("surprised", intensity=0.95, source="event", trigger=key)
     if key in {"animal_detected", "animal_arrival"}:
         species = str(context.get("species") or "").strip().lower()

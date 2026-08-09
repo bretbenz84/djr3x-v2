@@ -7703,8 +7703,95 @@ PLAY_LISTENING_CHIME = True
 # default; the data still remains in world_state for prompts.
 WORLD_SOUND_EVENT_REACTIONS_ENABLED = False
 WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED = True
-STARTLE_SOUND_EVENTS = {"scream", "sudden_loud_sound", "crash"}
+STARTLE_SOUND_EVENTS = {"scream", "sudden_loud_sound", "crash", "glass_break", "bang"}
 STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS = 20
+
+# ── Sound-event awareness (audio/sound_events.py — local YAMNet classifier) ────
+# A real AudioSet classifier (YAMNet ONNX, Apache-2.0, ~16MB, ~4ms/window CPU on
+# the onnxruntime already shipped for faces) upgrades Rex's non-speech hearing
+# from energy heuristics to named events: dog barks, doorbells, knocks, screams,
+# breaking glass, bangs, sirens, smoke alarms. Runs inside the audio-scene loop,
+# behind its self-noise gate (never on Rex's own TTS/music). Model downloaded by
+# setup_assets.py into assets/models/yamnet/; if it's missing or fails to load
+# the feature disables itself and the legacy heuristics carry on unchanged.
+SOUND_AWARENESS_ENABLED = True
+# Families → the AudioSet display names that count as that family (best class
+# wins). Names must match assets/models/yamnet/yamnet_class_map.csv exactly;
+# unknown names are skipped with a debug log.
+SOUND_EVENT_FAMILY_CLASSES = {
+    "scream":      ("Screaming", "Yell", "Shout"),
+    "glass_break": ("Glass", "Shatter", "Smash, crash"),
+    "bang":        ("Bang", "Slam", "Thump, thud", "Burst, pop", "Explosion", "Boom"),
+    "alarm":       ("Smoke detector, smoke alarm", "Fire alarm", "Car alarm", "Alarm"),
+    "siren":       ("Siren", "Police car (siren)", "Ambulance (siren)",
+                    "Fire engine, fire truck (siren)", "Civil defense siren"),
+    "baby_cry":    ("Baby cry, infant cry", "Crying, sobbing"),
+    "doorbell":    ("Doorbell", "Ding-dong"),
+    "knock":       ("Knock",),
+    "dog_bark":    ("Dog", "Bark", "Howl", "Growling", "Whimper (dog)"),
+    "cat":         ("Cat", "Meow"),
+    "laughter":    ("Laughter", "Baby laughter", "Giggle", "Chuckle, chortle", "Belly laugh"),
+}
+# When several families fire in one window, this order picks what Rex reacts to
+# (and what last_sound_event reports): urgent things first.
+SOUND_EVENT_PRIORITY = (
+    "scream", "glass_break", "bang", "alarm", "siren", "baby_cry",
+    "doorbell", "knock", "dog_bark", "cat", "laughter",
+)
+# Score floor a family's best class must clear (YAMNet scores are ~0..1 but NOT
+# calibrated probabilities — 0.3 is already a confident detection for many
+# classes). Per-family overrides for the trigger-happy transient classes.
+SOUND_EVENT_DEFAULT_THRESHOLD = 0.35
+SOUND_EVENT_FAMILY_THRESHOLDS = {
+    "bang": 0.5,          # doors, dishes, and dropped objects all flirt with Bang
+    "glass_break": 0.45,
+    "scream": 0.45,       # excited speech can brush Yell/Shout
+    "laughter": 0.5,      # only confident laughs corroborate the heuristic
+}
+# One event per family per this window — a barking dog is ONE dog_bark event,
+# not a reaction per bark.
+SOUND_EVENT_FAMILY_COOLDOWN_SECS = 30.0
+# Ignore windows shorter than one YAMNet frame (0.975s @ 16kHz).
+SOUND_EVENT_MIN_WINDOW_SECS = 0.975
+# Optional override for the model directory (default assets/models/yamnet/).
+SOUND_EVENT_MODEL_DIR = None
+# Spoken reactions to classifier families (the startle families above ride the
+# existing startle path instead). Cooldown is shared across all notable families
+# so a lively street doesn't turn Rex into a sound narrator.
+SOUND_AWARENESS_REACTIONS_ENABLED = True
+SOUND_EVENT_REACTION_COOLDOWN_SECS = 90.0
+SOUND_EVENT_REACTION_PROMPTS = {
+    "doorbell": (
+        "You just HEARD the doorbell ring. One short in-character line — announce "
+        "it like a droid doorman (you can't answer the door yourself, and you know it)."
+    ),
+    "knock": (
+        "You just HEARD knocking, probably at a door. One short in-character line "
+        "flagging it — dry, alert, maybe offering to be intimidating."
+    ),
+    "dog_bark": (
+        "You just HEARD a dog barking somewhere nearby — you hear it, you may not "
+        "see it. One short in-character reaction (you have opinions about organic "
+        "alarm systems)."
+    ),
+    "cat": (
+        "You just HEARD a cat meow somewhere nearby. One short in-character "
+        "reaction to the invisible cat."
+    ),
+    "baby_cry": (
+        "You just HEARD a baby crying somewhere nearby. One short, gentler-than-"
+        "usual in-character line acknowledging it — no jokes at the baby's expense."
+    ),
+    "siren": (
+        "You just HEARD an emergency siren pass somewhere outside. One short "
+        "in-character remark about it."
+    ),
+    "alarm": (
+        "You just HEARD what sounds like an alarm going off — possibly a smoke "
+        "alarm. Say so clearly and suggest someone check it. Concern first, one "
+        "line, no bit."
+    ),
+}
 
 # A new crowd-size label must PERSIST this long before Rex reacts to the change.
 # The camera crowd count flickers (a face lost for one frame reads pair->alone->pair);

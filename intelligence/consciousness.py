@@ -474,6 +474,7 @@ _pending_animal_arrivals: dict[str, dict] = {}
 # remarks_spoken, last_remark_at}.
 _animal_presence: dict[str, dict] = {}
 _last_startle_sound_reaction_at: float = 0.0
+_last_notable_sound_reaction_at: float = 0.0
 
 # Crowd-change reaction debounce. The camera crowd count flickers (a face lost for
 # one frame reads pair->alone->pair), and the raw "label changed" check fired a
@@ -6176,6 +6177,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
     generate and speak a short in-character reaction. Never fires in QUIET/SHUTDOWN.
     """
     global _acknowledged_dates, _acknowledged_tod, _last_weather_reaction_at, _last_startle_sound_reaction_at
+    global _last_notable_sound_reaction_at
 
     if _last_snapshot:
         _stage_animal_arrivals(snapshot)
@@ -6285,10 +6287,16 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     label="crowd size changed",
                 )
 
-        # Notable sound event
+        # Notable sound event. `last_sound_event_seq` bumps on every fresh
+        # classifier occurrence (per-family cooldown-gated upstream), so a REPEAT
+        # of the same family — the dog barks again a minute later — re-fires here,
+        # where value-change detection alone would stay silent forever. The legacy
+        # heuristic events (no seq bump) keep their original value-change gate.
         prev_sound = _last_snapshot.get("audio_scene", {}).get("last_sound_event")
         curr_sound = snapshot.get("audio_scene", {}).get("last_sound_event")
-        if curr_sound and curr_sound != prev_sound:
+        prev_seq = _last_snapshot.get("audio_scene", {}).get("last_sound_event_seq") or 0
+        curr_seq = snapshot.get("audio_scene", {}).get("last_sound_event_seq") or 0
+        if curr_sound and (curr_sound != prev_sound or curr_seq != prev_seq):
             startle_events = set(getattr(config, "STARTLE_SOUND_EVENTS", {"scream", "sudden_loud_sound", "crash"}))
             is_startle = curr_sound in startle_events
             startle_allowed = bool(
@@ -6296,6 +6304,11 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
             )
             generic_allowed = bool(getattr(config, "WORLD_SOUND_EVENT_REACTIONS_ENABLED", False))
             cooldown = float(getattr(config, "STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS", 20.0))
+            # Classifier families with an in-character reaction prompt (doorbell,
+            # dog_bark, alarm, …). Startle families keep the startle path below.
+            notable_prompts = getattr(config, "SOUND_EVENT_REACTION_PROMPTS", {}) or {}
+            notable_allowed = bool(getattr(config, "SOUND_AWARENESS_REACTIONS_ENABLED", True))
+            notable_cooldown = float(getattr(config, "SOUND_EVENT_REACTION_COOLDOWN_SECS", 90.0))
             if (
                 is_startle
                 and startle_allowed
@@ -6309,6 +6322,18 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     frame,
                     label=f"startle sound: {curr_sound}",
                     metadata={"startle_sound_event": curr_sound},
+                )
+            elif (
+                curr_sound in notable_prompts
+                and notable_allowed
+                and (time.monotonic() - _last_notable_sound_reaction_at) >= notable_cooldown
+            ):
+                emotion = "concerned" if curr_sound in {"alarm", "baby_cry"} else "curious"
+                _add_trigger(
+                    str(notable_prompts[curr_sound]),
+                    emotion,
+                    label=f"sound event: {curr_sound}",
+                    metadata={"notable_sound_event": curr_sound},
                 )
             elif generic_allowed:
                 _add_trigger(
@@ -6439,6 +6464,8 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 _last_weather_reaction_at = time.monotonic()
             if metadata.get("startle_sound_event"):
                 _last_startle_sound_reaction_at = time.monotonic()
+            if metadata.get("notable_sound_event"):
+                _last_notable_sound_reaction_at = time.monotonic()
             _prime_emotion_trigger(metadata)
             _generate_and_speak(
                 trigger["prompt"],
@@ -13604,7 +13631,7 @@ def start() -> None:
     global _last_face_seen_at
     global _smile_reaction_watch, _last_smile_reaction_at
     global _last_facial_expression_reaction_at
-    global _last_startle_sound_reaction_at
+    global _last_startle_sound_reaction_at, _last_notable_sound_reaction_at
     global _last_mood_gesture_at, _mood_owns_visor, _last_mood_breathing
     global _pending_wave_back
     if _thread and _thread.is_alive():
@@ -13655,6 +13682,7 @@ def start() -> None:
     _animal_presence.clear()
     _update_unknown_streak(False)   # reset unknown-face persistence streak
     _last_startle_sound_reaction_at = 0.0
+    _last_notable_sound_reaction_at = 0.0
     _acknowledged_dates.clear()
     _acknowledged_weather_signatures.clear()
     _acknowledged_tod.clear()
@@ -13786,7 +13814,7 @@ def stop() -> None:
     global _last_face_seen_at
     global _smile_reaction_watch
     global _pending_wave_back
-    global _last_startle_sound_reaction_at
+    global _last_startle_sound_reaction_at, _last_notable_sound_reaction_at
     _stop_event.set()
     _pending_identity_prompt.clear()
     _identity_prompt_in_flight.clear()
@@ -13804,6 +13832,7 @@ def stop() -> None:
     _pending_animal_arrivals.clear()
     _animal_presence.clear()
     _last_startle_sound_reaction_at = 0.0
+    _last_notable_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()

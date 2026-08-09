@@ -749,6 +749,52 @@ def download_rfdetr_model(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 5a4 — YAMNet sound-event classifier (audio/sound_events.py)
+# ─────────────────────────────────────────────────────────────────────────────
+YAMNET_MODEL_DIR = "assets/models/yamnet"
+YAMNET_FILES = [
+    {
+        "name": "yamnet.onnx",   # Apache-2.0; waveform-in ONNX export of Google's YAMNet
+        "url": "https://huggingface.co/andrelgomes/yamnet-onnx/resolve/main/yamnet.onnx",
+    },
+    {
+        "name": "yamnet_class_map.csv",   # official AudioSet class map (index → display_name)
+        "url": "https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv",
+    },
+]
+
+
+def download_yamnet_model(
+    root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    """Fetch the YAMNet ONNX sound-event classifier (~16 MB) + its class map.
+    audio/sound_events.py disables itself cleanly when these are missing, so a
+    failed download degrades to the legacy energy heuristics, not a crash."""
+    created: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    for item in YAMNET_FILES:
+        dest = root / YAMNET_MODEL_DIR / item["name"]
+        label = f"yamnet/{item['name']}"
+        if dest.exists():
+            skipped.append(label)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
+        try:
+            print(f"    Downloading {item['name']} ...")
+            urllib.request.urlretrieve(item["url"], tmp, _progress)
+            print()
+            tmp.rename(dest)
+            created.append(label)
+        except Exception as exc:
+            if tmp.exists():
+                tmp.unlink()
+            failed.append(f"{label}: {exc}")
+    return created, skipped, failed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 5a3 — MobileCLIP-S2 image encoder (place recognition, perception/place_*)
 # ─────────────────────────────────────────────────────────────────────────────
 def download_mobileclip_model(
@@ -1377,77 +1423,82 @@ def main() -> None:
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[1/15] Creating project directories ...")
+    print("[1/16] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
 
-    print("[2/15] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
+    print("[2/16] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
     c, s, f = download_insightface_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/15] dlib face recognition models (legacy fallback backend) ...")
+    print("[3/16] dlib face recognition models (legacy fallback backend) ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/15] MediaPipe Face Landmarker model ...")
+    print("[4/16] MediaPipe Face Landmarker model ...")
     c, s, f = download_mediapipe_face_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/15] MediaPipe Pose Landmarker model ...")
+    print("[5/16] MediaPipe Pose Landmarker model ...")
     c, s, f = download_mediapipe_pose_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[6/15] MediaPipe Object Detector model ...")
+    print("[6/16] MediaPipe Object Detector model ...")
     c, s, f = download_mediapipe_object_detector(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[7/15] RF-DETR object-detector model (primary local detector) ...")
+    print("[7/16] RF-DETR object-detector model (primary local detector) ...")
     c, s2, f = download_rfdetr_model(root)
     all_created += c; all_skipped += s2; all_failed += f
     _report(c, s2, f)
 
-    print("[8/15] MobileCLIP-S2 place-recognition image encoder ...")
+    print("[8/16] MobileCLIP-S2 place-recognition image encoder ...")
     c, s, f = download_mobileclip_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[9/15] mlx-whisper large-v3-turbo model ...")
+    print("[9/16] YAMNet sound-event classifier (audio/sound_events.py) ...")
+    c, s, f = download_yamnet_model(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[10/16] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[10/15] Qwen3-ASR model (primary transcription backend) ...")
+    print("[11/16] Qwen3-ASR model (primary transcription backend) ...")
     c, s, f = download_qwen_asr_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[11/15] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
+    print("[12/16] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
     c, s, f = download_ecapa_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[12/15] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
+    print("[13/16] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[13/15] Qwen3-TTS voice-clone model (on-device TTS engine) ...")
+    print("[14/16] Qwen3-TTS voice-clone model (on-device TTS engine) ...")
     c, s, f = download_qwen_tts_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[14/15] Ollama local sidecar model ...")
+    print("[15/16] Ollama local sidecar model ...")
     c, s, f = install_ollama_model()
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[15/15] Database schema and personality defaults ...")
+    print("[16/16] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)

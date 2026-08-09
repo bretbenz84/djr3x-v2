@@ -2297,6 +2297,56 @@ FALLBACK path, so the flagship episodic-recall beat almost never fired in the fi
 - Tests: `tests/test_lean_episodic_callback.py` (hook renders, directive path never
   rolls, kill switch, exception-safe, shared dedup with the classic path).
 
+### Sound-event awareness — a real classifier for non-speech hearing (2026-08-08)
+
+Rex's non-speech hearing was four energy heuristics (laughter bursts, applause
+flatness, scream centroid, sudden-loud spikes). New: `audio/sound_events.py` runs
+YAMNet (Google's AudioSet classifier; Apache-2.0 waveform-in ONNX export, ~16MB,
+521 classes, ~3-4ms per window on the onnxruntime the face stack already ships)
+inside the scene loop and maps classes onto behavior FAMILIES: scream,
+glass_break, bang, alarm, siren, baby_cry, doorbell, knock, dog_bark, cat,
+laughter.
+
+- **Placement:** called from `scene._analyze_cycle`, so it sits behind the
+  existing self-noise gate (`_should_skip_cycle`) — it never hears Rex's own
+  TTS/music. Per-class MAX over the window's frames (a 0.5s bang must not be
+  diluted by a 2s mean). Per-family thresholds (`SOUND_EVENT_FAMILY_THRESHOLDS`
+  over `SOUND_EVENT_DEFAULT_THRESHOLD`) + a per-family cooldown
+  (`SOUND_EVENT_FAMILY_COOLDOWN_SECS`, 30s) so a barking dog is ONE event.
+- **Publication:** classifier events land in `audio_scene.sound_events` and the
+  highest-priority reactable family becomes `last_sound_event`, bumping
+  `last_sound_event_seq` — the seq is what lets a REPEAT of the same family
+  (dog barks again a minute later) re-fire downstream, where value-change
+  detection alone stayed silent forever. Legacy heuristic events deliberately do
+  NOT bump seq (they'd re-fire every cycle of a sustained scream); their
+  original value-change semantics are preserved, and they remain the working
+  fallback whenever the model is missing/broken (module disables itself with
+  one warning; nothing else changes). Confident classifier laughter CORROBORATES
+  the burst heuristic (sets `laughter_detected`) rather than adding a second
+  laughter path.
+- **Reactions** (`consciousness._step_proactive_reactions`): scream/glass_break/
+  bang joined `STARTLE_SOUND_EVENTS` (yelp path, surprise frame —
+  `emotion_orchestrator.frame_for_event` learned the two new keys). The other
+  families get flavored prompts (`SOUND_EVENT_REACTION_PROMPTS`: doorman bit for
+  the doorbell, opinions about organic alarm systems for dog_bark, genuine
+  no-bit concern for alarm/baby_cry → "concerned") behind
+  `SOUND_AWARENESS_REACTIONS_ENABLED` with a shared 90s cooldown
+  (`_last_notable_sound_reaction_at`, consumed only when the trigger is chosen —
+  same ack pattern as startle). Laughter deliberately has NO reaction prompt:
+  the existing laughter/bow path owns that.
+- **Assets:** `setup_assets.py` step 9 downloads `yamnet.onnx` + the official
+  class map into `assets/models/yamnet/` (gitignored). No new pip dependencies.
+  Class names in `SOUND_EVENT_FAMILY_CLASSES` must match the class map exactly —
+  pinned by a config-consistency test; unknown names are skipped with a debug log.
+- Kill switches: `SOUND_AWARENESS_ENABLED` (classifier),
+  `SOUND_AWARENESS_REACTIONS_ENABLED` (speech). Tests:
+  `tests/test_sound_events.py` (24: detector, scene publication, reaction
+  branch, config consistency, real-model smoke).
+- **Live-tuning note:** thresholds shipped conservative and UNVALIDATED against
+  real room audio — the first field runs should watch `[sound_event]` log lines
+  for false fires (dishes → bang, TV → everything) before trusting reactions in
+  DJ-adjacent rooms.
+
 ## Likely Future Work
 
 - **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The
