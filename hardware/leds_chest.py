@@ -113,23 +113,47 @@ def _flush_drop_summary(reason: str) -> None:
 # ── Connection ─────────────────────────────────────────────────────────────────
 
 def connect() -> bool:
+    """Open the chest Arduino, retrying briefly like servos.py and motion.py.
+
+    The retries matter at startup: the menu bar LED console (and, while Rex is
+    off, the battery meter painting the charge gauge) hold this board and only
+    let go on their ~1 Hz single-instance-lock poll. main.py now waits for that
+    release explicitly (utils/port_handoff.py), so these attempts are the
+    backstop, not the plan.
+    """
     global _ser
     if not CHEST_LEDS_ENABLED:
         _log.debug("CHEST_LEDS_ENABLED=False — skipping connect")
         return False
-    try:
-        _ser = serial.Serial(ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD, timeout=1)
+
+    attempts = max(1, int(getattr(config, "CHEST_ARDUINO_CONNECT_RETRY_ATTEMPTS", 3)))
+    delay = max(0.0, float(getattr(config, "CHEST_ARDUINO_CONNECT_RETRY_DELAY_SECS", 0.5)))
+
+    for attempt in range(1, attempts + 1):
+        try:
+            _ser = serial.Serial(ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD, timeout=1)
+        except serial.SerialException as exc:
+            _ser = None
+            _log.log(
+                logging.ERROR if attempt == attempts else logging.WARNING,
+                "Failed to open chest Arduino port %s (attempt %d/%d): %s",
+                ARDUINO_CHEST_PORT, attempt, attempts, exc,
+            )
+            if attempt < attempts and delay:
+                time.sleep(delay)
+            continue
+
         # Opening the port toggles DTR on CH340 adapters, resetting the Arduino.
         # Wait for boot to complete before sending any commands.
         time.sleep(2.0)
         _ser.reset_input_buffer()
-        _log.info("Chest Arduino connected on %s at %d baud", ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD)
+        _log.info(
+            "Chest Arduino connected on %s at %d baud (attempt %d/%d)",
+            ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD, attempt, attempts,
+        )
         _flush_drop_summary("reconnected")
         return True
-    except serial.SerialException as exc:
-        _log.error("Failed to open chest Arduino port %s: %s", ARDUINO_CHEST_PORT, exc)
-        _ser = None
-        return False
+    return False
 
 
 def disconnect() -> None:

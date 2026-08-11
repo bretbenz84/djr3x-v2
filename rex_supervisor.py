@@ -454,6 +454,9 @@ def _launch_controller() -> Optional[subprocess.Popen]:
             cwd=str(_PROJECT_ROOT),
             stdout=child_stdout,
             stderr=subprocess.STDOUT,  # fold the controller's stderr into the same file
+            # Diagnostics only: main.py logs whether a run came from here or from
+            # a hand-typed `venv/bin/python main.py`. Both paths behave the same.
+            env=dict(os.environ, DJR3X_LAUNCHED_BY="supervisor"),
         )
     except Exception as exc:
         log.error("Failed to launch controller: %s", exc)

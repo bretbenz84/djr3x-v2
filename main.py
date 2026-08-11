@@ -104,7 +104,12 @@ from utils.config_loader import (
     CAMERA_SELECTION_DESCRIPTION,
     AUDIO_ENABLED,
     AUDIO_SELECTION_DESCRIPTION,
+    MAESTRO_PORT,
+    ARDUINO_HEAD_PORT,
+    ARDUINO_CHEST_PORT,
+    MOTION_ESP32_PORT,
 )
+from utils import port_handoff
 from sequences import animations
 from utils import phrase_cycler
 from audio import (
@@ -1078,6 +1083,42 @@ def _launch_startup_jeopardy() -> None:
         logger.exception("Failed to launch Jeopardy startup mode: %s", exc)
 
 
+def _wait_for_companion_port_handoff() -> None:
+    """Let the menu bar apps drop the serial ports before we open them.
+
+    The single-instance flock we took at startup is the handoff signal:
+    rex_battery_menubar.py (motion ESP32), rex_servo_menubar.py (Maestro) and
+    rex_led_menubar.py (head + chest Arduinos) each poll it about once a second
+    and close their port as soon as a controller is alive. rex_supervisor.py
+    never touches a serial port — it only spawns us — so a manual
+    `venv/bin/python main.py` gets exactly the same handoff. What it did not get
+    was the pause: we took the lock and opened the ports inside the same second,
+    ahead of that 1 Hz poll. Wait for the release here instead of racing it.
+
+    Costs one lsof (milliseconds) and logs nothing when the ports are already
+    free, which is every supervisor-launched wake. Never blocks startup: on
+    timeout we log which port is stuck and connect anyway, leaving each driver's
+    own retries as the backstop.
+    """
+    ports = [
+        ("Maestro servos", MAESTRO_PORT if SERVOS_ENABLED else None),
+        ("head LEDs", ARDUINO_HEAD_PORT if HEAD_LEDS_ENABLED else None),
+        ("chest LEDs", ARDUINO_CHEST_PORT if CHEST_LEDS_ENABLED else None),
+        (
+            "motion base",
+            MOTION_ESP32_PORT if bool(getattr(config, "MOTION_ENABLED", True)) else None,
+        ),
+    ]
+    try:
+        port_handoff.wait_for_release(
+            ports,
+            timeout=float(getattr(config, "SERIAL_HANDOFF_TIMEOUT_SECS", 5.0)),
+            log=logger,
+        )
+    except Exception as exc:  # a handoff helper must never prevent startup
+        logger.warning("Serial handoff check failed (%s) — connecting anyway.", exc)
+
+
 def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     _apply_startup_mode_overrides(jeopardy=startup_jeopardy)
     no_audio = bool(getattr(config, "NO_AUDIO_MODE", False))
@@ -1104,6 +1145,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     # Step 4: Initialize hardware and log enabled/disabled status.
     logger.info("=== Initializing hardware ===")
+
+    _wait_for_companion_port_handoff()
 
     servo_ok = servos.connect()
     if SERVOS_ENABLED and servo_ok:
@@ -2162,6 +2205,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _launch_source() -> str:
+    """Who started this run: "supervisor" (rex_supervisor.py sets the env var) or
+    "manual".
+
+    Diagnostics only. Both paths do the identical port handoff — the flock is
+    what the menu bar apps watch — but "which one started this?" is the first
+    question asked whenever a startup looks different, so answer it in the log.
+    """
+    return "supervisor" if os.environ.get("DJR3X_LAUNCHED_BY", "").strip() == "supervisor" else "manual"
+
+
 def _acquire_single_instance_or_exit() -> None:
     """Take the cross-process single-instance lock, or exit if a controller is
     already running.
@@ -2181,7 +2235,12 @@ def _acquire_single_instance_or_exit() -> None:
         logger.warning("Single-instance lock unavailable (%s) — continuing.", exc)
         return
     if single_instance.acquire():
-        logger.info("Single-instance lock acquired (%s).", single_instance.lock_path())
+        logger.info(
+            "Single-instance lock acquired (%s) — %s launch. Menu bar companions "
+            "release their serial ports from here.",
+            single_instance.lock_path(),
+            _launch_source(),
+        )
         return
     owner = single_instance.read_owner_pid()
     logger.warning(

@@ -3955,6 +3955,14 @@ GROUP_CHATTER_VOICE_CANDIDATE_FLOOR = 0.30
 # ─────────────────────────────────────────────────────────────────────────────
 
 HEAD_ARDUINO_BAUD = 115200
+# Connect retries, matching SERVO_/MOTION_CONNECT_RETRY_*. The head and chest
+# opens used to be single-shot while the Maestro and motion base retried, so a
+# start that overlapped the LED console's ~1 Hz port release lost the boards for
+# the entire session (the servos and base just retried and came up). See
+# utils/port_handoff.py — the handoff wait is the primary fix; these are the
+# backstop for anything that grabs a board after the wait clears.
+HEAD_ARDUINO_CONNECT_RETRY_ATTEMPTS = 3
+HEAD_ARDUINO_CONNECT_RETRY_DELAY_SECS = 0.5
 # pyserial write_timeout for the head Arduino. This was 0.20s, which is too tight
 # for USB-CDC on macOS: the IOKit driver briefly reports the write buffer as full
 # under load, raising a SerialTimeoutException even though the board is perfectly
@@ -4047,6 +4055,22 @@ EYE_COLORS = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 CHEST_ARDUINO_BAUD = 115200
+# See HEAD_ARDUINO_CONNECT_RETRY_ATTEMPTS. Each successful chest open already
+# costs a 2 s CH340 reboot wait, so retries only ever fire on a failed open.
+CHEST_ARDUINO_CONNECT_RETRY_ATTEMPTS = 3
+CHEST_ARDUINO_CONNECT_RETRY_DELAY_SECS = 0.5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SERIAL PORT HANDOFF (menu bar companions → main.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# How long main.py waits at hardware init for the menu bar apps (battery, servo,
+# LED consoles) to release the serial ports they hold while Rex is off. They poll
+# the single-instance flock ~1x/s, so this only has to cover one poll plus the
+# close; it is a ceiling, not a delay — the wait ends the instant the ports are
+# free, and costs a single lsof when nothing is holding them. See
+# utils/port_handoff.py and docs/supervisor.md.
+SERIAL_HANDOFF_TIMEOUT_SECS = 5.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PERSONALITY PARAMETER DEFAULTS (0–100)

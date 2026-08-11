@@ -61,6 +61,57 @@ Only one process opens the microphone at a time, so there's no contention. If
 `main.py` ever crashes, the OS frees the `flock` automatically and the supervisor
 resumes listening on its own.
 
+## Launching `main.py` by hand (the serial-port handoff)
+
+```bash
+venv/bin/python main.py
+```
+
+You do **not** have to quit or unload the battery / servo / LED menu bar apps
+first. It is worth being precise about why, because the obvious mental model is
+wrong: **the supervisor never touches a serial port.** It only spawns `main.py`.
+The thing every menu bar app actually watches is the single-instance flock — each
+one polls it ~1×/s and closes its port the moment a controller holds it. A
+hand-typed launch takes the same lock, so it gets the same handoff.
+
+What a manual launch used to lack was the *pause*. `main.py` took the lock and
+opened the ports inside the same second, ahead of that 1 Hz poll.
+`hardware/servos.py` and `hardware/motion.py` absorbed it with their 3×1 s
+connect retries; `leds_head`/`leds_chest` opened exactly once, so a launch that
+overlapped the LED console holding the boards lost the head and chest LEDs for
+the whole session while the servos and base came up fine. Worse, the failure was
+usually silent: pyserial only takes an advisory `flock` when `exclusive=True`
+(which the menu bar apps pass and the robot's drivers do not), so a `/dev/cu.*`
+port can genuinely be open in two processes at once, interleaving bytes rather
+than raising.
+
+So `main.py` now performs the handoff itself, at `=== Initializing hardware ===`
+and before the first `connect()` (`utils/port_handoff.py`):
+
+1. Ask `lsof` who holds `MAESTRO_PORT`, `ARDUINO_HEAD_PORT`,
+   `ARDUINO_CHEST_PORT`, `MOTION_ESP32_PORT` — only the ones this run will
+   actually open (`--noservos`, `MOTION_ENABLED=False` and unset ports are
+   skipped).
+2. Free? Return immediately. One `lsof`, ~40 ms, nothing logged. That is every
+   supervisor-launched wake.
+3. Held? Log who holds what by script name and pid, then poll until they let go
+   — typically ~0.3 s.
+4. Still held at `SERIAL_HANDOFF_TIMEOUT_SECS`? Log a warning naming the stuck
+   port and connect anyway. The handoff never blocks startup.
+
+Detection is `lsof` on purpose: it never opens the device (an open reboots both
+Arduinos, so probe-by-open would add a board reset to every startup) and it sees
+*any* holder — an Arduino IDE serial monitor or a stray `tools/` script counts
+too. If `lsof` can't be run at all, it pauses 1.5 s (one companion poll) and
+continues rather than assuming the ports are free.
+
+The head and chest Arduino opens now retry 3× like the Maestro and motion base
+(`HEAD_/CHEST_ARDUINO_CONNECT_RETRY_ATTEMPTS`), as a backstop behind the wait.
+
+`main.py` logs which path started it — `Single-instance lock acquired (…) —
+manual launch` vs `supervisor launch`. That is diagnostics only; both paths do
+the identical handoff.
+
 ## Voice commands
 
 | You say | Result |
@@ -231,6 +282,7 @@ ports are his either way. Opening a port reboots that Arduino, so the app waits
 | `REX_AUTO_UPDATE_INTERVAL_SECS` | `14400` | Periodic update-check interval (four hours; minimum 60 seconds). |
 | `REX_AUTO_UPDATE_TIMEOUT_SECS` | `45` | Maximum time allowed for each individual Git operation before startup falls back to installed code. |
 | `DJR3X_LOCK_PATH` | `<tmpdir>/djr3x-main.lock` | Single-instance lock location (must match between supervisor and `main.py`) |
+| `config.SERIAL_HANDOFF_TIMEOUT_SECS` | `5.0` | Ceiling on the serial-port handoff wait at hardware init (see above). A ceiling, not a delay: the wait ends the instant the ports are free. Set `0` to skip waiting and rely on the drivers' connect retries alone. |
 | `DJR3X_SKIP_SINGLE_INSTANCE` | unset | Set to `1` to let `main.py` skip the lock (manual dev runs) |
 | `AUDIO_DEVICE_NAME` / `AUDIO_DEVICE_INDEX` | from `.env` | Mic the supervisor listens on (same keys `main.py` uses) |
 

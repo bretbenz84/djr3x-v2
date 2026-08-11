@@ -154,27 +154,50 @@ def _flush_drop_summary(reason: str) -> None:
 # ── Connection ─────────────────────────────────────────────────────────────────
 
 def connect() -> bool:
+    """Open the head Arduino, retrying briefly like servos.py and motion.py.
+
+    The retries matter at startup: the menu bar LED console holds this board
+    while Rex is off and only releases it on its ~1 Hz single-instance-lock
+    poll. main.py now waits for that release explicitly (utils/port_handoff.py),
+    so these attempts are the backstop, not the plan.
+    """
     global _ser, _speech_drop_notified, _consecutive_write_timeouts
     if not HEAD_LEDS_ENABLED:
         _log.debug("HEAD_LEDS_ENABLED=False — skipping connect")
         return False
-    try:
-        _ser = serial.Serial(
-            ARDUINO_HEAD_PORT,
-            config.HEAD_ARDUINO_BAUD,
-            timeout=1,
-            write_timeout=float(getattr(config, "HEAD_ARDUINO_WRITE_TIMEOUT_SECS", 0.75)),
+
+    attempts = max(1, int(getattr(config, "HEAD_ARDUINO_CONNECT_RETRY_ATTEMPTS", 3)))
+    delay = max(0.0, float(getattr(config, "HEAD_ARDUINO_CONNECT_RETRY_DELAY_SECS", 0.5)))
+
+    for attempt in range(1, attempts + 1):
+        try:
+            _ser = serial.Serial(
+                ARDUINO_HEAD_PORT,
+                config.HEAD_ARDUINO_BAUD,
+                timeout=1,
+                write_timeout=float(getattr(config, "HEAD_ARDUINO_WRITE_TIMEOUT_SECS", 0.75)),
+            )
+        except _SERIAL_ERRORS as exc:
+            _ser = None
+            _log.log(
+                logging.ERROR if attempt == attempts else logging.WARNING,
+                "Failed to open head Arduino port %s (attempt %d/%d): %s",
+                ARDUINO_HEAD_PORT, attempt, attempts, exc,
+            )
+            if attempt < attempts and delay:
+                time.sleep(delay)
+            continue
+
+        _log.info(
+            "Head Arduino connected on %s at %d baud (attempt %d/%d)",
+            ARDUINO_HEAD_PORT, config.HEAD_ARDUINO_BAUD, attempt, attempts,
         )
-        _log.info("Head Arduino connected on %s at %d baud", ARDUINO_HEAD_PORT, config.HEAD_ARDUINO_BAUD)
         _flush_drop_summary("reconnected")
         _speech_drop_notified = False
         _consecutive_write_timeouts = 0
         _start_heartbeat()
         return True
-    except _SERIAL_ERRORS as exc:
-        _log.error("Failed to open head Arduino port %s: %s", ARDUINO_HEAD_PORT, exc)
-        _ser = None
-        return False
+    return False
 
 
 def _write_timeout_disconnect_limit() -> int:
