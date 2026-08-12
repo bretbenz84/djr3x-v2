@@ -220,9 +220,9 @@ _requested_come = {
                             # tick, including while the base is mid-turn (see step()):
                             # a sighting during a scan turn must not be thrown away
     "seen_sign": 0.0,       # which way to turn to re-center that sighting (+ = left)
-    "seen_frac": 0.0,       # fused bearing AT the sighting moment (neck + face read
-                            # together, so it is synchronized) — the resight turn
-                            # uses this actual angle, not a fixed step
+    "seen_deg": 0.0,        # fused bearing (real degrees) AT the sighting moment
+                            # (neck + face read together, so it is synchronized) —
+                            # the resight turn uses this actual angle, not a fixed step
     "head_wait_at": 0.0,    # when we started waiting for face tracking to centre
                             # the face (head-first alignment); 0 = not waiting
     "approach_at": 0.0,     # when the last `come` was issued (retry pacing)
@@ -313,7 +313,7 @@ def request_come_here(person_id: "int | None" = None) -> bool:
         scan_sign=1.0,
         last_seen_at=0.0,
         seen_sign=0.0,
-        seen_frac=0.0,
+        seen_deg=0.0,
         head_wait_at=0.0,
         approach_at=0.0,
         approaches=0,
@@ -337,7 +337,7 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
-                           seen_frac=0.0, head_wait_at=0.0, approach_at=0.0,
+                           seen_deg=0.0, head_wait_at=0.0, approach_at=0.0,
                            approaches=0, align_turns=0, skip_log_at=0.0)
 
 
@@ -560,9 +560,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             # chronically under-turned toward a face spotted at full neck throw
             # (~60°+ off-body) and the sweep swung right past him again (field
             # 2026-08-11 19:37). Fixed step is the fallback for a signless read.
-            seen_frac = float(_requested_come["seen_frac"])
-            if seen_frac != 0.0:
-                turn_deg = _turn_degrees_for(seen_frac)
+            seen_deg = float(_requested_come["seen_deg"])
+            if seen_deg != 0.0:
+                turn_deg = _come_turn_for_bearing(seen_deg)
             else:
                 turn_deg = seen_sign * abs(_num("MOTION_COME_RESIGHT_TURN_DEG", 30.0))
             seq = motion_controller.turn(
@@ -573,7 +573,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                 _requested_come["pending_turn_seq"] = seq
                 _requested_come["search_turns"] = 0
                 _requested_come["scan_sign"] = seen_sign
-                _requested_come["seen_frac"] = 0.0   # spent — don't re-turn on it
+                _requested_come["seen_deg"] = 0.0   # spent — don't re-turn on it
                 _log.info(
                     "[motion_agency] requested come: recent sighting %.1fs ago — "
                     "turning back %+.0f deg toward it",
@@ -636,10 +636,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     # 2026-08-11 19:57: locked at 178 px error, then a −48° "align" from a
     # garbage sample). The fused read survives only as the no-lock / timeout
     # fallback, where nothing is steering the neck.
-    centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
+    centered_deg = _num("MOTION_COME_CENTERED_DEG", 11.0)
     approach_heading = 0.0
     face_frac = _face_offset_fraction(person)
-    neck_frac = neck_offset_fraction()
     head_on_them = (
         locked_person is not None
         and face_frac is not None
@@ -658,11 +657,14 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     else:
         _requested_come["head_wait_at"] = 0.0
 
-    if head_on_them and neck_frac is not None:
-        frac = neck_frac        # face centred ⇒ neck offset IS the body bearing
+    if head_on_them:
+        # Face centred ⇒ the neck yaw alone IS the body bearing, in real degrees.
+        bearing = _come_neck_bearing_deg()
+        if bearing is None:
+            bearing = _come_bearing_deg(person, head_locked=True)
     else:
-        frac = _come_alignment_fraction(person, head_locked=locked_person is not None)
-    if frac is not None and abs(frac) >= centered:
+        bearing = _come_bearing_deg(person, head_locked=locked_person is not None)
+    if bearing is not None and abs(bearing) >= centered_deg:
         # GOOD-ENOUGH ESCAPE: repeated align turns that keep missing "centered"
         # must not starve the approach forever — field 2026-08-11: ±12-45 deg
         # oscillation for four minutes, the drive never re-launched, and the
@@ -671,17 +673,17 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # heading (its closed-loop turn owns the last few degrees) instead of
         # burning another host-side base turn.
         tries = int(_requested_come["align_turns"])
-        good_enough = _num("MOTION_COME_ALIGN_GOOD_ENOUGH_FRACTION", 0.40)
+        good_enough = _num("MOTION_COME_ALIGN_GOOD_ENOUGH_DEG", 24.0)
         if (tries >= int(_num("MOTION_COME_ALIGN_MAX_TRIES", 3))
-                and abs(frac) <= good_enough):
-            approach_heading = _bearing_degrees_for(frac)
+                and abs(bearing) <= good_enough):
+            approach_heading = _come_turn_for_bearing(bearing, floor=False)
             _log.info(
                 "[motion_agency] requested come: alignment not settling after "
                 "%d tries — approaching with residual heading %+.0f deg",
                 tries, approach_heading,
             )
         else:
-            deg = _turn_degrees_for(frac)
+            deg = _come_turn_for_bearing(bearing)
             seq = motion_controller.turn(deg)
             if seq is not None:
                 _requested_come["last_turn_at"] = now
@@ -889,33 +891,54 @@ def _face_offset_fraction(person: Optional[dict]) -> Optional[float]:
     return max(-1.0, min(1.0, (centre - width / 2.0) / (width / 2.0)))
 
 
-def _come_alignment_fraction(person: Optional[dict], *, head_locked: bool) -> Optional[float]:
-    """How far off-centre the target is, for the come-here align turn.
+def _come_neck_bearing_deg() -> Optional[float]:
+    """The neck's yaw off the body's nose in REAL degrees (+ = Rex's right)."""
+    frac = neck_offset_fraction()
+    if frac is None:
+        return None
+    return frac * _num("MOTION_COME_NECK_HALF_SPAN_DEG", 45.0)
 
-    The person's true bearing relative to the BODY is the sum of two offsets:
-    where the head points relative to the body (neck offset) plus where the face
-    sits within the camera frame. Sampling either one ALONE is only valid at the
-    extremes (head fully converged on them, or head parked elsewhere) — and
-    mid-slew, while face-tracking is re-centring the same error the base just
-    turned against, each individually flips sign and over-corrects. That
-    either/or was the ±12-45 deg align oscillation that never read "centered"
-    (field 2026-08-11). The SUM is correct at every phase of the head's motion,
-    so fuse whenever both are available.
 
-    ``MOTION_COME_FACE_BEARING_WEIGHT`` scales frame-fraction into neck-fraction
-    units (1.0 = the historical assumption that half a frame ≈ the neck's
-    half-span; tune if the camera FOV and neck throw diverge in the field).
+def _come_bearing_deg(person: Optional[dict], *, head_locked: bool) -> Optional[float]:
+    """The person's bearing off the BODY's nose in REAL degrees (+ = Rex's
+    right): neck yaw plus the face's angular offset within the camera frame.
+
+    The two components live on DIFFERENT angular scales — the neck's half-span
+    is ~45° of yaw (the physical sweep is "about 90 degrees", owner) and half
+    the camera frame is only ~25° — and the old fraction math mapped both
+    through one 60° constant, OVERSTATING every bearing 1.5-2.4x: he saw the
+    owner, computed an inflated angle, and swung ~45° past him, out of view
+    (field 2026-08-11 20:15). Camera calibration from that log: a −33° base
+    turn moved a face 1290 px across the 1920-wide frame ⇒ ~39 px/deg ⇒
+    half-frame ≈ 25°.
     """
-    neck_frac = neck_offset_fraction()
+    neck_deg = _come_neck_bearing_deg()
     face_frac = _face_offset_fraction(person)
-    weight = _num("MOTION_COME_FACE_BEARING_WEIGHT", 1.0)
-    if neck_frac is not None and face_frac is not None:
-        return neck_frac + weight * face_frac
-    if head_locked and neck_frac is not None:
-        return neck_frac
-    if face_frac is not None:
-        return weight * face_frac
-    return neck_frac
+    face_deg = (None if face_frac is None
+                else face_frac * _num("MOTION_COME_CAM_HALF_FOV_DEG", 25.0))
+    if neck_deg is not None and face_deg is not None:
+        return neck_deg + face_deg
+    if head_locked and neck_deg is not None:
+        return neck_deg
+    if face_deg is not None:
+        return face_deg
+    return neck_deg
+
+
+def _come_turn_for_bearing(bearing_deg: float, *, floor: bool = True) -> float:
+    """The base turn command (deg, + = left/CCW) that faces a bearing. Clamped
+    to the max expressive turn; the minimum-turn floor applies only to actual
+    base turns (a `come` heading must keep a 3° residual as 3°)."""
+    max_deg = _num("MOTION_FACE_TURN_MAX_DEG", 60.0)
+    deg = -float(bearing_deg)
+    if _flag("MOTION_FACE_TURN_INVERT", False):
+        deg = -deg
+    deg = max(-max_deg, min(max_deg, deg))
+    if floor:
+        min_deg = _num("MOTION_FACE_TURN_MIN_DEG", 10.0)
+        if abs(deg) < min_deg:
+            deg = min_deg if deg >= 0 else -min_deg
+    return deg
 
 
 def _tracked_person(snapshot: dict,
@@ -1192,14 +1215,14 @@ def _step_inner(snapshot: dict, profile) -> None:
             _stop_come_dwell_gaze()   # face found — the sweep yields to tracking,
                                       # leaving the neck ON them (no recentre)
             _requested_come["last_seen_at"] = time.monotonic()
-            frac = _come_alignment_fraction(seen, head_locked=seen_locked is not None)
-            if frac is not None and abs(frac) > 0.05:
-                # Same convention as _turn_degrees_for: positive neck offset
-                # (person to Rex's right) needs a negative (CW) base turn.
-                _requested_come["seen_sign"] = -1.0 if frac >= 0 else 1.0
+            bearing = _come_bearing_deg(seen, head_locked=seen_locked is not None)
+            if bearing is not None and abs(bearing) > 3.0:
+                # + bearing = person to Rex's right needs a negative (CW) base
+                # turn; seen_sign follows the turn convention (+ = left).
+                _requested_come["seen_sign"] = -1.0 if bearing >= 0 else 1.0
                 # The neck and face are read TOGETHER here, so this bearing is
                 # synchronized — trustworthy even mid-sweep at full neck throw.
-                _requested_come["seen_frac"] = float(frac)
+                _requested_come["seen_deg"] = float(bearing)
 
     # The base must be settled (idle) to sample intrusions, but a firmware BLOCKED
     # state is itself a strong front-crowding signal the flinch should answer. Any

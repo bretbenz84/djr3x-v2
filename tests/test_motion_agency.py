@@ -644,7 +644,8 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.turn.assert_called_once()
-        self.assertAlmostEqual(self.turn.call_args[0][0], -24.0, places=0)
+        # +0.40 of the CALIBRATED 45° neck half-span = 18° right → turn -18.
+        self.assertAlmostEqual(self.turn.call_args[0][0], -18.0, places=0)
         self.come.assert_not_called()
 
     def test_face_centered_and_neck_neutral_approaches(self):
@@ -675,7 +676,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertEqual(self.turn.call_count, 1, "no further align turns")
         self.come.assert_called_once()
         heading = self.come.call_args[0][0]
-        self.assertAlmostEqual(heading, -18.0, places=1)  # -0.30 * MAX_DEG
+        self.assertAlmostEqual(heading, -13.5, places=1)  # -0.30 * 45° half-span
         self.assertEqual(self.come.call_args[1]["stop_at"],
                          config.MOTION_COME_REQUEST_STOP_AT_M)
 
@@ -786,10 +787,10 @@ class RequestedComeFieldFixTest(unittest.TestCase):
         self.assertEqual(self.turn.call_count, 2)
         resight = self.turn.call_args[0][0]
         # The turn-back uses the ACTUAL bearing measured at the sighting (neck
-        # 7594 → +0.61 of half-span → ~-36.5°), not the fixed fallback step —
-        # a fixed 30° chronically under-turned toward a face spotted at full
-        # neck throw and the sweep swung past the owner again (field 2026-08-11).
-        self.assertAlmostEqual(resight, -36.5, places=0)
+        # 7594 → +0.61 of the calibrated 45° half-span → ~-27.4°), not the
+        # fixed fallback step — a fixed 30° under- or over-turned depending on
+        # where the face was spotted (field 2026-08-11).
+        self.assertAlmostEqual(resight, -27.4, places=0)
         self.assertLess(resight, 0)                    # back toward the right side
         self.assertTrue(MA.requested_come_active())
 
