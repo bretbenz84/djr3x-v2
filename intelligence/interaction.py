@@ -19145,6 +19145,7 @@ def _handle_charging_declaration(plugged: bool) -> str:
 
 def _handle_router_motion_action(
     decision: Optional[action_router.ActionDecision],
+    requester_person_id: Optional[int] = None,
 ) -> Optional[str]:
     """Drive the base for a motion.* decision; returns a short spoken line or None.
 
@@ -19219,7 +19220,12 @@ def _handle_router_motion_action(
         _clear_motion_continuation()
         try:
             from intelligence import motion_agency
-            return "On my way." if motion_agency.request_come_here() else None
+            # The voice-identified speaker is the target: with two people in the
+            # room, "come here" must go to whoever SAID it, not to the first known
+            # face the search happens across (owner spec 2026-08-11).
+            return ("On my way."
+                    if motion_agency.request_come_here(person_id=requester_person_id)
+                    else None)
         except Exception as exc:
             _log.debug("requested come start failed: %s", exc)
             return None
@@ -19332,6 +19338,7 @@ def _motion_no_base_denial_line(text: str) -> Optional[str]:
 def _explicit_motion_takeover(
     text: str,
     *,
+    person_id: Optional[int] = None,
     router_audit: Optional["_RouterDecisionAudit"] = None,
 ) -> Optional[str]:
     """Explicit drive-base motion, run BEFORE the dialogue-act gate.
@@ -19423,7 +19430,7 @@ def _explicit_motion_takeover(
         _clear_motion_continuation()
         return None
     _router_audit_note_decision(router_audit, motion_decision)
-    result = _handle_router_motion_action(motion_decision)
+    result = _handle_router_motion_action(motion_decision, requester_person_id=person_id)
     if result is not None:
         _router_audit_note_fast_local_action(
             router_audit, motion_decision.action, reason=motion_decision.reason
@@ -19862,7 +19869,7 @@ def _handle_router_takeover_action(
             "[action_router] executing %s person_id=%s args=%s text=%r",
             action, person_id, decision.args, text,
         )
-        return _handle_router_motion_action(decision)
+        return _handle_router_motion_action(decision, requester_person_id=person_id)
 
     return None
 
@@ -24993,7 +25000,9 @@ def _handle_speech_segment(
             # it even when the dialogue gate would skip the router, else commands spoken
             # right after Rex speaks get swallowed as conversation (live-logged 2026-06-23:
             # "move forward." / "Move backwards" -> conversation.reply).
-            fast_takeover_response = _explicit_motion_takeover(text, router_audit=router_audit)
+            fast_takeover_response = _explicit_motion_takeover(
+                text, person_id=person_id, router_audit=router_audit
+            )
             # An INVITE to explore the room ("look around a little", "make yourself at
             # home") is likewise a command, not an answer — start the self-directed
             # wander before the dialogue gate. Runs after the motion takeover so a

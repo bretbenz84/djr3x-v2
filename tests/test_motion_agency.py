@@ -21,13 +21,14 @@ def _profile(**over):
     return SimpleNamespace(**base)
 
 
-def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=None):
+def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=None,
+              db_id=1):
     """`visible=False` means NOBODY is on camera. The come-here search keys off
     world_state.people (a head lock is head behavior, not visibility), so clearing
     only face_tracking no longer simulates an empty room."""
     if not visible:
         return {"people": []}
-    person = {"id": slot, "person_db_id": 1,
+    person = {"id": slot, "person_db_id": db_id,
               "distance_zone": distance_zone, "face_visible": True}
     if face_box is not None:
         person["face_box"] = face_box
@@ -61,10 +62,17 @@ class MotionAgencyTest(unittest.TestCase):
             mock.patch.object(MA.motion_controller, "turn", return_value=7),
             mock.patch.object(MA.motion_controller, "come", return_value=8),
             mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
+            # Come-search turns resolve instantly (the firmware `done` is what the
+            # dwell/settle windows key off); the align settle is zeroed so the
+            # single-tick fixtures keep their cadence — the dwell/settle behaviors
+            # get their own explicit tests.
+            mock.patch.object(MA.motion, "done_result", return_value="completed",
+                              create=True),
+            mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 0.0,
+                              create=True),
         ]
-        self.available, self.state, self.turn, self.come, self.battery = [
-            p.start() for p in self._patches
-        ]
+        (self.available, self.state, self.turn, self.come, self.battery,
+         self.done_result, _) = [p.start() for p in self._patches]
         # Tracked person: locked+visible on slot person_1.
         self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
         self._visible = True          # world_state.people also shows them
@@ -437,7 +445,12 @@ class MotionAgencyTest(unittest.TestCase):
         self._visible = False        # nobody on camera at all
         self.assertTrue(MA.request_come_here())
         self._tick()
-        self.turn.assert_called_once_with(config.MOTION_COME_SEARCH_TURN_DEG)
+        # Scan legs sweep at the dedicated (slower) rate so the sighting sampler
+        # can catch a face the camera crosses mid-turn.
+        self.turn.assert_called_once_with(
+            config.MOTION_COME_SEARCH_TURN_DEG,
+            rate=config.MOTION_COME_SCAN_RATE_DEG_S,
+        )
         self.come.assert_not_called()
         self.assertTrue(MA.requested_come_active())
 
@@ -476,39 +489,56 @@ class MotionAgencyTest(unittest.TestCase):
         self._tracking = {"locked": False, "visible": False}
         self._visible = False        # nobody on camera
         with mock.patch.object(config, "MOTION_COME_SEARCH_MAX_TURNS", 2, create=True), \
-             mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
+             mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(3)
         self.assertEqual(self.turn.call_count, 2)
         self.assertFalse(MA.requested_come_active())
 
-    def test_requested_come_scan_waits_out_reacquire_grace(self):
-        # A chassis turn swings the camera; the person "vanishes" for a beat. Within
-        # the grace window the search WAITS instead of stacking more turns (the
-        # 2026-07-21 bookshelf spiral).
+    def test_requested_come_dwells_after_a_scan_turn_completes(self):
+        # After a scan leg's firmware `done` lands, the camera must DWELL (default
+        # 3 s, settled) before the search may conclude "nobody this way" — the
+        # detect→identify pipeline needs still frames (field 2026-08-11: back-to-
+        # back legs left ~1 s of still camera and Rex swept right past the owner).
         self._tracking = {"locked": False, "visible": False}
         self._visible = False        # nobody on camera at all
         self.assertTrue(MA.request_come_here())
-        self._tick(1)                              # scan turn 1 (no prior turn -> no grace)
+        self._tick(1)                              # scan turn 1 (no prior turn -> no wait)
         self.assertEqual(self.turn.call_count, 1)
-        self._tick(4)                              # still inside the 3 s grace -> all waits
+        self._tick(4)                              # done landed; dwell holds every tick
         self.assertEqual(self.turn.call_count, 1)
         self.assertTrue(MA.requested_come_active())
+
+    def test_requested_come_waits_for_the_turn_done_before_deciding(self):
+        # While our own turn is still executing (no `done` yet), no scan/align
+        # decision may be made at all — the camera is swinging.
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = False
+        self.done_result.return_value = None       # turn never reports back...
+        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(1)
+            self.assertEqual(self.turn.call_count, 1)
+            self._tick(4)                          # in flight -> every tick waits
+            self.assertEqual(self.turn.call_count, 1)
+            self.done_result.return_value = "completed"
+            self._tick(1)                          # done landed, dwell 0 -> next leg
+        self.assertEqual(self.turn.call_count, 2)
 
     def test_requested_come_scan_sweeps_alternating_sides(self):
         # Sweep pattern (sign alternates, magnitude grows): +45, -90, +135 — net
         # offsets +45, -45, +90 around the last-known side, not a one-way spiral.
         self._tracking = {"locked": False, "visible": False}
         self._visible = False        # nobody on camera
-        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
+        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(3)
         rels = [c.args[0] for c in self.turn.call_args_list]
         self.assertEqual(rels, [45.0, -90.0, 135.0])
 
-    def test_requested_come_align_seeds_sweep_side_and_grace(self):
+    def test_requested_come_align_seeds_sweep_side_and_dwell(self):
         # Person on the left (+ align turn), then lost: the sweep must start back
-        # toward that side, and only after the re-acquire grace.
+        # toward that side, and only after the settled-camera dwell.
         self._neck = 4400                          # far left -> positive align turn
         self.assertTrue(MA.request_come_here())
         self._tick(1)                              # align turn issued
@@ -517,12 +547,72 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertGreater(align_deg, 0)
         self._tracking = {"locked": False, "visible": False}
         self._visible = False        # nobody on camera
-        self._tick(2)                              # inside grace -> no scan yet
+        self._tick(2)                              # inside the dwell -> no scan yet
         self.assertEqual(self.turn.call_count, 1)
-        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
-            self._tick(1)                          # grace over -> first sweep turn
+        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
+            self._tick(1)                          # dwell over -> first sweep turn
         self.assertEqual(self.turn.call_count, 2)
         self.assertGreater(self.turn.call_args[0][0], 0)   # starts toward the last-known side
+
+    def test_align_measurement_waits_out_the_settle_window(self):
+        # After an align turn completes, the neck is still re-centring the same
+        # error the base just corrected — measuring mid-slew produced the
+        # +15/-37/+37 oscillation that never read "centered" (field 2026-08-11).
+        self._neck = 7594
+        with mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 5.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(1)                          # align turn 1
+            self.assertEqual(self.turn.call_count, 1)
+            self._tick(3)                          # done landed, settle holds
+            self.assertEqual(self.turn.call_count, 1)
+            self.come.assert_not_called()
+            self.assertTrue(MA.requested_come_active())
+
+    def test_requested_come_targets_the_requester_not_the_first_face(self):
+        # JT (db 2) is plainly visible and centered; Bret (db 1) asked. Rex must
+        # NOT deliver himself to JT — he keeps searching (owner spec 2026-08-11).
+        self._tracking = {"locked": False, "visible": False}
+        self.assertTrue(MA.request_come_here(person_id=1))
+        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
+            for _ in range(2):
+                MA.step(_snapshot(db_id=2), _profile())
+        self.come.assert_not_called()
+        self.assertEqual(self.turn.call_count, 2)      # still sweeping
+        self.assertTrue(MA.requested_come_active())
+
+    def test_requested_come_head_lock_on_the_wrong_person_is_ignored(self):
+        # The head happens to be tracking db 1, but db 2 asked: the lock must not
+        # steer the come-here at the wrong person.
+        self._tracking = {"locked": True, "visible": True, "lock_key": "db:1"}
+        self.assertTrue(MA.request_come_here(person_id=2))
+        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
+            self._tick(1)                              # snapshot person is db 1
+        self.come.assert_not_called()
+        self.assertEqual(self.turn.call_count, 1)      # scan, not approach
+        self.assertTrue(MA.requested_come_active())
+
+    def test_requested_come_approaches_the_requester_once_found(self):
+        self._tracking = {"locked": True, "visible": True, "lock_key": "db:1"}
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick(1)
+        self.come.assert_called_once_with(
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+        )
+
+    def test_requester_sighting_restarts_the_giveup_clock(self):
+        # Seen 40 s into a 45 s budget: the clock restarts from the sighting, so
+        # the errand must NOT die of old age while he is actively working the
+        # alignment (field 2026-08-11: "no person found" 5 s after aligning).
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = False
+        self.assertTrue(MA.request_come_here())
+        MA._requested_come["started_at"] = time.monotonic() - 100.0   # way past timeout
+        MA._requested_come["last_seen_at"] = time.monotonic() - 1.0   # but just seen
+        self._tick(1)
+        self.assertTrue(MA.requested_come_active(), "a fresh sighting must keep it alive")
+        MA._requested_come["last_seen_at"] = time.monotonic() - 100.0
+        self._tick(1)
+        self.assertFalse(MA.requested_come_active())
 
 
 class RequestedComeFieldFixTest(unittest.TestCase):
@@ -538,10 +628,13 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             mock.patch.object(MA.motion_controller, "turn", return_value=7),
             mock.patch.object(MA.motion_controller, "come", return_value=8),
             mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
+            mock.patch.object(MA.motion, "done_result", return_value="completed",
+                              create=True),
+            mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 0.0,
+                              create=True),
         ]
-        self.available, self.state, self.turn, self.come, self.battery = [
-            p.start() for p in self._patches
-        ]
+        (self.available, self.state, self.turn, self.come, self.battery,
+         self.done_result, _) = [p.start() for p in self._patches]
         self._tracking = {"locked": False, "visible": False}
         self._visible = False         # this class exercises the SEARCH path: empty room
         self._neck = 6000
@@ -568,7 +661,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
         # Scan turn 1 issued; DURING the turn (base moving) the camera sweeps past
         # the person and face tracking locks briefly, off to Rex's right. Once lost
         # again, the search must turn back toward that side — not take sweep leg 2.
-        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
+        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(1)
             self.assertEqual(self.turn.call_count, 1)  # sweep leg 1
@@ -593,7 +686,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
     def test_sweep_legs_rotate_the_short_way(self):
         # Later sweep legs used to issue -225/-270 relative spins; same net heading
         # must now be reached the short way (a command is never > 180 deg).
-        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True), \
+        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True), \
              mock.patch.object(config, "MOTION_COME_SEARCH_MAX_TURNS", 6, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(6)
@@ -607,7 +700,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
         # Turning away from a block is firmware-legal; a front flap must not kill
         # the search (it only defers the forward approach).
         self.state.return_value = "blocked"
-        with mock.patch.object(config, "MOTION_COME_REACQUIRE_GRACE_SECS", 0.0, create=True):
+        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(1)
             self.assertTrue(MA.requested_come_active())

@@ -5,10 +5,17 @@ Four behaviors, evaluated once per consciousness tick (~1 Hz), highest priority
 first:
 
 REQUESTED COME — after an explicit "come here" command, rotate in bounded search
-steps until face tracking acquires a person, use the tracked neck offset to turn the
-base toward them, then issue the firmware `come` command with a 1 m stop distance.
-The forward ToF target may be the person or an intervening obstacle, so furniture and
-walls stop the approach just as safely as the intended person does.
+steps until face tracking acquires the REQUESTER (the voice-identified speaker, when
+known — other people's faces are skipped; an anonymous requester accepts any known
+face), use the tracked neck offset to turn the base toward them, then issue the
+firmware `come` command with a 1 m stop distance. Search legs sweep at a slower rate
+and each is followed by a settled-camera dwell (keyed to the firmware `done`, not
+command issue) so the detect→identify pipeline gets still frames to work with; after
+any turn, alignment measurements wait out a short settle so a mid-slew neck can't
+produce oscillating corrections (field 2026-08-11: he circled the room twice, swept
+past the owner repeatedly, and timed out while looking straight at him). The forward
+ToF target may be the person or an intervening obstacle, so furniture and walls stop
+the approach just as safely as the intended person does.
 
 FLINCH — a reflexive back-off when someone crowds Rex from the front, the way an
 animal edges back when you get in its face. Each front matrix ToF half (fl/fr,
@@ -198,8 +205,15 @@ def _user_motion_standdown(now: float) -> bool:
 _requested_come = {
     "active": False,
     "started_at": 0.0,
+    "requester_id": None,   # person_db_id of the voice that asked, when known —
+                            # the search then targets THEM and skips other faces
+                            # (owner spec 2026-08-11: JT on the couch must not
+                            # satisfy Bret's "come here")
     "search_turns": 0,
     "last_turn_at": 0.0,    # when the LAST chassis turn (align or scan) was issued
+    "pending_turn_seq": None,  # a turn we issued whose firmware `done` hasn't landed —
+                               # no search/align decision is made while the camera swings
+    "turn_done_at": 0.0,    # when that `done` landed; dwell/settle windows key off this
     "scan_sign": 1.0,       # which side the person was last known on (sweep starts there)
     "last_seen_at": 0.0,    # last time face tracking held the person — sampled EVERY
                             # tick, including while the base is mid-turn (see step()):
@@ -207,6 +221,7 @@ _requested_come = {
     "seen_sign": 0.0,       # which way to turn to re-center that sighting (+ = left)
     "approach_at": 0.0,     # when the last `come` was issued (retry pacing)
     "approaches": 0,        # how many times we've launched at them this errand
+    "skip_log_at": 0.0,     # throttle for the "seeing X, waiting for requester" log
 }
 
 # Flinch detector state, sampled every idle tick and reset whenever the base is
@@ -247,8 +262,14 @@ def requested_come_active() -> bool:
     return bool(_requested_come["active"])
 
 
-def request_come_here() -> bool:
-    """Arm a bounded search/align/approach sequence for an explicit voice request."""
+def request_come_here(person_id: "int | None" = None) -> bool:
+    """Arm a bounded search/align/approach sequence for an explicit voice request.
+
+    ``person_id`` is the voice-identified requester (person_db_id). When known, the
+    search goes to THAT face and skips everyone else until it finds them — with two
+    people in the room, "the first known face wins" meant Rex could deliver himself
+    to whoever happened to be on camera, not to whoever called him (owner spec
+    2026-08-11). An anonymous requester keeps the old any-known-face behavior."""
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
         return False
     # "Come here" asks for movement, so it lifts an earlier "don't move" outright
@@ -273,26 +294,35 @@ def request_come_here() -> bool:
     _requested_come.update(
         active=True,
         started_at=time.monotonic(),
+        requester_id=person_id,
         search_turns=0,
         last_turn_at=0.0,
+        pending_turn_seq=None,
+        turn_done_at=0.0,
         scan_sign=1.0,
         last_seen_at=0.0,
         seen_sign=0.0,
         approach_at=0.0,
         approaches=0,
+        skip_log_at=0.0,
     )
     _reset("neck_hits", "far_hits")
-    _log.info("[motion_agency] requested come: searching for a visible person")
+    if person_id is not None:
+        _log.info("[motion_agency] requested come: searching for requester "
+                  "person %s", person_id)
+    else:
+        _log.info("[motion_agency] requested come: searching for a visible person")
     return True
 
 
 def cancel_requested_come(reason: str = "cancelled") -> None:
     if _requested_come["active"]:
         _log.info("[motion_agency] requested come: %s", reason)
-    _requested_come.update(active=False, started_at=0.0, search_turns=0,
-                           last_turn_at=0.0, scan_sign=1.0,
-                           last_seen_at=0.0, seen_sign=0.0,
-                           approach_at=0.0, approaches=0)
+    _requested_come.update(active=False, started_at=0.0, requester_id=None,
+                           search_turns=0, last_turn_at=0.0,
+                           pending_turn_seq=None, turn_done_at=0.0,
+                           scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
+                           approach_at=0.0, approaches=0, skip_log_at=0.0)
 
 
 def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> bool:
@@ -306,24 +336,50 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         return False
     timeout = _num("MOTION_COME_SEARCH_TIMEOUT_SECS", 45.0)
     max_turns = max(1, int(_num("MOTION_COME_SEARCH_MAX_TURNS", 8)))
-    if ((now - float(_requested_come["started_at"])) >= timeout
-            or int(_requested_come["search_turns"]) >= max_turns):
-        cancel_requested_come("no person found before search limit")
+    # The give-up clock restarts on every sighting of the target: measured from the
+    # errand start alone, the align phase burned it down and the errand died with
+    # "no person found" five seconds after aligning on the requester (field
+    # 2026-08-11). max_turns already resets on sightings, bounding each sweep.
+    seen_at = float(_requested_come["last_seen_at"])
+    anchor = max(float(_requested_come["started_at"]), seen_at)
+    if (now - anchor) >= timeout or int(_requested_come["search_turns"]) >= max_turns:
+        cancel_requested_come("lost them again after sighting — giving up"
+                              if seen_at > 0.0
+                              else "no person found before search limit")
         return True
+
+    # A turn WE issued is still executing (or its `done` hasn't landed): the camera
+    # is swinging, so any "person gone" or alignment judgment now is garbage. Wait.
+    pending = _requested_come["pending_turn_seq"]
+    if pending is not None:
+        verdict = None
+        try:
+            verdict = motion.done_result(int(pending))
+        except Exception:
+            verdict = "completed"       # can't ask — don't wedge the errand
+        if verdict is None:
+            if (now - float(_requested_come["last_turn_at"])) < _num(
+                "MOTION_COME_TURN_RESOLVE_TIMEOUT_SECS", 8.0
+            ):
+                return True
+            verdict = "completed"       # `done` lost (comms hiccup) — assume settled
+        _requested_come["pending_turn_seq"] = None
+        _requested_come["turn_done_at"] = now
 
     # The head LOCK is a head-behavior signal, not a visibility one — it drops
     # whenever anything else steers the head and flickers on a small far-away face.
-    # Seeing a known face at all is enough to go to them (field 2026-07-24).
-    locked_person = _tracked_person(snapshot)
-    person = locked_person or _visible_known_person(snapshot)
+    # Seeing the target's face at all is enough to go to them (field 2026-07-24).
+    requester = _requested_come["requester_id"]
+    locked_person = _tracked_person(snapshot, requester)
+    person = locked_person or _visible_known_person(snapshot, requester)
     if person is None:
-        # Re-acquire grace: a chassis turn WE issued swings the camera, so face
-        # tracking loses the person for a beat even when they never moved (field
-        # 2026-07-21: align +30° -> "person gone" -> scan spiral -> bookshelf).
-        # After any issued turn, wait out the grace before concluding they're lost.
-        grace = _num("MOTION_COME_REACQUIRE_GRACE_SECS", 3.0)
-        last_turn = float(_requested_come["last_turn_at"])
-        if last_turn > 0.0 and (now - last_turn) < grace:
+        # DWELL: the camera settled only turn_done_at ago, and the detect→identify
+        # pipeline needs a couple of seconds of STILL camera to find a face across
+        # the room. Concluding "nobody this way" any sooner is how two full sweeps
+        # crossed the owner without seeing him (field 2026-08-11). This also covers
+        # the old re-acquire grace (field 2026-07-21 bookshelf spiral).
+        done_at = float(_requested_come["turn_done_at"])
+        if done_at > 0.0 and (now - done_at) < _num("MOTION_COME_SCAN_DWELL_SECS", 3.0):
             return True
         # RESIGHT: face tracking held the person moments ago — typically mid-scan,
         # when the sweeping camera swept PAST them and a follow-up micro-turn (e.g.
@@ -332,13 +388,15 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # Turn a small step back toward that sighting and restart the sweep budget
         # centered there, instead of taking the next ever-bigger sweep leg away.
         fresh = _num("MOTION_COME_SIGHT_FRESH_SECS", 6.0)
-        seen_at = float(_requested_come["last_seen_at"])
         seen_sign = float(_requested_come["seen_sign"])
         if seen_at > 0.0 and (now - seen_at) < fresh and seen_sign != 0.0:
             deg = abs(_num("MOTION_COME_RESIGHT_TURN_DEG", 30.0))
-            seq = motion_controller.turn(seen_sign * deg)
+            seq = motion_controller.turn(
+                seen_sign * deg, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
+            )
             if seq is not None:
                 _requested_come["last_turn_at"] = now
+                _requested_come["pending_turn_seq"] = seq
                 _requested_come["search_turns"] = 0
                 _requested_come["scan_sign"] = seen_sign
                 _log.info(
@@ -351,6 +409,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # offsets +45, -45, +90, -90, ... (x scan_sign), so the search stays centered
         # on where the person actually was. Relative command i (1-based):
         #   sign = scan_sign * (-1)^(i+1),  magnitude = deg * i.
+        # Legs sweep at the slower scan rate so the every-tick sighting sampler can
+        # catch a face the camera crosses mid-turn (field 2026-08-11: 75 deg/s legs
+        # blew past the owner repeatedly).
         deg = abs(_num("MOTION_COME_SEARCH_TURN_DEG", 45.0))
         i = int(_requested_come["search_turns"]) + 1
         sign = float(_requested_come["scan_sign"]) * (1.0 if i % 2 == 1 else -1.0)
@@ -359,14 +420,27 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # grows to +/-225, +/-270 in the later sweep steps, which the chassis executed
         # as multi-second pirouettes ("he just spins"). Same net heading, shorter arc.
         rel = ((rel + 180.0) % 360.0) - 180.0
-        seq = motion_controller.turn(rel)
+        seq = motion_controller.turn(
+            rel, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
+        )
         if seq is not None:
             _requested_come["search_turns"] = i
             _requested_come["last_turn_at"] = now
+            _requested_come["pending_turn_seq"] = seq
             _log.info(
                 "[motion_agency] requested come: scan turn %d/%d (%+.0f deg, sweep)",
                 i, max_turns, rel,
             )
+        return True
+
+    # SETTLE before trusting any alignment measurement: after one of our turns the
+    # base and the neck are re-centring the SAME error at once, so sampling the neck
+    # (or the face box) mid-slew flips signs and over-corrects — the +15/-37/+37
+    # align oscillation that never read "centered" (field 2026-08-11). The sighting
+    # sampler keeps last_seen_at fresh through this hold, so the errand can't time
+    # out while he is simply letting the picture stabilize.
+    done_at = float(_requested_come["turn_done_at"])
+    if done_at > 0.0 and (now - done_at) < _num("MOTION_COME_ALIGN_SETTLE_SECS", 1.2):
         return True
 
     # Align using the neck when the head is on them, else the face's position in
@@ -375,14 +449,17 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
     if frac is not None and abs(frac) >= centered:
         deg = _turn_degrees_for(frac)
-        if motion_controller.turn(deg) is not None:
+        seq = motion_controller.turn(deg)
+        if seq is not None:
             _requested_come["last_turn_at"] = now
+            _requested_come["pending_turn_seq"] = seq
             # Remember which side they were on: if the align turn loses them, the
             # sweep starts back toward that side, not away from it.
             _requested_come["scan_sign"] = 1.0 if deg >= 0 else -1.0
             _requested_come["search_turns"] = 0     # fresh sweep budget after a sighting
             _log.info(
-                "[motion_agency] requested come: acquired person %s, aligning %+.0f deg",
+                "[motion_agency] requested come: acquired %s %s, aligning %+.0f deg",
+                "requester" if requester is not None else "person",
                 person.get("person_db_id") or person.get("id"), deg,
             )
         return True
@@ -475,7 +552,8 @@ def neck_offset_fraction() -> Optional[float]:
         return None
 
 
-def _visible_known_person(snapshot: dict) -> Optional[dict]:
+def _visible_known_person(snapshot: dict,
+                          requester_id: "int | None" = None) -> Optional[dict]:
     """A known person whose face is visible RIGHT NOW, head lock or not.
 
     The come-here search used to require face_tracking to be LOCKED. That lock is a
@@ -485,7 +563,13 @@ def _visible_known_person(snapshot: dict) -> Optional[dict]:
     swept the room — field 2026-07-24, owner ~9 ft away: "my face was detected in the
     GUI when I said come here, but he just turned left and right then around and
     never came anywhere." The GUI draws from world_state.people, which still had him.
+
+    With ``requester_id`` set, only THAT person counts: anyone else's face is noted
+    but skipped, and the search keeps looking until the requester is found (owner
+    spec 2026-08-11: JT on the couch must not satisfy Bret's "come here").
     """
+    skipped = None
+    found = None
     for person in snapshot.get("people") or []:
         if not isinstance(person, dict):
             continue
@@ -494,8 +578,20 @@ def _visible_known_person(snapshot: dict) -> Optional[dict]:
         pid = person.get("person_db_id")
         if pid is None or str(pid).strip() == "":
             continue                      # unknown face — never a come-here target
-        return person
-    return None
+        if requester_id is not None and str(pid) != str(requester_id):
+            skipped = pid                 # someone else — keep looking for the requester
+            continue
+        found = person
+        break
+    if found is None and skipped is not None and requested_come_active():
+        now = time.monotonic()
+        if (now - float(_requested_come["skip_log_at"] or 0.0)) > 5.0:
+            _requested_come["skip_log_at"] = now
+            _log.info(
+                "[motion_agency] requested come: seeing person %s but the requester "
+                "is %s — continuing the search", skipped, requester_id,
+            )
+    return found
 
 
 def _face_offset_fraction(person: Optional[dict]) -> Optional[float]:
@@ -544,8 +640,12 @@ def _come_alignment_fraction(person: Optional[dict], *, head_locked: bool) -> Op
     return face_frac if face_frac is not None else neck_offset_fraction()
 
 
-def _tracked_person(snapshot: dict) -> Optional[dict]:
-    """The world_state person entry the head is currently locked onto, or None."""
+def _tracked_person(snapshot: dict,
+                    requester_id: "int | None" = None) -> Optional[dict]:
+    """The world_state person entry the head is currently locked onto, or None.
+
+    With ``requester_id`` set, a lock on anyone ELSE returns None — the head
+    happening to track the wrong person must not steer a come-here at them."""
     try:
         from world_state import world_state
         tracking = (world_state.get("self_state") or {}).get("face_tracking") or {}
@@ -560,10 +660,14 @@ def _tracked_person(snapshot: dict) -> Optional[dict]:
             # Face tracking uses db:<person_db_id> for recognized people and a
             # camera slot key for unknowns. Comparing db:1 only with person["id"]
             # made a recognized, visibly tracked speaker impossible to acquire.
-            if kind == "db" and str(person.get("person_db_id")) == value:
-                return person
-            if kind != "db" and str(person.get("id")) == value:
-                return person
+            match = ((kind == "db" and str(person.get("person_db_id")) == value)
+                     or (kind != "db" and str(person.get("id")) == value))
+            if not match:
+                continue
+            if (requester_id is not None
+                    and str(person.get("person_db_id")) != str(requester_id)):
+                return None               # locked onto the wrong person
+            return person
         return None
     except Exception:
         return None
@@ -794,8 +898,9 @@ def _step_inner(snapshot: dict, profile) -> None:
     # without this the sighting is thrown away and the sweep spins right past them
     # (field 2026-07-23: face lock on Bret during scan turn 3, sweep went to -180).
     if requested_come_active():
-        seen_locked = _tracked_person(snapshot)
-        seen = seen_locked or _visible_known_person(snapshot)
+        _req = _requested_come["requester_id"]
+        seen_locked = _tracked_person(snapshot, _req)
+        seen = seen_locked or _visible_known_person(snapshot, _req)
         if seen is not None:
             _requested_come["last_seen_at"] = time.monotonic()
             frac = _come_alignment_fraction(seen, head_locked=seen_locked is not None)

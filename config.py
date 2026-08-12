@@ -8275,12 +8275,30 @@ MOTION_COME_STOP_AT_M = 0.60
 MOTION_COME_REQUEST_STOP_AT_M = 1.00
 MOTION_COME_SEARCH_TURN_DEG = 45.0
 MOTION_COME_SEARCH_MAX_TURNS = 8       # sweep budget (net reach grows ±45,±90,... per turn)
+# Give-up clock, measured from the LATER of the errand start and the last sighting
+# of the target — progress restarts it. Measured from start alone, the align phase
+# burned the clock and the errand died with "no person found" five seconds after
+# aligning on the requester's face (field 2026-08-11).
 MOTION_COME_SEARCH_TIMEOUT_SECS = 45.0
-# After ANY chassis turn the come-search issues (align or scan), face tracking needs a
-# beat to re-find the person the camera just swung away from. Within this grace the
-# search WAITS instead of declaring them lost (field 2026-07-21: without it, a +30°
-# align cascaded into a 180° scan spiral that ended in a bookshelf).
-MOTION_COME_REACQUIRE_GRACE_SECS = 3.0
+# After a scan/resight turn COMPLETES, the camera must dwell this long — settled,
+# not sweeping — before the search may conclude "nobody this way" and take the next
+# leg. The old grace counted from turn ISSUE, but a leg takes 1-2 s to execute, so
+# the detect→identify pipeline got ~1 s of still camera and Rex swept right past a
+# plainly visible person (field 2026-08-11: two full sweeps across the owner at
+# ~120°, sighted only in passing). Dwell is keyed to the firmware `done` for the
+# turn, with MOTION_COME_TURN_RESOLVE_TIMEOUT_SECS as the lost-`done` backstop.
+MOTION_COME_SCAN_DWELL_SECS = 3.0
+MOTION_COME_TURN_RESOLVE_TIMEOUT_SECS = 8.0
+# After any come-search turn completes, wait this long before TRUSTING an alignment
+# measurement. The base turn and the neck re-center the same error simultaneously;
+# sampling the neck mid-slew produced sign-flipping align turns (+15/-37/+37,
+# field 2026-08-11) that never read "centered", so `come` was never issued and the
+# errand timed out while he was looking straight at the requester.
+MOTION_COME_ALIGN_SETTLE_SECS = 1.2
+# Scan/resight legs sweep slower than the default turn rate so the ~1 Hz sighting
+# sampler + vision latency can actually catch a face the camera crosses mid-turn
+# (field 2026-08-11: 75 deg/s legs blew past the owner repeatedly).
+MOTION_COME_SCAN_RATE_DEG_S = 40.0
 # Sightings are sampled EVERY autonomy tick — including while a scan turn is mid-
 # flight (the settled-state step alone misses locks that happen as the camera
 # sweeps past, field 2026-07-23: face lock during scan turn 3, sweep continued to

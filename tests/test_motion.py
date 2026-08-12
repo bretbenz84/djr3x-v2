@@ -982,6 +982,23 @@ class MotionTakeoverTest(_MotionTestBase):
         finally:
             motion_agency.cancel_requested_come("test cleanup")
 
+    def test_explicit_come_carries_the_speakers_identity(self):
+        # "Come here" must go to whoever SAID it: the voice-identified person_id
+        # rides into the search so other faces are skipped (owner spec 2026-08-11,
+        # JT on the couch vs Bret on the chair).
+        from intelligence import interaction as I
+        from intelligence import motion_agency
+        self._connect()
+        motion_agency.cancel_requested_come("test reset")
+        try:
+            self.assertEqual(
+                I._explicit_motion_takeover("come to me", person_id=1), "On my way."
+            )
+            self.assertTrue(motion_agency.requested_come_active())
+            self.assertEqual(motion_agency._requested_come["requester_id"], 1)
+        finally:
+            motion_agency.cancel_requested_come("test cleanup")
+
     def test_non_motion_is_noop(self):
         from intelligence import interaction as I
         self._connect()
