@@ -93,5 +93,58 @@ class EagerHandoffTest(unittest.TestCase):
         self.assertEqual(text, "turn left")
 
 
+class MidErrandStopTest(unittest.TestCase):
+    """_errand_stop_demanded: a stop buried in a noisy multi-sentence segment
+    must count as a stop while the base is driving.
+
+    Field 2026-08-11: "Take your bone all the way down. Take your bone. Go.
+    Stop. Stop looking for me. Stop. Just stop." full-matched nothing — the
+    bare-stop regex needs the whole utterance — so it routed to conversation,
+    Rex SAID "Stopping." and the come-here errand kept driving.
+    """
+
+    def test_the_field_utterance_demands_a_stop(self):
+        self.assertTrue(IX._errand_stop_demanded(
+            "Take your bone all the way down. Take your bone. Go. Stop. "
+            "Stop looking for me. Stop. Just stop."
+        ))
+
+    def test_stop_shaped_sentences_match(self):
+        for text in (
+            "Stop.",
+            "Just stop.",
+            "stop moving",
+            "Stop looking for me.",
+            "Please stop searching.",
+            "No, stop.",
+            "Quit moving.",
+            "Don't move.",
+            "Stay right there.",
+            "Okay that's great, stop moving.",
+        ):
+            self.assertTrue(IX._errand_stop_demanded(text), text)
+
+    def test_conversational_stop_words_do_not_match(self):
+        for text in (
+            "I can't stop laughing.",
+            "We should stop by the store later.",
+            "The bus stop is around the corner.",
+            "Stop me if you've heard this one.",
+            "It never stops raining here.",
+            "",
+        ):
+            self.assertFalse(IX._errand_stop_demanded(text), text)
+
+    def test_eager_endpoint_matches_a_buried_stop_while_moving(self):
+        with mock.patch.object(motion_controller, "is_moving", return_value=True):
+            self.assertTrue(IX._eager_motion_transcript_matches(
+                "Go. Stop. Stop looking for me."
+            ))
+        with mock.patch.object(motion_controller, "is_moving", return_value=False):
+            self.assertFalse(IX._eager_motion_transcript_matches(
+                "Go. Stop. Stop looking for me."
+            ))
+
+
 if __name__ == "__main__":
     unittest.main()

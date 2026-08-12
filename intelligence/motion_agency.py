@@ -221,6 +221,11 @@ _requested_come = {
     "seen_sign": 0.0,       # which way to turn to re-center that sighting (+ = left)
     "approach_at": 0.0,     # when the last `come` was issued (retry pacing)
     "approaches": 0,        # how many times we've launched at them this errand
+    "align_turns": 0,       # consecutive align turns without reaching "centered" —
+                            # after MOTION_COME_ALIGN_MAX_TRIES a good-enough residual
+                            # goes to the firmware as the `come` heading instead of
+                            # another base turn (field 2026-08-11: ±12-45 deg align
+                            # oscillation never settled and the approach never launched)
     "skip_log_at": 0.0,     # throttle for the "seeing X, waiting for requester" log
 }
 
@@ -304,6 +309,7 @@ def request_come_here(person_id: "int | None" = None) -> bool:
         seen_sign=0.0,
         approach_at=0.0,
         approaches=0,
+        align_turns=0,
         skip_log_at=0.0,
     )
     _reset("neck_hits", "far_hits")
@@ -322,7 +328,8 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
-                           approach_at=0.0, approaches=0, skip_log_at=0.0)
+                           approach_at=0.0, approaches=0, align_turns=0,
+                           skip_log_at=0.0)
 
 
 def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> bool:
@@ -373,6 +380,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     locked_person = _tracked_person(snapshot, requester)
     person = locked_person or _visible_known_person(snapshot, requester)
     if person is None:
+        _requested_come["align_turns"] = 0   # sighting lost — alignment starts over
         # DWELL: the camera settled only turn_done_at ago, and the detect→identify
         # pipeline needs a couple of seconds of STILL camera to find a face across
         # the room. Concluding "nobody this way" any sooner is how two full sweeps
@@ -443,26 +451,47 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     if done_at > 0.0 and (now - done_at) < _num("MOTION_COME_ALIGN_SETTLE_SECS", 1.2):
         return True
 
-    # Align using the neck when the head is on them, else the face's position in
-    # frame — otherwise a come-here acquired without a head lock has no steer.
+    # Align using the fused bearing (neck offset PLUS face-in-frame offset — see
+    # _come_alignment_fraction) — otherwise a come-here acquired without a head
+    # lock has no steer.
     frac = _come_alignment_fraction(person, head_locked=locked_person is not None)
     centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
+    approach_heading = 0.0
     if frac is not None and abs(frac) >= centered:
-        deg = _turn_degrees_for(frac)
-        seq = motion_controller.turn(deg)
-        if seq is not None:
-            _requested_come["last_turn_at"] = now
-            _requested_come["pending_turn_seq"] = seq
-            # Remember which side they were on: if the align turn loses them, the
-            # sweep starts back toward that side, not away from it.
-            _requested_come["scan_sign"] = 1.0 if deg >= 0 else -1.0
-            _requested_come["search_turns"] = 0     # fresh sweep budget after a sighting
+        # GOOD-ENOUGH ESCAPE: repeated align turns that keep missing "centered"
+        # must not starve the approach forever — field 2026-08-11: ±12-45 deg
+        # oscillation for four minutes, the drive never re-launched, and the
+        # errand died to a user "stop". After MOTION_COME_ALIGN_MAX_TRIES
+        # attempts, a moderate residual is handed to the firmware as the `come`
+        # heading (its closed-loop turn owns the last few degrees) instead of
+        # burning another host-side base turn.
+        tries = int(_requested_come["align_turns"])
+        good_enough = _num("MOTION_COME_ALIGN_GOOD_ENOUGH_FRACTION", 0.40)
+        if (tries >= int(_num("MOTION_COME_ALIGN_MAX_TRIES", 3))
+                and abs(frac) <= good_enough):
+            approach_heading = _bearing_degrees_for(frac)
             _log.info(
-                "[motion_agency] requested come: acquired %s %s, aligning %+.0f deg",
-                "requester" if requester is not None else "person",
-                person.get("person_db_id") or person.get("id"), deg,
+                "[motion_agency] requested come: alignment not settling after "
+                "%d tries — approaching with residual heading %+.0f deg",
+                tries, approach_heading,
             )
-        return True
+        else:
+            deg = _turn_degrees_for(frac)
+            seq = motion_controller.turn(deg)
+            if seq is not None:
+                _requested_come["last_turn_at"] = now
+                _requested_come["pending_turn_seq"] = seq
+                _requested_come["align_turns"] = tries + 1
+                # Remember which side they were on: if the align turn loses them,
+                # the sweep starts back toward that side, not away from it.
+                _requested_come["scan_sign"] = 1.0 if deg >= 0 else -1.0
+                _requested_come["search_turns"] = 0  # fresh sweep budget after a sighting
+                _log.info(
+                    "[motion_agency] requested come: acquired %s %s, aligning %+.0f deg",
+                    "requester" if requester is not None else "person",
+                    person.get("person_db_id") or person.get("id"), deg,
+                )
+            return True
 
     if not base_idle:
         # Person found and centered but the front is momentarily blocked — hold
@@ -479,9 +508,21 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     _, last_result = motion_controller.last_come_result()
     if int(_requested_come["approaches"]) > 0:
         if last_result == "completed":
-            cancel_requested_come("arrived")
-            return True
-        if last_result is None:
+            # The firmware believes it arrived — but "arrived" means it stopped
+            # `stop_at` short of the nearest front return, and a phantom floor
+            # return (mis-calibrated matrix ToF) completes the drive seconds in
+            # while the requester is still across the room (field 2026-08-11:
+            # `come` "completed" after 3 s, 261 front zone_blocks that session).
+            # If the requester is visibly still at PUBLIC distance, the sensor is
+            # lying about arrival: treat it as stopped-short and keep trying.
+            if person.get("distance_zone") != "public":
+                cancel_requested_come("arrived")
+                return True
+            _log.info(
+                "[motion_agency] requested come: drive completed but requester "
+                "still reads far (public zone) — treating as stopped short"
+            )
+        elif last_result is None:
             return True                 # still driving; nothing to decide yet
         # Stopped short (blocked/aborted). Reaching here already means the base is
         # idle again (the not-base_idle hold above), i.e. the path cleared. Wait a
@@ -499,10 +540,11 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                   last_result)
 
     stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
-    seq = motion_controller.come(0.0, stop_at=stop_at)
+    seq = motion_controller.come(approach_heading, stop_at=stop_at)
     if seq is not None:
         _requested_come["approach_at"] = now
         _requested_come["approaches"] = int(_requested_come["approaches"]) + 1
+        _requested_come["align_turns"] = 0
         _log.info(
             "[motion_agency] requested come: approaching person %s "
             "(stop_at=%.2fm, obstacle-gated, try %d)",
@@ -624,20 +666,30 @@ def _face_offset_fraction(person: Optional[dict]) -> Optional[float]:
 def _come_alignment_fraction(person: Optional[dict], *, head_locked: bool) -> Optional[float]:
     """How far off-centre the target is, for the come-here align turn.
 
-    WHICH signal is right depends on where the head is pointing, not on magnitude:
-      * head TRACKING them — face-tracking keeps the face centred in frame, so the
-        face offset is ~0 and carries nothing; the neck's offset from neutral IS
-        the body's misalignment (the realign design).
-      * head NOT on them — the neck is wherever something else left it and says
-        nothing about the person, while the face's position in frame is a direct
-        measurement of which way to turn.
+    The person's true bearing relative to the BODY is the sum of two offsets:
+    where the head points relative to the body (neck offset) plus where the face
+    sits within the camera frame. Sampling either one ALONE is only valid at the
+    extremes (head fully converged on them, or head parked elsewhere) — and
+    mid-slew, while face-tracking is re-centring the same error the base just
+    turned against, each individually flips sign and over-corrects. That
+    either/or was the ±12-45 deg align oscillation that never read "centered"
+    (field 2026-08-11). The SUM is correct at every phase of the head's motion,
+    so fuse whenever both are available.
+
+    ``MOTION_COME_FACE_BEARING_WEIGHT`` scales frame-fraction into neck-fraction
+    units (1.0 = the historical assumption that half a frame ≈ the neck's
+    half-span; tune if the camera FOV and neck throw diverge in the field).
     """
-    if head_locked:
-        frac = neck_offset_fraction()
-        if frac is not None:
-            return frac
+    neck_frac = neck_offset_fraction()
     face_frac = _face_offset_fraction(person)
-    return face_frac if face_frac is not None else neck_offset_fraction()
+    weight = _num("MOTION_COME_FACE_BEARING_WEIGHT", 1.0)
+    if neck_frac is not None and face_frac is not None:
+        return neck_frac + weight * face_frac
+    if head_locked and neck_frac is not None:
+        return neck_frac
+    if face_frac is not None:
+        return weight * face_frac
+    return neck_frac
 
 
 def _tracked_person(snapshot: dict,
@@ -673,18 +725,27 @@ def _tracked_person(snapshot: dict,
         return None
 
 
-def _turn_degrees_for(frac: float) -> float:
-    """Base turn (deg, + = left/CCW per the wire protocol) that reduces a neck
-    offset fraction. Neck toward Rex's right (+frac) needs a RIGHT (CW, negative)
-    base turn; MOTION_FACE_TURN_INVERT flips if field testing disagrees."""
+def _bearing_degrees_for(frac: float) -> float:
+    """The signed correction (deg, + = left/CCW per the wire protocol) for an
+    offset fraction, WITHOUT the minimum-turn floor — suitable as a `come`
+    heading, where a 3-degree residual must stay 3 degrees. Neck toward Rex's
+    right (+frac) needs a RIGHT (CW, negative) correction;
+    MOTION_FACE_TURN_INVERT flips if field testing disagrees."""
     max_deg = _num("MOTION_FACE_TURN_MAX_DEG", 60.0)
-    min_deg = _num("MOTION_FACE_TURN_MIN_DEG", 10.0)
     deg = -frac * max_deg
     if _flag("MOTION_FACE_TURN_INVERT", False):
         deg = -deg
+    return max(-max_deg, min(max_deg, deg))
+
+
+def _turn_degrees_for(frac: float) -> float:
+    """Base turn that reduces an offset fraction: the bearing correction with a
+    minimum-turn floor, because the chassis can't execute a tiny nudge."""
+    deg = _bearing_degrees_for(frac)
+    min_deg = _num("MOTION_FACE_TURN_MIN_DEG", 10.0)
     if abs(deg) < min_deg:
         deg = min_deg if deg >= 0 else -min_deg
-    return max(-max_deg, min(max_deg, deg))
+    return deg
 
 
 def _reset_flinch() -> None:

@@ -13004,9 +13004,11 @@ def _eager_motion_transcript_matches(text: str) -> bool:
         )
         if sequence:
             return True
-        # Bare "stop" while the base is moving — the one case where faster
-        # endpointing is a safety improvement, not just comfort.
-        if _BARE_MOTION_STOP_RE.match(cleaned) and motion_controller.is_moving():
+        # A stop demand while the base is moving — the one case where faster
+        # endpointing is a safety improvement, not just comfort. Sentence-level
+        # scan, not just the bare token: field stops arrive buried in noisy
+        # segments ("... Go. Stop. Stop looking for me.").
+        if _errand_stop_demanded(cleaned) and motion_controller.is_moving():
             return True
     except Exception as exc:
         _log.debug("[eager_endpoint] match check failed: %s", exc)
@@ -19026,6 +19028,39 @@ _MOTION_DRIVE_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.ar
 _BARE_MOTION_STOP_RE = re.compile(
     r"^\s*(?:stop|halt|freeze|whoa|hold on|hold up|wait|stop it)\s*[.!]*\s*$", re.I
 )
+# Stop imperatives scanned PER SENTENCE while the base is moving or a come-here
+# errand is running. A real field "stop" rarely arrives as a clean bare token: it
+# rides inside a noisy multi-sentence segment ("... Go. Stop. Stop looking for me.
+# Just stop.") that the whole-utterance regex can't match and the router shrugs
+# off as conversation — Rex SAID "Stopping." and kept driving (field 2026-08-11).
+# Only consulted while an errand owns the base, so conversational "stop" ("I
+# can't stop laughing") stays free — and those don't full-match a fragment anyway.
+_MOTION_STOP_FRAGMENT_RE = re.compile(
+    r"^\s*(?:please\s+|just\s+|no[,\s]+)*"
+    r"(?:stop|halt|freeze|"
+    r"stay(?:\s+(?:there|put|right\s+there))?|"
+    r"don'?t\s+move|"
+    r"(?:stop|quit)\s+(?:moving|driving|turning|spinning|circling|"
+    r"looking|searching|hunting|chasing)"
+    r"(?:\s+(?:for|at|around|after)\s+me)?"
+    r")\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _errand_stop_demanded(text: str) -> bool:
+    """True when any sentence of the utterance is a stop imperative. Callers gate
+    this on an active drive (base moving / come-here errand) before acting."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _BARE_MOTION_STOP_RE.match(cleaned):
+        return True
+    return any(
+        _MOTION_STOP_FRAGMENT_RE.match(frag)
+        for frag in re.split(r"[.!?;,]+", cleaned)
+        if frag.strip()
+    )
 
 _motion_continuation_lock = threading.Lock()
 _motion_continuation: Optional[dict[str, Any]] = None
@@ -19409,7 +19444,7 @@ def _explicit_motion_takeover(
     if motion_decision is None:
         motion_decision = _resolve_motion_continuation(text)
     requested_come_active = False
-    if motion_decision is None and _BARE_MOTION_STOP_RE.match(text or ""):
+    if motion_decision is None and _errand_stop_demanded(text or ""):
         try:
             from intelligence import motion_agency
             requested_come_active = motion_agency.requested_come_active()
@@ -19418,11 +19453,11 @@ def _explicit_motion_takeover(
     if (
         motion_decision is None
         and (motion_controller.is_moving() or requested_come_active)
-        and _BARE_MOTION_STOP_RE.match(text or "")
+        and _errand_stop_demanded(text or "")
     ):
         motion_decision = action_router.ActionDecision(
             action="motion.stop", confidence=0.95, args={},
-            reason="bare stop while base moving",
+            reason="stop demanded while base moving",
         )
     if motion_decision is None:
         # Continuations are adjacency-sensitive. Any intervening non-motion turn

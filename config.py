@@ -8307,12 +8307,26 @@ MOTION_COME_SCAN_RATE_DEG_S = 40.0
 # taking the next (bigger) sweep leg away from them.
 MOTION_COME_SIGHT_FRESH_SECS = 6.0
 # Come-here no longer needs the head LOCK to find someone: a known face visible in
-# world_state.people is enough. Alignment then picks its signal by where the head is —
-# neck offset while tracking them (face is centred, so the neck IS the body error),
-# otherwise the face's position in frame. Field 2026-07-24: face plainly visible in the
-# GUI at ~9 ft, but a gaze search had pulled the head away, so the lock was gone and
-# Rex swept the room instead of approaching.
+# world_state.people is enough. Alignment reads the FUSED bearing — neck offset from
+# neutral PLUS the face's offset within the frame — which is geometrically correct
+# at every phase of the head's motion. Sampling either signal alone (the old
+# either/or) is only right at the extremes, and mid-slew it flip-flops: the ±12-45°
+# align oscillation of field 2026-08-11 that never read "centered". Field
+# 2026-07-24: face plainly visible in the GUI at ~9 ft, but a gaze search had
+# pulled the head away, so the lock was gone and Rex swept the room instead of
+# approaching.
 MOTION_COME_RESIGHT_TURN_DEG = 30.0
+# Scales the face's frame-fraction into neck-half-span units for that fusion.
+# 1.0 = half a camera frame counts the same as the neck's full half-span (the
+# scale alignment has always implicitly used); lower it if field testing shows
+# the wide-angle lens making Rex over-rotate toward off-centre faces.
+MOTION_COME_FACE_BEARING_WEIGHT = 1.0
+# Alignment must not starve the approach: after this many align turns that still
+# haven't read "centered", a moderate residual (below the GOOD_ENOUGH fraction) is
+# handed to the firmware as the `come` heading — its closed-loop turn owns the last
+# few degrees. Field 2026-08-11: four minutes of align turns, zero re-approaches.
+MOTION_COME_ALIGN_MAX_TRIES = 3
+MOTION_COME_ALIGN_GOOD_ENOUGH_FRACTION = 0.40
 # A come-here errand survives being stopped short: if something steps in front of
 # him mid-approach (field 2026-07-24: "if he gets blocked by my dog walking in
 # front of it... if my dog moves out of the way he should keep trying"), he waits

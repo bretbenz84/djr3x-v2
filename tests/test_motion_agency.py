@@ -614,6 +614,61 @@ class MotionAgencyTest(unittest.TestCase):
         self._tick(1)
         self.assertFalse(MA.requested_come_active())
 
+    # ── fused alignment bearing (field 2026-08-11: ±12-45° oscillation) ────────
+
+    def test_head_locked_with_face_off_centre_still_aligns(self):
+        # Neck at neutral but the face far right of frame: the old head-locked
+        # neck-only read said "centered" and launched the drive at nothing. The
+        # fused bearing (neck + face) sees the true offset and aligns first.
+        self._neck = 6000
+        self._face_box = _EDGE_FACE_RIGHT
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.turn.assert_called_once()
+        self.come.assert_not_called()
+
+    def test_opposing_neck_and_face_offsets_cancel_and_he_approaches(self):
+        # Mid-slew snapshot: head is +0.40 of half-span right (neck 7594) while
+        # the face still sits left of frame centre by the same bearing. Either
+        # signal alone reads a big error and over-corrects (the sign-flipping
+        # align loop); the sum reads ~0 and the approach launches.
+        self._neck = 6867                        # +0.40 of the 3488 half-span (neutral 5472)
+        self._face_box = (476, 400, 200, 200)    # centre 576 -> -0.40 of half-width
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.come.assert_called_once_with(
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+        )
+
+    def test_align_turns_that_never_settle_hand_the_residual_to_come(self):
+        # After MOTION_COME_ALIGN_MAX_TRIES align turns the residual bearing goes
+        # to the firmware as the `come` heading instead of a fourth base turn —
+        # alignment must not starve the approach forever (field 2026-08-11: four
+        # minutes of align turns, zero re-approaches).
+        self._neck = 5472                        # exactly neutral
+        self._face_box = (1148, 400, 200, 200)   # centre 1248 -> +0.30 offset
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.turn.assert_called_once()           # try 1: a normal align turn
+        self.assertEqual(MA._requested_come["align_turns"], 1)
+        MA._requested_come["align_turns"] = int(config.MOTION_COME_ALIGN_MAX_TRIES)
+        self._tick()
+        self.assertEqual(self.turn.call_count, 1, "no further align turns")
+        self.come.assert_called_once_with(
+            -18.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+        )                                        # -0.30 * MOTION_FACE_TURN_MAX_DEG
+
+    def test_a_lost_sighting_resets_the_align_try_counter(self):
+        self._neck = 6000
+        self._face_box = (1148, 400, 200, 200)
+        self.assertTrue(MA.request_come_here())
+        self._tick()
+        self.assertEqual(MA._requested_come["align_turns"], 1)
+        self._visible = False
+        self._tracking = {"locked": False, "visible": False}
+        self._tick()
+        self.assertEqual(MA._requested_come["align_turns"], 0)
+
 
 class RequestedComeFieldFixTest(unittest.TestCase):
     """Fixes for the 2026-07-23 'come here just spins' session: mid-turn sightings
@@ -826,6 +881,23 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
         self._tick()
         self.assertFalse(MA.requested_come_active(), "arriving must end the errand")
         self.assertEqual(self.come.call_count, 1, "no re-launch after arriving")
+
+    def test_completed_while_still_far_is_a_stopped_short_retry(self):
+        # Firmware "completed" = it stopped stop_at short of the nearest front
+        # return — and a phantom floor return (mis-calibrated matrix ToF)
+        # completes the drive seconds in while the requester still reads PUBLIC
+        # distance across the room (field 2026-08-11: `come` done in 3 s, 261
+        # front zone_blocks that session). Visibly-far + completed = the sensor
+        # is lying; retry instead of declaring arrival.
+        with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            MA.step(_snapshot(distance_zone="public"), _profile())
+            self.assertEqual(self.come.call_count, 1)
+            self._result = "completed"
+            MA.step(_snapshot(distance_zone="public"), _profile())
+        self.assertTrue(MA.requested_come_active(),
+                        "a phantom arrival must not end the errand")
+        self.assertEqual(self.come.call_count, 2, "he must try again")
 
     def test_still_driving_is_left_alone(self):
         self.assertTrue(MA.request_come_here())
