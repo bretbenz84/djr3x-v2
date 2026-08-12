@@ -19225,9 +19225,10 @@ def _handle_router_motion_action(
         # The human is steering by voice: the social realign behavior must not
         # rotate the body back toward their face for a while (field 2026-07-23,
         # "turn right" undone by a realign left turn 13 s later). EXCEPT "I'm
-        # behind you": that turn points him TOWARD the speaker, and realign
-        # finishing the job afterward is exactly what they asked for.
-        if not args.get("behind"):
+        # behind you" / "I'm to your left": those turns point him TOWARD the
+        # speaker, and realign finishing the job afterward is exactly what they
+        # asked for.
+        if not (args.get("behind") or args.get("bearing")):
             try:
                 from intelligence import motion_agency
                 motion_agency.note_user_motion()
@@ -19272,12 +19273,21 @@ def _handle_router_motion_action(
             # room, "come here" must go to whoever SAID it, not to the first known
             # face the search happens across (owner spec 2026-08-11).
             behind = bool(args.get("behind"))
+            side = args.get("side")
+            try:
+                side_deg = float(args["side_deg"]) if args.get("side_deg") else None
+            except (TypeError, ValueError):
+                side_deg = None
             started = motion_agency.request_come_here(
-                person_id=requester_person_id, behind=behind
+                person_id=requester_person_id, behind=behind, side_deg=side_deg
             )
             if not started:
                 return None
-            return "Turning around — on my way." if behind else "On my way."
+            if behind:
+                return "Turning around — on my way."
+            if side:
+                return f"Swinging {side} — on my way."
+            return "On my way."
         except Exception as exc:
             _log.debug("requested come start failed: %s", exc)
             return None
@@ -19320,6 +19330,15 @@ def _handle_router_motion_action(
         else:
             seq = motion_controller.turn_left(deg)
             line = "Turning left."
+        if seq is not None and args.get("bearing"):
+            # "I'm to your left" mid-come-search: the search adopts this swing
+            # as its own leg, exactly like the behind about-face.
+            line = f"Ah — off to my {direction}. Coming around."
+            try:
+                from intelligence import motion_agency
+                motion_agency.note_side_turn(seq, direction)
+            except Exception:
+                pass
         if seq is not None:
             _remember_motion_continuation(decision)
             return line

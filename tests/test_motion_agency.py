@@ -721,6 +721,47 @@ class MotionAgencyTest(unittest.TestCase):
         MA.note_behind_turn(42)
         self.assertFalse(MA.requested_come_active())
 
+    # ── "I'm to your left" (owner spec 2026-08-11, sideways sibling of behind) ─
+
+    def test_side_come_leads_with_a_swing(self):
+        # "I'm to your right, come here": the search's first leg is a signed swing
+        # toward the stated side, and the sweep continues on that side after.
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = False
+        self.assertTrue(MA.request_come_here(person_id=1, side_deg=-90.0))
+        self.turn.assert_called_once_with(
+            -90.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S
+        )
+        self.assertEqual(MA._requested_come["pending_turn_seq"], 7)
+        self.assertEqual(MA._requested_come["scan_sign"], -1.0,
+                         "sweep keeps hunting on the speaker's side")
+        # The next tick waits on that turn's `done` like any search leg.
+        self.done_result.return_value = None
+        self._tick(2)
+        self.assertEqual(self.turn.call_count, 1)
+
+    def test_note_side_turn_adopts_the_swing_mid_search(self):
+        # Standalone "I'm to your right" while a come search is running: the
+        # motion.turn lane issued seq 42; the search adopts it as its own leg.
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = False
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick(1)                              # scan leg 1
+        MA._requested_come["search_turns"] = 5     # deep into a sweep
+        MA.note_side_turn(42, "right")
+        self.assertEqual(MA._requested_come["pending_turn_seq"], 42)
+        self.assertEqual(MA._requested_come["search_turns"], 0,
+                         "fresh sweep budget at the new heading")
+        self.assertEqual(MA._requested_come["scan_sign"], -1.0,
+                         "sweep keeps hunting on the speaker's side")
+        self.assertGreater(MA._requested_come["last_seen_at"], 0.0,
+                           "their voice keeps the give-up clock fresh")
+        self.assertTrue(MA.requested_come_active())
+
+    def test_note_side_turn_is_a_noop_without_an_errand(self):
+        MA.note_side_turn(42, "left")
+        self.assertFalse(MA.requested_come_active())
+
     # ── dwell neck sweep (owner spec 2026-08-11) ───────────────────────────────
 
     def test_dwell_stretches_while_the_neck_sweep_runs(self):

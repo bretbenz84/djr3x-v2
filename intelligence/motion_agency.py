@@ -276,7 +276,8 @@ def requested_come_active() -> bool:
 
 
 def request_come_here(person_id: "int | None" = None, *,
-                      behind: bool = False) -> bool:
+                      behind: bool = False,
+                      side_deg: "float | None" = None) -> bool:
     """Arm a bounded search/align/approach sequence for an explicit voice request.
 
     ``person_id`` is the voice-identified requester (person_db_id). When known, the
@@ -287,7 +288,9 @@ def request_come_here(person_id: "int | None" = None, *,
 
     ``behind=True`` ("I'm behind you, come here") seeds the search with an
     immediate about-face instead of sweeping the wrong hemisphere first (owner
-    spec 2026-08-11)."""
+    spec 2026-08-11). ``side_deg`` ("I'm to your left, come here") is the sideways
+    version: a signed opening swing toward the stated side (+ = left/CCW, the
+    turn() convention); the follow-up sweep also starts on that side."""
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
         return False
     # "Come here" asks for movement, so it lifts an earlier "don't move" outright
@@ -342,6 +345,19 @@ def request_come_here(person_id: "int | None" = None, *,
             _requested_come["last_turn_at"] = time.monotonic()
             _log.info("[motion_agency] requested come: speaker says they're "
                       "behind — leading with an about-face")
+    elif side_deg:
+        seq = motion_controller.turn(
+            float(side_deg), rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
+        )
+        if seq is not None:
+            _requested_come["pending_turn_seq"] = seq
+            _requested_come["last_turn_at"] = time.monotonic()
+            # If the swing doesn't find them, keep sweeping on THEIR side rather
+            # than snapping back to the default left-first pattern.
+            _requested_come["scan_sign"] = 1.0 if float(side_deg) > 0 else -1.0
+            _log.info("[motion_agency] requested come: speaker says they're to "
+                      "the %s — leading with a %.0f° swing",
+                      "left" if float(side_deg) > 0 else "right", abs(float(side_deg)))
     return True
 
 
@@ -350,22 +366,35 @@ def note_behind_turn(seq: "int | None") -> None:
     motion.turn lane while a come-here search is RUNNING: adopt that turn as the
     search's own leg, so the dwell + neck sweep run at the new heading instead
     of the search blindly resuming its old sweep pattern mid-rotation."""
+    _adopt_voice_bearing_turn(seq, "behind")
+
+
+def note_side_turn(seq: "int | None", side: str) -> None:
+    """The sideways sibling of note_behind_turn: a standalone "I'm to your left/
+    right" swing issued through the motion.turn lane mid-come-search becomes the
+    search's own leg, and the sweep continues on the speaker's side."""
+    _adopt_voice_bearing_turn(seq, "to the %s" % ("right" if side == "right" else "left"))
+    if requested_come_active() and seq is not None:
+        _requested_come["scan_sign"] = -1.0 if side == "right" else 1.0
+
+
+def _adopt_voice_bearing_turn(seq: "int | None", where: str) -> None:
     if seq is None or not requested_come_active():
         return
     _stop_come_dwell_gaze()
     _requested_come.update(
         pending_turn_seq=int(seq),
         last_turn_at=time.monotonic(),
-        search_turns=0,          # fresh sweep budget at the new hemisphere
+        search_turns=0,          # fresh sweep budget at the new heading
         align_turns=0,
         # Their voice IS a localization: keep the give-up clock fresh, but drop
-        # any stored visual bearing — it predates the about-face.
+        # any stored visual bearing — it predates this turn.
         last_seen_at=time.monotonic(),
         seen_deg=0.0,
         seen_sign=0.0,
     )
-    _log.info("[motion_agency] requested come: speaker says they're behind — "
-              "adopting the about-face as a search leg")
+    _log.info("[motion_agency] requested come: speaker says they're %s — "
+              "adopting the turn as a search leg", where)
 
 
 def cancel_requested_come(reason: str = "cancelled") -> None:

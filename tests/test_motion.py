@@ -532,6 +532,64 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(d.action, "motion.come")
         self.assertFalse(d.args.get("behind"))
 
+    def test_side_bearing_turns_toward_the_voice(self):
+        # Field 2026-08-11 21:24: "I'm to your left a little bit." right after a
+        # come arrived → conversation, and Rex SAID "turning left" without moving.
+        # The speaker phrases the bearing in Rex's frame: "your left" = his left.
+        for text, direction, deg in (
+            ("I'm to your left a little bit.", "left", 45.0),
+            ("I'm on your right", "right", 90.0),
+            ("I am a little to your left", "left", 45.0),
+            ("Hey Rex, I'm off to your right.", "right", 90.0),
+            ("to your left", "left", 90.0),
+            ("I'm way over on your right", "right", 90.0),
+            ("on your left side", "left", 90.0),
+        ):
+            with self.subTest(text=text):
+                d = ar.classify_explicit_motion(text)
+                self.assertIsNotNone(d, text)
+                self.assertEqual(d.action, "motion.turn", text)
+                self.assertEqual(d.args.get("direction"), direction, text)
+                self.assertEqual(d.args.get("deg"), deg, text)
+                self.assertTrue(d.args.get("bearing"), text)
+
+    def test_side_bearing_mentions_are_not_commands(self):
+        # Mentions/questions must not swing the base (same guard as behind).
+        for text in ("what's to your left?", "the couch to your left is new",
+                     "is that on your left?", "there's a plant to your right",
+                     "look to your left", "I left my keys on your desk",
+                     "your left arm is drooping"):
+            with self.subTest(text=text):
+                d = ar.classify_explicit_motion(text)
+                self.assertFalse(d is not None and d.args.get("bearing"), text)
+
+    def test_side_bearing_plus_come_seeds_the_search(self):
+        # "+ = left/CCW" is the motion_controller.turn() sign convention.
+        d = ar.classify_explicit_motion("I'm to your left, come here")
+        self.assertEqual(d.action, "motion.come")
+        self.assertEqual((d.args.get("side"), d.args.get("side_deg")), ("left", 90.0))
+        d = ar.classify_explicit_motion("I'm to your right, come here")
+        self.assertEqual((d.args.get("side"), d.args.get("side_deg")), ("right", -90.0))
+        # Behind outranks a side phrase if both somehow appear.
+        d = ar.classify_explicit_motion("I'm behind you, come here")
+        self.assertTrue(d.args.get("behind"))
+        self.assertNotIn("side", d.args)
+
+    def test_bearing_fragments_are_not_route_legs(self):
+        # The takeover consults the SEQUENCE parser first, and a comma is a
+        # separator: "I'm behind you, come here" split into a turn decision plus
+        # a "come here" miss, the mixed-route guard returned None, and Rex said
+        # "I couldn't safely parse that whole route" instead of coming. A
+        # localization fragment is context, so these must fall through ([]) to
+        # the single-command come path that seeds the search.
+        for text in ("I'm behind you, come here",
+                     "I'm to your left, come here",
+                     "Hey Rex, I'm to your right, come over here"):
+            with self.subTest(text=text):
+                self.assertEqual(ar.classify_explicit_motion_sequence(text), [], text)
+                d = ar.classify_explicit_motion(text)
+                self.assertEqual(d.action, "motion.come", text)
+
     def test_contextual_motion_continuations(self):
         left = ar.classify_explicit_motion("turn left")
         forward = ar.classify_explicit_motion("move forward")

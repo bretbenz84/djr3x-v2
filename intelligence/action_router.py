@@ -1276,6 +1276,47 @@ def _speaker_says_behind(cleaned: str) -> bool:
                      or _MOTION_LOOK_BEHIND_RE.match(frag)):
             return True
     return False
+
+
+# "I'm to your left (a little bit)" — the sideways sibling of behind (field
+# 2026-08-11 21:24: said right after a come-here arrived, it routed to
+# conversation and Rex SPOKE "Got it, I'm turning left." without turning). The
+# speaker phrases the bearing in REX'S frame ("your left" = Rex's left), so it
+# is a deterministic swing toward that side. Same full-match-per-fragment guard
+# as behind: "what's to your left?" or "the couch to your left" never fire.
+_MOTION_SIDE_HEDGE_PAT = (
+    r"(?:just\s+)?(?:a\s+(?:little|bit|tad|touch|smidge|tiny\s+bit)(?:\s+bit)?|"
+    r"slightly|kinda|kind\s+of)"
+)
+_MOTION_SIDE_FRAGMENT_RE = re.compile(
+    r"^(?:hey\s+)?(?:rex[,!]?\s+)?"
+    r"(?:(?:i'?m|i\s+am|we'?re|we\s+are)\s+)?"
+    rf"(?:{_MOTION_SIDE_HEDGE_PAT}\s+)?"
+    r"(?:(?:way|right|directly|off|over)\s+)*"
+    r"(?:to|on)\s+your\s+(?P<side>left|right)"
+    r"(?:\s+side)?"
+    rf"(?:\s+{_MOTION_SIDE_HEDGE_PAT})?"
+    r"$",
+    re.I,
+)
+# A flat "I'm on your left" is a quarter turn; a hedged "…a little bit" swings 45°
+# — with the wide-angle camera either puts the face in frame, and face tracking /
+# the come-search centring finishes the job. NOT reusing the 15° command trim:
+# this is a stated bearing, not a commanded amount, and people understate offsets
+# at conversation range.
+_MOTION_SIDE_TURN_DEG = 90.0
+_MOTION_SIDE_TURN_SMALL_DEG = 45.0
+
+
+def _speaker_says_side(cleaned: str) -> "tuple[str, bool] | None":
+    """('left'|'right', hedged) when a sentence places the speaker to Rex's side."""
+    for frag in re.split(r"[.!?;,]+", cleaned or ""):
+        frag = frag.strip()
+        m = _MOTION_SIDE_FRAGMENT_RE.match(frag) if frag else None
+        if m:
+            hedged = bool(re.search(_MOTION_SIDE_HEDGE_PAT, frag, re.I))
+            return m.group("side").lower(), hedged
+    return None
 # Cardinal directions (true compass headings; executed against the calibrated
 # QMC5883's fused yaw at run time). Diagonals accept solid/spaced/hyphenated forms.
 _CARDINAL_DEG = {
@@ -1640,6 +1681,16 @@ def classify_explicit_motion_sequence(
     decisions: list[ActionDecision] = []
     misses = 0
     for clause in clauses:
+        if (_MOTION_BEHIND_FRAGMENT_RE.match(clause)
+                or _MOTION_LOOK_BEHIND_RE.match(clause)
+                or _MOTION_SIDE_FRAGMENT_RE.match(clause)):
+            # Speaker localization ("I'm behind you", "I'm to your left") is
+            # CONTEXT, not a route leg — counting it as either arm of the
+            # tri-state broke the comma'd combo: "I'm behind you, come here"
+            # split into a turn decision plus a "come here" miss, the mixed
+            # guard refused the WHOLE utterance, and the single-command path
+            # that seeds the come-search with the bearing was never reached.
+            continue
         decision = classify_explicit_motion(clause)
         if decision is None or decision.action not in {"motion.turn", "motion.move", "motion.arc"}:
             misses += 1
@@ -1726,6 +1777,15 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
         # "I'm behind you, come here" — seed the search with an immediate
         # about-face instead of sweeping the wrong hemisphere first.
         args = {"behind": True} if _speaker_says_behind(cleaned) else {}
+        if not args:
+            # "I'm to your left, come here" — same idea, sideways: lead with a
+            # signed swing toward the stated side (+ = left, the turn() sign).
+            side = _speaker_says_side(cleaned)
+            if side is not None:
+                direction, hedged = side
+                deg = _MOTION_SIDE_TURN_SMALL_DEG if hedged else _MOTION_SIDE_TURN_DEG
+                args = {"side": direction,
+                        "side_deg": deg if direction == "left" else -deg}
         return ActionDecision(
             action="motion.come", confidence=0.95, args=args,
             reason="explicit come-here request",
@@ -1739,6 +1799,21 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
             action="motion.turn", confidence=0.95,
             args={"direction": "around", "deg": 180.0, "behind": True},
             reason="speaker says they are behind the base",
+        )
+
+    side = _speaker_says_side(cleaned)
+    if side is not None:
+        # Standalone "I'm to your left (a little bit)": swing toward the voice.
+        # The bearing flag mirrors behind — mid-come-search the swing is adopted
+        # as a search leg, and the realign standdown is skipped (rotating toward
+        # their face afterwards is exactly what they asked for).
+        direction, hedged = side
+        return ActionDecision(
+            action="motion.turn", confidence=0.95,
+            args={"direction": direction,
+                  "deg": _MOTION_SIDE_TURN_SMALL_DEG if hedged else _MOTION_SIDE_TURN_DEG,
+                  "bearing": True},
+            reason="speaker says they are to the side of the base",
         )
 
     # Compound arc — a forward/back move AND a left/right turn joined by "and" in a
