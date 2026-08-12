@@ -854,12 +854,18 @@ def startup() -> None:
     # back wrong the floor->neutral interpolation collapses and the head jerks
     # straight up instead of rising slowly. We parked it at the rest pose on the
     # last shutdown()/sleep(), so we know exactly where it is.
+    #
+    # Pace: the old 25/0.025 (~1000 qus/s) wake read as sluggish (owner 2026-08-11:
+    # "the startup servo movements are slow"). 60/0.02 streams ~3000 qus/s — still
+    # under the startup profile's physical cap (speed 40 ≈ 4000 qus/s) and ramped
+    # by the per-channel acceleration, so the fragile headtilt still GLIDES (never
+    # snap the tilt — 5 lb head on an 8 mm rod), just ~3x brisker.
     lift_thread = threading.Thread(
         target=servos.move_to,
         args=({1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL, 3: VISOR_HALF},),
         kwargs={
-            "step_us": 25,
-            "step_delay": 0.025,
+            "step_us": 60,
+            "step_delay": 0.02,
             "start": {ch: SHUTDOWN_REST_POSE[ch] for ch in (1, 2, 3)},
         },
         daemon=True,
@@ -869,23 +875,24 @@ def startup() -> None:
 
     # Look around as if waking up — randomly choose left-right or right-left. The
     # first turn starts from the centred rest pose for the same reason as the lift.
+    # 70/0.025 (~2800 qus/s) keeps the look-around in step with the faster rise.
     neck_start = {0: SHUTDOWN_REST_POSE[0]}
     if random.random() < 0.5:
-        servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025, start=neck_start)
+        servos.move_to({0: NECK_LEFT},  step_us=70, step_delay=0.025, start=neck_start)
         time.sleep(0.3)
-        servos.move_to({0: NECK_RIGHT}, step_us=40, step_delay=0.025)
+        servos.move_to({0: NECK_RIGHT}, step_us=70, step_delay=0.025)
         time.sleep(0.3)
     else:
-        servos.move_to({0: NECK_RIGHT}, step_us=40, step_delay=0.025, start=neck_start)
+        servos.move_to({0: NECK_RIGHT}, step_us=70, step_delay=0.025, start=neck_start)
         time.sleep(0.3)
-        servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025)
+        servos.move_to({0: NECK_LEFT},  step_us=70, step_delay=0.025)
         time.sleep(0.3)
 
     # Wait for the head lift to finish before centering the neck.
     lift_thread.join()
 
     # Return to center.
-    servos.move_to({0: NECK_CENTER}, step_us=40, step_delay=0.025)
+    servos.move_to({0: NECK_CENTER}, step_us=70, step_delay=0.025)
     time.sleep(0.2)
 
 

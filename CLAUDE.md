@@ -20,6 +20,16 @@ here and has burned hours repeatedly:
   `_maybe_lean_impulse`). `test_idle_head_wander` and `test_listening_motion`
   pass alone but fail under discover.
 
+On the robot Mac, tests drive the REAL Maestro, so a sweep leaves the head in a
+random pose and the next boot jerks from it. `tests/test_zzz_servo_park.py`
+(named to sort last) glides everything back to the shutdown rest pose — always
+let a full sweep include it, and run it manually after any servo-touching test
+session:
+
+```bash
+venv/bin/python -m unittest tests.test_zzz_servo_park
+```
+
 ### Known pre-existing failures (as of 2026-08-02)
 
 These fail on a clean checkout of main, per-module, and are NOT caused by your
