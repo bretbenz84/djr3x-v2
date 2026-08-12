@@ -616,26 +616,43 @@ class MotionAgencyTest(unittest.TestCase):
         self._tick(1)
         self.assertFalse(MA.requested_come_active())
 
-    # ── fused alignment bearing (field 2026-08-11: ±12-45° oscillation) ────────
+    # ── head-first alignment (owner spec 2026-08-11: face centres, THEN the
+    # neck offset alone is the body bearing) ───────────────────────────────────
 
-    def test_head_locked_with_face_off_centre_still_aligns(self):
-        # Neck at neutral but the face far right of frame: the old head-locked
-        # neck-only read said "centered" and launched the drive at nothing. The
-        # fused bearing (neck + face) sees the true offset and aligns first.
+    def test_head_locked_with_face_off_centre_waits_for_tracking(self):
+        # Face far right of frame with a live lock: face tracking is mid-swing
+        # onto them. The body must WAIT — sampling now is how a −48° "align"
+        # turned him away from a person he was looking at (field 2026-08-11
+        # 19:57). After the settle timeout it falls back to the fused one-shot.
         self._neck = 6000
         self._face_box = _EDGE_FACE_RIGHT
         self.assertTrue(MA.request_come_here())
         self._tick()
+        self.turn.assert_not_called()
+        self.come.assert_not_called()
+        self.assertTrue(MA.requested_come_active())
+        with mock.patch.object(config, "MOTION_COME_HEAD_SETTLE_TIMEOUT_SECS",
+                               0.0, create=True):
+            self._tick()
+        self.turn.assert_called_once()           # timeout → fused fallback aligns
+
+    def test_face_centered_reads_the_neck_as_the_body_bearing(self):
+        # Face tracking has the face centred while the neck sits +0.40 right of
+        # neutral: the neck offset IS the bearing — one clean align turn right.
+        self._neck = 6867                        # +0.40 of the 3488 half-span
+        self._face_box = _CENTERED_FACE
+        self.assertTrue(MA.request_come_here())
+        self._tick()
         self.turn.assert_called_once()
+        self.assertAlmostEqual(self.turn.call_args[0][0], -24.0, places=0)
         self.come.assert_not_called()
 
-    def test_opposing_neck_and_face_offsets_cancel_and_he_approaches(self):
-        # Mid-slew snapshot: head is +0.40 of half-span right (neck 7594) while
-        # the face still sits left of frame centre by the same bearing. Either
-        # signal alone reads a big error and over-corrects (the sign-flipping
-        # align loop); the sum reads ~0 and the approach launches.
-        self._neck = 6867                        # +0.40 of the 3488 half-span (neutral 5472)
-        self._face_box = (476, 400, 200, 200)    # centre 576 -> -0.40 of half-width
+    def test_face_centered_and_neck_neutral_approaches(self):
+        # Head straight ahead, face in the middle of frame — the owner-spec'd
+        # green light: "once he's got me in the center and his head is pointed
+        # straight ahead he could reasonably move forward."
+        self._neck = 5472
+        self._face_box = _CENTERED_FACE
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.come.assert_called_once_with(
@@ -647,8 +664,8 @@ class MotionAgencyTest(unittest.TestCase):
         # to the firmware as the `come` heading instead of a fourth base turn —
         # alignment must not starve the approach forever (field 2026-08-11: four
         # minutes of align turns, zero re-approaches).
-        self._neck = 5472                        # exactly neutral
-        self._face_box = (1148, 400, 200, 200)   # centre 1248 -> +0.30 offset
+        self._neck = 6518                        # +0.30 of half-span, face centred
+        self._face_box = _CENTERED_FACE
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.turn.assert_called_once()           # try 1: a normal align turn
@@ -656,9 +673,11 @@ class MotionAgencyTest(unittest.TestCase):
         MA._requested_come["align_turns"] = int(config.MOTION_COME_ALIGN_MAX_TRIES)
         self._tick()
         self.assertEqual(self.turn.call_count, 1, "no further align turns")
-        self.come.assert_called_once_with(
-            -18.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
-        )                                        # -0.30 * MOTION_FACE_TURN_MAX_DEG
+        self.come.assert_called_once()
+        heading = self.come.call_args[0][0]
+        self.assertAlmostEqual(heading, -18.0, places=1)  # -0.30 * MAX_DEG
+        self.assertEqual(self.come.call_args[1]["stop_at"],
+                         config.MOTION_COME_REQUEST_STOP_AT_M)
 
     # ── dwell neck sweep (owner spec 2026-08-11) ───────────────────────────────
 
@@ -691,8 +710,8 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertEqual(self.turn.call_count, 3)
 
     def test_a_lost_sighting_resets_the_align_try_counter(self):
-        self._neck = 6000
-        self._face_box = (1148, 400, 200, 200)
+        self._neck = 6518                        # +0.30 of half-span, face centred
+        self._face_box = _CENTERED_FACE
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.assertEqual(MA._requested_come["align_turns"], 1)
@@ -1112,9 +1131,10 @@ class UserMotionStanddownTest(unittest.TestCase):
 
     def test_come_here_ignores_the_standdown(self):
         MA.note_user_motion()
+        self._face_box = _CENTERED_FACE   # face centred → neck offset is the bearing
         self.assertTrue(MA.request_come_here())
         self._tick(1)
-        # Person visible far right -> the come align turn still fires.
+        # Neck exhausted right with the face centred -> the align turn still fires.
         self.turn.assert_called_once()
 
 

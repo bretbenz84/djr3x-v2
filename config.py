@@ -8306,6 +8306,13 @@ MOTION_COME_SCAN_DWELL_SECS = 3.0
 MOTION_COME_NECK_SWEEP_ENABLED = True
 MOTION_COME_NECK_SWEEP_HOLD_SECS = 1.2   # settled-camera hold at each side pose
 MOTION_COME_SCAN_SWEEP_DWELL_SECS = 4.5  # dwell when the neck sweep is running
+# HEAD-FIRST alignment (owner spec 2026-08-11): with a head lock, face tracking
+# centres the face BEFORE any body decision — once the face is within
+# FACE_CENTERED of frame centre, the neck offset alone is the body bearing (one
+# clean, current number; no fusing a slewing neck with a stale face box). The
+# settle timeout bounds the wait before falling back to the fused one-shot read.
+MOTION_COME_FACE_CENTERED_FRACTION = 0.25
+MOTION_COME_HEAD_SETTLE_TIMEOUT_SECS = 4.0
 # Resuming after a `come` that "completed" while the requester still face-reads
 # far requires the radial front ToF to show at least this much open floor — the
 # face-size zone lies on the wide-angle lens, and retrying on it alone bulldozed

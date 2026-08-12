@@ -223,6 +223,8 @@ _requested_come = {
     "seen_frac": 0.0,       # fused bearing AT the sighting moment (neck + face read
                             # together, so it is synchronized) — the resight turn
                             # uses this actual angle, not a fixed step
+    "head_wait_at": 0.0,    # when we started waiting for face tracking to centre
+                            # the face (head-first alignment); 0 = not waiting
     "approach_at": 0.0,     # when the last `come` was issued (retry pacing)
     "approaches": 0,        # how many times we've launched at them this errand
     "align_turns": 0,       # consecutive align turns without reaching "centered" —
@@ -312,6 +314,7 @@ def request_come_here(person_id: "int | None" = None) -> bool:
         last_seen_at=0.0,
         seen_sign=0.0,
         seen_frac=0.0,
+        head_wait_at=0.0,
         approach_at=0.0,
         approaches=0,
         align_turns=0,
@@ -334,8 +337,8 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
-                           seen_frac=0.0, approach_at=0.0, approaches=0,
-                           align_turns=0, skip_log_at=0.0)
+                           seen_frac=0.0, head_wait_at=0.0, approach_at=0.0,
+                           approaches=0, align_turns=0, skip_log_at=0.0)
 
 
 # ── Come-search dwell gaze ────────────────────────────────────────────────────
@@ -433,10 +436,21 @@ def _come_dwell_gaze_loop(stop_event: threading.Event, first_side: str) -> None:
                     consciousness.hold_directed_gaze(side, secs=hold + 2.0)
                 except Exception:
                     pass
-            try:
-                animations.travel_glance_pose(side, "level")
-            except Exception:
-                return
+            # Sweep the side in fractional CHUNKS with stop checks between: one
+            # full-throw glide blocks for seconds and cannot be aborted, so on a
+            # mid-glide sighting it kept dragging the camera off the person
+            # while face tracking fought it — the neck ricocheted thousands of
+            # qus in seconds and alignment sampled the chaos (field 2026-08-11
+            # 19:57: neck 6872→4065→8904 in 6 s, aligns pinned at the clamp).
+            for fraction in (0.45, 0.75, 1.0):
+                if stop_event.is_set() or _shutting_down():
+                    return
+                try:
+                    animations.travel_glance_pose(side, "level", fraction=fraction)
+                except Exception:
+                    return
+                if stop_event.wait(0.15):
+                    return
             if stop_event.wait(max(0.1, hold)):
                 return
     finally:
@@ -514,6 +528,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     person = locked_person or _visible_known_person(snapshot, requester)
     if person is None:
         _requested_come["align_turns"] = 0   # sighting lost — alignment starts over
+        _requested_come["head_wait_at"] = 0.0
         # DWELL: the camera settled only turn_done_at ago, and the detect→identify
         # pipeline needs a couple of seconds of STILL camera to find a face across
         # the room. Concluding "nobody this way" any sooner is how two full sweeps
@@ -610,12 +625,43 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     if done_at > 0.0 and (now - done_at) < _num("MOTION_COME_ALIGN_SETTLE_SECS", 1.2):
         return True
 
-    # Align using the fused bearing (neck offset PLUS face-in-frame offset — see
-    # _come_alignment_fraction) — otherwise a come-here acquired without a head
-    # lock has no steer.
-    frac = _come_alignment_fraction(person, head_locked=locked_person is not None)
+    # ── HEAD-FIRST ALIGNMENT (owner spec 2026-08-11: "once he's got me in the
+    # center and his head is pointed straight ahead he could reasonably move
+    # forward") ──────────────────────────────────────────────────────────────
+    # With a head lock, let FACE TRACKING finish centring the face before any
+    # body decision: once the face is verified near frame centre, the neck
+    # offset alone IS the body's bearing to the person — one clean, current
+    # number. Fusing a fast-slewing neck with a face box up to a second stale
+    # is what turned him AWAY from a person he was looking straight at (field
+    # 2026-08-11 19:57: locked at 178 px error, then a −48° "align" from a
+    # garbage sample). The fused read survives only as the no-lock / timeout
+    # fallback, where nothing is steering the neck.
     centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
     approach_heading = 0.0
+    face_frac = _face_offset_fraction(person)
+    neck_frac = neck_offset_fraction()
+    head_on_them = (
+        locked_person is not None
+        and face_frac is not None
+        and abs(face_frac) <= _num("MOTION_COME_FACE_CENTERED_FRACTION", 0.25)
+    )
+    if (locked_person is not None and face_frac is not None and not head_on_them):
+        # Face tracking is still swinging the head onto them — wait it out
+        # (bounded), sampling nothing. The sighting sampler keeps the give-up
+        # clock fresh through this hold.
+        if float(_requested_come["head_wait_at"]) <= 0.0:
+            _requested_come["head_wait_at"] = now
+        if (now - float(_requested_come["head_wait_at"])) < _num(
+            "MOTION_COME_HEAD_SETTLE_TIMEOUT_SECS", 4.0
+        ):
+            return True
+    else:
+        _requested_come["head_wait_at"] = 0.0
+
+    if head_on_them and neck_frac is not None:
+        frac = neck_frac        # face centred ⇒ neck offset IS the body bearing
+    else:
+        frac = _come_alignment_fraction(person, head_locked=locked_person is not None)
     if frac is not None and abs(frac) >= centered:
         # GOOD-ENOUGH ESCAPE: repeated align turns that keep missing "centered"
         # must not starve the approach forever — field 2026-08-11: ±12-45 deg

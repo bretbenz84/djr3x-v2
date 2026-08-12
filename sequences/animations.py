@@ -1488,7 +1488,8 @@ def directed_look_pose(direction: str = "current", target: str = "") -> str:
     return norm
 
 
-def travel_glance_pose(side: str = "center", pitch: str = "level") -> None:
+def travel_glance_pose(side: str = "center", pitch: str = "level",
+                       fraction: float = 1.0) -> None:
     """One scenery glance while the base is rolling: neck yaw + head pitch in a
     single glide.
 
@@ -1498,9 +1499,16 @@ def travel_glance_pose(side: str = "center", pitch: str = "level") -> None:
     lift/tilt extremes on every swing of a drive, there is no settle sleep (the
     travel-gaze loop paces itself), and the glance is not recorded as a directed
     look.
+
+    ``fraction`` scales how far toward the side the NECK travels (1.0 = full
+    throw). Callers that need an interruptible sweep pose a side in fractional
+    chunks with stop checks between them — a single full-throw glide blocks for
+    seconds and cannot be aborted mid-flight (the come-search dwell sweep kept
+    dragging the camera off a person it had just found, field 2026-08-11 19:57).
     """
     side = (side or "center").strip().lower()
     pitch = (pitch or "level").strip().lower()
+    fraction = max(0.0, min(1.0, float(fraction)))
 
     neck_cfg = config.SERVO_CHANNELS["neck"]
     lift_cfg = config.SERVO_CHANNELS["headlift"]
@@ -1512,13 +1520,14 @@ def travel_glance_pose(side: str = "center", pitch: str = "level") -> None:
     step_us = int(getattr(config, "DIRECTED_LOOK_STEP_QUS", 30))
     step_delay = float(getattr(config, "DIRECTED_LOOK_STEP_DELAY_SECS", 0.032))
 
+    neck_neutral = int(neck_cfg["neutral"])
     targets = {int(visor_cfg["ch"]): int(visor_cfg["max"])}
     if side == "left":
-        targets[neck_ch] = int(neck_cfg["min"])
+        targets[neck_ch] = neck_neutral + int((int(neck_cfg["min"]) - neck_neutral) * fraction)
     elif side == "right":
-        targets[neck_ch] = int(neck_cfg["max"])
+        targets[neck_ch] = neck_neutral + int((int(neck_cfg["max"]) - neck_neutral) * fraction)
     else:
-        targets[neck_ch] = int(neck_cfg["neutral"])
+        targets[neck_ch] = neck_neutral
 
     lift_neutral = int(lift_cfg["neutral"])
     tilt_neutral = int(tilt_cfg["neutral"])
