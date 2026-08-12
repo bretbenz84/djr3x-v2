@@ -77,6 +77,7 @@ MOTION_FACE_PERSON_ENABLED / MOTION_APPROACH_ENABLED per behavior.
 """
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -324,12 +325,113 @@ def request_come_here(person_id: "int | None" = None) -> bool:
 def cancel_requested_come(reason: str = "cancelled") -> None:
     if _requested_come["active"]:
         _log.info("[motion_agency] requested come: %s", reason)
+    _stop_come_dwell_gaze()
     _requested_come.update(active=False, started_at=0.0, requester_id=None,
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
                            approach_at=0.0, approaches=0, align_turns=0,
                            skip_log_at=0.0)
+
+
+# ── Come-search dwell gaze ────────────────────────────────────────────────────
+# While the base holds still at a scan stop, the NECK sweeps left-right so each
+# stop covers roughly ±(neck half-span + camera half-FOV) instead of the camera's
+# straight-ahead cone alone (owner spec 2026-08-11: "would it help if the neck did
+# a sweep each time he stopped turning"). The every-tick sighting sampler catches
+# a face at any neck angle, and the fused alignment bearing (neck + face offset)
+# then turns the BODY by exactly the spotted angle while face tracking re-centres
+# the head — spotted frame-left at neck-left means "turn left while the neck
+# straightens", with no extra machinery. Wider per-stop coverage is also what lets
+# the scan legs grow to 90°, so facing directly away no longer costs a ~7-leg tour.
+
+_come_gaze: dict = {"stop": None, "thread": None, "done_key": 0.0}
+
+
+def _come_dwell_gaze_running_or_ran(done_key: float) -> bool:
+    thread = _come_gaze.get("thread")
+    if float(_come_gaze.get("done_key") or 0.0) == done_key:
+        return True          # already ran (or is running) for this scan stop
+    return bool(thread is not None and thread.is_alive())
+
+
+def _maybe_start_come_dwell_gaze(done_key: float, now: float) -> bool:
+    """Start (at most once per scan stop) the dwell neck sweep. Returns True when
+    a sweep is running or already ran for this stop, so the caller can extend the
+    dwell window to cover it."""
+    if _come_dwell_gaze_running_or_ran(done_key):
+        return True
+    if not _flag("MOTION_COME_NECK_SWEEP_ENABLED", True):
+        return False
+    try:
+        from hardware import servos
+        if not servos.connected():
+            return False
+    except Exception:
+        return False
+    stop_event = threading.Event()
+    first_side = "left" if float(_requested_come["scan_sign"]) >= 0 else "right"
+    worker = threading.Thread(
+        target=_come_dwell_gaze_loop,
+        args=(stop_event, first_side),
+        name="come-dwell-gaze",
+        daemon=True,
+    )
+    _come_gaze.update(stop=stop_event, thread=worker, done_key=done_key)
+    worker.start()
+    return True
+
+
+def _come_dwell_gaze_loop(stop_event: threading.Event, first_side: str) -> None:
+    """One left-and-right neck sweep, first toward the person's last-known side,
+    recentring on the way out. Face tracking still runs — a face spotted mid-sweep
+    locks the head and the sampler stops this worker."""
+    hold = _num("MOTION_COME_NECK_SWEEP_HOLD_SECS", 1.2)
+    try:
+        from sequences import animations
+    except Exception:
+        return
+    try:
+        from intelligence import consciousness
+    except Exception:
+        consciousness = None
+    try:
+        sides = (first_side, "right" if first_side == "left" else "left")
+        for side in sides:
+            if stop_event.is_set():
+                return
+            if consciousness is not None:
+                try:
+                    # Pin the pose against the idle wander / speaker room-scan for
+                    # the duration of the hold; face tracking still overrides.
+                    consciousness.hold_directed_gaze(side, secs=hold + 2.0)
+                except Exception:
+                    pass
+            try:
+                animations.travel_glance_pose(side, "level")
+            except Exception:
+                return
+            if stop_event.wait(max(0.1, hold)):
+                return
+    finally:
+        if consciousness is not None:
+            try:
+                consciousness.hold_directed_gaze("center")   # clears the hold
+            except Exception:
+                pass
+        try:
+            animations.travel_glance_pose("center", "level")
+        except Exception:
+            pass
+
+
+def _stop_come_dwell_gaze() -> None:
+    stop_event = _come_gaze.get("stop")
+    if stop_event is not None:
+        try:
+            stop_event.set()
+        except Exception:
+            pass
 
 
 def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> bool:
@@ -387,8 +489,15 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # crossed the owner without seeing him (field 2026-08-11). This also covers
         # the old re-acquire grace (field 2026-07-21 bookshelf spiral).
         done_at = float(_requested_come["turn_done_at"])
-        if done_at > 0.0 and (now - done_at) < _num("MOTION_COME_SCAN_DWELL_SECS", 3.0):
-            return True
+        if done_at > 0.0:
+            dwell = _num("MOTION_COME_SCAN_DWELL_SECS", 3.0)
+            # The dwell doubles as the neck-sweep window: the head scans left and
+            # right from the stationary base, widening what this stop can see.
+            if _maybe_start_come_dwell_gaze(done_at, now):
+                dwell = max(dwell, _num("MOTION_COME_SCAN_SWEEP_DWELL_SECS", 4.5))
+            if (now - done_at) < dwell:
+                return True
+        _stop_come_dwell_gaze()      # dwell over — recentre before the next leg
         # RESIGHT: face tracking held the person moments ago — typically mid-scan,
         # when the sweeping camera swept PAST them and a follow-up micro-turn (e.g.
         # compass correction) lost the lock again (field 2026-07-23: lock on Bret at
@@ -420,7 +529,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # Legs sweep at the slower scan rate so the every-tick sighting sampler can
         # catch a face the camera crosses mid-turn (field 2026-08-11: 75 deg/s legs
         # blew past the owner repeatedly).
-        deg = abs(_num("MOTION_COME_SEARCH_TURN_DEG", 45.0))
+        deg = abs(_num("MOTION_COME_SEARCH_TURN_DEG", 90.0))
         i = int(_requested_come["search_turns"]) + 1
         sign = float(_requested_come["scan_sign"]) * (1.0 if i % 2 == 1 else -1.0)
         rel = sign * deg * i
@@ -428,6 +537,10 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # grows to +/-225, +/-270 in the later sweep steps, which the chassis executed
         # as multi-second pirouettes ("he just spins"). Same net heading, shorter arc.
         rel = ((rel + 180.0) % 360.0) - 180.0
+        # 90° legs make some steps degenerate (i=4: rel 360 → 0): a no-op turn
+        # would burn a leg staring at the same view — take a plain leg instead.
+        if abs(rel) < 1.0:
+            rel = sign * deg
         seq = motion_controller.turn(
             rel, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
         )
@@ -513,14 +626,25 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             # return (mis-calibrated matrix ToF) completes the drive seconds in
             # while the requester is still across the room (field 2026-08-11:
             # `come` "completed" after 3 s, 261 front zone_blocks that session).
-            # If the requester is visibly still at PUBLIC distance, the sensor is
-            # lying about arrival: treat it as stopped-short and keep trying.
+            # A face-size "public" read alone is NOT enough to resume: the wide-
+            # angle lens lies about distance, and the resulting retry burst (three
+            # `come`s in 7 s, field 2026-08-11 19:05) bulldozed him into floor
+            # clutter right next to the owner. Resume only when the radial front
+            # ToF ALSO shows open floor ahead — the same the-ToF-is-the-truth
+            # cross-check the spontaneous approach uses. No usable reading fails
+            # open (the firmware's own obstacle stop still guards the drive).
             if person.get("distance_zone") != "public":
                 cancel_requested_come("arrived")
                 return True
+            front = _radial_front_m()
+            if front is not None and front < _num("MOTION_COME_RESUME_CLEAR_M", 1.8):
+                cancel_requested_come("arrived (front reads %.2fm)" % front)
+                return True
             _log.info(
                 "[motion_agency] requested come: drive completed but requester "
-                "still reads far (public zone) — treating as stopped short"
+                "still reads far and the front is open (%s) — treating as "
+                "stopped short",
+                "no front reading" if front is None else "%.2fm" % front,
             )
         elif last_result is None:
             return True                 # still driving; nothing to decide yet
@@ -571,6 +695,16 @@ def _min_valid_m(*vals) -> Optional[float]:
         if best is None or m < best:
             best = m
     return best
+
+
+def _radial_front_m() -> Optional[float]:
+    """Nearest radial front-pair (fl/fr) reading in metres, or None when no
+    usable reading exists. The face-size distance zone lies on the wide-angle
+    lens; this is the truth check before believing 'they're far'."""
+    tele = motion.telemetry()
+    if isinstance(tele, dict) and isinstance(tele.get("tof_mm"), dict):
+        return _min_valid_m(tele["tof_mm"].get("fl"), tele["tof_mm"].get("fr"))
+    return None
 
 
 def neck_offset_fraction() -> Optional[float]:
@@ -963,6 +1097,7 @@ def _step_inner(snapshot: dict, profile) -> None:
         seen_locked = _tracked_person(snapshot, _req)
         seen = seen_locked or _visible_known_person(snapshot, _req)
         if seen is not None:
+            _stop_come_dwell_gaze()   # face found — the sweep yields to tracking
             _requested_come["last_seen_at"] = time.monotonic()
             frac = _come_alignment_fraction(seen, head_locked=seen_locked is not None)
             if frac is not None and abs(frac) > 0.05:
@@ -1139,12 +1274,10 @@ def _step_inner(snapshot: dict, profile) -> None:
     # The front ToF is the truth — unless it shows genuinely open floor ahead, the
     # "they're far" vote doesn't count. Fails open only when there is no usable
     # front reading (the firmware's obstacle stop still guards the drive itself).
-    far_enough = True
-    tele = motion.telemetry()
-    if isinstance(tele, dict) and isinstance(tele.get("tof_mm"), dict):
-        front = _min_valid_m(tele["tof_mm"].get("fl"), tele["tof_mm"].get("fr"))
-        if front is not None and front < _num("MOTION_APPROACH_MIN_START_M", 1.8):
-            far_enough = False
+    front = _radial_front_m()
+    far_enough = not (
+        front is not None and front < _num("MOTION_APPROACH_MIN_START_M", 1.8)
+    )
     if person.get("distance_zone") == "public" and facing_them and far_enough:
         _state["far_hits"] += 1
     else:

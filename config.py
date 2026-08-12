@@ -8272,9 +8272,18 @@ MOTION_COME_STOP_AT_M = 0.60
 # tracking acquires somebody, square the chassis to them, then use the firmware's
 # obstacle-gated `come` command. This stop distance is deliberately separate from
 # MOTION_COME_STOP_AT_M, which remains the spontaneous social-approach distance.
-MOTION_COME_REQUEST_STOP_AT_M = 1.00
-MOTION_COME_SEARCH_TURN_DEG = 45.0
-MOTION_COME_SEARCH_MAX_TURNS = 8       # sweep budget (net reach grows ±45,±90,... per turn)
+# 1.00 -> 1.30 (field 2026-08-11 19:05: retried approaches walked him into floor
+# clutter at the owner's feet — arrive with room to spare; low junk near a person
+# sits under/inside the front sensors' floor-rejection band, so distance is the
+# only real margin).
+MOTION_COME_REQUEST_STOP_AT_M = 1.30
+# 45 -> 90: each stop now also runs a NECK sweep during its dwell (see
+# MOTION_COME_NECK_SWEEP_ENABLED), so per-stop coverage is roughly ±(neck
+# half-span + camera half-FOV) and the body legs can be twice as far apart —
+# facing directly away from the requester costs ~3 legs, not ~7 (owner spec
+# 2026-08-11).
+MOTION_COME_SEARCH_TURN_DEG = 90.0
+MOTION_COME_SEARCH_MAX_TURNS = 8       # sweep budget (net reach grows ±90,±180,... per turn)
 # Give-up clock, measured from the LATER of the errand start and the last sighting
 # of the target — progress restarts it. Measured from start alone, the align phase
 # burned the clock and the errand died with "no person found" five seconds after
@@ -8288,6 +8297,21 @@ MOTION_COME_SEARCH_TIMEOUT_SECS = 45.0
 # ~120°, sighted only in passing). Dwell is keyed to the firmware `done` for the
 # turn, with MOTION_COME_TURN_RESOLVE_TIMEOUT_SECS as the lost-`done` backstop.
 MOTION_COME_SCAN_DWELL_SECS = 3.0
+# While the base dwells at a scan stop, the neck sweeps toward the last-known
+# side, then the other way, then recentres — the sighting sampler catches a face
+# at any neck angle, and the fused alignment bearing turns the body by the full
+# spotted angle while face tracking straightens the head (owner spec 2026-08-11:
+# "if I was frame left he would know to turn left while straightening out his
+# neck servo"). The dwell stretches to SWEEP_DWELL so the sweep can finish.
+MOTION_COME_NECK_SWEEP_ENABLED = True
+MOTION_COME_NECK_SWEEP_HOLD_SECS = 1.2   # settled-camera hold at each side pose
+MOTION_COME_SCAN_SWEEP_DWELL_SECS = 4.5  # dwell when the neck sweep is running
+# Resuming after a `come` that "completed" while the requester still face-reads
+# far requires the radial front ToF to show at least this much open floor — the
+# face-size zone lies on the wide-angle lens, and retrying on it alone bulldozed
+# him into floor clutter beside the owner (field 2026-08-11 19:05, three comes
+# in 7 s). Same truth-check as MOTION_APPROACH_MIN_START_M.
+MOTION_COME_RESUME_CLEAR_M = 1.8
 MOTION_COME_TURN_RESOLVE_TIMEOUT_SECS = 8.0
 # After any come-search turn completes, wait this long before TRUSTING an alignment
 # measurement. The base turn and the neck re-center the same error simultaneously;

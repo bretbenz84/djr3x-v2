@@ -526,15 +526,17 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertEqual(self.turn.call_count, 2)
 
     def test_requested_come_scan_sweeps_alternating_sides(self):
-        # Sweep pattern (sign alternates, magnitude grows): +45, -90, +135 — net
-        # offsets +45, -45, +90 around the last-known side, not a one-way spiral.
+        # Sweep pattern (sign alternates, magnitude grows): +90, -180, then the
+        # short-way -90 — net offsets +90, -90, +180 around the last-known side,
+        # not a one-way spiral. With the dwell neck sweep widening each stop,
+        # those three legs (plus the starting heading) cover the full circle.
         self._tracking = {"locked": False, "visible": False}
         self._visible = False        # nobody on camera
         with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(3)
         rels = [c.args[0] for c in self.turn.call_args_list]
-        self.assertEqual(rels, [45.0, -90.0, 135.0])
+        self.assertEqual(rels, [90.0, -180.0, -90.0])
 
     def test_requested_come_align_seeds_sweep_side_and_dwell(self):
         # Person on the left (+ align turn), then lost: the sweep must start back
@@ -658,6 +660,36 @@ class MotionAgencyTest(unittest.TestCase):
             -18.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
         )                                        # -0.30 * MOTION_FACE_TURN_MAX_DEG
 
+    # ── dwell neck sweep (owner spec 2026-08-11) ───────────────────────────────
+
+    def test_dwell_stretches_while_the_neck_sweep_runs(self):
+        # With servos available, a scan stop's dwell extends to the sweep window
+        # so the head can finish looking left and right before the next leg.
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = False
+        with mock.patch("hardware.servos.connected", return_value=True), \
+             mock.patch.object(MA, "_come_dwell_gaze_loop", lambda *a, **k: None), \
+             mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True), \
+             mock.patch.object(config, "MOTION_COME_SCAN_SWEEP_DWELL_SECS", 60.0,
+                               create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(1)                          # scan leg 1
+            self.assertEqual(self.turn.call_count, 1)
+            self._tick(4)                          # sweep dwell holds every tick
+            self.assertEqual(self.turn.call_count, 1)
+            self.assertTrue(MA.requested_come_active())
+
+    def test_no_servos_means_stock_dwell_and_no_sweep(self):
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = False
+        with mock.patch("hardware.servos.connected", return_value=False), \
+             mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True), \
+             mock.patch.object(config, "MOTION_COME_SCAN_SWEEP_DWELL_SECS", 60.0,
+                               create=True):
+            self.assertTrue(MA.request_come_here())
+            self._tick(3)                          # legs proceed at the stock pace
+        self.assertEqual(self.turn.call_count, 3)
+
     def test_a_lost_sighting_resets_the_align_try_counter(self):
         self._neck = 6000
         self._face_box = (1148, 400, 200, 200)
@@ -746,10 +778,12 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             self.assertTrue(MA.request_come_here())
             self._tick(6)
         rels = [c.args[0] for c in self.turn.call_args_list]
-        # raw pattern would be +45,-90,+135,-180,+225,-270; the last two wrap to
-        # the equivalent short rotations -135 and +90.
-        self.assertEqual(rels, [45.0, -90.0, 135.0, -180.0, -135.0, 90.0])
+        # raw pattern would be +90,-180,+270,-360,+450,-540; the wraps give the
+        # short rotations -90 and +90/-180, and the degenerate -360→0 leg (a
+        # no-op stare at the same view) is replaced by a plain -90 leg.
+        self.assertEqual(rels, [90.0, -180.0, -90.0, -90.0, 90.0, -180.0])
         self.assertTrue(all(abs(r) <= 180.0 for r in rels))
+        self.assertTrue(all(abs(r) >= 1.0 for r in rels), "no no-op legs")
 
     def test_front_zone_block_does_not_cancel_the_search(self):
         # Turning away from a block is firmware-legal; a front flap must not kill
@@ -881,6 +915,42 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
         self._tick()
         self.assertFalse(MA.requested_come_active(), "arriving must end the errand")
         self.assertEqual(self.come.call_count, 1, "no re-launch after arriving")
+
+    def test_completed_with_front_clutter_accepts_arrival(self):
+        # The requester's face still reads "public" (the wide-angle lens lies)
+        # but the radial front ToF sees something 1.2 m ahead: believing the
+        # face-size zone and resuming is the retry burst that bulldozed him into
+        # floor clutter at the owner's feet (field 2026-08-11 19:05, three comes
+        # in 7 s). Front-not-clear + completed = we're there; stop.
+        with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            MA.step(_snapshot(distance_zone="public"), _profile())
+            self.assertEqual(self.come.call_count, 1)
+            self._result = "completed"
+            with mock.patch.object(
+                MA.motion, "telemetry",
+                return_value={"tof_mm": {"fl": 1200, "fr": 2600}}, create=True,
+            ):
+                MA.step(_snapshot(distance_zone="public"), _profile())
+        self.assertFalse(MA.requested_come_active(),
+                         "front clutter within RESUME_CLEAR_M must end the errand")
+        self.assertEqual(self.come.call_count, 1, "no bulldozing retry")
+
+    def test_completed_with_open_front_floor_resumes(self):
+        # Face reads far AND the front radial genuinely shows open floor — this
+        # is the phantom-matrix stop; he should keep coming.
+        with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            MA.step(_snapshot(distance_zone="public"), _profile())
+            self.assertEqual(self.come.call_count, 1)
+            self._result = "completed"
+            with mock.patch.object(
+                MA.motion, "telemetry",
+                return_value={"tof_mm": {"fl": 3400, "fr": 3600}}, create=True,
+            ):
+                MA.step(_snapshot(distance_zone="public"), _profile())
+        self.assertTrue(MA.requested_come_active())
+        self.assertEqual(self.come.call_count, 2, "open floor ahead — try again")
 
     def test_completed_while_still_far_is_a_stopped_short_retry(self):
         # Firmware "completed" = it stopped stop_at short of the nearest front
