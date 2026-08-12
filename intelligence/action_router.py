@@ -1327,9 +1327,11 @@ _MOTION_COMPASS_GO_RE = re.compile(
 # "a little / a bit / nudge / inch …" with no explicit distance => a SMALL move.
 _MOTION_SMALL_RE = re.compile(rf"\b(?:{_MOTION_AMOUNT}|nudge|inch)\b", re.I)
 _MOTION_SMALL_MOVE_M = 0.15
-# A direct "turn left/right a little" is still a useful deliberate reorientation,
-# not the tiny 15° conversational continuation used by "a little more".
-_MOTION_SMALL_TURN_DEG = 45.0
+# "turn left/right a little" => a small deliberate correction. Owner spec
+# 2026-08-11: 15°, the same increment as the "a little more" continuation — these
+# arrive as fine-trim commands after an overshoot ("You went too far. Turn right
+# a little bit."), where the previous 45° would swing well past the mark again.
+_MOTION_SMALL_TURN_DEG = 15.0
 # Compound arc: a forward/back move + a left/right component joined by "and" in ONE
 # utterance ("move a little forward and to your right") => a simultaneous curve. The
 # left/right must follow the "and" (within a short window) so it's the arc's turn part.
@@ -1353,6 +1355,27 @@ _MOTION_TURN_RE = re.compile(
     r"(?P<dir>left|right|around|clockwise|counter[-\s]?clockwise)\b",
     re.I,
 )
+# ASR renders the imperative in past tense when a past-tense clause precedes it.
+# Field 2026-08-11 21:26: "Turn right a little bit" arrived as "You went too far.
+# Turned right a little bit." — no motion family matched "turned", the utterance
+# fell to the LLM router as conversation, and the repair layer answered "Got it —
+# turning right a little." with zero wheel motion. A subjectless past-tense turn
+# verb opening a sentence IS the imperative: real narration keeps its subject
+# ("I turned right", "you turned too far") and is deliberately left alone, as is
+# anything mid-sentence ("he came in, turned around and left").
+_MOTION_PAST_IMPERATIVE_RE = re.compile(
+    r"(?P<lead>^|[.!?]\s+)(?P<verb>turned|rotated|pivoted|spun)\b", re.I,
+)
+_MOTION_PAST_TO_BASE = {
+    "turned": "turn", "rotated": "rotate", "pivoted": "pivot", "spun": "spin",
+}
+
+
+def _restore_misheard_imperatives(text: str) -> str:
+    return _MOTION_PAST_IMPERATIVE_RE.sub(
+        lambda m: m.group("lead") + _MOTION_PAST_TO_BASE[m.group("verb").lower()],
+        text or "",
+    )
 _MOTION_STOP_RE = re.compile(
     r"\b(halt|freeze|stop\s+(?:moving|driving|rolling)|"
     r"stop\s+the\s+(?:robot|base|droid|wheels|car)|hold\s+still|"
@@ -1579,6 +1602,7 @@ def classify_explicit_motion_sequence(
     "move forward and to your right" remains the existing single arc command.
     """
     cleaned = " ".join((text or "").strip().split())
+    cleaned = _restore_misheard_imperatives(cleaned)
     # Re-attach magnitudes BEFORE stripping a vocative: ", 15 degrees" is part of the
     # command, ", Rex" is not. Both run before the separator scan so a comma that is
     # only punctuation never looks like a route boundary.
@@ -1648,6 +1672,7 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
     only while it is actually moving, so 'stop' still means stop-music/game/talk
     otherwise)."""
     cleaned = " ".join((text or "").strip().split())
+    cleaned = _restore_misheard_imperatives(cleaned)
     if not cleaned:
         return None
     # Questions about prior behavior and explicit negations are conversation, not

@@ -712,7 +712,9 @@ class ClassifierTest(unittest.TestCase):
         d = ar.classify_explicit_motion("turn 180")
         self.assertEqual(d.args, {"direction": "around", "deg": 180.0})
 
-    def test_direct_small_turn_is_45_degrees(self):
+    def test_direct_small_turn_is_15_degrees(self):
+        # Owner spec 2026-08-11: "turn right a little" is a fine-trim correction —
+        # 15°, same increment as the "a little more" continuation.
         for text, direction in (
             ("turn right a little", "right"),
             ("turn left a bit", "left"),
@@ -722,7 +724,30 @@ class ClassifierTest(unittest.TestCase):
             d = ar.classify_explicit_motion(text)
             self.assertIsNotNone(d, text)
             self.assertEqual(d.action, "motion.turn", text)
-            self.assertEqual(d.args, {"direction": direction, "deg": 45.0}, text)
+            self.assertEqual(d.args, {"direction": direction, "deg": 15.0}, text)
+
+    def test_past_tense_imperative_still_turns(self):
+        # Field 2026-08-11 21:26: qwen3 heard "Turn right a little bit" as
+        # "Turned ..." (primed by the past-tense clause before it); nothing
+        # matched, and Rex SAID "turning right" without moving. A subjectless
+        # past-tense turn verb opening a sentence is the imperative.
+        d = ar.classify_explicit_motion("You went too far. Turned right a little bit.")
+        self.assertIsNotNone(d)
+        self.assertEqual(d.action, "motion.turn")
+        self.assertEqual(d.args, {"direction": "right", "deg": 15.0})
+        d = ar.classify_explicit_motion("Turned left a little.")
+        self.assertEqual((d.action, d.args["direction"]), ("motion.turn", "left"))
+
+    def test_past_tense_narration_is_not_a_command(self):
+        # Narration keeps its subject / sits mid-sentence — must not spin the base.
+        for text in (
+            "I turned right at the light",
+            "you turned right instead of left",
+            "he came in, turned around and left",
+            "we turned left onto the highway",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(ar.classify_explicit_motion(text), text)
 
     def test_distance_parse(self):
         d = ar.classify_explicit_motion("move forward 2 feet")
