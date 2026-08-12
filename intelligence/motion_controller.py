@@ -41,6 +41,7 @@ _arc_until = 0.0
 _turn_verify_lock = threading.Lock()
 _turn_verify_epoch = 0
 _pending_turn_verify: dict[int, dict] = {}
+_turn_verify_unavailable_logged = False
 
 
 def _get_float(name: str, default: float) -> float:
@@ -308,7 +309,21 @@ def _remember_turn_verification(
     epoch: int,
     attempt: int,
 ) -> None:
-    if start_yaw is None or abs(desired_deg) > 170.0:
+    if start_yaw is None:
+        # Silent for a whole session of overshooting turns (field 2026-08-11:
+        # every 90° turn landed ~115° and NOTHING in the log said the compass
+        # check never armed). Say so once, loudly, so a dead mag / missing
+        # calibration is visible in the log instead of inferred from absence.
+        global _turn_verify_unavailable_logged
+        if (not _turn_verify_unavailable_logged
+                and bool(getattr(config, "MOTION_COMPASS_TURN_VERIFY_ENABLED", True))):
+            _turn_verify_unavailable_logged = True
+            _log.warning(
+                "[motion] compass turn verification unavailable (no calibrated "
+                "fused yaw) — finite turns run open-loop this session; check mag "
+                "telemetry health and compass calibration")
+        return
+    if abs(desired_deg) > 170.0:
         return  # shortest-angle comparison is ambiguous at/above a half turn
     with _turn_verify_lock:
         _pending_turn_verify[int(seq)] = {

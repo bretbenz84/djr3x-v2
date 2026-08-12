@@ -396,6 +396,14 @@
 #define TURN_VERIFY_TIMEOUT_MIN_MS 8000
 #define TURN_VERIFY_TIMEOUT_MULT    3.0f
 #define TURN_VERIFY_TOLERANCE_DEG   1.5f
+// Finite turns decelerate INTO the target (v = sqrt(2*a*remaining), the angular
+// twin of the linear slow-zone taper). Without it the turn ran at full rate until
+// the yaw crossed the threshold, `done` fired, and the accel_ang ramp-down coasted
+// v^2/(2a) PAST it — a 90° voice turn at 75°/s (accel_ang 2.0) landed ~115°, and a
+// 15° trim nearly doubled (field 2026-08-11). The floor keeps the tapered pivot
+// above stick-slip: ~20°/s keeps both wheels well clear of WHEEL_STALLED_EPS_MS,
+// and the stall-gated spin kick + WHEEL_SPIN_RUN_DUTY carry the scrub load.
+#define TURN_DECEL_MIN_RAD_S        0.35f
 
 // (The stalled-pivot "wiggle" assist that lived here — auto-converting a stalled
 // pivot into alternating rolling arcs — was removed 2026-07-13 at the owner's

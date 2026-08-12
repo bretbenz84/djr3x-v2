@@ -276,6 +276,22 @@ class Compass:
         if not field_magnitude_ok(mx, my, mz, self.cal):
             self._rejected += 1
             self._alpha = 0.0
+            if self._rejected == 50 and self._fused is None:
+                # Every sample rejected and the fusion never anchored: the
+                # chassis field no longer resembles the calibration (hardware
+                # added/moved near the mag, or a big charge current). Without
+                # this line the whole downstream stack — cardinal turns, the
+                # motion turn verifier — just went dark with no trace (field
+                # 2026-08-11: dead since the Aug-7 ToF-module failure, noticed
+                # only because 90° voice turns were landing at ~115°).
+                _log.warning(
+                    "[compass] field gate rejected the first %d samples "
+                    "(|B|=%.0f vs calibrated %.0f) — fused yaw UNAVAILABLE; the "
+                    "chassis field has changed since calibration, re-run "
+                    "tools/compass_calibrate.py in-situ",
+                    self._rejected, math.sqrt(mx * mx + my * my + mz * mz),
+                    self.cal.field_norm,
+                )
             return
 
         self._alpha = alpha_for_current(ma)

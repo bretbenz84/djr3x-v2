@@ -124,6 +124,19 @@ static bool turn_verify_timed_out(const FiniteCmd& f, uint32_t now) {
   return (uint32_t)(now - f.turn_started_ms) > limit;
 }
 
+// Decel-anticipating rate for a finite turn: command the speed the accel_ang
+// slew can shed to zero exactly at the target, floored (calib.h) so the pivot
+// never tapers into stick-slip. Progress uses the same source as the done check.
+static float turn_decel_rate(const FiniteCmd& f, float accel_ang) {
+  const float progress = f.imu_verify
+      ? signf(f.target_dtheta) * f.imu_progress_rad
+      : f.progress_dtheta;
+  const float remaining = fmaxf(0.0f, fabsf(f.target_dtheta) - progress);
+  if (accel_ang <= 1e-4f) return f.rate;
+  const float v = sqrtf(2.0f * accel_ang * remaining);
+  return clampf(v, TURN_DECEL_MIN_RAD_S, f.rate);
+}
+
 // ---- control tick: runs entirely under the state lock (race-free), then
 // emits any `done` AFTER releasing the lock. -------------------------------
 void control_tick(float dt) {
@@ -195,14 +208,17 @@ void control_tick(float dt) {
         lin_t = c.setpoint.lin; ang_t = c.setpoint.ang;
         break;
       case CMD_TURN:
-        ang_t = signf(c.finite.target_dtheta) * c.finite.rate;
+        ang_t = signf(c.finite.target_dtheta)
+                * turn_decel_rate(c.finite, c.params.accel_ang);
         break;
       case CMD_MOVE:
         lin_t = signf(c.finite.target_dist) * c.finite.speed;
         break;
       case CMD_COME:
-        if (c.finite.come_turning) ang_t = signf(c.finite.target_dtheta) * c.finite.rate;
-        else                       lin_t = c.finite.speed;   // always forward
+        if (c.finite.come_turning)
+          ang_t = signf(c.finite.target_dtheta)
+                  * turn_decel_rate(c.finite, c.params.accel_ang);
+        else lin_t = c.finite.speed;   // always forward
         break;
       default: break;
     }
