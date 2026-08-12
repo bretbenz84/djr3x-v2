@@ -273,14 +273,19 @@ def requested_come_active() -> bool:
     return bool(_requested_come["active"])
 
 
-def request_come_here(person_id: "int | None" = None) -> bool:
+def request_come_here(person_id: "int | None" = None, *,
+                      behind: bool = False) -> bool:
     """Arm a bounded search/align/approach sequence for an explicit voice request.
 
     ``person_id`` is the voice-identified requester (person_db_id). When known, the
     search goes to THAT face and skips everyone else until it finds them — with two
     people in the room, "the first known face wins" meant Rex could deliver himself
     to whoever happened to be on camera, not to whoever called him (owner spec
-    2026-08-11). An anonymous requester keeps the old any-known-face behavior."""
+    2026-08-11). An anonymous requester keeps the old any-known-face behavior.
+
+    ``behind=True`` ("I'm behind you, come here") seeds the search with an
+    immediate about-face instead of sweeping the wrong hemisphere first (owner
+    spec 2026-08-11)."""
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
         return False
     # "Come here" asks for movement, so it lifts an earlier "don't move" outright
@@ -326,7 +331,40 @@ def request_come_here(person_id: "int | None" = None) -> bool:
                   "person %s", person_id)
     else:
         _log.info("[motion_agency] requested come: searching for a visible person")
+    if behind:
+        seq = motion_controller.turn(
+            180.0, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
+        )
+        if seq is not None:
+            _requested_come["pending_turn_seq"] = seq
+            _requested_come["last_turn_at"] = time.monotonic()
+            _log.info("[motion_agency] requested come: speaker says they're "
+                      "behind — leading with an about-face")
     return True
+
+
+def note_behind_turn(seq: "int | None") -> None:
+    """A standalone "I'm behind you" about-face was issued through the normal
+    motion.turn lane while a come-here search is RUNNING: adopt that turn as the
+    search's own leg, so the dwell + neck sweep run at the new heading instead
+    of the search blindly resuming its old sweep pattern mid-rotation."""
+    if seq is None or not requested_come_active():
+        return
+    _stop_come_dwell_gaze()
+    _requested_come.update(
+        pending_turn_seq=int(seq),
+        last_turn_at=time.monotonic(),
+        search_turns=0,          # fresh sweep budget at the new hemisphere
+        align_turns=0,
+        head_wait_at=0.0,
+        # Their voice IS a localization: keep the give-up clock fresh, but drop
+        # any stored visual bearing — it predates the about-face.
+        last_seen_at=time.monotonic(),
+        seen_deg=0.0,
+        seen_sign=0.0,
+    )
+    _log.info("[motion_agency] requested come: speaker says they're behind — "
+              "adopting the about-face as a search leg")
 
 
 def cancel_requested_come(reason: str = "cancelled") -> None:

@@ -1251,6 +1251,31 @@ _MOTION_COME_RE = re.compile(
     r"roll\s+over\s+here|get\s+over\s+here|come\s+to\s+(?:me|daddy))\b",
     re.I,
 )
+# "I'm behind you" — the speaker localizes THEMSELVES behind the base (owner spec
+# 2026-08-11: "if he's facing away he knows to turn around first"). Matched per
+# SENTENCE FRAGMENT, full-match only, so "what's behind you?" or "the couch
+# behind you" never fires; "come back here" starts with a verb and misses too.
+_MOTION_BEHIND_FRAGMENT_RE = re.compile(
+    r"^(?:hey\s+)?(?:rex[,!]?\s+)?"
+    r"(?:(?:i'?m|i\s+am|we'?re|we\s+are)\s+)?"
+    r"(?:right\s+|directly\s+)?"
+    r"(?:behind\s+you|in\s+back\s+of\s+you|back\s+here)"
+    r"$",
+    re.I,
+)
+_MOTION_LOOK_BEHIND_RE = re.compile(
+    r"^(?:hey\s+)?(?:rex[,!]?\s+)?look\s+behind\s+you$", re.I
+)
+
+
+def _speaker_says_behind(cleaned: str) -> bool:
+    """True when any sentence of the utterance places the speaker behind Rex."""
+    for frag in re.split(r"[.!?;,]+", cleaned or ""):
+        frag = frag.strip()
+        if frag and (_MOTION_BEHIND_FRAGMENT_RE.match(frag)
+                     or _MOTION_LOOK_BEHIND_RE.match(frag)):
+            return True
+    return False
 # Cardinal directions (true compass headings; executed against the calibrated
 # QMC5883's fused yaw at run time). Diagonals accept solid/spaced/hyphenated forms.
 _CARDINAL_DEG = {
@@ -1673,9 +1698,22 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
             )
 
     if _MOTION_COME_RE.search(cleaned):
+        # "I'm behind you, come here" — seed the search with an immediate
+        # about-face instead of sweeping the wrong hemisphere first.
+        args = {"behind": True} if _speaker_says_behind(cleaned) else {}
         return ActionDecision(
-            action="motion.come", confidence=0.95, args={},
+            action="motion.come", confidence=0.95, args=args,
             reason="explicit come-here request",
+        )
+
+    if _speaker_says_behind(cleaned):
+        # Standalone "I'm behind you" (no come request): turn to face the voice —
+        # mid-come-search the turn is adopted as a search leg (motion_agency),
+        # otherwise face tracking simply picks them up after the about-face.
+        return ActionDecision(
+            action="motion.turn", confidence=0.95,
+            args={"direction": "around", "deg": 180.0, "behind": True},
+            reason="speaker says they are behind the base",
         )
 
     # Compound arc — a forward/back move AND a left/right turn joined by "and" in a

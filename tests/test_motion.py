@@ -503,6 +503,35 @@ class ClassifierTest(unittest.TestCase):
         for text in ("come here", "come over here", "come to me"):
             self.assertEqual(self._act(text), "motion.come")
 
+    def test_behind_you_turns_around(self):
+        # Owner spec 2026-08-11: "I'm behind you" → about-face toward the voice.
+        for text in ("I'm behind you", "I am behind you", "Hey Rex, I'm behind you.",
+                     "behind you", "right behind you", "I'm back here",
+                     "look behind you", "we're behind you"):
+            with self.subTest(text=text):
+                d = ar.classify_explicit_motion(text)
+                self.assertIsNotNone(d, text)
+                self.assertEqual(d.action, "motion.turn")
+                self.assertEqual(d.args.get("direction"), "around")
+                self.assertTrue(d.args.get("behind"))
+
+    def test_behind_you_mentions_are_not_commands(self):
+        # Mentions/questions must not spin the base.
+        for text in ("what's behind you?", "the couch behind you is new",
+                     "come back here", "who's behind you",
+                     "there's a plant behind you"):
+            with self.subTest(text=text):
+                d = ar.classify_explicit_motion(text)
+                self.assertFalse(d is not None and d.args.get("behind"), text)
+
+    def test_behind_you_plus_come_seeds_the_search(self):
+        d = ar.classify_explicit_motion("I'm behind you, come here")
+        self.assertEqual(d.action, "motion.come")
+        self.assertTrue(d.args.get("behind"))
+        d = ar.classify_explicit_motion("come here")
+        self.assertEqual(d.action, "motion.come")
+        self.assertFalse(d.args.get("behind"))
+
     def test_contextual_motion_continuations(self):
         left = ar.classify_explicit_motion("turn left")
         forward = ar.classify_explicit_motion("move forward")

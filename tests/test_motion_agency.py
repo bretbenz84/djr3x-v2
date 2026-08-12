@@ -680,6 +680,43 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertEqual(self.come.call_args[1]["stop_at"],
                          config.MOTION_COME_REQUEST_STOP_AT_M)
 
+    # ── "I'm behind you" (owner spec 2026-08-11) ───────────────────────────────
+
+    def test_behind_come_leads_with_an_about_face(self):
+        # "I'm behind you, come here": the search's first leg is an immediate
+        # 180 instead of sweeping the wrong hemisphere.
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = False
+        self.assertTrue(MA.request_come_here(person_id=1, behind=True))
+        self.turn.assert_called_once_with(
+            180.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S
+        )
+        self.assertEqual(MA._requested_come["pending_turn_seq"], 7)
+        # The next tick waits on that turn's `done` like any search leg.
+        self.done_result.return_value = None
+        self._tick(2)
+        self.assertEqual(self.turn.call_count, 1)
+
+    def test_note_behind_turn_adopts_the_turn_mid_search(self):
+        # Standalone "I'm behind you" while a come search is running: the
+        # motion.turn lane issued seq 42; the search adopts it as its own leg.
+        self._tracking = {"locked": False, "visible": False}
+        self._visible = False
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick(1)                              # scan leg 1
+        MA._requested_come["search_turns"] = 5     # deep into a sweep
+        MA.note_behind_turn(42)
+        self.assertEqual(MA._requested_come["pending_turn_seq"], 42)
+        self.assertEqual(MA._requested_come["search_turns"], 0,
+                         "fresh sweep budget at the new hemisphere")
+        self.assertGreater(MA._requested_come["last_seen_at"], 0.0,
+                           "their voice keeps the give-up clock fresh")
+        self.assertTrue(MA.requested_come_active())
+
+    def test_note_behind_turn_is_a_noop_without_an_errand(self):
+        MA.note_behind_turn(42)
+        self.assertFalse(MA.requested_come_active())
+
     # ── dwell neck sweep (owner spec 2026-08-11) ───────────────────────────────
 
     def test_dwell_stretches_while_the_neck_sweep_runs(self):

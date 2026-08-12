@@ -19224,12 +19224,15 @@ def _handle_router_motion_action(
     if action in {"motion.turn", "motion.move", "motion.arc"}:
         # The human is steering by voice: the social realign behavior must not
         # rotate the body back toward their face for a while (field 2026-07-23,
-        # "turn right" undone by a realign left turn 13 s later).
-        try:
-            from intelligence import motion_agency
-            motion_agency.note_user_motion()
-        except Exception:
-            pass
+        # "turn right" undone by a realign left turn 13 s later). EXCEPT "I'm
+        # behind you": that turn points him TOWARD the speaker, and realign
+        # finishing the job afterward is exactly what they asked for.
+        if not args.get("behind"):
+            try:
+                from intelligence import motion_agency
+                motion_agency.note_user_motion()
+            except Exception:
+                pass
     elif action == "motion.stop":
         # "Don't move" is a STANDING instruction, not a brief pause — it latches
         # until he's told to move again. Sharing the 45 s steering window meant he
@@ -19268,9 +19271,13 @@ def _handle_router_motion_action(
             # The voice-identified speaker is the target: with two people in the
             # room, "come here" must go to whoever SAID it, not to the first known
             # face the search happens across (owner spec 2026-08-11).
-            return ("On my way."
-                    if motion_agency.request_come_here(person_id=requester_person_id)
-                    else None)
+            behind = bool(args.get("behind"))
+            started = motion_agency.request_come_here(
+                person_id=requester_person_id, behind=behind
+            )
+            if not started:
+                return None
+            return "Turning around — on my way." if behind else "On my way."
         except Exception as exc:
             _log.debug("requested come start failed: %s", exc)
             return None
@@ -19298,6 +19305,15 @@ def _handle_router_motion_action(
         if direction == "around":
             seq = motion_controller.turn(180.0 if deg is None else deg)
             line = "Spinning around."
+            if seq is not None and args.get("behind"):
+                # "I'm behind you" mid-come-search: the search adopts this turn
+                # as its own leg (dwell + neck sweep at the new heading).
+                line = "Ah — behind me. Turning around."
+                try:
+                    from intelligence import motion_agency
+                    motion_agency.note_behind_turn(seq)
+                except Exception:
+                    pass
         elif direction == "right":
             seq = motion_controller.turn_right(deg)
             line = "Turning right."
