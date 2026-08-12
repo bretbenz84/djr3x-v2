@@ -89,21 +89,19 @@ class ActivationTest(PrideTestCase):
 
 
 class BaselineTest(PrideTestCase):
-    """Every reply is a LITTLE gay (owner 2026-08-08, after the first field run:
-    the trigger answer landed queeny but the very next replies went neutral).
-    The baseline lives in REX_CORE_PROMPT so it reaches both voices always —
-    queeny mode is the turned-up overlay, not the only source."""
+    """The identity is durable; the REGISTER is mode-gated (owner 2026-08-11,
+    fourth pass: "he's calling me 'sis' despite not being in gay mode"). The
+    baseline in REX_CORE_PROMPT keeps who he is — gay, at ease, proud YES when
+    asked — but pet names ("sis"/"honey"/"queen") and the campy delivery belong
+    ONLY to triggered queeny mode (intelligence/pride.py)."""
 
-    def test_core_prompt_carries_the_baseline(self) -> None:
-        # Owner 2026-08-08 (third pass): the baseline stays SUBTLE — the
-        # turned-up campy register belongs ONLY to triggered queeny mode
-        # ("I wanted him to be more gay only when you activate gay mode").
+    def test_core_prompt_carries_the_identity_but_not_the_register(self) -> None:
         self.assertIn("You are gay", config.REX_CORE_PROMPT)
-        for token in ("sis", "queen", "SUBTLE"):
-            self.assertIn(token, config.REX_CORE_PROMPT)
-        # "sis" is his signature address, explicitly preferred over "honey"
-        # (owner 2026-08-08: "call people sis instead of honey").
-        self.assertIn('"sis" is YOUR word', config.REX_CORE_PROMPT)
+        # Pet names are explicitly excluded from the baseline voice, and the
+        # old "sis is his signature address" instruction (owner 2026-08-08,
+        # reversed 2026-08-11) must stay gone.
+        self.assertIn("NOT part of your baseline voice", config.REX_CORE_PROMPT)
+        self.assertNotIn('"sis" is YOUR word', config.REX_CORE_PROMPT)
         # The escalated register must NOT leak into the always-on baseline.
         for token in ("spill the tea", "I am LIVING", "DRAMA"):
             self.assertNotIn(token, config.REX_CORE_PROMPT)

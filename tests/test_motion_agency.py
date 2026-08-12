@@ -766,7 +766,11 @@ class RequestedComeFieldFixTest(unittest.TestCase):
             self._tick(1)
         self.assertEqual(self.turn.call_count, 2)
         resight = self.turn.call_args[0][0]
-        self.assertAlmostEqual(abs(resight), config.MOTION_COME_RESIGHT_TURN_DEG)
+        # The turn-back uses the ACTUAL bearing measured at the sighting (neck
+        # 7594 → +0.61 of half-span → ~-36.5°), not the fixed fallback step —
+        # a fixed 30° chronically under-turned toward a face spotted at full
+        # neck throw and the sweep swung past the owner again (field 2026-08-11).
+        self.assertAlmostEqual(resight, -36.5, places=0)
         self.assertLess(resight, 0)                    # back toward the right side
         self.assertTrue(MA.requested_come_active())
 
@@ -986,6 +990,45 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
                 self._result = "blocked"          # never actually clears
         self.assertLessEqual(self.come.call_count, 3)
         self.assertFalse(MA.requested_come_active(), "must not retry forever")
+
+
+class ComeDwellGazeTest(unittest.TestCase):
+    """The dwell neck sweep's exit behavior. The recentre glide is the risky
+    part: racing the power-down droop it stood the servos back up after the
+    rest pose (field 2026-08-11 19:39), and after a sighting it would glide the
+    head OFF the person it just found."""
+
+    def _run_loop(self, *, recenter, state_val, stop_set=True):
+        calls = []
+        stop = __import__("threading").Event()
+        if stop_set:
+            stop.set()
+        MA._come_gaze["recenter"] = recenter
+        with mock.patch("sequences.animations.travel_glance_pose",
+                        side_effect=lambda side, pitch: calls.append(side)), \
+             mock.patch("intelligence.consciousness.hold_directed_gaze",
+                        lambda *a, **k: None), \
+             mock.patch.object(MA.state_module, "get_state",
+                               return_value=state_val):
+            MA._come_dwell_gaze_loop(stop, "left")
+        return calls
+
+    def test_recenter_stop_glides_the_head_back(self):
+        from state import State
+        calls = self._run_loop(recenter=True, state_val=State.IDLE)
+        self.assertEqual(calls, ["center"])
+
+    def test_sighting_stop_leaves_the_neck_on_the_person(self):
+        from state import State
+        calls = self._run_loop(recenter=False, state_val=State.IDLE)
+        self.assertEqual(calls, [], "no recentre — the head is ON them")
+
+    def test_shutdown_suppresses_the_recenter_glide(self):
+        # The recentre racing animations.shutdown()'s droop drove the visor/head
+        # back up AFTER the rest pose, and the latch then froze it there.
+        from state import State
+        calls = self._run_loop(recenter=True, state_val=State.SHUTDOWN)
+        self.assertEqual(calls, [], "never re-pose during a shutdown")
 
 
 class UserMotionStanddownTest(unittest.TestCase):

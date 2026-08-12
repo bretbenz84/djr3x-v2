@@ -220,6 +220,9 @@ _requested_come = {
                             # tick, including while the base is mid-turn (see step()):
                             # a sighting during a scan turn must not be thrown away
     "seen_sign": 0.0,       # which way to turn to re-center that sighting (+ = left)
+    "seen_frac": 0.0,       # fused bearing AT the sighting moment (neck + face read
+                            # together, so it is synchronized) — the resight turn
+                            # uses this actual angle, not a fixed step
     "approach_at": 0.0,     # when the last `come` was issued (retry pacing)
     "approaches": 0,        # how many times we've launched at them this errand
     "align_turns": 0,       # consecutive align turns without reaching "centered" —
@@ -308,6 +311,7 @@ def request_come_here(person_id: "int | None" = None) -> bool:
         scan_sign=1.0,
         last_seen_at=0.0,
         seen_sign=0.0,
+        seen_frac=0.0,
         approach_at=0.0,
         approaches=0,
         align_turns=0,
@@ -330,8 +334,8 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
-                           approach_at=0.0, approaches=0, align_turns=0,
-                           skip_log_at=0.0)
+                           seen_frac=0.0, approach_at=0.0, approaches=0,
+                           align_turns=0, skip_log_at=0.0)
 
 
 # ── Come-search dwell gaze ────────────────────────────────────────────────────
@@ -345,7 +349,17 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
 # straightens", with no extra machinery. Wider per-stop coverage is also what lets
 # the scan legs grow to 90°, so facing directly away no longer costs a ~7-leg tour.
 
-_come_gaze: dict = {"stop": None, "thread": None, "done_key": 0.0}
+_come_gaze: dict = {"stop": None, "thread": None, "done_key": 0.0,
+                    "recenter": True}
+
+
+def _come_gaze_busy() -> bool:
+    """True while the sweep worker (including its recentre glide) is running —
+    alignment/scan decisions must wait it out, or they sample the neck mid-glide
+    (field 2026-08-11 19:37: aligns pinned at the ±60° clamp because the fused
+    bearing was read while the sweep had the neck at full throw)."""
+    thread = _come_gaze.get("thread")
+    return bool(thread is not None and thread.is_alive())
 
 
 def _come_dwell_gaze_running_or_ran(done_key: float) -> bool:
@@ -377,15 +391,20 @@ def _maybe_start_come_dwell_gaze(done_key: float, now: float) -> bool:
         name="come-dwell-gaze",
         daemon=True,
     )
-    _come_gaze.update(stop=stop_event, thread=worker, done_key=done_key)
+    _come_gaze.update(stop=stop_event, thread=worker, done_key=done_key,
+                      recenter=True)
     worker.start()
     return True
 
 
 def _come_dwell_gaze_loop(stop_event: threading.Event, first_side: str) -> None:
-    """One left-and-right neck sweep, first toward the person's last-known side,
-    recentring on the way out. Face tracking still runs — a face spotted mid-sweep
-    locks the head and the sampler stops this worker."""
+    """One left-and-right neck sweep, first toward the person's last-known side.
+    Face tracking still runs — a face spotted mid-sweep locks the head and the
+    sampler stops this worker WITHOUT recentring (the head is ON them; gliding
+    it back to centre would be throwing the sighting away). Only a sweep that
+    ends empty (dwell over, next leg coming) recentres, and never once the
+    system is shutting down — the recentre glide racing the power-down droop is
+    what stood the servos back up after the rest pose (field 2026-08-11 19:39)."""
     hold = _num("MOTION_COME_NECK_SWEEP_HOLD_SECS", 1.2)
     try:
         from sequences import animations
@@ -395,10 +414,17 @@ def _come_dwell_gaze_loop(stop_event: threading.Event, first_side: str) -> None:
         from intelligence import consciousness
     except Exception:
         consciousness = None
+
+    def _shutting_down() -> bool:
+        try:
+            return state_module.get_state() in (State.SLEEP, State.SHUTDOWN)
+        except Exception:
+            return False
+
     try:
         sides = (first_side, "right" if first_side == "left" else "left")
         for side in sides:
-            if stop_event.is_set():
+            if stop_event.is_set() or _shutting_down():
                 return
             if consciousness is not None:
                 try:
@@ -419,13 +445,18 @@ def _come_dwell_gaze_loop(stop_event: threading.Event, first_side: str) -> None:
                 consciousness.hold_directed_gaze("center")   # clears the hold
             except Exception:
                 pass
-        try:
-            animations.travel_glance_pose("center", "level")
-        except Exception:
-            pass
+        if bool(_come_gaze.get("recenter", True)) and not _shutting_down():
+            try:
+                animations.travel_glance_pose("center", "level")
+            except Exception:
+                pass
 
 
-def _stop_come_dwell_gaze() -> None:
+def _stop_come_dwell_gaze(recenter: bool = False) -> None:
+    """Stop the dwell sweep. ``recenter=False`` (sighting / cancel / shutdown)
+    leaves the neck where it is; ``recenter=True`` (dwell over, empty view)
+    glides it back before the next scan leg."""
+    _come_gaze["recenter"] = bool(recenter)
     stop_event = _come_gaze.get("stop")
     if stop_event is not None:
         try:
@@ -497,7 +528,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                 dwell = max(dwell, _num("MOTION_COME_SCAN_SWEEP_DWELL_SECS", 4.5))
             if (now - done_at) < dwell:
                 return True
-        _stop_come_dwell_gaze()      # dwell over — recentre before the next leg
+        _stop_come_dwell_gaze(recenter=True)   # dwell over — recentre for the next leg
+        if _come_gaze_busy():
+            return True              # let the recentre glide finish first
         # RESIGHT: face tracking held the person moments ago — typically mid-scan,
         # when the sweeping camera swept PAST them and a follow-up micro-turn (e.g.
         # compass correction) lost the lock again (field 2026-07-23: lock on Bret at
@@ -507,19 +540,29 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         fresh = _num("MOTION_COME_SIGHT_FRESH_SECS", 6.0)
         seen_sign = float(_requested_come["seen_sign"])
         if seen_at > 0.0 and (now - seen_at) < fresh and seen_sign != 0.0:
-            deg = abs(_num("MOTION_COME_RESIGHT_TURN_DEG", 30.0))
+            # Turn by the ACTUAL bearing measured at the sighting (fused
+            # neck+face, synchronized) when we have one — a fixed 30° step
+            # chronically under-turned toward a face spotted at full neck throw
+            # (~60°+ off-body) and the sweep swung right past him again (field
+            # 2026-08-11 19:37). Fixed step is the fallback for a signless read.
+            seen_frac = float(_requested_come["seen_frac"])
+            if seen_frac != 0.0:
+                turn_deg = _turn_degrees_for(seen_frac)
+            else:
+                turn_deg = seen_sign * abs(_num("MOTION_COME_RESIGHT_TURN_DEG", 30.0))
             seq = motion_controller.turn(
-                seen_sign * deg, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
+                turn_deg, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
             )
             if seq is not None:
                 _requested_come["last_turn_at"] = now
                 _requested_come["pending_turn_seq"] = seq
                 _requested_come["search_turns"] = 0
                 _requested_come["scan_sign"] = seen_sign
+                _requested_come["seen_frac"] = 0.0   # spent — don't re-turn on it
                 _log.info(
                     "[motion_agency] requested come: recent sighting %.1fs ago — "
                     "turning back %+.0f deg toward it",
-                    now - seen_at, seen_sign * deg,
+                    now - seen_at, turn_deg,
                 )
             return True
         # Sweep AROUND the last-known side instead of spiraling one direction: net
@@ -559,7 +602,10 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     # (or the face box) mid-slew flips signs and over-corrects — the +15/-37/+37
     # align oscillation that never read "centered" (field 2026-08-11). The sighting
     # sampler keeps last_seen_at fresh through this hold, so the errand can't time
-    # out while he is simply letting the picture stabilize.
+    # out while he is simply letting the picture stabilize. Same for the dwell
+    # sweep worker: while it is still gliding the neck, any read is mid-slew.
+    if _come_gaze_busy():
+        return True
     done_at = float(_requested_come["turn_done_at"])
     if done_at > 0.0 and (now - done_at) < _num("MOTION_COME_ALIGN_SETTLE_SECS", 1.2):
         return True
@@ -1097,13 +1143,17 @@ def _step_inner(snapshot: dict, profile) -> None:
         seen_locked = _tracked_person(snapshot, _req)
         seen = seen_locked or _visible_known_person(snapshot, _req)
         if seen is not None:
-            _stop_come_dwell_gaze()   # face found — the sweep yields to tracking
+            _stop_come_dwell_gaze()   # face found — the sweep yields to tracking,
+                                      # leaving the neck ON them (no recentre)
             _requested_come["last_seen_at"] = time.monotonic()
             frac = _come_alignment_fraction(seen, head_locked=seen_locked is not None)
             if frac is not None and abs(frac) > 0.05:
                 # Same convention as _turn_degrees_for: positive neck offset
                 # (person to Rex's right) needs a negative (CW) base turn.
                 _requested_come["seen_sign"] = -1.0 if frac >= 0 else 1.0
+                # The neck and face are read TOGETHER here, so this bearing is
+                # synchronized — trustworthy even mid-sweep at full neck throw.
+                _requested_come["seen_frac"] = float(frac)
 
     # The base must be settled (idle) to sample intrusions, but a firmware BLOCKED
     # state is itself a strong front-crowding signal the flinch should answer. Any

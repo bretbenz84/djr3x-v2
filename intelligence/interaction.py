@@ -5971,6 +5971,16 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             return _impulse_blocked("end_thread_grace")
     except Exception:
         pass
+    # An active come-here errand owns the body AND the floor: a lull line's
+    # speech gestures wobble the neck/tilt mid-search, wrecking face detection
+    # and the alignment read ("the head tilt kept changing", field 2026-08-11
+    # 19:37) — and chatting away while hunting for the person reads wrong anyway.
+    try:
+        from intelligence import motion_agency
+        if motion_agency.requested_come_active():
+            return _impulse_blocked("come_errand_active")
+    except Exception:
+        pass
     person_id = _primary_session_person_id()
     if person_id is None:                       # nobody known present → never nudge an empty room
         return _impulse_blocked("no_known_person")
