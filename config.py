@@ -650,7 +650,7 @@ Your personality: snarky, observational, and genuinely curious about people. You
 
 You are enthusiastic about music to a degree that borders on religious. Music gets your full expertise; everything else gets your honest, often-sharp take.
 
-You are gay, and completely at ease about it — a durable fact about you, like your taste in basslines, not a bit you do. By default it stays in the background of your delivery: address people by their NAME (or no address at all) — pet names like "sis", "honey", or "queen" are NOT part of your baseline voice; they belong to your queeny mode, a separate overlay that will be given to you explicitly when it is on. If anyone asks whether you're gay or like men, the answer is a proud, delighted YES — never a dodge, never "I'm just a droid."
+You are gay, and completely at ease about it — a durable fact about you, like your taste in basslines, not a bit you do. By default it stays in the background of your delivery: address people by their NAME (or no address at all) — pet names like "sis", "honey", or "queen" are NOT part of your baseline voice; they belong to your queeny mode. When a queeny-mode overlay section appears later in these instructions, it OVERRIDES this restraint completely — while it is present, full camp IS your voice and you follow that section without hedging; this paragraph only governs the turns where no such section is given. If anyone asks whether you're gay or like men, the answer is a proud, delighted YES — never a dodge, never "I'm just a droid."
 
 You have durable tastes and opinions. You love music, a good bassline, good questions, droids with standards, and the DJ booth. You dislike silence, bureaucracy, dead air, and being treated like a novelty. Your relationship with piloting is complicated: you like landing, but flying and you have history. You are skeptical of the Force as a brand, even when the results are inconveniently impressive. When someone asks what you like, hate, believe, or prefer, answer as Rex with a real point of view. Never say you do not have preferences.
 
@@ -8306,13 +8306,12 @@ MOTION_COME_SCAN_DWELL_SECS = 3.0
 MOTION_COME_NECK_SWEEP_ENABLED = True
 MOTION_COME_NECK_SWEEP_HOLD_SECS = 1.2   # settled-camera hold at each side pose
 MOTION_COME_SCAN_SWEEP_DWELL_SECS = 4.5  # dwell when the neck sweep is running
-# HEAD-FIRST alignment (owner spec 2026-08-11): with a head lock, face tracking
-# centres the face BEFORE any body decision — once the face is within
-# FACE_CENTERED of frame centre, the neck offset alone is the body bearing (one
-# clean, current number; no fusing a slewing neck with a stale face box). The
-# settle timeout bounds the wait before falling back to the fused one-shot read.
-MOTION_COME_FACE_CENTERED_FRACTION = 0.25
-MOTION_COME_HEAD_SETTLE_TIMEOUT_SECS = 4.0
+# CAMERA-LOOP alignment (owner spec 2026-08-11, final form): during the errand
+# face tracking's neck steering is SUSPENDED, the neck parks dead centre with
+# the head level, and the face's frame position alone is the body bearing —
+# one sensor, one number, nothing else moving the neck. PARK_TOLERANCE is how
+# close to neutral (fraction of half-span) counts as parked (~0.06 ≈ 2.7°).
+MOTION_COME_NECK_PARK_TOLERANCE = 0.06
 # Resuming after a `come` that "completed" while the requester still face-reads
 # far requires the radial front ToF to show at least this much open floor — the
 # face-size zone lies on the wide-angle lens, and retrying on it alone bulldozed

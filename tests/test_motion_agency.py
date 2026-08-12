@@ -70,9 +70,11 @@ class MotionAgencyTest(unittest.TestCase):
                               create=True),
             mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 0.0,
                               create=True),
+            # The park/sweep poses go through animations — never real servos.
+            mock.patch("sequences.animations.travel_glance_pose"),
         ]
         (self.available, self.state, self.turn, self.come, self.battery,
-         self.done_result, _) = [p.start() for p in self._patches]
+         self.done_result, _, self.glance) = [p.start() for p in self._patches]
         # Tracked person: locked+visible on slot person_1.
         self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
         self._visible = True          # world_state.people also shows them
@@ -84,7 +86,7 @@ class MotionAgencyTest(unittest.TestCase):
                 if key == "self_state" else {}),
         )
         self._ws.start()
-        self._neck = 6000  # neutral (SERVO_CHANNELS neck: 1984/9984/6000)
+        self._neck = 5472  # neutral (SERVO_CHANNELS neck: 1984/8960/5472) — parked
         self._face_box = None
 
     def _arm_realign(self):
@@ -473,13 +475,15 @@ class MotionAgencyTest(unittest.TestCase):
         self.turn.assert_not_called()
 
     def test_requested_come_aligns_before_approaching(self):
-        self._neck = 7594
+        # Parked neck, face off to the right: align first, approach only once
+        # the face reads centred.
+        self._face_box = (1436, 400, 200, 200)   # +0.60 of half-width → 15°
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.turn.assert_called_once()
         self.come.assert_not_called()
 
-        self._neck = 6000
+        self._face_box = _CENTERED_FACE
         self._tick()
         self.come.assert_called_once_with(
             0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
@@ -541,7 +545,7 @@ class MotionAgencyTest(unittest.TestCase):
     def test_requested_come_align_seeds_sweep_side_and_dwell(self):
         # Person on the left (+ align turn), then lost: the sweep must start back
         # toward that side, and only after the settled-camera dwell.
-        self._neck = 4400                          # far left -> positive align turn
+        self._face_box = (284, 400, 200, 200)      # -0.60 → face left → +15° turn
         self.assertTrue(MA.request_come_here())
         self._tick(1)                              # align turn issued
         self.assertEqual(self.turn.call_count, 1)
@@ -557,10 +561,10 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertGreater(self.turn.call_args[0][0], 0)   # starts toward the last-known side
 
     def test_align_measurement_waits_out_the_settle_window(self):
-        # After an align turn completes, the neck is still re-centring the same
-        # error the base just corrected — measuring mid-slew produced the
-        # +15/-37/+37 oscillation that never read "centered" (field 2026-08-11).
-        self._neck = 7594
+        # After an align turn completes, the frame is still stabilizing —
+        # measuring mid-motion produced the sign-flipping align oscillation
+        # that never read "centered" (field 2026-08-11).
+        self._face_box = (1436, 400, 200, 200)     # +0.60 → align turn 1 fires
         with mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 5.0, create=True):
             self.assertTrue(MA.request_come_here())
             self._tick(1)                          # align turn 1
@@ -616,39 +620,39 @@ class MotionAgencyTest(unittest.TestCase):
         self._tick(1)
         self.assertFalse(MA.requested_come_active())
 
-    # ── head-first alignment (owner spec 2026-08-11: face centres, THEN the
-    # neck offset alone is the body bearing) ───────────────────────────────────
+    # ── camera-loop alignment (owner spec 2026-08-11, final form: neck parks
+    # dead centre, then the face's frame position ALONE is the body bearing) ───
 
-    def test_head_locked_with_face_off_centre_waits_for_tracking(self):
-        # Face far right of frame with a live lock: face tracking is mid-swing
-        # onto them. The body must WAIT — sampling now is how a −48° "align"
-        # turned him away from a person he was looking at (field 2026-08-11
-        # 19:57). After the settle timeout it falls back to the fused one-shot.
-        self._neck = 6000
+    def test_off_centre_neck_parks_before_any_body_decision(self):
+        # The neck is off to the side (a sweep or old tracking left it there):
+        # the FIRST move is parking the head centre-and-level — no base turn,
+        # no approach, no measurement off an unparked neck.
+        self._neck = 6867
         self._face_box = _EDGE_FACE_RIGHT
         self.assertTrue(MA.request_come_here())
         self._tick()
+        self.glance.assert_called_with("center", "level")
         self.turn.assert_not_called()
         self.come.assert_not_called()
         self.assertTrue(MA.requested_come_active())
-        with mock.patch.object(config, "MOTION_COME_HEAD_SETTLE_TIMEOUT_SECS",
-                               0.0, create=True):
-            self._tick()
-        self.turn.assert_called_once()           # timeout → fused fallback aligns
+        # Once the park lands (neck reads neutral), the face bearing drives the
+        # turn: +0.833 of half-frame × 25° half-FOV ≈ 20.8° right → turn -21.
+        self._neck = 5472
+        self._tick()
+        self.turn.assert_called_once()
+        self.assertAlmostEqual(self.turn.call_args[0][0], -20.8, places=0)
 
-    def test_face_centered_reads_the_neck_as_the_body_bearing(self):
-        # Face tracking has the face centred while the neck sits +0.40 right of
-        # neutral: the neck offset IS the bearing — one clean align turn right.
-        self._neck = 6867                        # +0.40 of the 3488 half-span
-        self._face_box = _CENTERED_FACE
+    def test_parked_neck_reads_the_face_as_the_body_bearing(self):
+        # Neck parked; face 60% toward the right edge: bearing = 0.6 × 25° = 15°.
+        self._neck = 5472
+        self._face_box = (1436, 400, 200, 200)   # centre 1536 → +0.60 of half-width
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.turn.assert_called_once()
-        # +0.40 of the CALIBRATED 45° neck half-span = 18° right → turn -18.
-        self.assertAlmostEqual(self.turn.call_args[0][0], -18.0, places=0)
+        self.assertAlmostEqual(self.turn.call_args[0][0], -15.0, places=0)
         self.come.assert_not_called()
 
-    def test_face_centered_and_neck_neutral_approaches(self):
+    def test_face_centered_and_neck_parked_approaches(self):
         # Head straight ahead, face in the middle of frame — the owner-spec'd
         # green light: "once he's got me in the center and his head is pointed
         # straight ahead he could reasonably move forward."
@@ -665,8 +669,8 @@ class MotionAgencyTest(unittest.TestCase):
         # to the firmware as the `come` heading instead of a fourth base turn —
         # alignment must not starve the approach forever (field 2026-08-11: four
         # minutes of align turns, zero re-approaches).
-        self._neck = 6518                        # +0.30 of half-span, face centred
-        self._face_box = _CENTERED_FACE
+        self._neck = 5472
+        self._face_box = (1436, 400, 200, 200)   # +0.60 → bearing 15°
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.turn.assert_called_once()           # try 1: a normal align turn
@@ -676,7 +680,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertEqual(self.turn.call_count, 1, "no further align turns")
         self.come.assert_called_once()
         heading = self.come.call_args[0][0]
-        self.assertAlmostEqual(heading, -13.5, places=1)  # -0.30 * 45° half-span
+        self.assertAlmostEqual(heading, -15.0, places=1)  # -0.60 × 25° half-FOV
         self.assertEqual(self.come.call_args[1]["stop_at"],
                          config.MOTION_COME_REQUEST_STOP_AT_M)
 
@@ -748,8 +752,8 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertEqual(self.turn.call_count, 3)
 
     def test_a_lost_sighting_resets_the_align_try_counter(self):
-        self._neck = 6518                        # +0.30 of half-span, face centred
-        self._face_box = _CENTERED_FACE
+        self._neck = 5472
+        self._face_box = (1436, 400, 200, 200)   # +0.60 → bearing 15°
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.assertEqual(MA._requested_come["align_turns"], 1)
@@ -776,12 +780,13 @@ class RequestedComeFieldFixTest(unittest.TestCase):
                               create=True),
             mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 0.0,
                               create=True),
+            mock.patch("sequences.animations.travel_glance_pose"),
         ]
         (self.available, self.state, self.turn, self.come, self.battery,
-         self.done_result, _) = [p.start() for p in self._patches]
+         self.done_result, _, self.glance) = [p.start() for p in self._patches]
         self._tracking = {"locked": False, "visible": False}
         self._visible = False         # this class exercises the SEARCH path: empty room
-        self._neck = 6000
+        self._neck = 5472
         self._ws = mock.patch(
             "world_state.world_state.get",
             side_effect=lambda key: (
@@ -876,7 +881,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
         # visibility signal. world_state.people still had him the whole time.
         self._tracking = {"locked": False, "visible": False}   # lock pulled away
         self._visible = True                                   # but plainly on camera
-        self._neck = 6000                                      # head centred: no steer
+        self._neck = 5472                                      # head parked: no steer
         self.assertTrue(MA.request_come_here())
         self._tick(1)
         self.turn.assert_not_called()          # nothing to align: don't sweep the room
@@ -889,7 +894,7 @@ class RequestedComeFieldFixTest(unittest.TestCase):
         # position in frame or he would drive straight past them.
         self._tracking = {"locked": False, "visible": False}
         self._visible = True
-        self._neck = 6000
+        self._neck = 5472
         snap = {"people": [{"id": "person_1", "person_db_id": 1,
                             "distance_zone": "social", "face_visible": True,
                             "face_box": (1500, 400, 200, 200)}]}   # right of centre
@@ -928,14 +933,16 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
             mock.patch.object(MA.motion_controller, "last_come_result",
                               side_effect=lambda: (8, self._result)),
             mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
+            mock.patch("sequences.animations.travel_glance_pose"),
         ]
         (self.available, self.state, self.turn, self.come,
-         self.last_result, self.battery) = [p.start() for p in self._patches]
+         self.last_result, self.battery, self.glance) = [p.start() for p in self._patches]
         self.addCleanup(lambda: [p.stop() for p in self._patches])
         self.addCleanup(lambda: MA.cancel_requested_come("test cleanup"))
         self._state_val = "idle"
         self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
-        self._neck = 6000            # centred: no align turn, straight to the approach
+        self._neck = 5472            # parked at neutral: no align turn, straight
+                                     # to the approach (camera-loop design)
         self._ws = mock.patch(
             "world_state.world_state.get",
             side_effect=lambda key: (
@@ -992,9 +999,15 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
                 MA.motion, "telemetry",
                 return_value={"tof_mm": {"fl": 1200, "fr": 2600}}, create=True,
             ):
+                # A single near frame only ARMS the confirmation — one speckled
+                # reading ended a whole errand as "arrived (front reads 0.62m)"
+                # nowhere near the requester (field 2026-08-11 20:37).
+                MA.step(_snapshot(distance_zone="public"), _profile())
+                self.assertTrue(MA.requested_come_active(),
+                                "one near frame must not end the errand")
                 MA.step(_snapshot(distance_zone="public"), _profile())
         self.assertFalse(MA.requested_come_active(),
-                         "front clutter within RESUME_CLEAR_M must end the errand")
+                         "front clutter CONFIRMED twice must end the errand")
         self.assertEqual(self.come.call_count, 1, "no bulldozing retry")
 
     def test_completed_with_open_front_floor_resumes(self):
@@ -1169,10 +1182,11 @@ class UserMotionStanddownTest(unittest.TestCase):
 
     def test_come_here_ignores_the_standdown(self):
         MA.note_user_motion()
-        self._face_box = _CENTERED_FACE   # face centred → neck offset is the bearing
+        self._neck = 5472                 # parked — camera-loop measures the face
+        self._face_box = _EDGE_FACE_RIGHT
         self.assertTrue(MA.request_come_here())
         self._tick(1)
-        # Neck exhausted right with the face centred -> the align turn still fires.
+        # Face far right with the neck parked -> the align turn still fires.
         self.turn.assert_called_once()
 
 

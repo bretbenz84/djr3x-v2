@@ -223,8 +223,10 @@ _requested_come = {
     "seen_deg": 0.0,        # fused bearing (real degrees) AT the sighting moment
                             # (neck + face read together, so it is synchronized) —
                             # the resight turn uses this actual angle, not a fixed step
-    "head_wait_at": 0.0,    # when we started waiting for face tracking to centre
-                            # the face (head-first alignment); 0 = not waiting
+    "front_near_hits": 0,   # consecutive completed-drive ticks with the radial
+                            # front reading NEAR — one speckled frame must not
+                            # end the errand as "arrived" (field 2026-08-11
+                            # 20:37: arrived at 0.62m nowhere near the requester)
     "approach_at": 0.0,     # when the last `come` was issued (retry pacing)
     "approaches": 0,        # how many times we've launched at them this errand
     "align_turns": 0,       # consecutive align turns without reaching "centered" —
@@ -319,7 +321,7 @@ def request_come_here(person_id: "int | None" = None, *,
         last_seen_at=0.0,
         seen_sign=0.0,
         seen_deg=0.0,
-        head_wait_at=0.0,
+        front_near_hits=0,
         approach_at=0.0,
         approaches=0,
         align_turns=0,
@@ -356,7 +358,6 @@ def note_behind_turn(seq: "int | None") -> None:
         last_turn_at=time.monotonic(),
         search_turns=0,          # fresh sweep budget at the new hemisphere
         align_turns=0,
-        head_wait_at=0.0,
         # Their voice IS a localization: keep the give-up clock fresh, but drop
         # any stored visual bearing — it predates the about-face.
         last_seen_at=time.monotonic(),
@@ -370,12 +371,17 @@ def note_behind_turn(seq: "int | None") -> None:
 def cancel_requested_come(reason: str = "cancelled") -> None:
     if _requested_come["active"]:
         _log.info("[motion_agency] requested come: %s", reason)
+        try:
+            from intelligence import consciousness
+            consciousness.resume_face_tracking()
+        except Exception:
+            pass
     _stop_come_dwell_gaze()
     _requested_come.update(active=False, started_at=0.0, requester_id=None,
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
-                           seen_deg=0.0, head_wait_at=0.0, approach_at=0.0,
+                           seen_deg=0.0, front_near_hits=0, approach_at=0.0,
                            approaches=0, align_turns=0, skip_log_at=0.0)
 
 
@@ -526,6 +532,17 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     """
     if not requested_come_active():
         return False
+    # The errand OWNS the head for its whole duration: face tracking's neck
+    # steering is suspended (rolling re-up, so it resumes shortly after the
+    # errand ends however it ends). Five field runs on 2026-08-11 all failed
+    # the same way — SOMETHING (face tracking, the sweep, a stale pose) was
+    # slewing the neck at the instant alignment sampled it. Detection and
+    # identity keep running; only the neck steering stands down.
+    try:
+        from intelligence import consciousness
+        consciousness.suspend_face_tracking(10.0)
+    except Exception:
+        pass
     timeout = _num("MOTION_COME_SEARCH_TIMEOUT_SECS", 45.0)
     max_turns = max(1, int(_num("MOTION_COME_SEARCH_MAX_TURNS", 8)))
     # The give-up clock restarts on every sighting of the target: measured from the
@@ -566,7 +583,6 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     person = locked_person or _visible_known_person(snapshot, requester)
     if person is None:
         _requested_come["align_turns"] = 0   # sighting lost — alignment starts over
-        _requested_come["head_wait_at"] = 0.0
         # DWELL: the camera settled only turn_done_at ago, and the detect→identify
         # pipeline needs a couple of seconds of STILL camera to find a face across
         # the room. Concluding "nobody this way" any sooner is how two full sweeps
@@ -663,45 +679,26 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     if done_at > 0.0 and (now - done_at) < _num("MOTION_COME_ALIGN_SETTLE_SECS", 1.2):
         return True
 
-    # ── HEAD-FIRST ALIGNMENT (owner spec 2026-08-11: "once he's got me in the
-    # center and his head is pointed straight ahead he could reasonably move
-    # forward") ──────────────────────────────────────────────────────────────
-    # With a head lock, let FACE TRACKING finish centring the face before any
-    # body decision: once the face is verified near frame centre, the neck
-    # offset alone IS the body's bearing to the person — one clean, current
-    # number. Fusing a fast-slewing neck with a face box up to a second stale
-    # is what turned him AWAY from a person he was looking straight at (field
-    # 2026-08-11 19:57: locked at 178 px error, then a −48° "align" from a
-    # garbage sample). The fused read survives only as the no-lock / timeout
-    # fallback, where nothing is steering the neck.
+    # ── CAMERA-LOOP ALIGNMENT (owner spec 2026-08-11, final form: "if I was
+    # frame left he would know to turn left while straightening out his neck
+    # servo... once he's got me in the center and his head is pointed straight
+    # ahead he could reasonably move forward") ───────────────────────────────
+    # The neck PARKS dead centre with the head level, so the camera points
+    # exactly where the body points — and then the face's position in the
+    # frame ALONE is the body bearing. One sensor, one number, and nothing
+    # else is allowed to move the neck (face-tracking steering is suspended
+    # for the whole errand). Every neck-sampling variant failed in the field
+    # because something was always slewing the neck at the moment alignment
+    # read it — five runs on 2026-08-11 ended in sign-flipping or clamped
+    # align turns from exactly that race.
+    if not _neck_parked_centre():
+        _park_head_for_alignment(now)
+        return True                # settle: measure off a fresh, still frame
     centered_deg = _num("MOTION_COME_CENTERED_DEG", 11.0)
     approach_heading = 0.0
     face_frac = _face_offset_fraction(person)
-    head_on_them = (
-        locked_person is not None
-        and face_frac is not None
-        and abs(face_frac) <= _num("MOTION_COME_FACE_CENTERED_FRACTION", 0.25)
-    )
-    if (locked_person is not None and face_frac is not None and not head_on_them):
-        # Face tracking is still swinging the head onto them — wait it out
-        # (bounded), sampling nothing. The sighting sampler keeps the give-up
-        # clock fresh through this hold.
-        if float(_requested_come["head_wait_at"]) <= 0.0:
-            _requested_come["head_wait_at"] = now
-        if (now - float(_requested_come["head_wait_at"])) < _num(
-            "MOTION_COME_HEAD_SETTLE_TIMEOUT_SECS", 4.0
-        ):
-            return True
-    else:
-        _requested_come["head_wait_at"] = 0.0
-
-    if head_on_them:
-        # Face centred ⇒ the neck yaw alone IS the body bearing, in real degrees.
-        bearing = _come_neck_bearing_deg()
-        if bearing is None:
-            bearing = _come_bearing_deg(person, head_locked=True)
-    else:
-        bearing = _come_bearing_deg(person, head_locked=locked_person is not None)
+    bearing = (None if face_frac is None
+               else face_frac * _num("MOTION_COME_CAM_HALF_FOV_DEG", 25.0))
     if bearing is not None and abs(bearing) >= centered_deg:
         # GOOD-ENOUGH ESCAPE: repeated align turns that keep missing "centered"
         # must not starve the approach forever — field 2026-08-11: ±12-45 deg
@@ -770,8 +767,17 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                 return True
             front = _radial_front_m()
             if front is not None and front < _num("MOTION_COME_RESUME_CLEAR_M", 1.8):
-                cancel_requested_come("arrived (front reads %.2fm)" % front)
-                return True
+                # Confirm the near reading on a SECOND tick before believing it:
+                # the radial front throws single-frame speckle, and one bad
+                # frame ended a whole errand as "arrived (front reads 0.62m)"
+                # nowhere near the requester (field 2026-08-11 20:37).
+                hits = int(_requested_come["front_near_hits"]) + 1
+                _requested_come["front_near_hits"] = hits
+                if hits >= 2:
+                    cancel_requested_come("arrived (front reads %.2fm)" % front)
+                    return True
+                return True             # re-sample next tick
+            _requested_come["front_near_hits"] = 0
             _log.info(
                 "[motion_agency] requested come: drive completed but requester "
                 "still reads far and the front is open (%s) — treating as "
@@ -935,6 +941,28 @@ def _come_neck_bearing_deg() -> Optional[float]:
     if frac is None:
         return None
     return frac * _num("MOTION_COME_NECK_HALF_SPAN_DEG", 45.0)
+
+
+def _neck_parked_centre() -> bool:
+    """True when the neck sits close enough to neutral that the camera's frame
+    centre IS the body's nose. No servo readback (dev Mac) counts as parked —
+    there is no neck to correct for."""
+    frac = neck_offset_fraction()
+    return frac is None or abs(frac) <= _num("MOTION_COME_NECK_PARK_TOLERANCE", 0.06)
+
+
+def _park_head_for_alignment(now: float) -> None:
+    """Glide the neck to centre with the head level (the owner's spec: he keeps
+    his head level and straight ahead while lining up). Ends any dwell sweep
+    first; the caller's settle window then guarantees a still frame before the
+    first camera-bearing measurement."""
+    _stop_come_dwell_gaze()
+    try:
+        from sequences import animations
+        animations.travel_glance_pose("center", "level")
+    except Exception:
+        pass
+    _requested_come["turn_done_at"] = now
 
 
 def _come_bearing_deg(person: Optional[dict], *, head_locked: bool) -> Optional[float]:
