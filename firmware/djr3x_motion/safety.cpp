@@ -8,8 +8,17 @@
 // FAIL-OPEN: if every sensor in the travel direction reads -1 (all errored / unwired),
 // min3_valid yields 32767 and the zone is CLEAR — the base is NOT stopped. tof.cpp
 // holds each sensor's last-good value through a transient -1, so this only bites when
-// a whole direction is genuinely dead/unwired (acceptable during bring-up; revisit to
-// fail-safe — treat persistent all-error as STOP — before trusting autonomy).
+// a whole direction is genuinely dead/unwired.
+//
+// That fail-open is now covered on the HOST side, not here (field 2026-08-07..08-11:
+// the front 8x8 matrix died electrically and Rex drove into walls for four days —
+// this reflex saw nothing wrong because the radial ring kept answering, and the
+// matrix's own -1 just fell through as CLEAR). intelligence/motion_controller.py
+// refuses every autonomous command while the sensing is absent — no tofmx frames, or
+// the whole ring reading -1 — and stops a leg that is already running. It is still
+// deliberately NOT enforced down here: the reflex must never be the thing that
+// strands a base mid-floor, and stop/estop plus gamepad teleop have to work when the
+// sensors are dead. Keep both halves if you touch either.
 
 // Edge-trigger memory (only this task touches these).
 static bool       s_prev_blocked = false;

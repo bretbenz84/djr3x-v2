@@ -20,11 +20,17 @@ from intelligence import action_router as ar
 
 class FakeESP32Serial:
     """Minimal stand-in for the firmware: replies to hello, acks commands, and
-    streams telemetry reflecting a simple moving/idle + owner state."""
+    streams telemetry reflecting a simple moving/idle + owner state.
+
+    Streams an 8x8 `tofmx` frame too, so the default fake base is a SEEING base:
+    autonomous motion is gated on obstacle sensing being present
+    (motion_controller.tof_block_reason). Pass tof_matrix=False to simulate the
+    2026-08-07 failure — the matrix no-ACKs and stops streaming while the radial
+    ring keeps answering normally."""
 
     def __init__(
         self, *args, reply_hello=True, owner="auto", charging=False,
-        batt_mv=12000, batt_ma=1000, batt_soc=50, **kwargs
+        batt_mv=12000, batt_ma=1000, batt_soc=50, tof_matrix=True, **kwargs
     ):
         self.is_open = True
         self._out = bytearray()
@@ -36,6 +42,7 @@ class FakeESP32Serial:
         self.batt_mv = batt_mv
         self.batt_ma = batt_ma
         self.batt_soc = batt_soc
+        self.tof_matrix = tof_matrix
         self._state = "idle"
 
     def _emit(self, obj):
@@ -79,10 +86,18 @@ class FakeESP32Serial:
                 "batt_mv": self.batt_mv, "batt_ma": self.batt_ma,
                 "batt_soc": self.batt_soc, "charging": self.charging, "errs": 0}
 
+    def _tofmx(self):
+        """Open room ahead, floor in the bottom two rows — nothing to block on."""
+        grid = ["fa0"] * 48 + ["182"] * 8 + ["11e"] * 8      # 4000mm, then 386, 286
+        return {"v": 1, "type": "tofmx", "t": 1, "g": "".join(grid),
+                "rej": [4095, 4095, 4095, 4095, 1548, 517, 312, 250]}
+
     def read(self, n=1):
         with self._lock:
             if not self._out:
                 self._out += (json.dumps(self._telemetry()) + "\n").encode()
+                if self.tof_matrix:
+                    self._out += (json.dumps(self._tofmx()) + "\n").encode()
             data = bytes(self._out[:n])
             del self._out[:n]
         time.sleep(0.003)
@@ -98,6 +113,17 @@ class _MotionTestBase(unittest.TestCase):
         self._orig_paused = getattr(config, "INTERACTION_PAUSED", False)
         self._orig_enabled = config.MOTION_ENABLED
         self._orig_timeout = config.MOTION_HANDSHAKE_TIMEOUT_MS
+        # The obstacle-sensing gate holds autonomy for MOTION_TOF_RECOVERY_SECS
+        # after sensing appears; no test can wait 3 real seconds for that. Zero it
+        # and reset the gate's module state, which otherwise leaks between tests.
+        self._orig_tof_settle = config.MOTION_TOF_RECOVERY_SECS
+        config.MOTION_TOF_RECOVERY_SECS = 0.0
+        mc._tof_healthy_since = 0.0
+        mc._tof_fault_since = 0.0
+        mc._tof_warned = False
+        mc._tof_block_reason = "tof_startup"
+        mc._tof_cut_for_reason = None
+        mc._tof_announced_at = 0.0
         config.INTERACTION_PAUSED = False
         config.MOTION_ENABLED = True
         config.MOTION_HANDSHAKE_TIMEOUT_MS = 400
@@ -112,6 +138,7 @@ class _MotionTestBase(unittest.TestCase):
         config.INTERACTION_PAUSED = self._orig_paused
         config.MOTION_ENABLED = self._orig_enabled
         config.MOTION_HANDSHAKE_TIMEOUT_MS = self._orig_timeout
+        config.MOTION_TOF_RECOVERY_SECS = self._orig_tof_settle
 
     def _install(self, **kw):
         self.fake = FakeESP32Serial(**kw)
@@ -189,6 +216,39 @@ class TransportTest(_MotionTestBase):
         motion._last_port = "/dev/cu.does-not-exist"
         self.assertFalse(motion.reconnect())
         self.assertFalse(motion.connected())
+
+
+class BlindBaseTest(_MotionTestBase):
+    """End-to-end over the real transport: a base whose 8x8 matrix has died must
+    not drive itself. This is the 2026-08-07 failure — the matrix no-ACKs and its
+    tofmx stream stops while the radial ring keeps reporting healthy distances,
+    which is precisely why nothing downstream noticed for four days."""
+
+    def test_blind_base_refuses_autonomous_motion(self):
+        self._connect(tof_matrix=False)
+        self.assertTrue(mc.available())            # the base itself is fine
+        self.assertEqual(mc.tof_block_reason(), "tof_matrix_down")
+        self.assertIsNone(mc.move(1.0))
+        self.assertIsNone(mc.turn_left())
+        self.assertIsNone(mc.come_here())
+        self.assertIsNone(self._last("move"))
+        self.assertIsNone(self._last("turn"))
+        self.assertIsNone(self._last("come"))
+
+    def test_blind_base_still_takes_stop_and_operator_teleop(self):
+        self._connect(tof_matrix=False)
+        mc.stop()
+        self.assertIsNotNone(self._last("stop"))
+        mc.estop()
+        self.assertIsNotNone(self._last("estop"))
+        mc.drive_manual(0.2, 0.0)                  # the human is the eyes
+        self.assertIsNotNone(self._last("drive"))
+
+    def test_seeing_base_drives_normally(self):
+        self._connect()                            # tofmx streaming (the default)
+        self.assertIsNone(mc.tof_block_reason())
+        self.assertIsNotNone(mc.move(1.0))
+        self.assertIsNotNone(self._last("move"))
 
 
 class ControllerTest(_MotionTestBase):

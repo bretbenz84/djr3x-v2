@@ -8949,6 +8949,32 @@ MOTION_GAMEPAD_BUTTON_ACTIONS = {
 MOTION_MANUAL_RAMP_UP_SECS = 1.2
 MOTION_MANUAL_RAMP_DOWN_SECS = 0.5
 
+# ── Autonomy requires working obstacle sensing ────────────────────────────────
+# Field 2026-08-07..08-11: the front 8x8 matrix ToF failed electrically and Rex
+# drove into walls and low objects for four days. Nothing was broken in code —
+# safety.cpp fails OPEN on a -1 reading by documented choice, and the radial ring
+# kept answering, so no layer saw a reason to stop. The matrix is what covers the
+# near floor and anything short enough to pass under the ring's ±22.5° beams.
+# So autonomous motion now requires the sensing to be PRESENT, not just quiet.
+# stop/estop/clear and operator teleop (drive_manual, gamepad) are never gated.
+MOTION_REQUIRE_TOF_FOR_AUTONOMY = True
+# Whether a live 8x8 matrix is part of that bar. Turn OFF only for a base built
+# without MOTION_TOF_MATRIX_PRESENT — on this robot, off means he will happily
+# drive with exactly the blind spot that caused the incident.
+MOTION_TOF_MATRIX_REQUIRED = True
+# Recovery hysteresis. Sensing loss blocks on the next check; sensing has to come
+# back and STAY back this long before autonomy resumes, so a sensor flapping in
+# and out can't ratchet him across the room one frame at a time. Also covers the
+# ~6 s the matrix spends initialising after a base reboot.
+MOTION_TOF_RECOVERY_SECS = 3.0
+# What he says when a move he was ASKED for out loud is refused for this reason.
+# Autonomous legs stay silent (they retry constantly); a refused voice command
+# must not be silence — that reads as "he ignores my commands" (field 2026-07-23).
+MOTION_TOF_BLOCKED_LINE = (
+    "My depth sensor's out, honey. I'm not driving blind — push me if you must."
+)
+MOTION_TOF_BLOCKED_ANNOUNCE_COOLDOWN_SECS = 30.0
+
 # Serial connection retry (mirrors the servo connect pattern).
 MOTION_SERIAL_TIMEOUT_SECS = 0.1
 MOTION_CONNECT_RETRY_ATTEMPTS = 3

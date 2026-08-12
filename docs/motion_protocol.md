@@ -539,6 +539,45 @@ tuned over the wire: `WHEEL_DIAMETER_MM`, `COUNTS_PER_REV`, and the per-wheel
 the robot *move unexpectedly* is a valid, accepted, in-cap command — everything else
 no-ops toward stop.
 
+### 11.1 Blind base — autonomy requires the ToF to be *present*
+
+The firmware's obstacle reflex fails **open** on `-1` readings, by documented choice
+(`safety.cpp`): a dead direction reads CLEAR and the base is not stopped. That is
+correct for a reflex — it must never be the thing that strands the base mid-floor —
+but it means the firmware alone cannot tell "nothing is there" from "I can't see".
+
+Field 2026-08-07..08-11 is what that costs: the front 8x8 matrix failed electrically
+and Rex drove into walls and low objects for four days. The radial ring kept
+answering, so the reflex was never alarmed, and the matrix's own `-1` fell through as
+clear. The matrix is what covers the near floor and anything short enough to pass
+under the ring's ±22.5° beams.
+
+So the **host** closes it. `intelligence/motion_controller.py` refuses every
+autonomous command while the sensing is absent:
+
+| Signal | Meaning | Reason string |
+| --- | --- | --- |
+| No `tofmx` frame within ~1 s | matrix absent, no-ACK, I2C-wedged, or in a read-error streak | `tof_matrix_down` |
+| Every `tof_mm` reading is `-1` | the radial ring is gone (an empty room reads CLEAR, not `-1`) | `tof_ring_down` |
+
+- **Blocked:** `drive` / `turn` / `move` / `come` / `arc` — every autonomous path,
+  including exploration legs, motion agency, and voice-commanded moves.
+- **Never blocked:** `stop` / `estop` / `clear`, and operator teleop (`drive_manual`,
+  the gamepad) — a human at the controls *is* the obstacle sensing.
+- **A leg already in flight** is closed-loop on the ESP32 and would finish blind, so
+  the heartbeat sends `stop` once when sensing drops mid-move.
+- **Recovery is not instant:** sensing has to hold for `MOTION_TOF_RECOVERY_SECS`
+  (default 3 s) before autonomy resumes, so a flapping sensor cannot ratchet the base
+  across the room one frame at a time. This also covers the ~6 s the matrix spends
+  initialising after a base reboot.
+- **A refused *voice* command says why** (`MOTION_TOF_BLOCKED_LINE`, 30 s cooldown).
+  Autonomous legs refuse silently — they retry constantly.
+
+Escape hatches for a base built without the matrix: `MOTION_TOF_MATRIX_REQUIRED = False`
+drops it from the bar; `MOTION_REQUIRE_TOF_FOR_AUTONOMY = False` disables the gate
+entirely. On this robot, either one restores exactly the blind spot that caused the
+incident.
+
 ---
 
 ## 12. Manual gamepad override & the protocol

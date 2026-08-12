@@ -386,6 +386,33 @@ def tof_matrix() -> "dict | None":
     return dict(fx)
 
 
+def radial_tof_alive() -> "tuple[int, int]":
+    """(sensors returning a real distance, sensors reported) for the radial ring.
+
+    -1 is the firmware's honest "read error / not present" marker (tof.cpp): a
+    dead sensor, a mux NACK, or a read-error streak. It does NOT mean "nothing
+    in range" — an empty room reads the clear value, not -1. So 0 alive means
+    the ring is gone, and callers can treat that as blindness rather than calm.
+
+    (0, 0) when no telemetry has arrived yet. Note the front pair fl/fr is the
+    FUSED radial-or-matrix value, so this cannot tell you the matrix is dead —
+    use tof_matrix() for that (field 2026-08-07: the matrix went no-ACK while
+    the ring stayed alive, and nothing downstream noticed for four days)."""
+    t = telemetry()
+    if not t:
+        return (0, 0)
+    readings = (t.get("tof_mm") or {}).values()
+    total = 0
+    alive = 0
+    for value in readings:
+        if value is None:
+            continue
+        total += 1
+        if int(value) >= 0:
+            alive += 1
+    return (alive, total)
+
+
 def hello_info() -> "dict | None":
     with _state_lock:
         return dict(_hello) if _hello is not None else None

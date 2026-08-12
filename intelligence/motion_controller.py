@@ -506,6 +506,14 @@ def _heartbeat_tick() -> None:
     so a concurrent stop()/_cancel_arc can't be overridden by a stale `drive` (the small
     JSON send is fast; lock order is always _arc_lock -> motion locks, so no deadlock)."""
     global _arc_active
+    # Obstacle sensing is checked every tick, not just when something asks to move:
+    # this is what puts a matrix dying at 3am in the log at 3am, and what cuts a leg
+    # that is already running closed-loop on the ESP32 (the policy gate can only
+    # refuse NEW commands). Deliberately OUTSIDE _arc_lock — stop() reaches for it
+    # via _cancel_arc(), and it also ends any in-flight arc for us.
+    if _tof_should_cut_inflight():
+        stop()
+        return
     with _arc_lock:
         if _arc_active:
             if time.monotonic() < _arc_until and _autonomous_allowed() is None:
@@ -566,6 +574,141 @@ def _push_config() -> None:
     motion.send(cfg)
 
 
+# ── Obstacle-sensing health gate ────────────────────────────────────────────────
+# Field 2026-08-07..08-11: the front 8x8 matrix ToF died electrically and Rex spent
+# four days driving into walls and low objects. No code was broken — safety.cpp
+# fails OPEN on a -1 reading by documented choice, the radial ring stayed alive, so
+# nothing downstream ever saw a reason to stop. But the matrix is what covers the
+# near floor and anything short enough to duck under the ring's ±22.5° beams, so
+# "the ring is answering" was never the same as "he can see where he's going".
+#
+# Autonomy now requires the obstacle sensing to be PRESENT, not merely un-alarmed.
+# The asymmetry is deliberate: losing it blocks on the very next check, regaining
+# it has to hold for MOTION_TOF_RECOVERY_SECS first, so a sensor flapping in and
+# out cannot ratchet him across the room one frame at a time.
+#
+# Never gated: stop/estop/clear (you must always be able to halt him) and operator
+# teleop — drive_manual and the gamepad — because a human at the controls IS the
+# obstacle sensing. This blocks autonomy, not the robot.
+
+_tof_lock = threading.Lock()
+_tof_healthy_since = 0.0
+_tof_fault_since = 0.0
+_tof_warned = False
+_tof_block_reason: "str | None" = "tof_startup"
+_tof_cut_for_reason: "str | None" = None
+_tof_announced_at = 0.0
+
+
+def _tof_sensing_fault() -> "str | None":
+    """Raw read: is the obstacle sensing THERE? None = present and fresh."""
+    if not bool(getattr(config, "MOTION_REQUIRE_TOF_FOR_AUTONOMY", True)):
+        return None
+    if bool(getattr(config, "MOTION_TOF_MATRIX_REQUIRED", True)):
+        # No tofmx frame inside the staleness window means absent, no-ACK,
+        # I2C-wedged, or in a read-error streak. All four are "blind to the floor".
+        if motion.tof_matrix() is None:
+            return "tof_matrix_down"
+    alive, total = motion.radial_tof_alive()
+    if total and alive == 0:
+        return "tof_ring_down"
+    return None
+
+
+def tof_block_reason() -> "str | None":
+    """The gate's answer, with recovery hysteresis. None = sensing is trusted.
+
+    Also owns the transition logging, and the heartbeat calls it every tick — so
+    a matrix that dies at 3am is in the log then, not whenever something next
+    tries to move.
+    """
+    global _tof_healthy_since, _tof_block_reason, _tof_fault_since, _tof_warned
+    fault = _tof_sensing_fault()
+    now = time.monotonic()
+    settle = max(0.0, float(getattr(config, "MOTION_TOF_RECOVERY_SECS", 3.0)))
+    with _tof_lock:
+        if fault is not None:
+            _tof_healthy_since = 0.0
+            if _tof_fault_since == 0.0 or fault != _tof_block_reason:
+                _tof_fault_since = now
+                _tof_warned = False
+            _tof_block_reason = fault
+            # Block from the very first observation, but don't cry wolf about it:
+            # the matrix takes ~6 s to initialise after a base reboot, and on every
+            # normal startup the heartbeat's first tick beats the first tofmx frame.
+            # A WARNING on each launch would train everyone to ignore the one that
+            # matters. Blocking is immediate; the alarm waits out the same window.
+            if not _tof_warned and (now - _tof_fault_since) >= settle:
+                _tof_warned = True
+                _log.warning(
+                    "Obstacle sensing lost (%s) for %.1fs — autonomous motion "
+                    "blocked. stop/estop and operator teleop still work.",
+                    fault, now - _tof_fault_since,
+                )
+            return fault
+        _tof_fault_since = 0.0
+        if _tof_healthy_since == 0.0:
+            _tof_healthy_since = now
+        healthy_for = now - _tof_healthy_since
+        if _tof_block_reason is not None and healthy_for < settle:
+            return _tof_block_reason
+        if _tof_block_reason is not None:
+            _log.info(
+                "Obstacle sensing healthy for %.1fs — autonomous motion enabled "
+                "(previous state: %s).", healthy_for, _tof_block_reason,
+            )
+            _tof_block_reason = None
+            _tof_warned = False
+        return None
+
+
+def _tof_should_cut_inflight() -> bool:
+    """True once per outage when sensing dies with an autonomous leg still running.
+
+    The gate above only refuses NEW commands; a move/turn/come already accepted is
+    closed-loop on the ESP32 and would drive the rest of it blind.
+    """
+    global _tof_cut_for_reason
+    reason = tof_block_reason()
+    if reason is None:
+        _tof_cut_for_reason = None
+        return False
+    if _tof_cut_for_reason == reason:
+        return False                                  # already cut for this outage
+    if motion.owner() != "auto" or motion.state() != "moving":
+        return False
+    _tof_cut_for_reason = reason
+    _log.warning("Obstacle sensing lost mid-move (%s) — stopping the base.", reason)
+    return True
+
+
+def _suppressed(verb: str, reason: str) -> None:
+    """Log a refused autonomous command, and when a human asked for it out loud,
+    let Rex say WHY. A silent no-op reads as "he ignores my commands" (field
+    2026-07-23 — the same lesson that produced announce_if_blocked)."""
+    global _tof_announced_at
+    _log.debug("motion %s suppressed: %s", verb, reason)
+    if not reason.startswith("tof_") or not _user_commanded_fx():
+        return                       # autonomous legs stay quiet; they retry constantly
+    now = time.monotonic()
+    cooldown = float(getattr(config, "MOTION_TOF_BLOCKED_ANNOUNCE_COOLDOWN_SECS", 30.0))
+    with _tof_lock:
+        if (now - _tof_announced_at) < cooldown:
+            return
+        _tof_announced_at = now
+    try:
+        from audio import speech_queue
+        speech_queue.enqueue(
+            str(getattr(config, "MOTION_TOF_BLOCKED_LINE",
+                        "My depth sensor is down, sweetheart. I don't drive blind.")),
+            emotion="neutral",
+            priority=1,
+            tag="motion_tof_blocked",
+        )
+    except Exception as exc:
+        _log.debug("tof-blocked announce failed: %s", exc)
+
+
 # ── Policy gate ─────────────────────────────────────────────────────────────────
 
 def _autonomous_allowed() -> "str | None":
@@ -580,7 +723,9 @@ def _autonomous_allowed() -> "str | None":
         return "interaction_paused"
     if motion.owner() == "manual":
         return "manual_override"
-    return None
+    # Last, so the everyday reasons above keep their clearer message and Rex
+    # doesn't announce a dead sensor while he is merely asleep or on the cord.
+    return tof_block_reason()
 
 
 # ── Commands ────────────────────────────────────────────────────────────────────
@@ -596,7 +741,7 @@ def turn(
     """Spin in place by `deg` (+ = left/CCW). Closed loop on the ESP32."""
     reason = _autonomous_allowed()
     if reason:
-        _log.debug("motion turn suppressed: %s", reason)
+        _suppressed("turn", reason)
         return None
     max_rate = _get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0)
     rate = _get_float("MOTION_DEFAULT_TURN_RATE", 75.0) if rate is None else rate
@@ -623,7 +768,7 @@ def move(dist: float, speed: "float | None" = None) -> "int | None":
     """Drive straight `dist` metres (+ = forward, - = back). ToF-gated."""
     reason = _autonomous_allowed()
     if reason:
-        _log.debug("motion move suppressed: %s", reason)
+        _suppressed("move", reason)
         return None
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.40)
     speed = max_lin if speed is None else speed
@@ -676,7 +821,7 @@ def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
     nearest forward obstacle."""
     reason = _autonomous_allowed()
     if reason:
-        _log.debug("motion come suppressed: %s", reason)
+        _suppressed("come", reason)
         return None
     if "come" not in motion.caps():
         _log.debug("motion come unsupported by firmware")
@@ -704,7 +849,7 @@ def arc(lin: float, ang: float, duration_s: "float | None" = None) -> "int | Non
     Gated like the other autonomous commands."""
     reason = _autonomous_allowed()
     if reason:
-        _log.debug("motion arc suppressed: %s", reason)
+        _suppressed("arc", reason)
         return None
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.40)
     max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0))
@@ -725,7 +870,7 @@ def drive(lin: float, ang: float) -> "int | None":
     refreshed — for teleop-style control, call repeatedly."""
     reason = _autonomous_allowed()
     if reason:
-        _log.debug("motion drive suppressed: %s", reason)
+        _suppressed("drive", reason)
         return None
     _invalidate_turn_verification()
     _cancel_arc()
