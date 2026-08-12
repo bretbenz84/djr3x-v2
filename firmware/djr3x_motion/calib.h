@@ -315,14 +315,27 @@
 // ⚠ MEASURE TOF_MATRIX_HEIGHT_M on the robot: lens centre to floor, metres. If unsure
 // err HIGH — too-high reads the empty floor as an obstacle (nuisance block, obvious);
 // too-low classifies real low obstacles as floor (missed, silent).
-#define TOF_MATRIX_HEIGHT_M        0.11f // EFFECTIVE optical height — empirically
-                                         // calibrated 2026-07-16. Tape-measured lens
-                                         // height is 0.16 m, but the raw grid on open
-                                         // floor reads row7≈330/row6≈460 mm (vs 474/657
-                                         // predicted): oblique ToF returns under-range
-                                         // at grazing angles by a consistent ~0.70x.
-                                         // 0.11 makes both bottom rows match observed
-                                         // floor. Recalibrate if the mount height moves.
+#define TOF_MATRIX_HEIGHT_M       0.095f // EFFECTIVE optical height — empirically
+                                         // calibrated 2026-07-16, RE-calibrated
+                                         // 2026-08-11 after the SEN0628 was replaced.
+                                         // Tape-measured lens height is 0.16 m, but
+                                         // oblique ToF returns under-range at grazing
+                                         // angles; the effective height absorbs that.
+                                         // Was 0.11 (that module under-read ~0.70x,
+                                         // open floor row7≈330/row6≈460 mm). THIS
+                                         // module under-reads harder — ~0.59x, open
+                                         // floor row7≈286 (min 236) / row6≈386 (min
+                                         // 309) mm over 136 frames — which back-solves
+                                         // to 0.096 from row7 and 0.094 from row6.
+                                         // At 0.11 the row-6 reject (362 mm) sat INSIDE
+                                         // the floor's own spread, so 12% of row-6
+                                         // returns read as a 340-460 mm obstacle and
+                                         // the matrix published a phantom front-left
+                                         // block in ~half of all frames while parked
+                                         // on open floor. Recalibrate if the mount
+                                         // height moves OR the module is swapped again:
+                                         // capture the raw grid on empty floor and set
+                                         // this to mean(row_mm) * sin(row elevation).
 #define TOF_MATRIX_PITCH_DEG       0.0f  // mount pitch trim (+ = tilted up); level = 0
 #define TOF_MATRIX_VFOV_DEG        45.0f // VL53L7CX vertical FOV (45° square per ST)
 #define TOF_MATRIX_FLOOR_TOLERANCE 0.80f // reading >= this fraction of expected floor = floor
