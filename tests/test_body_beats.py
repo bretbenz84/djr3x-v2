@@ -225,7 +225,11 @@ class BodyBeatAnimationTest(unittest.TestCase):
     def test_wave_back_gesture_sweeps_wrist_full_travel_count_times(self):
         from sequences import animations
 
-        sets = []        # (channel, position) from set_servo
+        # Every commanded position, from EITHER servo entry point: the wrist and the
+        # elbow now move together, so the gesture batches them through set_servos()
+        # rather than issuing one set_servo() per channel. Record both so the assertions
+        # below test the motion, not the call shape.
+        sets = []        # (channel, position)
         speeds = []      # (channel, speed) from set_speed
         snapshot = {
             4: animations.ELBOW_NEUTRAL,
@@ -234,6 +238,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
         }
         hand_min = animations.config.SERVO_CHANNELS["hand"]["min"]
         hand_max = animations.config.SERVO_CHANNELS["hand"]["max"]
+        elbow_max = animations.config.SERVO_CHANNELS["elbow"]["max"]
+        elbow_hi = min(elbow_max, animations.ELBOW_UP + animations.config.WAVE_BACK_ELBOW_WAVE_QUS)
         default_speed = animations.config.SERVO_DEFAULT_SPEED
 
         with (
@@ -241,6 +247,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
             mock.patch.object(animations, "_current_body_pose", return_value=snapshot),
             mock.patch.object(animations.time, "sleep", return_value=None),
             mock.patch.object(animations.servos, "set_servo", side_effect=lambda ch, pos: sets.append((ch, pos))),
+            mock.patch.object(animations.servos, "set_servos",
+                              side_effect=lambda targets: sets.extend(targets.items())),
             mock.patch.object(animations.servos, "set_speed", side_effect=lambda ch, sp: speeds.append((ch, sp))),
             mock.patch.object(animations.servos, "set_acceleration"),
             mock.patch.object(animations.servos, "move_to") as move_to,
@@ -254,6 +262,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
         # The wrist (ch5) is driven to BOTH full travel limits exactly `count` times.
         self.assertEqual(sum(1 for ch, pos in sets if ch == 5 and pos == hand_max), 4)
         self.assertEqual(sum(1 for ch, pos in sets if ch == 5 and pos == hand_min), 4)
+        # The elbow (ch4) bobs in sync with the wrist — one lift per outbound sweep.
+        self.assertEqual(sum(1 for ch, pos in sets if ch == 4 and pos == elbow_hi), 4)
         # Arm raised (elbow up + hero arm forward) before the wave.
         self.assertIn((4, animations.ELBOW_UP), sets)
         self.assertIn((7, animations.HEROARM_FORWARD), sets)
@@ -269,24 +279,39 @@ class BodyBeatAnimationTest(unittest.TestCase):
         from sequences import animations
 
         snapshot = {4: animations.ELBOW_NEUTRAL, 5: animations.HAND_NEUTRAL, 7: animations.HEROARM_NEUTRAL}
-        default_speed = animations.config.SERVO_DEFAULT_SPEED
+        hand_max = animations.config.SERVO_CHANNELS["hand"]["max"]
 
         def wrist_speed_for(hp):
-            speeds = []
+            # One ordered log of both call kinds. The wave speed can't be picked off as
+            # "the first non-default speed on ch5" any more: the raise phase sets its own
+            # (half_period-independent) glide speed on every arm channel first. The wave
+            # speed is the last one set on the wrist before it actually sweeps.
+            events = []  # ("speed", ch, value) | ("pos", ch, value)
             with (
                 mock.patch.object(animations._state_module, "get_state", return_value=animations._State.ACTIVE),
                 mock.patch.object(animations, "_current_body_pose", return_value=snapshot),
                 mock.patch.object(animations.time, "sleep", return_value=None),
-                mock.patch.object(animations.servos, "set_servo"),
-                mock.patch.object(animations.servos, "set_speed", side_effect=lambda ch, sp: speeds.append((ch, sp))),
+                mock.patch.object(animations.servos, "set_servo",
+                                  side_effect=lambda ch, pos: events.append(("pos", ch, pos))),
+                mock.patch.object(animations.servos, "set_servos",
+                                  side_effect=lambda targets: events.extend(
+                                      ("pos", ch, pos) for ch, pos in targets.items())),
+                mock.patch.object(animations.servos, "set_speed",
+                                  side_effect=lambda ch, sp: events.append(("speed", ch, sp))),
                 mock.patch.object(animations.servos, "set_acceleration"),
                 mock.patch.object(animations.servos, "move_to"),
                 mock.patch.object(animations.servos, "pause_arm_idle"),
                 mock.patch.object(animations.servos, "resume_arm_idle"),
             ):
                 self.assertTrue(animations.wave_back_gesture(count=1, half_period=hp, async_=False))
-            # First speed set on the wrist channel (ch5) is the wave speed (before restore).
-            return next(sp for ch, sp in speeds if ch == 5 and sp != default_speed)
+            first_sweep = next(
+                i for i, (kind, ch, val) in enumerate(events)
+                if kind == "pos" and ch == 5 and val == hand_max
+            )
+            return next(
+                val for kind, ch, val in reversed(events[:first_sweep])
+                if kind == "speed" and ch == 5
+            )
 
         # A shorter half-period (faster wave) ⇒ higher Maestro speed than a longer one.
         self.assertGreater(wrist_speed_for(0.18), wrist_speed_for(0.48))
