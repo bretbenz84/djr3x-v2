@@ -15344,6 +15344,41 @@ def _memory_key(value: str) -> str:
     return re.sub(r"_+", "_", cleaned).strip("_") or "detail"
 
 
+# A stored fact key is an ATTRIBUTE of a person ("job", "birthday", "his name",
+# "favorite band") — never a topical noun phrase. "the most annoying part" is a
+# subject in the conversation, not something Rex can hold about Bret.
+_FACT_ATTRIBUTE_STOP_LEADERS = re.compile(
+    r"^(?:the|a|an|this|that|these|those|it|there|what|which|who|"
+    r"one|some|any|all|both|either|neither|another|each|every)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_fact_attribute(key_phrase: str, value: str = "") -> bool:
+    """Guard the generic "<X> is <Y>" correction write.
+
+    The regex behind it matches ANY clause with an "is" in it, so a correction
+    that slipped past the parser used to be filed verbatim: field 2026-08-13
+    11:30, "Actually, the most annoying part is figuring out where to mount them
+    on your body." → key=`the_most_annoying_part`, and Rex announced "I now have
+    Bret Benziger as the most annoying part: ...". A determiner-led or
+    clause-length phrase is the conversation's subject, not a person attribute —
+    fall through to the elaboration reply below instead of writing a fact.
+    """
+    phrase = " ".join(str(key_phrase or "").split())
+    if not phrase:
+        return False
+    if _FACT_ATTRIBUTE_STOP_LEADERS.match(phrase):
+        return False
+    if len(phrase.split()) > 3:
+        return False
+    # A clause-shaped value ("figuring out where to mount them on your body") is
+    # story detail, not a fact value, even under a plausible-looking key.
+    if len(str(value or "").split()) > 10:
+        return False
+    return True
+
+
 def _clean_memory_person_name(value: str) -> str:
     name = " ".join(str(value or "").strip(" .?!,;:").split())
     name = re.split(
@@ -15747,7 +15782,9 @@ def _execute_memory_correct_fact_command(
         return resp
 
     generic = re.match(r"(?i)^(.+?)\s+is\s+(.+)$", detail)
-    if target_id is not None and generic:
+    if target_id is not None and generic and _looks_like_fact_attribute(
+        generic.group(1), generic.group(2)
+    ):
         key = _memory_key(generic.group(1))
         value = generic.group(2).strip(" .!?")
         facts_memory.apply_fact_correction(

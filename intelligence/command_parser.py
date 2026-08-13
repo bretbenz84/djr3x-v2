@@ -625,13 +625,53 @@ def _parse_memory_boundary(normalized: str, original: str) -> dict | None:
     return None
 
 
+# "That's wrong, X" states outright that Rex got something wrong — the lead-in IS
+# the evidence. "Actually / no / nope" is only a DISCOURSE MARKER: people open
+# ordinary elaborations with it constantly, so on that branch the REMAINDER has to
+# carry its own correction evidence or the turn belongs in conversation.
+_CORRECTION_LEAD_INS = (
+    (r"^(?:that's|that is|you got that|you have that)\s+wrong\s*,?\s+(.+)$", True),
+    (r"^(?:actually|no|nope)\s*,?\s+(.+)$", False),
+)
+
+# A stored fact anchored to a NAMED person — the only third-person shape
+# _execute_memory_correct_fact_command can actually resolve and write.
+_CORRECTION_NAMED_FACT_RE = re.compile(
+    r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}"
+    r"(?:'s\s+\S|\s+(?:is|are|was|were|has|have|goes|lives|likes|loves|hates|"
+    r"dislikes|prefers|avoids|works|wants|plays|collects)\b)",
+)
+
+# "his/her/their (first|last|…) name is X" — an identity correction with no name
+# in subject position. "my name is X" stays out: first person is handled by the
+# contextual-reply guard below (a sensitive reply must not become a memory write).
+_CORRECTION_NAME_ATTR_RE = re.compile(
+    r"^(?:his|her|their)\s+(?:first\s+|last\s+|full\s+|real\s+|middle\s+)?name\s+is\s+\S",
+    re.IGNORECASE,
+)
+
+
+def _correction_carries_fact_evidence(correction: str) -> bool:
+    """True when a bare 'actually/no/nope' lead-in is followed by something that
+    is genuinely a memory correction rather than the speaker elaborating.
+
+    Field 2026-08-13 11:30: Rex asked "what's the most annoying part of calibrating
+    those sensors?" and the answer — "Actually, the most annoying part is figuring
+    out where to mount them on your body." — matched the bare marker, so Rex replied
+    "Corrected. I now have Bret Benziger as the most annoying part: ..." and wrote
+    `the_most_annoying_part` into his facts. Answering his own question is not a
+    correction; the marker alone proves nothing.
+    """
+    if _plain(correction).startswith("call me "):
+        return True                              # explicit rename
+    if _CORRECTION_NAME_ATTR_RE.match(correction.strip()):
+        return True
+    return bool(_CORRECTION_NAMED_FACT_RE.match(correction.strip()))
+
+
 def _parse_memory_correct_fact(normalized: str, original: str) -> dict | None:
     clean = _plain(normalized)
-    patterns = [
-        r"^(?:that's|that is|you got that|you have that)\s+wrong\s*,?\s+(.+)$",
-        r"^(?:actually|no|nope)\s*,?\s+(.+)$",
-    ]
-    for pattern in patterns:
+    for pattern, lead_in_is_evidence in _CORRECTION_LEAD_INS:
         m = re.match(pattern, clean)
         if not m:
             continue
@@ -651,6 +691,8 @@ def _parse_memory_correct_fact(normalized: str, original: str) -> dict | None:
                 not correction_plain.startswith("call me ")
                 and re.match(r"^(?:i|i'm|im|me|my|we|we're|were|our)\b", correction_plain)
             ):
+                return None
+            if not lead_in_is_evidence and not _correction_carries_fact_evidence(correction):
                 return None
             return {"correction": correction}
     return None

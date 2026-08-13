@@ -14,6 +14,10 @@ Four user-visible failures in one three-minute session:
     and nothing ever re-closed it;
   * the same pet was announced twice under two species labels — covered in
     tests/test_animal_returns.py (CrossSpeciesFlipTest).
+
+Plus one from the 11:27 run (logs/conversation-2026-08-13-11-27-02.log): Rex
+asked "what's the most annoying part of calibrating those sensors?" and the
+ANSWER to his own question was parsed as a memory correction.
 """
 
 import unittest
@@ -194,6 +198,98 @@ class SleepPoseRaceTest(unittest.TestCase):
                 "awake, speech end still releases the visor to neutral")
         finally:
             servos._speech_active.clear()
+
+
+class ActuallyIsNotACorrectionTest(unittest.TestCase):
+    """11:30:42 — Rex asked "What's the most annoying part of calibrating those
+    sensors — the math, or the fact that you have to trust your own hands?" and
+    Bret answered it. "Actually, ..." matched the bare discourse-marker branch
+    of _parse_memory_correct_fact, so Rex replied "Corrected. I now have Bret
+    Benziger as the most annoying part: figuring out where to mount them on your
+    body." and wrote `the_most_annoying_part` into his person_facts.
+
+    The dialogue-act guard that names memory_correct_fact as un-promotable could
+    not help: the reply was 15 words, over _looks_like_contextual_reply's
+    12-word cap, so the turn came through as general_chat.
+    """
+
+    FIELD_UTTERANCE = (
+        "Actually, the most annoying part is figuring out where to mount "
+        "them on your body."
+    )
+
+    def test_answering_rex_is_not_a_memory_correction(self):
+        from intelligence import command_parser
+        self.assertIsNone(command_parser.parse(self.FIELD_UTTERANCE))
+
+    def test_actually_needs_evidence_beyond_the_marker(self):
+        from intelligence import command_parser
+        for text in (
+            "Actually, the deadline is Friday.",
+            "Actually, the hardest part is the wiring.",
+            "No, the meeting is at three.",
+            "Actually, they changed the deadline on him.",
+            "Nope, the whole thing is a mess.",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(command_parser.parse(text))
+
+    def test_real_corrections_still_route(self):
+        from intelligence import command_parser
+        for text in (
+            "That's wrong, Daniel's last name is Smith.",   # lead-in IS evidence
+            "Actually, call me Bret Michael.",              # explicit rename
+            "Actually, Daniel's last name is Smith.",       # named-person fact
+            "Nope, Daniel is a pilot.",
+            "No, her name is Sarah.",
+        ):
+            with self.subTest(text=text):
+                match = command_parser.parse(text)
+                self.assertIsNotNone(match, text)
+                self.assertEqual(match.command_key, "memory_correct_fact")
+
+    def test_generic_write_rejects_a_topical_noun_phrase(self):
+        """Second layer: even reached directly, "<clause> is <clause>" must not
+        become a person attribute — it falls through to the elaboration reply."""
+        from intelligence import interaction as I
+
+        detail = ("the most annoying part is figuring out where to mount "
+                  "them on your body")
+        spoken = []
+        with (
+            mock.patch.object(I.facts_memory, "apply_fact_correction") as correct,
+            mock.patch.object(I.llm, "get_response",
+                              return_value="Mounting brackets. The eternal enemy."),
+            mock.patch.object(I, "_speak_blocking",
+                              side_effect=lambda t, *a, **k: spoken.append(t) or True),
+            mock.patch.object(I, "_extract_memory_statement_target",
+                              return_value=(1, "Bret Benziger", detail, False)),
+        ):
+            resp = I._execute_memory_correct_fact_command(
+                {"correction": detail}, 1, "Bret Benziger")
+
+        correct.assert_not_called()
+        self.assertNotIn("Corrected", resp)
+        self.assertIn("Mounting brackets", resp)
+
+    def test_generic_write_still_stores_a_real_attribute(self):
+        from intelligence import interaction as I
+
+        with (
+            mock.patch.object(I.facts_memory, "apply_fact_correction") as correct,
+            mock.patch.object(I.repair_moves, "add_better_luck_line",
+                              side_effect=lambda line: line),
+            mock.patch.object(I, "_speak_blocking"),
+            mock.patch.object(I, "_extract_memory_statement_target",
+                              return_value=(7, "Daniel", "job is engineer", True)),
+        ):
+            resp = I._execute_memory_correct_fact_command(
+                {"correction": "Daniel's job is engineer"}, 1, "Bret Benziger")
+
+        correct.assert_called_once()
+        self.assertEqual(correct.call_args.args[1], "job")
+        self.assertEqual(correct.call_args.args[2], "engineer")
+        self.assertIn("Corrected", resp)
 
 
 if __name__ == "__main__":
