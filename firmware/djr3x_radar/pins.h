@@ -1,0 +1,46 @@
+// pins.h — ESP32-S3 (N16R8) UART assignments for the LD2450 radar ring.
+//
+// The Mac link is NATIVE USB CDC (the S3's USB-OTG/JTAG port), so all three
+// hardware UARTs (0/1/2) are free for sensors — no software serial anywhere.
+// Pin choices avoid the S3 footguns:
+//   - GPIO 26..32 are wired to the SPI flash. Never usable.
+//   - GPIO 33..37 are bonded to the in-package OCTAL PSRAM on N16R8 modules
+//     (this board). Unusable here regardless of whether the app enables PSRAM.
+//   - GPIO 19/20 are the native USB D-/D+ — the Mac link itself. Reserved.
+//   - GPIO 0/3/45/46 are strapping pins; kept off the sensor lines.
+//   - GPIO 43/44 are the UART0 default pins (the "COM" header / bridge chip on
+//     dual-port devkits). We re-map UART0 onto clean GPIOs instead so the
+//     bridge port stays free for debugging.
+// That leaves 4-18, 21, 38-42, 47, 48 clean; sensors use the low block.
+//
+// If your wiring differs, THIS is the one file to edit — nothing else
+// hard-codes a pin or a mount angle.
+#pragma once
+#include <stdint.h>
+
+// One row per LD2450 module. Written for N sensors, not hardcoded 3 — during
+// bring-up you can run 2 by deleting a row and dropping RADAR_SENSOR_COUNT;
+// everything (parsers, fusion, telemetry, boot config) iterates the table.
+//
+//   uart       ESP32-S3 UART controller (0/1/2), one per sensor.
+//   rx_pin     ESP GPIO wired to the sensor's TX (the data stream — required).
+//   tx_pin     ESP GPIO wired to the sensor's RX. Wired even though reading
+//              needs only RX, so config can be pushed without pulling a module
+//              out of the ring (spec "Notes").
+//   mount_deg  Where the sensor's boresight points in the ROBOT frame, in the
+//              project-wide sign convention (docs/motion_protocol.md §4):
+//              degrees, 0 = robot forward, + = LEFT/CCW, wrapped (-180,180].
+struct RadarSensorPin {
+  uint8_t uart;
+  int8_t  tx_pin;
+  int8_t  rx_pin;
+  float   mount_deg;
+};
+
+#define RADAR_SENSOR_COUNT 3
+
+static const RadarSensorPin RADAR_SENSORS[RADAR_SENSOR_COUNT] = {
+  {1, 5,  4,    0.0f},   // S0 — front
+  {2, 7,  6,  120.0f},   // S1 — left-rear  (+120° CCW)
+  {0, 9,  8, -120.0f},   // S2 — right-rear (120° CW)
+};

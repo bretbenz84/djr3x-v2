@@ -8240,6 +8240,31 @@ RADIO_STATIONS = [
     },
 ]
 
+# ── Radar ring (ESP32-S3, LD2450 bearing prior) ─────────────────────────────────
+# 360° mmWave ring on the base: three HLK-LD2450 modules fused on the S3 into a
+# robot-frame (bearing, range, confidence) target list, streamed at 10 Hz over
+# native USB CDC. It is a BEARING PRIOR for the come-here person search, not a
+# detector — and this pass is logs-only: nothing consumes the targets yet.
+# Device identity lives in .env (RADAR_ESP32_SERIAL, matched by USB serial
+# number — see utils/config_loader.py); spec: docs/radar-bearing-prior-spec.md;
+# firmware: firmware/djr3x_radar; transport: hardware/radar.py.
+RADAR_ENABLED = True                  # master switch; also needs a .env identity set
+RADAR_BAUD = 115200                   # nominal — the link is native USB CDC
+RADAR_PROTO_VERSION = 1
+RADAR_HANDSHAKE_TIMEOUT_MS = 1500     # wait for the `hello` reply at connect
+RADAR_CONNECT_RETRY_ATTEMPTS = 3      # mirrors MOTION_CONNECT_RETRY_*
+RADAR_CONNECT_RETRY_DELAY_SECS = 1.0
+RADAR_SERIAL_TIMEOUT_SECS = 0.1
+RADAR_RECONNECT_INTERVAL_SECS = 5.0   # self-heal poll while the link is down (a
+                                      # crashed S3's CDC device VANISHES from /dev,
+                                      # so only re-resolving the serial number heals it)
+RADAR_TARGET_LATCH_SECS = 3.0         # keep returning the last non-empty target list
+                                      # this long after a dropout: the LD2450 tracks
+                                      # MOVING targets only, so a person who freezes
+                                      # falls off the list — a dropout is not an
+                                      # empty room (spec "Mac-side reader")
+RADAR_LOG_INTERVAL_SECS = 2.0         # throttle for the [radar] targets INFO line
+
 # ── Motion base (ESP32 drive controller) ────────────────────────────────────────
 # High-level config for the differential-drive base. The serial device path is
 # MOTION_ESP32_PORT in .env (disabled cleanly when unset, like MAESTRO_PORT). The

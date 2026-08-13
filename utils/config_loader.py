@@ -235,6 +235,19 @@ ARDUINO_HEAD_PORT: "str | None" = _require_port("ARDUINO_HEAD_PORT", "head LEDs"
 ARDUINO_CHEST_PORT: "str | None" = _require_port("ARDUINO_CHEST_PORT", "chest LEDs")
 MOTION_ESP32_PORT: "str | None" = _require_port("MOTION_ESP32_PORT", "motion base")
 
+# Radar ring (ESP32-S3, LD2450 bearing prior). Matched by USB SERIAL NUMBER,
+# not device path: there are two ESP32s attached now and /dev/cu.usbmodem*
+# numbering shuffles across reboots/replug order. RADAR_ESP32_PORT is the
+# literal-path escape hatch; hardware/radar.py resolves the serial number
+# fresh on every connect (the S3's CDC device re-enumerates after a crash).
+RADAR_ESP32_SERIAL: "str | None" = _optional_env("RADAR_ESP32_SERIAL")
+RADAR_ESP32_PORT: "str | None" = _optional_env("RADAR_ESP32_PORT")
+if RADAR_ESP32_SERIAL is None and RADAR_ESP32_PORT is None:
+    _log.warning(
+        "Hardware config missing: neither RADAR_ESP32_SERIAL nor RADAR_ESP32_PORT set"
+        " — radar ring disabled."
+    )
+
 if CAMERA_DEVICE_NAME:
     CAMERA_SELECTION_DESCRIPTION = f'device name match "{CAMERA_DEVICE_NAME}"'
 elif CAMERA_INDEX is not None:
@@ -254,3 +267,6 @@ CHEST_LEDS_ENABLED: bool = ARDUINO_CHEST_PORT is not None
 # Motion base is enabled when its port is set AND the master switch (config.MOTION_ENABLED)
 # is on; the master-switch check lives in hardware.motion.connect() like servos.
 MOTION_PORT_SET: bool = MOTION_ESP32_PORT is not None
+# Radar ring mirrors the motion pattern: configured here, master switch
+# (config.RADAR_ENABLED) checked in hardware.radar.connect().
+RADAR_CONFIGURED: bool = RADAR_ESP32_SERIAL is not None or RADAR_ESP32_PORT is not None

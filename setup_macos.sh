@@ -1406,7 +1406,12 @@ def probe(dev):
                     msg = json.loads(line.decode("utf-8", "replace"))
                 except Exception:
                     continue
-                if isinstance(msg, dict) and msg.get("type") == "hello" and msg.get("proto") == 1:
+                # Require the "drive" cap: the radar ring (firmware/djr3x_radar)
+                # also answers hello on proto 1, with caps ["radar"] — without
+                # this check the probe would pin the radar board as the base.
+                if (isinstance(msg, dict) and msg.get("type") == "hello"
+                        and msg.get("proto") == 1
+                        and "drive" in (msg.get("caps") or [])):
                     return True
         return False
     finally:

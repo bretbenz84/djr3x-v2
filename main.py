@@ -94,7 +94,7 @@ import soundfile as sf
 import config
 import state
 from state import State
-from hardware import servos, leds_head, leds_chest, motion
+from hardware import servos, leds_head, leds_chest, motion, radar
 from utils.config_loader import (
     SERVOS_ENABLED,
     HEAD_LEDS_ENABLED,
@@ -108,6 +108,8 @@ from utils.config_loader import (
     ARDUINO_HEAD_PORT,
     ARDUINO_CHEST_PORT,
     MOTION_ESP32_PORT,
+    RADAR_CONFIGURED,
+    RADAR_ESP32_PORT,
 )
 from utils import port_handoff
 from sequences import animations
@@ -854,6 +856,7 @@ def _shutdown() -> None:
     leds_head.disconnect()
     leds_chest.disconnect()
     motion_controller.disconnect()   # stops heartbeat + leaves the base stopped
+    radar.shutdown()                 # also parks the self-heal monitor
 
     # Release the single-instance lock so the always-on supervisor can relaunch
     # on the next "wake up rex". (The OS would also free it on process exit.)
@@ -1108,6 +1111,13 @@ def _wait_for_companion_port_handoff() -> None:
             "motion base",
             MOTION_ESP32_PORT if bool(getattr(config, "MOTION_ENABLED", True)) else None,
         ),
+        # Radar ring: only the literal-path config can be checked here — the
+        # serial-number match resolves at connect time, and no menubar app
+        # holds that port anyway.
+        (
+            "radar ring",
+            RADAR_ESP32_PORT if bool(getattr(config, "RADAR_ENABLED", True)) else None,
+        ),
     ]
     try:
         port_handoff.wait_for_release(
@@ -1184,6 +1194,20 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.warning("Motion base: disabled (MOTION_ESP32_PORT set but connection/handshake failed)")
     else:
         logger.info("Motion base: disabled (MOTION_ESP32_PORT not set)")
+
+    radar_master = bool(getattr(config, "RADAR_ENABLED", True))
+    radar_ok = radar.connect()
+    if radar_ok:
+        logger.info("Radar ring: enabled (ESP32-S3 connected, targets in [radar] logs)")
+    elif not radar_master:
+        logger.info("Radar ring: disabled (config.RADAR_ENABLED is False)")
+    elif RADAR_CONFIGURED:
+        # Not fatal: the transport's monitor keeps re-resolving the serial
+        # number, so a board plugged in later (or re-enumerating after a crash)
+        # is picked up without a restart.
+        logger.warning("Radar ring: disabled (configured but connect/handshake failed — watching for the board)")
+    else:
+        logger.info("Radar ring: disabled (RADAR_ESP32_SERIAL/RADAR_ESP32_PORT not set)")
 
     # Wire chest LEDs to state transitions so they stay in sync without
     # scattering leds_chest calls across every module.
