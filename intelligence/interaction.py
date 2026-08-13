@@ -1076,7 +1076,9 @@ def _dj_command_listen_step(*, allowed_states: tuple[State, ...]) -> None:
     threshold — "stop the music", repeated at a turned-down amp, did nothing
     and the owner had to kill the process. This keeps a narrow ear open: VAD on
     the hardware-AEC-cleaned mic, transcribe the segment, and act ONLY on
-    music-control/shutdown commands (_DJ_LISTEN_COMMAND_KEYS). Anything else —
+    music-control/shutdown commands (_DJ_LISTEN_COMMAND_KEYS) — and only when
+    the parser matched them EXACTly, since this is the one execution path that
+    never reaches _legacy_command_execution_block_reason. Anything else —
     including whatever the radio station says — is dropped with a log line.
     """
     chunk = stream.get_audio_chunk(_CHUNK_SECS)
@@ -1107,6 +1109,36 @@ def _dj_command_listen_step(*, allowed_states: tuple[State, ...]) -> None:
             _log.info(
                 "[dj_listen] dropped non-command speech during playback: %r (key=%s)",
                 text, key,
+            )
+            return
+
+        # This listener is the ONLY execution path that never reaches
+        # _legacy_command_execution_block_reason, so it has to enforce that
+        # gate's legacy_fuzzy_disabled rule itself. Fuzzy is whole-utterance edit
+        # distance, and a room with a radio playing in it is exactly where near
+        # misses arrive: "shot down" (0.89 vs "shut down"), "sun down" (0.82),
+        # "powder down" (0.95 vs "power down"), "sit down" (0.82) and "turn it
+        # off" (0.84 vs "turn off") ALL resolve to shutdown, which here kills the
+        # process with no confirmation. Note "sit down" — the wake-confirm path
+        # deliberately excludes that homophone because it may be aimed at a pet
+        # (_SHUTDOWN_WAKE_HOMOPHONE_CORES), and the fuzzy lane was handing it back.
+        # Real music commands ("stop the music", "skip this song", "turn it down")
+        # all match EXACTly, so nothing usable is lost.
+        if match.match_type == "fuzzy":
+            _log.info(
+                "[dj_listen] dropped fuzzy command during playback: %r (key=%s)",
+                text, key,
+            )
+            return
+
+        # Belt-and-braces on the one destructive key in the set: re-verify
+        # shutdown against the strict clause-aware matcher before powering off
+        # over a track. Every EXACT shutdown phrase in the table passes this
+        # ("shut down rex", "turn yourself off", "power off"), so it only ever
+        # costs a near-miss.
+        if key == "shutdown" and not command_parser.is_shutdown_request(text):
+            _log.info(
+                "[dj_listen] dropped unverified shutdown during playback: %r", text,
             )
             return
 
@@ -1544,6 +1576,11 @@ def _legacy_command_blocked_by_dialogue(
 
 # Unmapped legacy command_keys explicit enough to break out of an answer_to_rex frame
 # (NOT memory_correct_fact — that pattern-matches sensitive contextual replies).
+# memory_remember_fact is the one DURABLE, unconfirmed write in this set — it can
+# even mint a new person row — and it stays only because it is now backstopped:
+# _legacy_unmapped_memory_write_block_reason runs AFTER this breakout, so a real
+# "remember that Dana is allergic to shellfish" still routes mid-frame while
+# narration does not. Do not add another durable key here without a bar there.
 _LEGACY_ANSWER_FRAME_BREAKOUT_KEYS = frozenset({
     "wave_to", "volume_up", "volume_down",
     "set_personality", "query_personality", "memory_remember_fact",
@@ -1587,6 +1624,59 @@ _LEGACY_COMMAND_ACTION_MAP: dict[str, str] = {
     "quiet_mode": "system.sleep",
     "shutdown": "system.shutdown",
 }
+
+
+# Unmapped command_keys that still WRITE people.db. The rest of the unmapped set is
+# safe to run unchecked and deliberately so: forget_me / forget_everyone /
+# volume_up / volume_down only ever reach us from the whole-utterance EXACT table,
+# set_personality / query_personality from anchored "^set <param> to <n>" and
+# "^what's your <param>" regexes, wave_to from an anchored "^wave (to|at) X$" — for
+# those the parser match IS the evidence, and the effect is a canned readout, a
+# volume nudge, a personality dial, one gesture, or an ARMED confirmation the user
+# still has to say back. These two are open-ended tails whose executors write a
+# durable fact with no confirmation turn, so they need a bar of their own.
+_LEGACY_UNMAPPED_MEMORY_WRITE_KEYS = frozenset({
+    "memory_remember_fact",
+    "memory_correct_fact",
+})
+
+# A stored attribute is short; a story is not. Measured on the parser 2026-08-13:
+# real writes run 2-8 words ("Sarah is a vegetarian", "last name is Bender") while
+# the narration that produced the junk rows runs 15-17 ("my mom is coming over on
+# Sunday and she really does not like loud music"). Same 12-word line dialogue_act
+# uses to call a turn a contextual reply — and the reason that guard never saw
+# these: over 12 words the turn is general_chat, so BOTH gates passed it.
+_LEGACY_MEMORY_WRITE_MAX_WORDS = 12
+
+
+def _legacy_unmapped_memory_write_block_reason(
+    match: command_parser.CommandMatch,
+) -> Optional[str]:
+    """Evidence bar for the unmapped legacy keys that write people.db.
+
+    Field 2026-08-13: "Remember that my mom is coming over on Sunday and she
+    really does not like loud music" parsed as memory_remember_fact, and at 17
+    words dialogue_act never bound it as answer_to_rex either (that label only
+    claims replies of <=12 words), so BOTH gates passed it and the executor filed
+    the whole sentence as a fact.
+
+    Length is the discriminator on purpose. The obvious alternative — reusing
+    command_parser._correction_carries_fact_evidence for the correction twin —
+    also rejects "that's wrong, last name is Bender", a self-surname correction
+    the executor genuinely handles and that the live garbled-surname work depends
+    on. A stored attribute is short whoever it belongs to; a story is not.
+    """
+    key = getattr(match, "command_key", "")
+    if key not in _LEGACY_UNMAPPED_MEMORY_WRITE_KEYS:
+        return None
+    args = match.args or {}
+    field = "statement" if key == "memory_remember_fact" else "correction"
+    value = " ".join(str(args.get(field) or "").split()).strip(" .!?")
+    if not value:
+        return f"missing_memory_write_{field}"
+    if len(value.split()) > _LEGACY_MEMORY_WRITE_MAX_WORDS:
+        return "memory_write_is_narrative"
+    return None
 
 
 _INTENT_ACTION_MAP: dict[str, str] = {
@@ -1702,7 +1792,11 @@ def _legacy_command_execution_block_reason(
         return "legacy_fuzzy_disabled"
     decision = _legacy_command_action_decision(match)
     if decision is None:
-        return None
+        # No mapped action means no ActionDecision to evidence-check, which used
+        # to mean "allow, unchecked" — the one silent hole in this gate (routing
+        # audit 2026-08-13). Benign unmapped keys still pass; the keys that write
+        # people.db now answer for themselves.
+        return _legacy_unmapped_memory_write_block_reason(match)
     return action_router.missing_required_evidence_reason(
         text,
         decision,
@@ -3768,8 +3862,19 @@ def _is_sleep_wake_transcript(text: str) -> bool:
     }:
         return True
     rex_name = r"(?:d\s*j\s+)?(?:rex|r\s*3\s*x|r3x|rx)"
-    wake_prefix = r"(?:(?:hey|yo)\s+)?(?:please\s+)?"
-    wake_suffix = r"(?:\s+please)?"
+    wake_prefix = r"(?:(?:hey|yo|ok|okay|alright)\s+)*(?:please\s+)?"
+    # A trailing address or particle is not content — "Rex, wake up buddy" and
+    # "wake up rex, come on" left him ASLEEP under the old bare fullmatch, and a
+    # missed wake is the expensive direction of this error (he cannot be woken by
+    # voice at all until someone says the exact phrase). A false wake just makes
+    # him listen, so tolerating filler here is the safe asymmetry.
+    wake_suffix = (
+        r"(?:\s+(?:please|now|already|buddy|bud|pal|dude|man|boy|"
+        r"friend|come\s+on|will\s+you))*"
+    )
+    # Rex's NAME stays mandatory: a bare "wake up" is ambient speech in a room he
+    # is asleep in, not an address to him (pinned by
+    # test_sleep_wake_transcript_requires_explicit_rex_wake_phrase).
     return bool(
         re.fullmatch(rf"{wake_prefix}wake\s+up\s+{rex_name}{wake_suffix}", cleaned)
         or re.fullmatch(rf"{wake_prefix}{rex_name}\s+wake\s+up{wake_suffix}", cleaned)
@@ -7686,6 +7791,27 @@ def _known_person_needs_last_name(person_id: Optional[int], person_name: Optiona
     return not _has_declined_last_name(int(person_id))
 
 
+def _rename_candidate_is_name_cased(raw_text: str, name: str) -> bool:
+    """True when the candidate actually appeared capitalized in the transcript.
+
+    ASR writes a real claim with a capital ("Call me Bret.", "My name is Bret
+    Benziger.") and an idiom in lowercase ("Call me later.", "Call me crazy, but
+    I think it'll work.", "My name is on the list."). _normalize_name title-cases
+    an all-lowercase tail, so by the time there IS a candidate the tell is gone —
+    check the raw line instead. Same casing bar action_router
+    ._plausible_thats_not_name_candidate applies to a "that's not X" tail (field
+    2026-08-13), here on the branch that can DURABLY rename a person row or arm a
+    person MERGE. An uncased transcript loses the rename on this fast path, but
+    _handle_router_identity_name_correction re-enters with a normalized
+    "call me <Name>" and still lands it — the smarter layer keeps the escape hatch.
+    """
+    first = next(iter((name or "").split()), "")
+    if not first:
+        return False
+    match = re.search(rf"\b{re.escape(first)}\b", raw_text or "", re.IGNORECASE)
+    return bool(match and match.group(0)[:1].isupper())
+
+
 def _extract_name_update(text: str) -> Optional[str]:
     """Extract an explicit request/correction to rename the current person."""
     normalized = (text or "").strip()
@@ -7693,13 +7819,23 @@ def _extract_name_update(text: str) -> Optional[str]:
         return None
 
     # When a preferred short name is supplied, use it over the formal name.
+    name = None
     call_match = _CALL_ME_NAME_RE.search(normalized)
     if call_match:
         name = _normalize_name(call_match.group(1))
-        if name:
-            return name
+    if not name:
+        name = _extract_introduced_name(normalized, allow_bare_name=False)
+    if not name:
+        return None
 
-    return _extract_introduced_name(normalized, allow_bare_name=False)
+    if not _rename_candidate_is_name_cased(normalized, name):
+        _log.info(
+            "[identity] refusing uncapitalized rename candidate %r from %r",
+            name,
+            text,
+        )
+        return None
+    return name
 
 
 def _single_visible_person_identity() -> tuple[Optional[int], Optional[str]]:
@@ -19452,6 +19588,43 @@ def _motion_no_base_denial_line(text: str) -> Optional[str]:
     return random.choice(lines)
 
 
+def _motion_takeover_executable(
+    decision: Optional[action_router.ActionDecision],
+    *,
+    text: Optional[str] = None,
+) -> bool:
+    """Execute policy for the two pre-dialogue-gate motion takeovers.
+
+    Field 2026-08-13: every one of the 203 audited "not_in_execute_allowlist"
+    events logged final_executed_path=fast_local_takeover.motion.* — the takeovers
+    drove the base straight off the deterministic classifier without ever asking
+    the policy, so the wheels turned while the audit line said the action was
+    blocked. This turns the two OVERSIGHT guards back on: the
+    config.ACTION_ROUTER_EXECUTE_ACTIONS allowlist (which now carries the motion.*
+    keys, making it a real kill switch) and the confidence floor — regex motion
+    emits 0.95-0.97 and the explore invite 0.93, all clear of the 0.85 bar, so
+    genuine commands pass exactly as they do today.
+
+    dialogue_decision is deliberately NOT passed. Running ahead of the dialogue-act
+    gate is the entire reason these takeovers exist: ccd839e (2026-06-23) shipped
+    because "move forward." / "Move backwards" were labelled answer_to_rex and the
+    motion fast path was skipped, and the field logs still show "Turn around.",
+    "Back up two feet." and "Stop moving." binding as answer frames. A physical
+    command is never the answer to Rex's last question, and
+    _dialogue_allows_action_breakout has no motion escape hatch — handing the
+    dialogue decision in here would re-swallow exactly those turns.
+
+    text is withheld on the motion side for the same reason: the deterministic
+    classifier IS the evidence there, and the continuation ("more" after a turn)
+    and errand-stop decisions are synthesized from live base state rather than from
+    re-matchable words, so an evidence re-match would block valid commands. The
+    explore takeover does pass it — motion.explore's evidence check is the same
+    imperative-invite classifier that produced the decision, so it is a free
+    re-verification.
+    """
+    return _router_decision_executable(decision, text=text)
+
+
 def _explicit_motion_takeover(
     text: str,
     *,
@@ -19509,6 +19682,17 @@ def _explicit_motion_takeover(
             reason="explicit ordered motion sequence",
         )
         _router_audit_note_decision(router_audit, decision)
+        if not all(_motion_takeover_executable(step) for step in sequence):
+            # A route is only as executable as its legs. Without this, switching a
+            # motion key off in ACTION_ROUTER_EXECUTE_ACTIONS would stop "turn left"
+            # but still drive "turn left then move forward" — the composite
+            # motion.sequence decision is a local audit label, not a catalog action,
+            # so the policy has to be applied per leg.
+            _log.info(
+                "[motion] route blocked by execute policy (allowlist/confidence): text=%r",
+                text,
+            )
+            return None
         if motion_controller.charging():
             line = "I'm plugged in and charging. Wheels stay locked."
             _speak_blocking(line, emotion="neutral", log_text=False)
@@ -19547,6 +19731,16 @@ def _explicit_motion_takeover(
         _clear_motion_continuation()
         return None
     _router_audit_note_decision(router_audit, motion_decision)
+    if not _motion_takeover_executable(motion_decision):
+        # Allowlist + confidence oversight only — see _motion_takeover_executable
+        # for why the dialogue-act gate stays off this path (ccd839e, 2026-06-23).
+        _log.info(
+            "[motion] command blocked by execute policy: action=%s conf=%.2f text=%r",
+            motion_decision.action,
+            float(motion_decision.confidence or 0.0),
+            text,
+        )
+        return None
     result = _handle_router_motion_action(motion_decision, requester_person_id=person_id)
     if result is not None:
         _router_audit_note_fast_local_action(
@@ -19621,6 +19815,13 @@ def _explore_invite_takeover(
     if decision is None or decision.action != "motion.explore":
         return None
     _router_audit_note_decision(router_audit, decision)
+    if not _motion_takeover_executable(decision, text=text):
+        # Same oversight as the motion takeover: allowlist + the 0.85 confidence
+        # floor (the invite classifier emits 0.93) plus motion.explore's own invite
+        # evidence check — but no dialogue-act gate, because "look around a little"
+        # spoken right after Rex talks is still a command, not an answer.
+        _log.info("[explore] invite blocked by execute policy: text=%r", text)
+        return None
     return _handle_explore_invite(
         text, person_id=person_id, person_name=person_name, router_audit=router_audit
     )

@@ -125,31 +125,84 @@ _SLEEP_COMMAND_PREFIXES = (
     "please ",
     "rex ",
     "hey rex ",
+    # Matched to the shutdown prefix list 2026-08-13 — "Okay Rex, go to sleep."
+    # reduced to nothing and was refused by every lane.
+    "okay ",
+    "ok ",
+    "alright ",
+    "hey ",
 )
 _SLEEP_COMMAND_SUFFIXES = (
     " please",
 )
 
 
-def is_standalone_sleep_command(text: str) -> bool:
-    """True only for short, direct sleep commands, not embedded narration."""
-    clean = _plain(text)
-    if not clean:
-        return False
+# A trailing address or particle carries no meaning for a mode command, but it
+# stopped the clause from reducing to a bare core, so the command died silently.
+# Field 2026-08-13: "Go to sleep, Rex.", "Go to sleep buddy." and "Time for bed,
+# go to sleep now." were each refused by EVERY lane — and because action_router's
+# system.sleep evidence gate re-uses these same matchers, even a correct LLM tool
+# call was vetoed. This is surface normalization only: the negation,
+# object-scoping ("shut down the music") and hypothetical guards are untouched,
+# because a trailing vocative is stripped only AFTER those have seen the clause.
+_MODE_COMMAND_TRAILER_RE = re.compile(
+    r"\s+(?:rex|r3x|dj\s+rex|buddy|bud|pal|dude|man|boy|friend|"
+    r"now|already|then|please|ok|okay|alright)$",
+    re.IGNORECASE,
+)
 
+
+def _strip_mode_command_trailers(value: str) -> str:
+    """Peel trailing vocatives/particles ("..., Rex", "... buddy", "... now")."""
+    previous = None
+    while previous != value:
+        previous = value
+        value = _MODE_COMMAND_TRAILER_RE.sub("", value).strip()
+    return value
+
+
+def _reduce_sleep_clause(clean: str) -> str:
+    """Peel polite prefixes, suffixes and trailing vocatives from one clause."""
+    value = clean.strip()
     changed = True
     while changed:
         changed = False
         for prefix in _SLEEP_COMMAND_PREFIXES:
-            if clean.startswith(prefix):
-                clean = clean[len(prefix):].strip()
+            if value.startswith(prefix):
+                value = value[len(prefix):].strip()
                 changed = True
         for suffix in _SLEEP_COMMAND_SUFFIXES:
-            if clean.endswith(suffix):
-                clean = clean[: -len(suffix)].strip()
+            if value.endswith(suffix):
+                value = value[: -len(suffix)].strip()
                 changed = True
+        stripped = _strip_mode_command_trailers(value)
+        if stripped != value:
+            value = stripped
+            changed = True
+    return value
 
-    return clean in _SLEEP_COMMAND_CORES
+
+def is_standalone_sleep_command(text: str) -> bool:
+    """True only for short, direct sleep commands, not embedded narration.
+
+    Clause-aware since 2026-08-13, mirroring is_standalone_shutdown_command —
+    "Time for bed, go to sleep now." never reduced under the whole-string match,
+    so the sleep never happened. The same negation/hypothetical guard shutdown
+    uses runs per clause, so "don't go to sleep" and "why would I sleep" are
+    still refused, and narration ("the baby wouldn't go to sleep") never reduces
+    to a bare core.
+    """
+    if not text or not text.strip():
+        return False
+    for clause in _SHUTDOWN_CLAUSE_SPLIT_RE.split(text.lower()):
+        clean = _plain(clause)
+        if not clean:
+            continue
+        if _SHUTDOWN_NEGATION_GUARD_RE.search(clean):
+            continue
+        if _reduce_sleep_clause(clean) in _SLEEP_COMMAND_CORES:
+            return True
+    return False
 
 
 # Full-process shutdown is a heavier action than sleep (it exits main.py and
@@ -212,7 +265,7 @@ _SHUTDOWN_CLAUSE_LEADERS = (
 
 
 def _reduce_shutdown_clause(clean: str) -> str:
-    """Peel polite prefixes/leaders and suffixes from one normalized clause."""
+    """Peel polite prefixes/leaders, suffixes and trailing vocatives from one clause."""
     value = clean.strip()
     changed = True
     while changed:
@@ -225,6 +278,13 @@ def _reduce_shutdown_clause(clean: str) -> str:
             if value.endswith(suffix):
                 value = value[: -len(suffix)].strip()
                 changed = True
+        # "Shut down, Rex." / "power off buddy" — an address is not an object, but
+        # it kept the clause from reducing to a bare core (field 2026-08-13). Runs
+        # after the negation/object guards have already seen the clause.
+        stripped = _strip_mode_command_trailers(value)
+        if stripped != value:
+            value = stripped
+            changed = True
     return value
 
 

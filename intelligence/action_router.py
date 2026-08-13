@@ -605,13 +605,37 @@ _FORGET_SPECIFIC_REQUEST_RE = re.compile(
 )
 _RECENT_DISCARD_REQUEST_RE = re.compile(
     r"\b("
-    r"forget|don'?t\s+remember|do\s+not\s+remember|don'?t\s+store|"
-    r"do\s+not\s+store|don'?t\s+save|do\s+not\s+save|discard"
+    r"forget|don['’]?t\s+remember|do\s+not\s+remember|don['’]?t\s+store|"
+    r"do\s+not\s+store|don['’]?t\s+save|do\s+not\s+save|discard"
     r")\b.{0,80}\b("
     r"that|this|it|what\s+i\s+(?:just\s+)?said|i\s+(?:just\s+)?said\s+that"
     r")\b",
     re.IGNORECASE,
 )
+# "don't forget that we have dinner tomorrow" is the EXACT INVERSE of a discard —
+# the speaker is asking Rex to hold on to it — but the bare "forget ... that"
+# trigger above fired anyway and wiped the turn (audit 2026-08-13). Same for
+# "I'll never forget that trip". The negator has to sit immediately on "forget";
+# "don't remember that" stays a discard, which is why this keys on the verb
+# FORGET alone and not on the negator by itself.
+_MEMORY_KEEP_INTENT_RE = re.compile(
+    r"\b(?:don['’]?t|do\s+not|never|won['’]?t|will\s+not|can['’]?t|cannot|couldn['’]?t|"
+    r"shouldn['’]?t|should\s+not|mustn['’]?t)\s+(?:ever\s+|really\s+|you\s+)?forget\b",
+    re.IGNORECASE,
+)
+
+
+def _is_recent_discard_request(text: str) -> bool:
+    """True for an explicit 'drop what I just said', False for its inverse.
+
+    Shared by the deterministic classifier, the evidence gate and the
+    post-LLM sanity pass so a "don't forget" can't reach the discard handler
+    down ANY of the three routes.
+    """
+    cleaned = text or ""
+    if not _RECENT_DISCARD_REQUEST_RE.search(cleaned):
+        return False
+    return not _MEMORY_KEEP_INTENT_RE.search(cleaned)
 _BOUNDARY_REQUEST_RE = re.compile(
     r"\b("
     r"don'?t|do not|stop|quit|please don'?t|please do not"
@@ -734,15 +758,50 @@ _TELL_JOKE_RE = re.compile(
     r"\bgot\s+(?:any|a)\s+(?:jokes?|puns?)\b",
     re.IGNORECASE,
 )
+# The catch-all target used to be [a-z][a-z .'-]{0,40} — spaces INSIDE the class,
+# so "roast marshmallows over the fire" captured "marshmallows over the fire" and
+# "I'm going to roast a chicken for dinner" captured "a chicken for dinner"
+# (audit 2026-08-13). A person's name is at most three tokens, and the space now
+# only appears between them.
 _ROAST_REQUEST_RE = re.compile(
     r"\b(?:roast|tease|mock|trash\s*talk)\s+"
     r"(?P<target>me|us|the room|this room|yourself|him|her|them|"
-    r"[a-z][a-z .'-]{0,40})\b|"
+    r"[a-z][a-z'-]{0,20}(?:\s+[a-z][a-z'-]{0,20}){0,2})\b|"
     r"\bmake\s+fun\s+of\s+"
     r"(?P<target2>me|us|the room|this room|yourself|him|her|them|"
-    r"[a-z][a-z .'-]{0,40})\b|"
+    r"[a-z][a-z'-]{0,20}(?:\s+[a-z][a-z'-]{0,20}){0,2})\b|"
     r"\bgive\s+(?:me|us)\s+(?:a\s+)?roast\b|"
     r"\bhit\s+(?:me|us)\s+with\s+(?:a\s+)?roast\b",
+    re.IGNORECASE,
+)
+# "Don't roast me" executed a roast (audit 2026-08-13) — the humor classifiers had
+# no negation guard at all, unlike impersonation (_IMPERSONATE_NEGATION_RE) and
+# motion (_MOTION_NEGATED_RE). Same "negator within 24 chars of the verb" shape as
+# motion, but the gap cannot cross a clause boundary: "don't hold back, roast me"
+# is a REQUEST, and a bare .{0,24} would have killed it.
+_HUMOR_NEGATION_RE = re.compile(
+    r"\b(?:don['’]?t|do\s+not|never|stop|quit|no\s+more|shouldn['’]?t|should\s+not|"
+    r"won['’]?t|will\s+not|can['’]?t|cannot|couldn['’]?t|mustn['’]?t)\b"
+    r"[^.,;!?]{0,24}?\b(?:roast|roasting|teas(?:e|ing)|mock(?:ing)?|trash\s*talk|"
+    r"make\s+fun|jokes?|joking|funny|laugh|riff|bit)\b",
+    re.IGNORECASE,
+)
+# NARRATION, not a request: "they mock me at school for my accent" and "this heat
+# could roast a turkey" both fired humor.roast (audit 2026-08-13). A roast request
+# is addressed to Rex, so a first/third-person subject or a hypothetical modal
+# sitting in front of the verb disqualifies it — unless "you"/"rex" comes between
+# ("I want you to roast me" is still a request), which is what the tempered
+# repetition protects. Base verb forms only — "he teased me" already fails the
+# request pattern above, so inflections here would only cost real requests.
+_HUMOR_NOT_A_REQUEST_RE = re.compile(
+    r"\b(?:i|i['’]?m|i['’]?ve|i['’]?ll|i['’]?d|we|we['’]?re|we['’]?ve|we['’]?ll|we['’]?d|"
+    r"they|they['’]?re|they['’]?d|he|he['’]?s|he['’]?d|she|she['’]?s|she['’]?d|"
+    r"it|it['’]?s|this|that|everyone|everybody|nobody|people|kids|mom|dad|grandpa|grandma)\s+"
+    r"(?:(?!\byou\b|\brex\b)[\w'’]+\s+){0,3}?"
+    r"(?:roast|tease|mock|trash\s*talk|make\s+fun|tell|told|crack|cracked)\b|"
+    r"\b(?:would|could|might|may|should|used\s+to|gonna|going\s+to)\s+"
+    r"(?:(?!\byou\b|\brex\b)[\w'’]+\s+){0,2}?"
+    r"(?:roast|tease|mock|trash\s*talk|make\s+fun)\b",
     re.IGNORECASE,
 )
 _FREE_HUMOR_RE = re.compile(
@@ -777,14 +836,31 @@ _IMPERSONATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     # "impersonate X", "imitate X", "mimic X"
     re.compile(r"\b(?:impersonate|imitate|mimic)\s+(?P<target>.+)$", re.IGNORECASE),
-    # "do/copy/clone my voice", "do Jimmy Carter's voice"
+    # "do/copy/clone my voice", "do Jimmy Carter's voice". The target used to be a
+    # lazy .+? , which let "Do you like my voice?" through as an impersonation of
+    # "you like my" (audit 2026-08-13). It now has to be a possessive determiner or
+    # a name carrying the possessive 's.
     re.compile(
-        r"\b(?:do|copy|clone|steal)\s+(?P<target>.+?)(?:'s)?\s+voice\b",
+        r"\b(?:do|copy|clone|steal)\s+"
+        r"(?P<target>my|your|his|her|their|our|"
+        r"[a-z][a-z.'’-]{0,20}?(?:\s+[a-z][a-z.'’-]{0,20}?){0,3}"
+        r"(?=['’]s\s+voice))"
+        r"(?:['’]s)?\s+voice\b",
         re.IGNORECASE,
     ),
 )
 _IMPERSONATE_NEGATION_RE = re.compile(
-    r"\b(?:don'?t|do\s+not|never|stop|quit|no\s+more)\b", re.IGNORECASE
+    r"\b(?:don['’]?t|do\s+not|never|stop|quit|no\s+more)\b", re.IGNORECASE
+)
+# An opinion QUESTION about a voice is not a command to perform one ("do you like
+# my voice?" — audit 2026-08-13). Anchored at the front and limited to
+# opinion/perception verbs so a request phrased as a question ("can you imitate
+# Jimmy Carter") is untouched.
+_IMPERSONATE_QUESTION_RE = re.compile(
+    r"^(?:so\s+|hey\s+)?(?:rex[,!]?\s+)?(?:do|does|did)\s+(?:you|u|we|they|i)\s+"
+    r"(?:really\s+|actually\s+|ever\s+)?"
+    r"(?:like|love|hate|prefer|enjoy|miss|hear|recognize|think)\b",
+    re.IGNORECASE,
 )
 # The verb with NOBODY named — "Impersonate." on its own, usually because the
 # speaker was cut off before finishing the sentence (field 2026-08-04). This used
@@ -819,6 +895,9 @@ def classify_explicit_impersonation(text: str) -> ActionDecision | None:
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
         return None
+    # "Do you like my voice?" is an opinion question, not a performance order.
+    if _IMPERSONATE_QUESTION_RE.match(cleaned):
+        return None
     verb_seen = False
     for pattern in _IMPERSONATE_PATTERNS:
         m = pattern.search(cleaned)
@@ -848,6 +927,43 @@ def classify_explicit_impersonation(text: str) -> ActionDecision | None:
             reason="impersonation request with no target named",
         )
     return None
+# The body-beat and mood-pose patterns match a bare verb anywhere in the turn, so
+# "don't be sad" posed sad, "I agree with you" fired the agreement nod, and "we
+# should celebrate your birthday" fired the victory dance (audit 2026-08-13). Same
+# two guards the roast path uses: a negator in the same clause as the verb, and a
+# first/third-person subject in front of it. The gap stops at a clause boundary
+# and skips over "you"/"rex" so "I want you to act surprised" still performs.
+# BASE forms only: the beat/pose patterns below only ever match a base verb, so an
+# inflected narration ("he looks angry", "I made an announcement") already fails
+# them, and listing "looks" here would only cost real requests ("this looks great,
+# do a victory dance").
+_PERFORMANCE_NEGATION_RE = re.compile(
+    r"\b(?:don['’]?t|do\s+not|never|stop|quit|no\s+more|shouldn['’]?t|should\s+not|"
+    r"won['’]?t|will\s+not|can['’]?t|cannot|couldn['’]?t|mustn['’]?t)\b"
+    r"[^.,;!?]{0,24}?\b(?:nod|agree|shake|disagree|celebrate|dance|look|act|be|"
+    r"do|perform|give|show|strike|peek|hit|drop|shoot|make|hype)\b",
+    re.IGNORECASE,
+)
+_PERFORMANCE_NARRATION_RE = re.compile(
+    r"\b(?:i|i['’]?m|i['’]?ve|i['’]?ll|we|we['’]?re|we['’]?ve|we['’]?ll|they|they['’]?re|he|he['’]?s|"
+    r"she|she['’]?s|it|it['’]?s|this|that|everyone|everybody|nobody|people|kids)\s+"
+    r"(?:(?!\byou\b|\brex\b)[\w'’]+\s+){0,3}?"
+    r"(?:nod|agree|shake|disagree|celebrate|dance|look|act|be|make|hype|"
+    r"strike|peek)\b",
+    re.IGNORECASE,
+)
+# Two more shapes the subject-pronoun guard above cannot see. "You look sad today,
+# buddy." is the speaker DESCRIBING Rex, not ordering a droop — it is second person,
+# so it has no narrating subject to catch, and the beat patterns match a bare "look
+# sad" anywhere. Anchored at the start of the turn so a genuine request keeps its
+# auxiliary ("Can you look surprised?" opens with "can", not "you"). "If she asks,
+# just say yes." is a conditional the speaker is answering, and no imperative to Rex
+# opens with "if" (audit 2026-08-13).
+_PERFORMANCE_DESCRIBES_REX_RE = re.compile(
+    r"^(?:hey\s+)?(?:rex[,!]?\s+)?(?:so\s+|and\s+|but\s+|well\s+)?"
+    r"(?:you\s+(?:look|seem|sound|are|['’]re)|if)\b",
+    re.IGNORECASE,
+)
 _BODY_BEAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
@@ -1059,10 +1175,55 @@ _ROAST_FOOD_TARGETS = {
     "beef",
     "chicken",
     "coffee",
+    "duck",
+    "ham",
+    "lamb",
+    "marshmallow",
+    "marshmallows",
+    "nuts",
+    "peppers",
     "pork",
+    "potatoes",
     "turkey",
+    "veggies",
     "vegetables",
 }
+# The stoplist was checked against the RAW captured target, so the article rode
+# along and "roast a turkey" looked up "a turkey", missed, and roasted the room
+# (audit 2026-08-13). Stripped only for the lookup — the arg keeps its wording.
+_ROAST_ARTICLE_RE = re.compile(r"^(?:a|an|the|some)\s+", re.I)
+# Everything a roast can legitimately be aimed at that ISN'T a capitalized name.
+# Anything else lowercase is a common noun ("marshmallows", "my accent"), which
+# is the shape the catch-all keeps dragging in — those fall through to the LLM.
+_ROAST_PERSON_TARGETS = {
+    "speaker",
+    "room",
+    "rex",
+    "me",
+    "us",
+    "you",
+    "yourself",
+    "myself",
+    "him",
+    "her",
+    "them",
+    "he",
+    "she",
+    "they",
+    "everyone",
+    "everybody",
+    "y'all",
+    "you guys",
+}
+
+
+def _roast_target_is_person(target: str) -> bool:
+    """True when a captured roast target names a person/the room, not a thing."""
+    if target.lower() in _ROAST_PERSON_TARGETS:
+        return True
+    # Whisper/qwen3 capitalize proper nouns reliably, so a leading capital is the
+    # cheapest available name signal.
+    return bool(target) and target[:1].isupper()
 
 
 @dataclass
@@ -1215,7 +1376,7 @@ def classify_explicit_control(text: str) -> ActionDecision | None:
     if not cleaned:
         return None
 
-    if _RECENT_DISCARD_REQUEST_RE.search(cleaned):
+    if _is_recent_discard_request(cleaned):
         return ActionDecision(
             action="memory.recent_discard",
             confidence=0.97,
@@ -1227,6 +1388,15 @@ def classify_explicit_control(text: str) -> ActionDecision | None:
         name = ""
         match = _NAME_FROM_TEXT_RE.search(cleaned)
         if match:
+            # Same casing bar as the "that's not X" tail below. "Call me later.",
+            # "Call me crazy, but I think it'll work." and "My name is on the
+            # list." each shipped identity.name_correction at 0.95 with a
+            # title-cased junk arg, and _handle_router_identity_name_correction
+            # re-entered the rename handler as "call me Later" — a durable person
+            # rename off an idiom (audit 2026-08-13). A real claim comes back
+            # capitalized from ASR; an idiom does not.
+            if not _plausible_thats_not_name_candidate(match.group("name")):
+                return None
             name = _clean_name_arg(match.group("name"))
         if not name:
             wrong_name = _THATS_NOT_NAME_RE.search(cleaned)
@@ -1255,9 +1425,28 @@ def classify_explicit_control(text: str) -> ActionDecision | None:
 
 # Drive-base motion (deterministic; only acted on when a base is connected — the
 # interaction layer gates these on motion_controller.available()).
+# The bare "over here" alternative needed no verb at all, so ordinary conversation
+# drove the base across the room: field 2026-08-13 "It's crazy over here at work."
+# and "the party's over here" both came. Every alternative now carries an approach
+# verb; the optional "right/on" hedges keep the phrasings the bare form used to
+# cover ("come right over here", "get on over here", "head over here").
 _MOTION_COME_RE = re.compile(
-    r"\b(come\s+(?:here|over\s+here|to\s+me|closer|on\s+over)|over\s+here|"
-    r"roll\s+over\s+here|get\s+over\s+here|come\s+to\s+(?:me|daddy))\b",
+    r"\b(?:come\s+(?:right\s+|on\s+)?(?:here|over\s+here|to\s+me|closer|on\s+over)|"
+    r"(?:roll|get|head|scoot|drive|wheel)\s+(?:right\s+|on\s+)?over\s+here|"
+    r"come\s+to\s+(?:me|daddy))\b",
+    re.I,
+)
+# Reported speech is a story, not a summons — field 2026-08-13: "My sister said to
+# come here for Thanksgiving." rolled the base at a family anecdote. A speech verb
+# governing the come phrase means somebody ELSE did the asking. The first-person
+# lookbehinds are deliberate: "I told you to come here" is the owner RE-ISSUING the
+# command and must still move.
+_MOTION_REPORTED_SPEECH_RE = re.compile(
+    r"(?<!\bi\s)(?<!\bwe\s)"
+    r"\b(?:said|says|saying|told|tells|telling|asked|asks|asking|mentioned|"
+    r"wrote|texted|invited|wants|wanted)\b"
+    r"(?:\s+(?:me|him|her|them|us|you|everyone|someone|somebody))?"
+    r"\s+(?:that\s+)?(?:to\s+|i\s+should\s+|we\s+should\s+)?$",
     re.I,
 )
 # "I'm behind you" — the speaker localizes THEMSELVES behind the base (owner spec
@@ -1352,7 +1541,10 @@ _MOTION_AMOUNT = (
 _MOTION_FWD_RE = re.compile(
     r"\b(?:move|go|roll|drive|scoot|head|creep|come|ease|inch|edge|pull)"
     rf"(?:\s+{_MOTION_AMOUNT})?\s+(?:forward|forwards)\b"
-    r"(?!\s+(?:with|in|on|through|into|towards?)\b)",
+    # "as" joined the figurative list on 2026-08-13: "We just need to move forward
+    # as a team." drove the base 15 cm into the room mid-conversation ("just" is an
+    # amount word, so it even picked up the small-move distance).
+    r"(?!\s+(?:with|in|on|through|into|towards?|as)\b)",
     re.I,
 )
 _MOTION_BACK_RE = re.compile(
@@ -1397,12 +1589,31 @@ _MOTION_LATERAL_RE = re.compile(
     rf"(?:\s+{_MOTION_AMOUNT})?"
     r"(?:\s+over)?"
     r"(?:\s+(?:to|toward|towards))?(?:\s+(?:your|the|my))?"
-    r"\s+(?P<lr>left|right)\b",
+    r"\s+(?P<lr>left|right)\b"
+    # "right" is far more often an INTENSIFIER than a heading: field 2026-08-13
+    # "Go right ahead and tell him." and "I go right to bed after that." both arced
+    # the base across the floor. A real lateral ends at the side (or gives a
+    # distance); an adverbial continuation means the word was never a direction.
+    r"(?!\s+(?:ahead|now|away|back|there|here|then|after|before|to|into|onto|"
+    r"up|about|out|in|on|at|off|past|through|by|when|as|"
+    r"and\s+(?:tell|say|ask|let))\b)",
     re.I,
 )
+# Only a WHITELISTED filler may sit between the turn verb and the direction. The old
+# ".{0,20}?" gap swallowed a whole noun phrase, so English idioms spun the base at
+# conversation (field 2026-08-13): "She had to turn her whole life around.", "Turn
+# that frown around.", "I can't face them right now.", "face the right way", "turn
+# the right one on". A genuine turn command puts nothing in that slot but a hedge, a
+# magnitude, or a preposition — and a determiner ("the"/"your") only ever follows
+# to/toward, which is what still admits "turn to the right" while rejecting "turn the
+# right one on". The final separator tolerates a comma so ASR's "turn, left" lives.
 _MOTION_TURN_RE = re.compile(
-    r"\b(?:turn|rotate|spin|pivot|swing|face)\b.{0,20}?\b"
-    r"(?P<dir>left|right|around|clockwise|counter[-\s]?clockwise)\b",
+    r"\b(?:turn|rotate|spin|pivot|swing|face)\b"
+    rf"(?:\s+(?:{_MOTION_AMOUNT}|bit|yourself|all\s+the\s+way|back|"
+    r"\d+(?:\.\d+)?|degrees?|deg|°))*"
+    r"(?:\s+(?:to|toward|towards)(?:\s+(?:the|your|my))?)?"
+    rf"(?:\s+(?:{_MOTION_AMOUNT}|bit))*"
+    r"[\s,]+(?P<dir>left|right|around|clockwise|counter[-\s]?clockwise)\b",
     re.I,
 )
 # ASR renders the imperative in past tense when a past-tense clause precedes it.
@@ -1413,8 +1624,22 @@ _MOTION_TURN_RE = re.compile(
 # verb opening a sentence IS the imperative: real narration keeps its subject
 # ("I turned right", "you turned too far") and is deliberately left alone, as is
 # anything mid-sentence ("he came in, turned around and left").
+# The rewrite ALSO requires that what follows the verb actually looks like a motion
+# argument — a direction, a bearing phrase or a magnitude. Field 2026-08-13:
+# "Turned out he was right." was rewritten to "turn out he was right", and
+# _MOTION_TURN_RE's 20-char window then found "turn … right" and spun the base at a
+# compliment. A real ASR-mangled imperative always names its argument ("Turned right
+# a little bit."); the idioms — "turned out", "turned into", "spun out" — take a
+# clause instead, so the argument lookahead separates them cleanly.
 _MOTION_PAST_IMPERATIVE_RE = re.compile(
-    r"(?P<lead>^|[.!?]\s+)(?P<verb>turned|rotated|pivoted|spun)\b", re.I,
+    r"(?P<lead>^|[.!?]\s+)(?P<verb>turned|rotated|pivoted|spun)\b"
+    rf"(?=[\s,]+(?:{_MOTION_AMOUNT}\s+)?"
+    r"(?:(?:to|toward|towards)\s+)?(?:the\s+|your\s+|my\s+)?"
+    rf"(?:{_MOTION_AMOUNT}\s+)?"
+    r"(?:left|right|around|clockwise|counter[-\s]?clockwise|"
+    r"north\s*-?\s*east|north\s*-?\s*west|south\s*-?\s*east|south\s*-?\s*west|"
+    r"north|south|east|west|\d+(?:\.\d+)?)\b)",
+    re.I,
 )
 _MOTION_PAST_TO_BASE = {
     "turned": "turn", "rotated": "rotate", "pivoted": "pivot", "spun": "spin",
@@ -1454,7 +1679,10 @@ _MOTION_EXPLANATION_RE = re.compile(
 )
 _MOTION_NEGATED_RE = re.compile(
     r"\b(?:don'?t|do\s+not|never|shouldn'?t|mustn'?t|can'?t|cannot)\b"
-    r".{0,24}\b(?:move|go|roll|drive|turn|rotate|spin|pivot|back\s*up|come)\b",
+    # "face" was missing from the verb list while BOTH _MOTION_TURN_RE and
+    # _MOTION_COMPASS_TURN_RE accept it as a turn verb, so the guard waved through
+    # "don't face north" and "I can't face them right now" (field 2026-08-13).
+    r".{0,24}\b(?:move|go|roll|drive|turn|rotate|spin|pivot|face|back\s*up|come)\b",
     re.I,
 )
 _MOTION_MORE_RE = re.compile(
@@ -1782,7 +2010,12 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
                 reason="explicit compass move",
             )
 
-    if _MOTION_COME_RE.search(cleaned):
+    come = _MOTION_COME_RE.search(cleaned)
+    if come is not None and _MOTION_REPORTED_SPEECH_RE.search(cleaned[: come.start()]):
+        # "My sister said to come here for Thanksgiving." — the speaker is quoting
+        # somebody else's invitation, not asking Rex to roll over (field 2026-08-13).
+        come = None
+    if come is not None:
         # "I'm behind you, come here" — seed the search with an immediate
         # about-face instead of sweeping the wrong hemisphere first.
         args = {"behind": True} if _speaker_says_behind(cleaned) else {}
@@ -2049,15 +2282,24 @@ def classify_explicit_humor(text: str) -> ActionDecision | None:
     if not cleaned:
         return None
 
+    # "Don't roast me" / "don't tell me a joke" — the refusal is the whole point of
+    # the turn, and every humor lane below would otherwise perform it anyway.
+    if _HUMOR_NEGATION_RE.search(cleaned):
+        return None
+
+    # Reminiscence is not an order: "He'd always tell me a joke before bed."
+    narrated = bool(_HUMOR_NOT_A_REQUEST_RE.search(cleaned))
+
     roast = _ROAST_REQUEST_RE.search(cleaned)
-    if roast:
+    if roast and not narrated:
         raw_target = (
             roast.groupdict().get("target")
             or roast.groupdict().get("target2")
             or "speaker"
         )
         target = _clean_roast_target(raw_target)
-        if target.lower() not in _ROAST_FOOD_TARGETS:
+        food_key = _ROAST_ARTICLE_RE.sub("", target).strip().lower()
+        if food_key not in _ROAST_FOOD_TARGETS and _roast_target_is_person(target):
             return ActionDecision(
                 action="humor.roast",
                 confidence=0.96,
@@ -2065,7 +2307,7 @@ def classify_explicit_humor(text: str) -> ActionDecision | None:
                 reason="explicit roast request",
             )
 
-    if _TELL_JOKE_RE.search(cleaned):
+    if _TELL_JOKE_RE.search(cleaned) and not narrated:
         return ActionDecision(
             action="humor.tell_joke",
             confidence=0.96,
@@ -2073,7 +2315,7 @@ def classify_explicit_humor(text: str) -> ActionDecision | None:
             reason="explicit joke request",
         )
 
-    if _FREE_HUMOR_RE.search(cleaned):
+    if _FREE_HUMOR_RE.search(cleaned) and not narrated:
         return ActionDecision(
             action="humor.free_bit",
             confidence=0.94,
@@ -2093,6 +2335,15 @@ def classify_explicit_performance(text: str) -> ActionDecision | None:
     impersonation = classify_explicit_impersonation(cleaned)
     if impersonation is not None:
         return impersonation
+
+    # A refused, merely REPORTED, or second-person-described performance must not
+    # be performed.
+    if _PERFORMANCE_NEGATION_RE.search(cleaned):
+        return None
+    if _PERFORMANCE_NARRATION_RE.search(cleaned):
+        return None
+    if _PERFORMANCE_DESCRIBES_REX_RE.match(cleaned):
+        return None
 
     if _DJ_BIT_RE.search(cleaned):
         return ActionDecision(
@@ -2173,7 +2424,7 @@ def missing_required_evidence_reason(
     if action == "conversation.repair":
         return None if _REPAIR_REQUEST_RE.search(cleaned) else "missing_repair_evidence"
     if action == "memory.recent_discard":
-        return None if _RECENT_DISCARD_REQUEST_RE.search(cleaned) else "missing_recent_discard_evidence"
+        return None if _is_recent_discard_request(cleaned) else "missing_recent_discard_evidence"
     if action == "memory.forget_specific":
         return None if _FORGET_SPECIFIC_REQUEST_RE.search(cleaned) else "missing_forget_evidence"
     if action == "humor.tell_joke":
@@ -2192,6 +2443,18 @@ def missing_required_evidence_reason(
         # turn — require the deterministic imperative-invite classifier to agree.
         explicit = classify_explicit_exploration(cleaned)
         return None if explicit and explicit.action == action else "missing_explore_invite_evidence"
+    if action in {"motion.turn", "motion.move", "motion.arc", "motion.come", "motion.stop"}:
+        # Same rule as motion.explore above, added 2026-08-13 when the motion.* keys
+        # joined ACTION_ROUTER_EXECUTE_ACTIONS: that also un-gated the LLM-decided
+        # motion branch in interaction._handle_router_takeover_action, which had been
+        # dead ONLY because the allowlist blocked it. Measured without this: a
+        # 0.9-confidence model read of "I think we should move on from that topic"
+        # becomes fully executable and drives the base. The deterministic takeovers
+        # are unaffected — they do not pass text, because the classifier is their
+        # evidence and their continuation ("more" after a turn) / errand-stop
+        # decisions are synthesized from live base state, not from re-matchable words.
+        explicit = classify_explicit_motion(cleaned)
+        return None if explicit and explicit.action == action else "missing_motion_command_evidence"
     if action == "character.preference_query":
         return (
             None
@@ -2246,6 +2509,21 @@ def missing_required_evidence_reason(
         # not read as extra content (field 2026-08-13: both "Go to sleep." turns
         # were blocked here and whether Rex slept came down to the reply LLM
         # improvising a tool call).
+        #
+        # Delegate the sleep/shutdown halves to command_parser rather than keep a
+        # FOURTH copy of this vocabulary. That divergence is what made a correct
+        # tool call unreachable: "Go to sleep, Rex." satisfied nobody, because the
+        # regex below demands the utterance END at the keyword and this gate is
+        # also what vets the LLM's choice. The parser owns the negation /
+        # object-scoped / hypothetical guards, so this delegation inherits them.
+        try:
+            from intelligence import command_parser as _cp
+            if _cp.is_sleep_request(cleaned) or _cp.is_shutdown_request(cleaned):
+                return None
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.debug("[action_router] system.sleep parser check failed: %s", exc)
+        # The wake / quiet-mode halves have no parser predicate, so they keep the
+        # anchored literal list.
         return (
             None
             if re.match(
@@ -2395,7 +2673,7 @@ def _apply_context_overrides(
 
     if (
         decision.action == "memory.recent_discard"
-        and not _RECENT_DISCARD_REQUEST_RE.search(text or "")
+        and not _is_recent_discard_request(text or "")
     ):
         return ActionDecision(
             action="conversation.reply",

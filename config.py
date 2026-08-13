@@ -5293,6 +5293,25 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     # (negation / object-scoped / hypothetical guards) before executing — an
     # unverified LLM shutdown decision still dies at dispatch.
     "system.shutdown",
+    # motion.* added 2026-08-13: these were the ONLY actions Rex executed with no
+    # execute policy at all. _explicit_motion_takeover / _explore_invite_takeover
+    # drove the base straight off the deterministic classifier without ever asking
+    # the policy, so all 203 audited "not_in_execute_allowlist" events logged
+    # final_executed_path=fast_local_takeover.motion.* — the wheels turned while the
+    # audit line said the action was blocked. Listing them here makes the audit true
+    # and gives the drive base a real kill switch (drop a key in user_config.py and
+    # that maneuver stops executing instead of being logged as if it had).
+    # The takeovers still run BEFORE the dialogue-act gate on purpose — a physical
+    # command is never an answer to Rex's last question (ccd839e, 2026-06-23:
+    # "move forward." / "Move backwards" labelled answer_to_rex and the motion path
+    # skipped entirely) — and an LLM-decided motion.* still has to clear
+    # action_router.missing_required_evidence_reason before dispatch.
+    "motion.turn",
+    "motion.move",
+    "motion.arc",
+    "motion.come",
+    "motion.stop",
+    "motion.explore",
 }
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 # Decoupled from LLM_MODEL 2026-08-02: gpt-4o-mini's ~1.08s median TTFT was the
