@@ -39,6 +39,7 @@ _commanded_positions: dict[int, int] = {
 _last_reconnect_attempt_at = 0.0
 _manual_override = threading.Event()
 _shutdown_latch = threading.Event()   # power-down pose reached — servos frozen
+_sleep_latch = threading.Event()      # sleep pose reached — frozen until wake
 
 # breathing_thread stop event — set by shutdown()
 _stop_breathing = threading.Event()
@@ -257,7 +258,29 @@ def _record_manual_override_state(enabled: bool) -> None:
 
 
 def _program_servo_updates_blocked() -> bool:
-    return _manual_override.is_set() or _shutdown_latch.is_set()
+    return (
+        _manual_override.is_set()
+        or _shutdown_latch.is_set()
+        or _sleep_latch.is_set()
+    )
+
+
+def latch_sleep_pose() -> None:
+    """Freeze programmatic servo writes once the sleep pose has been commanded.
+
+    Same race as the shutdown latch, on the sleep path (field 2026-08-13: the
+    "Going dark" clip's end_speech_motion drove the visor back to neutral around
+    the sleep glide and nothing ever re-closed it). Unlike the shutdown latch
+    this one is released — by animations.wake(), or by animations.shutdown()
+    when Rex is powered down while asleep."""
+    _sleep_latch.set()
+    _log.info("Servo sleep latch set — sleep pose held until wake.")
+
+
+def release_sleep_latch() -> None:
+    if _sleep_latch.is_set():
+        _sleep_latch.clear()
+        _log.info("Servo sleep latch released.")
 
 
 def latch_shutdown_pose() -> None:
@@ -712,6 +735,15 @@ def end_speech_motion() -> None:
     """Return speech-owned channels toward their baseline and release arms."""
     global _speech_emotion_frame
     _speech_active.clear()
+    # A sleep/shutdown ack clip ends INSIDE the transition — the state has already
+    # flipped (or is about to latch) by the time this fires from the audio-end
+    # callback. Restoring the "awake" baseline here re-opens the visor mid-droop
+    # (field 2026-08-13: the "Going dark" clip's release raced the sleep glide and
+    # the visor never fully closed). Keep the bookkeeping, skip the pose.
+    if not _automatic_motion_allowed():
+        _speech_emotion_frame = {}
+        set_breathing_emotion("neutral")
+        return
     # If a scripted arm gesture (wave-back) owns the arm, don't yank the arm back to neutral
     # when the line finishes mid-gesture — leave the arm channels to the gesture; only the
     # head/visor return to baseline.

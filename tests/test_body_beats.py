@@ -303,6 +303,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
             mock.patch.object(animations.leds_chest, "sleep") as chest_sleep,
             mock.patch.object(animations.leds_head, "sleep") as head_sleep,
             mock.patch.object(animations.servos, "pause_arm_idle") as pause_arm,
+            mock.patch.object(animations.servos, "set_motion_profile") as profile,
+            mock.patch.object(animations.servos, "latch_sleep_pose") as latch,
             mock.patch.object(animations.servos, "move_to", side_effect=record_move),
             mock.patch.object(animations.time, "sleep", return_value=None),
         ):
@@ -311,6 +313,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
         chest_sleep.assert_called_once()
         head_sleep.assert_called_once()
         pause_arm.assert_called_once()
+        profile.assert_called_once()
+        latch.assert_called_once()
         self.assertEqual(moves[0], {3: animations.VISOR_CLOSED})
         self.assertEqual(
             moves[1],
@@ -318,6 +322,9 @@ class BodyBeatAnimationTest(unittest.TestCase):
                 0: animations.NECK_CENTER,
                 1: animations.HEADLIFT_FLOOR,
                 2: animations.HEADTILT_DOWN,
+                # Re-asserted so a racing end_speech_motion can't leave it open
+                # (field 2026-08-13).
+                3: animations.VISOR_CLOSED,
                 4: animations.ELBOW_NEUTRAL,
                 5: animations.HAND_NEUTRAL,
                 6: animations.POKERARM_NEUTRAL,

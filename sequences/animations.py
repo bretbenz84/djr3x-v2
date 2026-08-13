@@ -992,6 +992,11 @@ def shutdown() -> None:
         servos.set_manual_override_enabled(False)
     except Exception:
         pass
+    # Shutting down while asleep: the sleep latch would freeze the droop too.
+    try:
+        servos.release_sleep_latch()
+    except Exception:
+        pass
 
     servos.stop_breathing()
     time.sleep(0.1)   # let breathing thread exit before we move headlift
@@ -1033,10 +1038,25 @@ def shutdown() -> None:
 # ---------------------------------------------------------------------------
 
 def sleep() -> None:
-    """Sleep: return to the shutdown/rest pose without tearing hardware down."""
+    """Sleep: return to the shutdown/rest pose without tearing hardware down.
+
+    Carries the same protections shutdown() earned in the field (see its
+    docstring): reset the head/arm motion profile so a stale slow speed cap
+    can't strand the glide short of the pose, keep the visor target asserted
+    through the final move so a racing writer can't leave it half-open, and
+    latch the pose the moment it's commanded — wake() (or shutdown(), when Rex
+    is powered off in his sleep) releases the latch. Field 2026-08-13: the
+    sleep ack clip's end_speech_motion re-opened the visor around the glide
+    and Rex "slept" with the visor visibly open.
+    """
     leds_chest.sleep()
     leds_head.sleep()
     servos.pause_arm_idle()
+    servos.set_motion_profile(
+        list(config.HEAD_CHANNELS) + list(config.ARM_CHANNELS),
+        speed=int(getattr(config, "SHUTDOWN_DROOP_SERVO_SPEED", 70)),
+        acceleration=int(getattr(config, "SHUTDOWN_DROOP_SERVO_ACCELERATION", 14)),
+    )
     servos.move_to({3: VISOR_CLOSED}, step_us=25, step_delay=0.035)
     time.sleep(0.25)
     servos.move_to(
@@ -1044,6 +1064,7 @@ def sleep() -> None:
             0: NECK_CENTER,
             1: HEADLIFT_FLOOR,
             2: HEADTILT_DOWN,
+            3: VISOR_CLOSED,
             4: ELBOW_NEUTRAL,
             5: HAND_NEUTRAL,
             6: POKERARM_NEUTRAL,
@@ -1052,10 +1073,12 @@ def sleep() -> None:
         step_us=25,
         step_delay=0.035,
     )
+    servos.latch_sleep_pose()
 
 
 def wake() -> None:
     """Wake from sleep: head raises, visor opens, active LEDs restore."""
+    servos.release_sleep_latch()
     leds_chest.active()
     servos.move_to(
         {
