@@ -46,6 +46,7 @@ class RadarClient:
 
     def _read_loop(self) -> None:
         buf = b""
+        synced = False   # the board streams from boot; opening mid-line is normal
         while not self._stop.is_set():
             try:
                 chunk = self.ser.read(256)
@@ -54,6 +55,13 @@ class RadarClient:
             if not chunk:
                 continue
             buf += chunk
+            if not synced:
+                # Drop the partial line we opened into — it would count as a
+                # phantom parse error against a perfectly healthy stream.
+                if b"\n" not in buf:
+                    continue
+                buf = buf.split(b"\n", 1)[1]
+                synced = True
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 line = line.strip()
