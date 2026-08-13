@@ -24342,10 +24342,38 @@ def _handle_speech_segment(
                     pass
                 if person_name:
                     ctx_bits.append(f"speaker is {person_name}")
-                addr = address_mode.classify(text, context="; ".join(ctx_bits))
+                # A fresh Rex-turn frame means we're mid-exchange with this
+                # speaker — their "you/your robot" reply is aimed at Rex, not a
+                # third party, so classify() skips the LLM guess (hard rules
+                # still run: an explicit "say hi to Rex" keeps its
+                # instructional read). Field failure 2026-08-12: the answer to
+                # "New sensors for me?" — "…adding three radar sensors to your
+                # body… your robot body" — was LLM-labeled instructional and
+                # dropped without a HEARD line.
+                reply_frame = None
+                try:
+                    reply_frame = dialogue_act.active_frame(person_id=person_id)
+                except Exception:
+                    pass
+                in_active_exchange = False
+                if reply_frame is not None:
+                    if reply_frame.text:
+                        ctx_bits.append(
+                            "Rex's most recent line to this speaker: "
+                            f'"{reply_frame.text[:160]}"'
+                        )
+                    frame_age = time.monotonic() - reply_frame.created_at
+                    in_active_exchange = frame_age <= float(
+                        getattr(config, "ADDRESS_MODE_EXCHANGE_FRESH_SECS", 45.0)
+                    )
+                addr = address_mode.classify(
+                    text,
+                    context="; ".join(ctx_bits),
+                    in_active_exchange=in_active_exchange,
+                )
                 _log.info(
-                    "[interaction] address_mode=%s sentiment=%s rule=%s text=%r",
-                    addr.label, addr.sentiment, addr.rule, text[:120],
+                    "[interaction] address_mode=%s sentiment=%s rule=%s exchange=%s text=%r",
+                    addr.label, addr.sentiment, addr.rule, in_active_exchange, text[:120],
                 )
                 if addr.label in (
                     address_mode.ADDRESS_REFERENTIAL,

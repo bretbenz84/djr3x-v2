@@ -6529,6 +6529,14 @@ ADDRESS_MODE_KEYWORDS = (
     "dj rex", "dj r3x", "deejay rex",
 )
 
+# A reply landing within this window after Rex's last line to the same speaker
+# is part of a live exchange: hard rules still run, but classify() skips the
+# LLM fallback and keeps the turn as direct_address. Must sit well under the
+# 120s dialogue-act frame TTL. (Field 2026-08-12: "…adding three radar sensors
+# to your body…" answered "New sensors for me?" 14s later, was LLM-labeled
+# instructional, and the turn was silently dropped.)
+ADDRESS_MODE_EXCHANGE_FRESH_SECS = 45.0
+
 # How long after a being-discussed mention the situation profile reports
 # being_discussed=True (and the consciousness step considers a chime-in).
 BEING_DISCUSSED_ACTIVE_WINDOW_SECS = 30.0

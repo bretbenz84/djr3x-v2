@@ -11,7 +11,10 @@ Pipeline:
   1. Cheap keyword pre-filter — if text has no rex-keyword, return direct_address
      immediately (the caller decides whether to even invoke this module).
   2. Hard rules — common patterns we can label without an LLM call.
-  3. LLM fallback — single tiny GPT-4o-mini call (~3-token output) when
+  3. Active-exchange bypass — when the caller says Rex spoke to this person
+     moments ago (`in_active_exchange=True`), an unmatched utterance is a
+     reply to him, not third-party chatter: direct_address, no LLM call.
+  4. LLM fallback — single tiny GPT-4o-mini call (~3-token output) when
      hard rules don't fire. Returns 'direct_address' on any error.
 
 Sentiment is co-classified by the LLM call when it's invoked: positive,
@@ -109,9 +112,21 @@ _DIRECT_PREFIXES = (
     "dj rex", "dj r3x", "yo rex", "yo robot",
 )
 
+# Dense second-person address — "adding sensors to YOUR body so YOU can
+# sense" — is speech TO Rex. Two hits required so a lone conversational
+# "you know" aimed at a third party doesn't trip it, and the instructional
+# check runs first so "you should tell Rex …" keeps its label. Field failure
+# 2026-08-12: the answer to Rex's "New sensors for me?" was LLM-labeled
+# instructional and the turn was silently dropped.
+_SECOND_PERSON_RE = re.compile(
+    r"\b(?:you(?:'(?:re|ve|ll|d))?|your|yours|yourself|yourselves)\b",
+    re.IGNORECASE,
+)
+_SECOND_PERSON_MIN_HITS = 2
 
-def _hard_rule(text: str) -> Optional[str]:
-    """Return an address label if a high-confidence rule fires, else None."""
+
+def _hard_rule(text: str) -> Optional[tuple[str, str]]:
+    """Return (address label, rule name) if a high-confidence rule fires, else None."""
     if not text:
         return None
     t = text.strip().lower()
@@ -119,7 +134,7 @@ def _hard_rule(text: str) -> Optional[str]:
     # Direct prefix: starts with "hey rex", "rex," etc.
     for p in _DIRECT_PREFIXES:
         if t.startswith(p):
-            return ADDRESS_DIRECT
+            return (ADDRESS_DIRECT, "direct_prefix")
 
     # Instructional: "say hi to rex / robot / droid".
     keywords = _keywords()
@@ -131,7 +146,10 @@ def _hard_rule(text: str) -> Optional[str]:
         tail = t[idx + len(verb): idx + len(verb) + 60]
         for kw in keywords:
             if re.search(rf"\b{re.escape(kw)}\b", tail):
-                return ADDRESS_INSTRUCTIONAL
+                return (ADDRESS_INSTRUCTIONAL, "instructional_verb")
+
+    if len(_SECOND_PERSON_RE.findall(t)) >= _SECOND_PERSON_MIN_HITS:
+        return (ADDRESS_DIRECT, "second_person")
 
     return None
 
@@ -156,6 +174,8 @@ _LLM_PROMPT = (
     '("say hi to Rex", "show them the droid", "introduce Rex to her")\n'
     '  unrelated — Rex/droid/robot appears but the utterance is not actually about him '
     '(e.g. talking about a different robot, a movie title, a coincidental word)\n\n'
+    'If the context shows Rex himself just said something to this speaker, a reply '
+    'worded in the second person ("you", "your") is almost always direct_address.\n\n'
     'Context: {context}\n'
     'Utterance: "{text}"\n\n'
     'Reply with the JSON object only.'
@@ -215,6 +235,7 @@ def classify(
     *,
     context: Optional[str] = None,
     skip_llm: bool = False,
+    in_active_exchange: bool = False,
 ) -> AddressClassification:
     """
     Classify a transcribed utterance's address mode.
@@ -225,6 +246,10 @@ def classify(
     `context` is an optional one-line description of the social setting
     ("2 people present, Bret is dominant speaker, Rex is in active conversation").
     `skip_llm` forces hard-rule-only operation (used for tests / latency-critical paths).
+    `in_active_exchange` means Rex spoke to this person moments ago; hard rules
+    still run, but an unmatched utterance is treated as a reply to him instead
+    of being handed to the LLM (whose plausible-but-wrong labels silently drop
+    the turn — field failure 2026-08-12).
     """
     has_kw = contains_rex_keyword(text)
     if not has_kw:
@@ -237,10 +262,19 @@ def classify(
 
     rule = _hard_rule(text)
     if rule is not None:
+        label, rule_name = rule
         return AddressClassification(
-            label=rule,
+            label=label,
             sentiment="neutral",
-            rule="hard_rule",
+            rule=rule_name,
+            contained_keyword=True,
+        )
+
+    if in_active_exchange:
+        return AddressClassification(
+            label=ADDRESS_DIRECT,
+            sentiment="neutral",
+            rule="active_exchange",
             contained_keyword=True,
         )
 
