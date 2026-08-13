@@ -2175,6 +2175,32 @@ def _animal_signature(animal: dict) -> str:
     return f"{species}:{position}"
 
 
+def _furry_sibling_spoke_recently(species: str, now: float) -> bool:
+    """True while a DIFFERENT furry species spoke an arrival/return remark
+    recently. One physical pet, two classifier labels — dog and cat share the
+    "small furry lifeform" line pool, so a species flip must not re-announce."""
+    cooldown = float(getattr(
+        config, "ANIMAL_FURRY_CROSS_SPECIES_REMARK_COOLDOWN_SECS", 180.0))
+    if cooldown <= 0:
+        return False
+    for other, reacted_at in _animal_species_reacted_at.items():
+        if other == species:
+            continue
+        if not _animal_is_furry_companion(other):
+            continue
+        if (now - float(reacted_at or 0.0)) < cooldown:
+            return True
+    return False
+
+
+def _furry_sibling_pending(species: str) -> bool:
+    """True while a DIFFERENT furry species already has a remark staged."""
+    return any(
+        other != species and _animal_is_furry_companion(other, pending)
+        for other, pending in _pending_animal_arrivals.items()
+    )
+
+
 def _stage_animal_remark(species: str, animal: dict, *, kind: str,
                          return_count: int, now: float) -> None:
     """Queue one pending animal remark for this species (arrival or return joke)."""
@@ -2249,6 +2275,13 @@ def _stage_animal_arrivals(snapshot: dict) -> None:
                 "departed_at": None, "return_count": 0,
                 "remarks_spoken": 0, "last_remark_at": 0.0,
             }
+            if _animal_is_furry_companion(species, animal) and (
+                _furry_sibling_spoke_recently(species, now)
+                or _furry_sibling_pending(species)
+            ):
+                _log.info("consciousness: furry arrival muted species=%s "
+                          "(sibling furry species owns the remark)", species)
+                continue  # presence tracked; likely the same pet, relabeled
             _stage_animal_remark(species, animal, kind="arrival",
                                  return_count=0, now=now)
             continue
@@ -2262,6 +2295,13 @@ def _stage_animal_arrivals(snapshot: dict) -> None:
             continue  # bit is spent for this run — welcome back silently
         if (now - float(rec.get("last_remark_at") or 0.0)) < min_gap:
             continue  # too soon after the last remark — let it breathe
+        if _animal_is_furry_companion(species, animal) and (
+            _furry_sibling_spoke_recently(species, now)
+            or _furry_sibling_pending(species)
+        ):
+            _log.info("consciousness: furry return muted species=%s "
+                      "(sibling furry species owns the remark)", species)
+            continue
         _stage_animal_remark(species, animal, kind="return",
                              return_count=rec["return_count"], now=now)
 
@@ -2360,6 +2400,18 @@ def _fire_pending_animal_arrival_reaction() -> bool:
     for pending_key, animal in list(_pending_animal_arrivals.items()):
         if now - float(animal.get("last_seen_at") or now) > stale_after:
             _pending_animal_arrivals.pop(pending_key, None)
+            continue
+        # A furry remark that waited out the output gate is dropped once a
+        # sibling furry species has spoken — by then it's a re-announcement of
+        # the same pet under a different label, not news.
+        _fire_species = (animal.get("species") or "creature").strip().lower()
+        if (
+            _animal_is_furry_companion(_fire_species, animal)
+            and _furry_sibling_spoke_recently(_fire_species, now)
+        ):
+            _pending_animal_arrivals.pop(pending_key, None)
+            _log.info("consciousness: pending furry remark dropped species=%s "
+                      "(sibling furry species spoke first)", _fire_species)
             continue
         frame, line = _animal_reaction_frame_and_line(animal)
 

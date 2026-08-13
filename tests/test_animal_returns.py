@@ -168,6 +168,77 @@ class PacingTest(_PresenceCase):
         self.assertEqual(self._dog()["return_count"], 0)
 
 
+class CrossSpeciesFlipTest(_PresenceCase):
+    """One pet, two labels (field 2026-08-13): RF-DETR flip-flopped Max between
+    "dog" and "cat" — the per-species ledger minted a second fresh arrival and
+    Rex announced the same "small furry lifeform" twice in 20 seconds."""
+
+    def setUp(self):
+        super().setUp()
+        self._saved_reacted = dict(C._animal_species_reacted_at)
+        C._animal_species_reacted_at.clear()
+        self.addCleanup(self._restore_reacted)
+
+    def _restore_reacted(self):
+        C._animal_species_reacted_at.clear()
+        C._animal_species_reacted_at.update(self._saved_reacted)
+
+    def test_species_flip_after_spoken_arrival_stays_silent(self):
+        self._tick("dog")
+        C._pending_animal_arrivals.clear()
+        C._animal_species_reacted_at["dog"] = time.monotonic() - 12
+        self._tick("cat", "dog")  # detector now labels the same pet both ways
+        self.assertNotIn("cat", C._pending_animal_arrivals)
+        self.assertTrue(C._animal_presence["cat"]["present"],
+                        "presence is still tracked, just silently")
+
+    def test_sibling_pending_mutes_the_second_label(self):
+        self._tick("dog")  # dog arrival staged, not yet spoken
+        self._tick("cat", "dog")
+        self.assertIn("dog", C._pending_animal_arrivals)
+        self.assertNotIn("cat", C._pending_animal_arrivals)
+
+    def test_pending_furry_remark_dropped_once_sibling_speaks(self):
+        # The morning failure mode: the cat line waited out the output gate for
+        # 8s and fired AFTER the dog line (and after the human had already
+        # introduced the pet by name).
+        self._tick("cat")
+        self.assertIn("cat", C._pending_animal_arrivals)
+        C._animal_species_reacted_at["dog"] = time.monotonic() - 5
+        with mock.patch.object(C, "_speak_async", return_value=True) as speak:
+            fired = C._fire_pending_animal_arrival_reaction()
+        self.assertFalse(fired)
+        speak.assert_not_called()
+        self.assertNotIn("cat", C._pending_animal_arrivals,
+                         "a muted pending must be dropped, not retried")
+
+    def test_cooldown_expiry_lets_a_genuinely_new_furry_speak(self):
+        cooldown = float(getattr(
+            config, "ANIMAL_FURRY_CROSS_SPECIES_REMARK_COOLDOWN_SECS", 180.0))
+        C._animal_species_reacted_at["dog"] = time.monotonic() - (cooldown + 30)
+        self._tick("cat")
+        self.assertIn("cat", C._pending_animal_arrivals)
+
+    def test_non_furry_arrivals_are_not_muted(self):
+        C._animal_species_reacted_at["dog"] = time.monotonic() - 5
+        C._stage_animal_arrivals(
+            {"animals": [{"species": "bird", "position": "upper left"}]})
+        self.assertIn("bird", C._pending_animal_arrivals,
+                      "a bird is not a relabeled dog")
+
+    def test_same_species_return_is_not_its_own_sibling(self):
+        self._tick("dog")
+        C._pending_animal_arrivals.clear()
+        C._animal_species_reacted_at["dog"] = time.monotonic() - 130
+        rec = self._dog()
+        rec["present"] = False
+        rec["departed_at"] = time.monotonic() - 300
+        rec["last_remark_at"] = time.monotonic() - 300
+        self._tick("dog")
+        self.assertEqual(self._pending_kind(), "return",
+                         "the guard is cross-species only")
+
+
 class SpokenLedgerTest(_PresenceCase):
     def test_on_spoke_bumps_the_ledger_and_only_arrivals_hit_the_diary(self):
         self._tick("dog")

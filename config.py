@@ -5808,6 +5808,13 @@ ANIMAL_DEPARTURE_GRACE_SECS = 30.0        # out-of-frame shorter than this is fl
 ANIMAL_RETURN_REMARK_MIN_GAP_SECS = 120.0 # min gap between SPOKEN remarks per species
 ANIMAL_REMARK_SESSION_CAP = 4             # max spoken animal remarks per species per run
 ANIMAL_FRESH_ARRIVAL_AFTER_SECS = 1800.0  # absence this long resets the bit to a fresh arrival
+# The ledger is keyed per species, but the detector isn't that sure of species:
+# RF-DETR flip-flopping one pet between "dog" and "cat" mints a second fresh
+# arrival, and both draw from the same "small furry lifeform" line pool (field
+# 2026-08-13: Max got announced twice in 20 seconds). While any furry species
+# has spoken a remark this recently, remarks for OTHER furry species stay
+# silent — presence is still tracked. 0 disables the guard.
+ANIMAL_FURRY_CROSS_SPECIES_REMARK_COOLDOWN_SECS = 180.0
 FURRY_COMPANION_ANIMAL_SPECIES = {
     "dog",
     "puppy",
