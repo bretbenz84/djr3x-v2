@@ -30,10 +30,15 @@ class ServoParkTest(unittest.TestCase):
             self.skipTest("no Maestro connected — nothing to park")
         from sequences import animations
 
-        # A test may have left breathing/arm-idle threads or the GUI manual
-        # override armed — all of which would freeze or fight the park.
+        # A test may have left breathing/arm-idle threads, the GUI manual
+        # override, or the sleep latch armed — all of which would freeze or
+        # fight the park.
         try:
             servos.set_manual_override_enabled(False)
+        except Exception:
+            pass
+        try:
+            servos.release_sleep_latch()
         except Exception:
             pass
         try:
