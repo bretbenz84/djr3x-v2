@@ -240,6 +240,12 @@ MOTION_ESP32_PORT: "str | None" = _require_port("MOTION_ESP32_PORT", "motion bas
 # numbering shuffles across reboots/replug order. RADAR_ESP32_PORT is the
 # literal-path escape hatch; hardware/radar.py resolves the serial number
 # fresh on every connect (the S3's CDC device re-enumerates after a crash).
+#
+# The MOTION base deliberately has no MOTION_ESP32_SERIAL twin: its CH340
+# bridge carries no iSerial descriptor (verified 2026-08-12, pyserial + IOKit
+# both report none), so there is nothing to match — and its cu.usbserial-<id>
+# path is derived from the USB location, which is already stable unless the
+# cable moves ports. See the MOTION_ESP32_PORT note in .env.example.
 RADAR_ESP32_SERIAL: "str | None" = _optional_env("RADAR_ESP32_SERIAL")
 RADAR_ESP32_PORT: "str | None" = _optional_env("RADAR_ESP32_PORT")
 if RADAR_ESP32_SERIAL is None and RADAR_ESP32_PORT is None:
