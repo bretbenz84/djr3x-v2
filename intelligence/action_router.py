@@ -1157,7 +1157,16 @@ def _plausible_name_arg(raw: str) -> bool:
 
 def _plausible_thats_not_name_candidate(raw: str) -> bool:
     """Return True when a "that's not X" tail looks like a person name."""
-    return _plausible_name_arg(raw)
+    candidate = (raw or "").strip()
+    # A bare "that's not <word>" only reads as a name correction when the tail
+    # is cased like a name: ASR writes "That's not funny." with a lowercase
+    # adjective but "That's not Brad" with a capital (field 2026-08-13: "That's
+    # not funny." shipped identity.name_correction at 0.95 and Rex asked for
+    # "the right name" out of nowhere). The stoplist can't enumerate every
+    # adjective; the casing signal doesn't have to.
+    if not candidate or not candidate[0].isupper():
+        return False
+    return _plausible_name_arg(candidate)
 
 
 def _text_has_identity_name_correction_content(
@@ -2233,13 +2242,17 @@ def missing_required_evidence_reason(
     if action == "vision.directed_look":
         return None if has_directed_look_evidence(cleaned) else "missing_directed_look_evidence"
     if action == "system.sleep":
+        # ASR transcripts carry sentence punctuation ("Go to sleep."), which must
+        # not read as extra content (field 2026-08-13: both "Go to sleep." turns
+        # were blocked here and whether Rex slept came down to the reply LLM
+        # improvising a tool call).
         return (
             None
             if re.match(
                 r"^\s*(?:go\s+to\s+sleep|sleep|wake\s+up|resume(?:\s+talking)?|"
                 r"talk\s+again|speak\s+again|stop\s+being\s+quiet|"
                 r"exit\s+quiet\s+mode|be\s+quiet|quiet\s+mode|go\s+quiet|"
-                r"shut\s*down|shutdown|power\s+off|turn\s+off)\s*$",
+                r"shut\s*down|shutdown|power\s+off|turn\s+off)\s*[.!?…]*\s*$",
                 cleaned,
                 re.IGNORECASE,
             )
