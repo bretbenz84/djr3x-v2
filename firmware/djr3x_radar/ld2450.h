@@ -48,6 +48,19 @@
 #define LD2450_CMD_END_CONFIG    0x00FE
 #define LD2450_CMD_MULTI_TARGET  0x0090
 #define LD2450_CMD_READ_FW       0x00A0
+// Bluetooth on/off. Value is 2 bytes LE: 0x0001 = on, 0x0000 = off. UNLIKE the
+// commands above this one is PERSISTENT (survives power-down) and only takes
+// effect when the module next restarts — see RADAR_DISABLE_BLUETOOTH in calib.h.
+// Cross-checked 2026-08-14, the same two sources as the parser above and they
+// agree exactly: (a) official protocol doc V1.03 — word 0x00A4, "0x0100 to turn
+// on, 0x0000 to turn off", send frame FD FC FB FA | 04 00 | A4 00 | 01 00 |
+// 04 03 02 01, ACK FD FC FB FA | 04 00 | A4 01 | 00 00 | 04 03 02 01, "not lost
+// when power down ... takes effect after restarting the module"; (b) ESPHome
+// core ld2450.cpp — CMD_BLUETOOTH = 0xA4, set_bluetooth() sends
+// {enable ? 0x01 : 0x00, 0x00}. Note the doc's four command words we already
+// used (FF/FE/90/A0) match ESPHome's enum exactly, so A4 is from a namespace
+// this parser has already validated end-to-end.
+#define LD2450_CMD_BLUETOOTH     0x00A4
 
 struct Ld2450Target {
   int16_t  x_mm;      // + = right of sensor per official convention (see header)

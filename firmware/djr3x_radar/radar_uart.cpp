@@ -81,16 +81,30 @@ static void boot_config(int i) {
   }
   const bool multi_ok = cfg_transact(i, LD2450_CMD_MULTI_TARGET, nullptr, 0,
                                      nullptr, nullptr);
+
+  // Bluetooth off (calib.h RADAR_DISABLE_BLUETOOTH). Persistent, and only live
+  // after the module's next restart — we let the S3's own power cycle deliver
+  // that rather than rebooting each module every boot. Its ACK is reported but
+  // never gates cfg_ok: a module tracking people with its radio still on is a
+  // working sensor, and failing the ring over a power-saving nicety would turn
+  // a cosmetic problem into "I can't see".
+  const char* bt = "skipped";
+#if RADAR_DISABLE_BLUETOOTH
+  const uint8_t bt_off[2] = {0x00, 0x00};
+  bt = cfg_transact(i, LD2450_CMD_BLUETOOTH, bt_off, sizeof(bt_off),
+                    nullptr, nullptr) ? "off@next-boot" : "NO-ACK";
+#endif
+
   cfg_transact(i, LD2450_CMD_END_CONFIG, nullptr, 0, nullptr, nullptr);
 
   LOCK_STATE();
   g_ctx.sensors[i].cfg_ok = multi_ok;
   memcpy(g_ctx.sensors[i].fw, fw, sizeof(fw));
   UNLOCK_STATE();
-  snprintf(msg, sizeof(msg), "radar[%d] uart%u mount%+d: %s fw=%s multi=%s", i,
-           RADAR_SENSORS[i].uart, (int)RADAR_SENSORS[i].mount_deg,
+  snprintf(msg, sizeof(msg), "radar[%d] uart%u mount%+d: %s fw=%s multi=%s bt=%s",
+           i, RADAR_SENSORS[i].uart, (int)RADAR_SENSORS[i].mount_deg,
            multi_ok ? "OK" : "FAIL", fw[0] ? fw : "?",
-           multi_ok ? "ok" : "no-ack");
+           multi_ok ? "ok" : "no-ack", bt);
   emit_log(multi_ok ? "info" : "warn", msg);
 }
 

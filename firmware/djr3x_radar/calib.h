@@ -66,8 +66,30 @@
 
 // ---- Boot-time sensor config (real HW only) -------------------------------
 // One config-mode transaction per sensor at init: read the firmware version
-// into the logs and force MULTI-target tracking (a module left in single-target
-// mode would silently cap the ring at 1 person). Read-only otherwise — no
-// Bluetooth changes, no zone filters, nothing persistent.
+// into the logs, force MULTI-target tracking (a module left in single-target
+// mode would silently cap the ring at 1 person), and turn the module's
+// Bluetooth off. No zone filters.
 #define RADAR_SENSOR_BOOT_CONFIG 1
 #define RADAR_CFG_ACK_TIMEOUT_MS 300   // per command; a silent sensor skips the rest
+
+// Turn each module's Bluetooth radio off (LD2450_CMD_BLUETOOTH). It ships ON —
+// it exists for the HLKRadarTool phone app, which we never use, so it is pure
+// parasitic draw on a ring that has no other reason to broadcast.
+//
+// TWO THINGS MAKE THIS UNLIKE THE REST OF BOOT CONFIG, both from the protocol
+// doc, neither a choice we get to make:
+//   1. It is PERSISTENT. Every other boot command re-asserts volatile state;
+//      this one writes the module's config and survives power-down. Setting it
+//      back on means either flipping this to 0 and reflashing, or the phone app
+//      over Bluetooth — which is off, so it's the reflash.
+//   2. It only takes effect ON THE MODULE'S NEXT RESTART. The write lands
+//      immediately, the radio keeps running until then.
+// We deliberately do NOT chase (2) with a restart command. The modules are
+// powered from the S3's 5 V, so they restart whenever the board does: the write
+// happens on this boot, and every boot from the next power-cycle onward starts
+// with the radio already dark. Issuing a reboot per sensor per boot instead
+// would mean guessing an undocumented settle time before frames resume, every
+// boot, forever — to save one session of a radio that has been on for weeks.
+// The command is re-asserted each boot: harmless, and it re-applies itself to a
+// module swapped into the ring without anyone remembering to configure it.
+#define RADAR_DISABLE_BLUETOOTH  1

@@ -82,10 +82,23 @@ Sensors run 256000 8N1, 5 V supply / 3.3 V TTL — powered from USB 5 V through
 the S3 board (~80 mA each), **not** the robot's 5 V rail.
 
 At boot (real build, `RADAR_SENSOR_BOOT_CONFIG`), each sensor gets one
-config-mode transaction: read the module firmware version into the logs and
-force **multi-target tracking** (a module left in single-target mode would
-silently cap the ring at one person). Nothing persistent is changed —
-Bluetooth stays as-is (default on; the HLKRadarTool phone app uses it).
+config-mode transaction: read the module firmware version into the logs, force
+**multi-target tracking** (a module left in single-target mode would silently
+cap the ring at one person), and turn the module's **Bluetooth off**
+(`RADAR_DISABLE_BLUETOOTH`) — it ships on for the HLKRadarTool phone app, which
+this build never uses.
+
+The Bluetooth bit is the one **persistent** thing boot config writes, and per
+the protocol doc it only goes live **on the module's next restart**. We don't
+send a reboot to force it: the modules run off the S3's 5 V, so they restart
+with the board, and every boot after the next power-cycle starts with the radio
+already dark. The command is re-asserted every boot, so a module swapped into
+the ring gets configured without anyone remembering to.
+
+Consequence worth knowing before you flash: once this has taken effect, **the
+HLKRadarTool phone app can no longer reach those modules** — the only way back
+is `RADAR_DISABLE_BLUETOOTH 0` plus a reflash. The boot log reports it per
+sensor as `bt=off@next-boot`, `bt=NO-ACK`, or `bt=skipped`.
 
 ## Protocol
 
