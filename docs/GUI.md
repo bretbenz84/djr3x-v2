@@ -40,6 +40,24 @@ python -m gui.dashboard --demo
 Demo mode generates a placeholder camera frame, fake people boxes, conversation
 lines, and simulated servo motion.
 
+## Motivator Control
+
+The 🕹 MOTIVATOR button (servo panel) opens a four-column drive console:
+joystick + commanded output | radar-ring scope | ToF (photoreceptors + 8×8
+matrix) | gamepad mirror, attitude, and raw ESP32 feedback.
+
+The **RADAR RING** panel is a top-down scope of the LD2450 bearing-prior ring,
+polled from `hardware.radar` on the telemetry tick: front is up, + bearing =
+left/CCW, dashed rings every 2 m to the 8 m full scale. Each sensor's ±60° FOV
+wedge (mounts from the board's hello) turns red when that sensor stops
+delivering; fused targets plot at (bearing, range) as confidence-colored dots
+(green ≥ 0.55, amber ≥ 0.30, gray below) with a radial speed tail and a white
+halo when two sensors agreed across a seam. An empty live frame with
+`radar.targets()` still latching draws hollow dots under a LATCHED chip —
+"remembering", not "seeing". Per-sensor frames/bad/drop counters line the
+footer. The drive-base and radar links are independent — either panel stays
+live while the other board is down.
+
 ## How State Reaches Qt
 
 The GUI reads only copied data from `gui.state_bridge.gui_bridge`.

@@ -1653,6 +1653,262 @@ class TofMatrixWidget(QWidget):
         p.end()
 
 
+class RadarRingWidget(QWidget):
+    """Top-down scope of the LD2450 bearing-prior ring (firmware/djr3x_radar).
+
+    Front is up, + bearing = left/CCW (docs/motion_protocol.md §4). Each sensor's
+    ±60° FOV is a faint wedge at its mount angle (mounts come from the board's
+    hello; wedges go red when that sensor stops delivering frames), dashed rings
+    mark 2/4/6/8 m, and every fused target is plotted at (bearing, range): dot
+    sized+colored by confidence, radial tail showing radial speed (outward = moving
+    away), thin halo when two sensors agreed across a seam. When the live frame is
+    empty but hardware.radar is still latching the last list (the LD2450 drops
+    people who freeze), targets draw hollow/dashed under a LATCHED chip —
+    "remembering", not "seeing". Per-sensor transport health (frames/bad/drop)
+    lines the footer. Read-only: call set_state() from the telemetry tick.
+    """
+
+    _MAX_M = 8.0                          # LD2450 spec range — the display reach
+    _HALF_FOV_DEG = 60.0                  # ±60° azimuth per module
+    _FALLBACK_MOUNTS = (0.0, 120.0, -120.0)   # pins.h defaults, until hello arrives
+    _STALE_SECS = 1.0                     # telemetry freshness bar (radar_ok())
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(280, 320)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._connected = False
+        self._fresh = False
+        self._ok = False
+        self._up = 0
+        self._errs = 0
+        self._targets: list = []          # live fused targets (normalized dicts)
+        self._latched: list = []          # latch-only display (live frame empty)
+        self._sens: list = []             # per-sensor {ok, frames, bad, drop}
+        self._mounts: tuple = self._FALLBACK_MOUNTS
+        self._cfg: tuple = ()             # per-sensor hello cfg_ok flags
+
+    @staticmethod
+    def _norm_target(t) -> "dict | None":
+        """Wire target {b,r,c,s,m} -> display dict (same normalization as
+        hardware/radar.py; the wire schema is the stable contract)."""
+        try:
+            return {
+                "bearing_deg": float(t["b"]),
+                "range_m": float(t["r"]),
+                "confidence": float(t["c"]),
+                "speed_mps": float(t.get("s", 0.0)),
+                "sensors": int(t.get("m", 0)),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def set_state(self, tel, latched=None, hello=None, connected: bool = False) -> None:
+        """Feed the raw radar telemetry frame, hardware.radar.targets() (the
+        latched list), hello_info(), and link state. Any piece may be None."""
+        self._connected = bool(connected)
+        rx = (tel or {}).get("rx_monotonic")
+        self._fresh = bool(tel) and rx is not None and (time.monotonic() - rx) <= self._STALE_SECS
+        radar_obj = (tel or {}).get("radar") or {}
+        self._ok = bool(radar_obj.get("ok")) and self._fresh
+        self._up = int(radar_obj.get("up") or 0) if self._fresh else 0
+        self._errs = int((tel or {}).get("errs") or 0)
+        self._sens = list((tel or {}).get("sens") or []) if self._fresh else []
+        if self._fresh:
+            self._targets = [
+                t for t in (self._norm_target(x) for x in radar_obj.get("targets") or [])
+                if t is not None
+            ]
+        else:
+            self._targets = []
+        # Latch display only when the ring is live but the current frame is empty.
+        self._latched = []
+        if self._fresh and not self._targets:
+            self._latched = [
+                t for t in (latched or [])
+                if isinstance(t, dict) and "bearing_deg" in t and "range_m" in t
+            ]
+        sens_info = (hello or {}).get("sensors") or []
+        mounts = []
+        for s in sens_info:
+            try:
+                mounts.append(float(s.get("mount")))
+            except (TypeError, ValueError):
+                pass
+        self._mounts = tuple(mounts) if mounts else self._FALLBACK_MOUNTS
+        self._cfg = tuple(bool(s.get("cfg", True)) for s in sens_info)
+        self.update()
+
+    def clear(self) -> None:
+        self._connected = self._fresh = self._ok = False
+        self._up = self._errs = 0
+        self._targets = []
+        self._latched = []
+        self._sens = []
+        self._mounts = self._FALLBACK_MOUNTS
+        self._cfg = ()
+        self.update()
+
+    @staticmethod
+    def _polar_px(cx, cy, body_r, reach, max_m, bearing_deg, range_m) -> QPointF:
+        """Robot-frame polar -> widget pixels. Front = up; + bearing = left/CCW,
+        so screen angle = 90° + bearing in Qt's 0°=3-o'clock CCW+ convention."""
+        r = body_r + (max(0.0, min(float(range_m), max_m)) / max_m) * reach
+        a = math.radians(90.0 + float(bearing_deg))
+        return QPointF(cx + r * math.cos(a), cy - r * math.sin(a))
+
+    @staticmethod
+    def _conf_color(c: float, alpha: int = 255) -> QColor:
+        if c >= 0.55:
+            return QColor(70, 200, 130, alpha)     # confident
+        if c >= 0.30:
+            return QColor(240, 180, 60, alpha)     # marginal (FOV edge / young track)
+        return QColor(120, 130, 145, alpha)        # barely there
+
+    def _chip(self, p: QPainter, rect: QRectF, color: QColor, text: str, dim: float) -> None:
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(color.red(), color.green(), color.blue(), int(55 * dim)))
+        p.drawRoundedRect(rect, 4, 4)
+        p.setPen(QColor(color.red(), color.green(), color.blue(), int(255 * dim)))
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+    def paintEvent(self, _e) -> None:
+        w, h = float(self.width()), float(self.height())
+        n_sens = max(len(self._mounts), len(self._sens), 1)
+        foot_h = 14.0 * n_sens + 20.0             # per-sensor rows + legend line
+        cx = w / 2.0
+        cy = (h - foot_h) / 2.0 + 6.0
+        maxR = min(w, h - foot_h) / 2.0 - 16.0
+        if maxR < 24:
+            return
+        body_r = maxR * 0.12
+        reach = maxR - body_r
+        live = self._connected and self._fresh
+        dim = 1.0 if live else 0.35
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+
+        # Sensor FOV wedges: blue = delivering, red = link up but sensor dead,
+        # neutral gray = link down (unknown, not an accusation).
+        for i, mount in enumerate(self._mounts):
+            if not live:
+                col = QColor(120, 130, 145)
+            else:
+                s_ok = bool(self._sens[i].get("ok")) if i < len(self._sens) else self._ok
+                col = QColor(90, 150, 200) if s_ok else QColor(235, 70, 60)
+            p.setBrush(QColor(col.red(), col.green(), col.blue(), int(34 * dim)))
+            p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), int(90 * dim)), 1))
+            span = 2.0 * self._HALF_FOV_DEG
+            p.drawPie(QRectF(cx - maxR, cy - maxR, 2 * maxR, 2 * maxR),
+                      int((90.0 + mount - self._HALF_FOV_DEG) * 16), int(span * 16))
+
+        # Range rings every 2 m, labeled up the forward axis.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for m in (2.0, 4.0, 6.0, 8.0):
+            rr = body_r + (m / self._MAX_M) * reach
+            p.setPen(QPen(QColor(70, 80, 95, int(255 * dim)), 1, Qt.PenStyle.DashLine))
+            p.drawEllipse(QRectF(cx - rr, cy - rr, 2 * rr, 2 * rr))
+            p.setPen(QColor(120, 135, 155, int(170 * dim)))
+            p.drawText(QRectF(cx + 3, cy - rr - 6, 34, 12),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       f"{m:.0f}m")
+
+        # Robot body + forward chevron (matches the photoreceptors dial).
+        p.setPen(QPen(QColor(120, 140, 165, int(255 * dim)), 2))
+        p.setBrush(QBrush(QColor(30, 36, 46, int(255 * dim))))
+        p.drawEllipse(QRectF(cx - body_r, cy - body_r, 2 * body_r, 2 * body_r))
+        p.setPen(QPen(QColor(130, 215, 255, int(255 * dim)), 2))
+        p.drawLine(QPointF(cx - body_r * 0.45, cy), QPointF(cx, cy - body_r * 0.55))
+        p.drawLine(QPointF(cx, cy - body_r * 0.55), QPointF(cx + body_r * 0.45, cy))
+
+        # Targets — live solid, latched hollow/dashed.
+        latch_mode = not self._targets and bool(self._latched)
+        for t in (self._latched if latch_mode else self._targets):
+            c = max(0.0, min(1.0, t.get("confidence", 0.0)))
+            pos = self._polar_px(cx, cy, body_r, reach, self._MAX_M,
+                                 t.get("bearing_deg", 0.0), t.get("range_m", 0.0))
+            dot_r = 4.0 + 5.0 * c
+            col = self._conf_color(c, int(255 * dim))
+            if latch_mode:
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(self._conf_color(c, int(170 * dim)), 1.4, Qt.PenStyle.DashLine))
+                p.drawEllipse(QRectF(pos.x() - dot_r, pos.y() - dot_r, 2 * dot_r, 2 * dot_r))
+            else:
+                # Radial speed tail: outward = moving away (s > 0), inward = approaching.
+                spd = float(t.get("speed_mps", 0.0))
+                if abs(spd) >= 0.05:
+                    a = math.radians(90.0 + t.get("bearing_deg", 0.0))
+                    ux, uy = math.cos(a), -math.sin(a)      # outward unit vector (screen)
+                    L = min(24.0, 6.0 + abs(spd) * 22.0) * (1.0 if spd > 0 else -1.0)
+                    p.setPen(QPen(self._conf_color(c, int(200 * dim)), 2))
+                    p.drawLine(pos, QPointF(pos.x() + ux * L, pos.y() + uy * L))
+                p.setPen(QPen(col, 1.5))
+                p.setBrush(QColor(col.red(), col.green(), col.blue(), int(180 * dim)))
+                p.drawEllipse(QRectF(pos.x() - dot_r, pos.y() - dot_r, 2 * dot_r, 2 * dot_r))
+                # Seam agreement: two+ sensors merged into this target.
+                if bin(int(t.get("sensors", 0))).count("1") >= 2:
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.setPen(QPen(QColor(230, 240, 250, int(190 * dim)), 1.2))
+                    hr = dot_r + 2.5
+                    p.drawEllipse(QRectF(pos.x() - hr, pos.y() - hr, 2 * hr, 2 * hr))
+            label = f"{t.get('range_m', 0.0):.1f}m {t.get('bearing_deg', 0.0):+.0f}°"
+            p.setPen(QColor(185, 205, 225, int(230 * dim)))
+            ly = pos.y() + dot_r + 3 if pos.y() < cy else pos.y() - dot_r - 16
+            p.drawText(QRectF(pos.x() - 40, ly, 80, 14),
+                       Qt.AlignmentFlag.AlignCenter, label)
+
+        # Status chips: ring health (left) and target count / latch (right).
+        if not self._connected:
+            self._chip(p, QRectF(6, 6, 118, 19), QColor(120, 130, 145), "RING NO LINK", dim)
+        elif not self._fresh:
+            self._chip(p, QRectF(6, 6, 118, 19), QColor(240, 180, 60), "RING STALE", dim)
+        elif self._ok:
+            self._chip(p, QRectF(6, 6, 118, 19), QColor(70, 200, 130),
+                       f"RING OK · {self._up}/{n_sens}", dim)
+        else:
+            self._chip(p, QRectF(6, 6, 118, 19), QColor(235, 70, 60),
+                       f"RING DOWN 0/{n_sens}", dim)
+        if latch_mode:
+            self._chip(p, QRectF(w - 106, 6, 100, 19), QColor(240, 180, 60),
+                       f"LATCHED ×{len(self._latched)}", dim)
+        elif self._targets:
+            self._chip(p, QRectF(w - 106, 6, 100, 19), QColor(130, 215, 255),
+                       f"TARGETS {len(self._targets)}", dim)
+
+        # Footer: per-sensor transport health + orientation legend.
+        fy = h - foot_h + 4.0
+        for i in range(n_sens):
+            mount = self._mounts[i] if i < len(self._mounts) else 0.0
+            s = self._sens[i] if i < len(self._sens) else None
+            if s is None:
+                col, stats = QColor(120, 130, 145), "—"
+            else:
+                col = QColor(70, 200, 130) if s.get("ok") else QColor(235, 70, 60)
+                stats = (f"{int(s.get('frames', 0))} fr · {int(s.get('bad', 0))} bad · "
+                         f"{int(s.get('drop', 0))} drop")
+            if i < len(self._cfg) and not self._cfg[i]:
+                stats += " · cfg✗"
+            p.setPen(QColor(col.red(), col.green(), col.blue(), int(255 * dim)))
+            p.drawText(QRectF(8, fy + 14.0 * i, w - 16, 14),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       f"S{i} {mount:+.0f}°  {stats}")
+        p.setPen(QColor(120, 135, 155, int(170 * dim)))
+        legend = "front=up · +bearing=CCW · 8 m full scale"
+        if self._errs:
+            legend = f"errs {self._errs} · " + legend
+        p.drawText(QRectF(8, h - 16, w - 16, 14),
+                   Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, legend)
+
+        if not live:
+            p.setPen(QColor(150, 165, 185))
+            f.setPointSize(10); f.setBold(True); p.setFont(f)
+            p.drawText(QRectF(0, cy - 12, w, 24), Qt.AlignmentFlag.AlignCenter,
+                       "no link" if not self._connected else "no telemetry")
+        p.end()
+
+
 class GamepadMirrorWidget(QWidget):
     """Read-only mirror of the PHYSICAL gamepad paired to the ESP32.
 
@@ -1875,7 +2131,8 @@ class AttitudeWidget(QWidget):
 
 
 class MotivatorControlDialog(QDialog):
-    """Joystick console to drive the motion base by hand, with live ESP32 readout.
+    """Joystick console to drive the motion base by hand, with live ESP32 readout
+    (drive base) and the LD2450 radar-ring scope (its own ESP32-S3 link).
 
     Mixing (arcade): forward = stick-up, turn = stick-right.
       left motor  = forward + turn      right motor = forward - turn
@@ -1891,7 +2148,7 @@ class MotivatorControlDialog(QDialog):
         # A top-level QDialog doesn't inherit the main window's stylesheet, so apply
         # the shared console theme plus the Motivator-specific rules (theme.DIALOG_STYLE).
         self.setStyleSheet(theme.DIALOG_STYLE)
-        self.resize(1280, 760)
+        self.resize(1500, 780)
         self._x = 0.0
         self._y = 0.0
         self._engaged = False     # only drive after the operator has touched the stick
@@ -1909,9 +2166,9 @@ class MotivatorControlDialog(QDialog):
         self._conn.setWordWrap(True)
         root.addWidget(self._conn)
 
-        # Three columns so everything fits on one screen without scrolling:
-        # drive (joystick + commanded) | sensing (radar + 8x8 matrix) |
-        # telemetry (gamepad + attitude + feedback).
+        # Four columns so everything fits on one screen without scrolling:
+        # drive (joystick + commanded) | radar ring scope | ToF (photoreceptors
+        # + 8x8 matrix) | telemetry (gamepad + attitude + feedback).
         body = QHBoxLayout()
         body.setSpacing(14)
         root.addLayout(body, 1)
@@ -1942,6 +2199,9 @@ class MotivatorControlDialog(QDialog):
         self._lbl_ang = self._row(cmd, "Angular")
         left.addWidget(cmd["frame"])
         body.addLayout(left, 4)
+
+        self._radar = RadarRingWidget()
+        body.addWidget(_panel("RADAR RING (3× LD2450)", self._radar), 4)
 
         mid = QVBoxLayout()
         mid.setSpacing(12)
@@ -2078,10 +2338,34 @@ class MotivatorControlDialog(QDialog):
         except Exception:
             connected, tel = False, None
 
-        if connected:
-            self._conn.setText("ESP32 connected — this console holds manual control while open")
+        # Radar ring — its own board and link, independent of the drive base,
+        # so it updates even while the base is down (and vice versa).
+        try:
+            from hardware import radar
+            r_conn = radar.connected()
+            self._radar.set_state(
+                radar.telemetry() if r_conn else None,
+                radar.targets() if r_conn else [],
+                radar.hello_info() if r_conn else None,
+                r_conn,
+            )
+        except Exception:
+            r_conn = False
+            self._radar.set_state(None, [], None, False)
+
+        if connected and r_conn:
+            self._conn.setText(
+                "Drive ESP32 + radar ring connected — this console holds manual control while open")
+        elif connected:
+            self._conn.setText(
+                "Drive ESP32 connected (radar ring down) — this console holds manual control while open")
+        elif r_conn:
+            self._conn.setText(
+                "Radar ring connected; drive ESP32 down — set MOTION_ESP32_PORT and run main.py --gui")
         else:
-            self._conn.setText("ESP32 disconnected — set MOTION_ESP32_PORT and run main.py --gui")
+            self._conn.setText(
+                "Drive ESP32 + radar ring disconnected — set MOTION_ESP32_PORT / "
+                "RADAR_ESP32_SERIAL and run main.py --gui")
         self._conn.setProperty("ok", bool(connected))
         self._conn.style().unpolish(self._conn)
         self._conn.style().polish(self._conn)

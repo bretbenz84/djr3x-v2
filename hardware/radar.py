@@ -7,10 +7,12 @@ firmware streams at 10 Hz. The wire contract mirrors docs/motion_protocol.md
 (NDJSON, v1); the firmware is firmware/djr3x_radar; the feature spec is
 docs/radar-bearing-prior-spec.md.
 
-This module is just the pipe, and this pass is LOGS-ONLY by design: nothing
-consumes `targets()` yet — the spec lands the data pipeline first and wires
-behavior later. Consumers-to-be (the come-here search prior) should read
-`targets()` and treat the radar as a hint source, never a detector.
+This module is just the pipe, and nothing drives BEHAVIOR from it yet — the
+spec lands the data pipeline first and wires behavior later. Today's only
+consumer is read-only display: the Motivator Control radar scope
+(gui/dashboard.py RadarRingWidget) polls telemetry()/targets()/hello_info(),
+alongside the [radar] log lines. Consumers-to-be (the come-here search prior)
+should read `targets()` and treat the radar as a hint source, never a detector.
 
 Differences from hardware/motion.py, each deliberate:
 

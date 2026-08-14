@@ -135,3 +135,8 @@ the math. Full source notes at the top of `ld2450.h`.
 - The stub build runs the full pipeline on a bare S3 over real USB.
 - `firmware/tools/radar_serial_smoketest.py` checks a flashed board
   end-to-end (handshake, telemetry schema, target sanity, error handling).
+- The GUI's Motivator Control window (`main.py --gui` → 🕹 MOTIVATOR) has a
+  live **RADAR RING** scope — targets, FOV wedges, per-sensor health — fed
+  from `hardware/radar.py` (docs/GUI.md). The fastest way to eyeball a flashed
+  board: the stub build's scripted scene animates the scope with no modules
+  wired.
