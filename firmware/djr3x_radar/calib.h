@@ -27,7 +27,13 @@
 // in ld2450.h). We implement the official + ESPHome-core convention (+x =
 // right of sensor); if bring-up shows bearings mirrored (walk left, bearing
 // goes right), set this to 1 rather than touching the math.
-#define RADAR_FLIP_X          0
+//
+// RESOLVED 2026-08-14 on real hardware: bearings came out mirrored left/right,
+// so these modules use the OPPOSITE x polarity from the official doc's worked
+// example — i.e. the csRon / TillFleisch drivers had it right for this batch.
+// Flag flipped to 1; the math in fusion.cpp is untouched and still matches the
+// official doc, which is where it should stay.
+#define RADAR_FLIP_X          1
 #define RADAR_RANGE_MIN_M     0.20f    // closer than this is the robot's own shell/PETG
 #define RADAR_RANGE_MAX_M     8.00f    // module spec ceiling; beyond is noise
 

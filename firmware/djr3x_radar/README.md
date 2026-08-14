@@ -122,6 +122,13 @@ example. Which side of the sensor is +x is stated nowhere official — if
 bring-up shows mirrored bearings, set `RADAR_FLIP_X` in `calib.h`, don't touch
 the math. Full source notes at the top of `ld2450.h`.
 
+**Settled 2026-08-14 on hardware:** bearings came out mirrored left/right, so
+this batch of modules uses the drivers' polarity, not the official doc's.
+`RADAR_FLIP_X` is now **1**. The parser math still implements the official
+convention — the flag is the only thing that moved, which is what keeps the
+provenance above honest. A future batch that reads correct again is a one-line
+revert, not a rewrite.
+
 ## Testing without hardware
 
 - `tests/test_radar_parser.py` compiles `ld2450.cpp` + `fusion.cpp` (both
