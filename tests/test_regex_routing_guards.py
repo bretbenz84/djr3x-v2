@@ -31,6 +31,7 @@ import numpy as np
 from intelligence import action_router
 from intelligence import command_parser
 from intelligence import interaction
+from intelligence import tool_router
 from state import State
 
 
@@ -1083,6 +1084,120 @@ class JsonProseRouterRetirementTest(unittest.TestCase):
         ) as create:
             self.assertFalse(action_router.warmup())
         self.assertFalse(create.called)
+
+
+class VisionHoldingFieldFailureTest(unittest.TestCase):
+    """Field 2026-08-13 20:42 — Rex refused to look at what was in a hand.
+
+    Verbatim from logs/conversation-2026-08-13-20-25-31.log:
+        "What do you see me holding?"          -> "I can't tell from here."
+        "I'm holding it right in front of you." -> "Still not enough..."
+        "What do you see?"                      -> "I see Bret ... a colorful
+                                                   braided toy ..."
+    The camera was fine and the ROUTING was fine — the shadow collector picked
+    vision.describe_scene for the holding phrasing on that same turn
+    ([tool_router_shadow] ... "tool": "vision.describe_scene", "agree": false).
+    The reply call declined, because REX_CORE_PROMPT's anti-hallucination rule
+    names "what someone is holding" as a thing never to invent and never told him
+    he could look instead.
+    """
+
+    def test_the_failing_phrasings_still_classify_as_vision(self):
+        from intelligence import intent_classifier
+
+        for text in ("What do you see me holding?", "what am I holding",
+                     "Can you see what I'm holding", "what's in my hand"):
+            self.assertEqual(
+                intent_classifier.classify_deterministic(text),
+                "query_what_do_you_see", text)
+            self.assertTrue(action_router.has_vision_query_evidence(text), text)
+
+    def test_the_turn_is_handed_to_the_reply_call(self):
+        for text in ("What do you see me holding?", "what am I holding"):
+            self.assertEqual(
+                interaction._intent_execution_block_reason(
+                    "query_what_do_you_see", text=text),
+                "tool_router_owns_action", text)
+
+    def test_the_persona_rule_tells_him_to_look_not_refuse(self):
+        import config
+
+        rule = next(l for l in config.REX_CORE_PROMPT.splitlines()
+                    if "genuinely see" in l)
+        # The anti-hallucination half must survive — it exists because Rex used to
+        # invent "I see it".
+        self.assertIn("never invent physical details", rule)
+        # ...but it must also point at the escape hatch, or the rule reads as a
+        # blanket ban on answering and he refuses instead of looking.
+        self.assertIn("holding", rule)
+        self.assertRegex(rule.lower(), r"call the vision tool")
+        self.assertRegex(rule.lower(), r"do not (guess and do not )?refuse")
+
+    def test_the_tool_hint_covers_a_held_object(self):
+        from intelligence import tool_router
+
+        hint = next(s["function"]["description"] for s in tool_router.live_reply_tools()
+                    if s["function"]["name"] == "vision_describe_scene")
+        for word in ("holding", "hand"):
+            self.assertIn(word, hint.lower(), hint)
+
+
+class StreamedToolCallAccumulationTest(unittest.TestCase):
+    """Field 2026-08-13 20:30:11 — two tool calls glued into one invalid name."""
+
+    def _run(self, specs):
+        from types import SimpleNamespace
+        from intelligence import lean_brain, tool_router
+
+        chunks = []
+        for spec in specs:
+            if spec[0] == "content":
+                delta = SimpleNamespace(content=spec[1], tool_calls=None)
+            else:
+                index, name, args = spec
+                call = SimpleNamespace(
+                    index=index,
+                    function=SimpleNamespace(name=name, arguments=args),
+                )
+                delta = SimpleNamespace(content=None, tool_calls=[call])
+            chunks.append(SimpleNamespace(choices=[SimpleNamespace(delta=delta)]))
+
+        with mock.patch.object(lean_brain, "_messages",
+                               return_value=[{"role": "user", "content": "x"}]), \
+             mock.patch("intelligence.llm_compat.create", return_value=chunks):
+            try:
+                return "".join(lean_brain.stream_reply("x", 1)), None
+            except tool_router.ToolCallRequested as requested:
+                return None, (requested.action, requested.tool_args)
+
+    def test_two_tool_calls_no_longer_concatenate_into_nothing(self):
+        # The logged name was 'weather_queryvision_describe_scene', which resolved
+        # to nothing, so the user got "...circuits hiccuped. Say that again?" and
+        # had to repeat "what would you say the weather is like?".
+        spoken, resolved = self._run([
+            (0, "weather_", "{}"), (0, "query", ""),
+            (1, "vision_describe_scene", "{}"),
+        ])
+        self.assertIsNone(spoken)
+        self.assertEqual(resolved[0], "weather.query")
+
+    def test_a_single_fragmented_call_still_resolves(self):
+        _spoken, resolved = self._run([
+            (0, "vision_", ""), (0, "describe_scene", "{"), (0, "", "}"),
+        ])
+        self.assertEqual(resolved[0], "vision.describe_scene")
+
+    def test_prose_still_wins_over_a_tool_call(self):
+        spoken, resolved = self._run([
+            ("content", "Sure thing."), (0, "weather_query", "{}"),
+        ])
+        self.assertEqual(spoken, "Sure thing.")
+        self.assertIsNone(resolved)
+
+    def test_a_genuinely_non_live_tool_still_declines(self):
+        spoken, resolved = self._run([(0, "motion_explore", "{}")])
+        self.assertIsNone(resolved)
+        self.assertIn("circuits", spoken)
 
 
 class LegacyMemoryWriteGateTest(unittest.TestCase):

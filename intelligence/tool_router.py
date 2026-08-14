@@ -197,7 +197,19 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     "music.stop": ("Stop the music that is playing.", {}, []),
     "music.skip": ("Skip to the next track.", {}, []),
     "music.options": ("Asking what music is available.", {}, []),
-    "vision.describe_scene": ("Asking what Rex can SEE right now.", {}, []),
+    # Widened 2026-08-13 after a field failure: "What do you see me holding?" and
+    # "I'm holding it right in front of you." both drew "I can't tell from here."
+    # while the camera was working — the very next turn, "What do you see?",
+    # returned "a colorful braided toy". The shadow collector picked
+    # vision.describe_scene for the holding phrasing on that same turn, so the
+    # ROUTING was right and the reply call was what declined. The old hint only
+    # described the generic scene case, so a question about ONE object read as
+    # something else.
+    "vision.describe_scene": (
+        "Asking what Rex can SEE right now — the room, or what someone is HOLDING, "
+        "wearing, showing him or pointing at, or what an object is. Returns the "
+        "live camera frame including objects in someone's hand, so call it rather "
+        "than saying you cannot tell.", {}, []),
     "vision.snapshot": ("An explicit request to take a picture.", {}, []),
     "time.query": ("Asking the current clock time.", {}, []),
     "date.query": ("Asking today's date/day (NOT holiday explanations).", {}, []),

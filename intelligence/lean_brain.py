@@ -822,6 +822,9 @@ def stream_reply(
             tool_extra = {"tools": live_tools, "tool_choice": "auto"}
     except Exception as exc:
         _log.debug("[lean] live tools unavailable: %s", exc)
+    # index -> {"name", "args"}; see the accumulation loop below for why this is
+    # keyed rather than a single pair of strings.
+    tool_calls: dict[int, dict[str, str]] = {}
     tc_name, tc_args, yielded = "", "", False
     try:
         stream = llm_compat.create(
@@ -840,9 +843,29 @@ def stream_reply(
                 continue
             for tc in (getattr(delta, "tool_calls", None) or []):
                 fn = getattr(tc, "function", None)
-                if fn is not None:
-                    tc_name += str(getattr(fn, "name", None) or "")
-                    tc_args += str(getattr(fn, "arguments", None) or "")
+                if fn is None:
+                    continue
+                # Accumulate PER TOOL-CALL INDEX. The deltas for a streamed tool
+                # call arrive in fragments, and when the model emits TWO calls in
+                # one turn their fragments interleave — appending them all to one
+                # string glued the names together into a tool that does not exist.
+                # Field 2026-08-13 20:30:11: "And what would you say the weather is
+                # like?" produced the name 'weather_queryvision_describe_scene',
+                # which resolve_tool_call rejected as non-live, and the whole turn
+                # was spent on "...circuits hiccuped. Say that again?" — the user
+                # had to repeat the question. One action per turn is still the
+                # contract, so the FIRST complete call wins and any extra is logged.
+                # Coerce: the index is an int on every real SDK delta, but it can
+                # be absent (a lone call on some providers) or a stand-in under
+                # test. Anything unusable collapses to slot 0, which restores the
+                # old single-call behavior rather than raising mid-stream.
+                try:
+                    idx = int(getattr(tc, "index", 0) or 0)
+                except (TypeError, ValueError):
+                    idx = 0
+                slot = tool_calls.setdefault(idx, {"name": "", "args": ""})
+                slot["name"] += str(getattr(fn, "name", None) or "")
+                slot["args"] += str(getattr(fn, "arguments", None) or "")
             if getattr(delta, "content", None):
                 yielded = True
                 yield delta.content
@@ -860,6 +883,17 @@ def stream_reply(
                 _log.error("[lean] local fallback also failed: %s", exc2)
         yield "...circuits hiccuped. Say that again?"
         return
+    # Collapse the per-index slots to the ONE call this turn acts on. Ordered by
+    # index so "first call wins" is deterministic rather than dict-insertion luck.
+    if tool_calls:
+        ordered = [tool_calls[i] for i in sorted(tool_calls)]
+        tc_name = ordered[0]["name"]
+        tc_args = ordered[0]["args"]
+        if len(ordered) > 1:
+            _log.info(
+                "[lean] model emitted %d tool calls %r — acting on the first",
+                len(ordered), [c["name"] for c in ordered],
+            )
     if tc_name and not yielded:
         try:
             from intelligence import tool_router
