@@ -1256,6 +1256,68 @@ class MemoryQueryCoreferenceTest(unittest.TestCase):
         self.assertIn("transcript", hint.lower())
 
 
+class CompoundGazeDirectionTest(unittest.TestCase):
+    """Field 2026-08-13 21:01 — "look down and to your left" looked LEFT only.
+
+    _parse_directed_look walked the literal tuple ("left","right","up","down")
+    and broke on the first member found ANYWHERE in the utterance, so yaw always
+    beat pitch regardless of what the speaker said first. The dog was on the
+    floor; Rex pointed his camera level-left and reported nothing.
+    """
+
+    def test_compound_phrasings_keep_both_axes(self):
+        cases = {
+            "Look down and to your left.": "down_left",
+            "Look down and then look left.": "down_left",   # the real 21:02:38 line
+            "Look down into your left.": "down_left",       # the real 21:02:53 line
+            "look left and down": "down_left",              # order must not matter
+            "look up and to the right": "up_right",
+            "look to your lower left": "down_left",
+        }
+        for text, expected in cases.items():
+            match = command_parser.parse(text)
+            self.assertIsNotNone(match, text)
+            self.assertEqual(match.args.get("direction"), expected, text)
+
+    def test_single_axis_and_idioms_are_unchanged(self):
+        for text, expected in (("Look down.", "down"), ("look left", "left"),
+                               ("look up", "up"), ("look the other way", "other_way")):
+            match = command_parser.parse(text)
+            self.assertEqual(match.args.get("direction"), expected, text)
+
+    def test_a_compound_pose_adds_no_new_servo_extreme(self):
+        """The head is 5 lb on an 8mm rod and the tilt servo is fragile.
+
+        A compound must be the SET UNION of its two single-axis poses in one
+        glided move_to — never a new tilt value. Captured without commanding
+        hardware.
+        """
+        import config
+        from sequences import animations
+
+        seen: dict = {}
+
+        def _capture(targets, **kwargs):
+            seen.clear()
+            seen.update(targets)
+
+        with mock.patch.object(animations.servos, "move_to", side_effect=_capture), \
+             mock.patch.object(animations.servos, "set_face_tracking_baseline"), \
+             mock.patch.object(animations.time, "sleep"):
+            animations.directed_look_pose("down")
+            down = dict(seen)
+            animations.directed_look_pose("left")
+            left = dict(seen)
+            returned = animations.directed_look_pose("down_left")
+            compound = dict(seen)
+
+        self.assertEqual(returned, "down_left")
+        self.assertEqual(compound, {**down, **left})
+        tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
+        self.assertEqual(compound[tilt_ch], down[tilt_ch],
+                         "a compound must not command a tilt beyond plain 'down'")
+
+
 class LegacyMemoryWriteGateTest(unittest.TestCase):
     """Unmapped legacy keys skipped the evidence check entirely."""
 

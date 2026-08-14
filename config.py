@@ -2655,6 +2655,20 @@ DIRECTED_LOOK_FACE_SEARCH_MAX_ATTEMPTS = 5
 DIRECTED_LOOK_HOLD_ENABLED = True
 DIRECTED_LOOK_HOLD_SECS = 25.0
 
+# After a BARE directional look ("look down", "look to your left", "look over
+# there" — no target hint, no vision question), say what the new view holds
+# instead of turning in silence. The frame is already captured by
+# _move_and_capture_gaze, so the only added cost is one VISION_MODEL look at it
+# plus the reply. Default ON because the failure this fixes IS silence: on
+# 2026-08-13 21:01:45-21:02:53 the owner said "look down and to your left" five
+# different ways at a dog on the floor and got a silent gaze change, then "What
+# am I looking for?", then "Oh hi, Bret." Gating this on the local COCO
+# detectors was considered and rejected — that same night the dog scored
+# 0.215/0.246/0.300 against the 0.30 accept bar and never confirmed, while a
+# phantom "cat" did. Set False to restore the old silent-turn behavior (the
+# face-greet and the "what am I looking for?" ladder come back with it).
+DIRECTED_LOOK_REPORT_VIEW = True
+
 # Wave gesture defaults for "wave to X".
 WAVE_COUNT = 3
 WAVE_STEP_QUS = 55

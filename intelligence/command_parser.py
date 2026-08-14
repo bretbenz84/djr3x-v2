@@ -420,11 +420,66 @@ _BARE_LOOK_DIRECTIONS = {
     "center": "center",
     "centre": "center",
 }
+# Pitch words that modify a gaze. "lower"/"upper" ride along because "look to
+# your lower left" is the same physical request as "look down and to your left".
+# "below"/"beneath" are deliberately EXCLUDED: they usually relate a target to
+# another object ("the dog below the table"), not Rex's own gaze axis.
+_PITCH_LOOK_WORDS = r"(?:down|downward|downwards|lower|up|upward|upwards|upper)"
+_PITCH_LOOK_AXIS = {
+    "down": "down", "downward": "down", "downwards": "down", "lower": "down",
+    "up": "up", "upward": "up", "upwards": "up", "upper": "up",
+}
+# The embedded form captures a BOUNDED clause -- at most two direction tokens
+# joined by "and"/"then"/","/"-"/"to"/"into" -- instead of the single word right
+# after "look", so an embedded compound keeps both axes. The bound is the point:
+# an unbounded tail would read "Look up and I'll be right back" as up_right.
 _EMBEDDED_LOOK_DIRECTION_RE = re.compile(
-    r"(?:^|[.!?]\s+)(?:please\s+)?look\s+(?:to\s+)?(?:your\s+)?"
-    r"(?P<direction>left|right|up|down)\b",
+    r"(?:^|[.!?]\s+)(?:please\s+)?look\s+(?P<clause>"
+    r"(?:to\s+|into\s+)?(?:your\s+|the\s+)?"
+    r"(?:left|right|up|down|lower|upper)"
+    r"(?:\s*(?:,|-|and|then)?\s*(?:to\s+|into\s+)?(?:your\s+|the\s+)?"
+    r"(?:left|right|up|down|lower|upper))?"
+    r")\b",
     re.IGNORECASE,
 )
+
+
+def _look_axis_direction(clean: str) -> str | None:
+    """Pick the gaze direction from a cleaned "look ..." clause.
+
+    Yaw and pitch are DIFFERENT servo channels (neck vs headlift+headtilt), so a
+    diagonal is physically expressible and has to survive the parse as one value:
+    "down_left", "up_right". The old code walked ("left", "right", "up", "down")
+    and broke on the first hit -- tuple order, not word order -- so yaw always won
+    and the pitch of every compound phrasing was dropped on the floor. Field
+    2026-08-13 21:01-21:03: the owner's dog was down and to Rex's left and he said
+    so five ways ("Look down and to your left.", "Look down into your left. You'll
+    see him."); every one parsed to a bare "left", so Rex swung his head left at
+    standing height, saw nothing, and answered "What am I looking for?".
+    """
+    if re.search(r"\b(?:the\s+)?other\s+way\b|\bopposite\s+way\b", clean):
+        return "other_way"
+
+    yaw = None
+    for word in ("left", "right"):
+        if re.search(rf"\b(?:your\s+)?{word}\b", clean):
+            yaw = word
+            break
+
+    pitch = None
+    m_pitch = re.search(rf"\b(?:your\s+)?(?P<pitch>{_PITCH_LOOK_WORDS})\b", clean)
+    if m_pitch:
+        pitch = _PITCH_LOOK_AXIS.get(m_pitch.group("pitch").lower())
+
+    if yaw and pitch:
+        return f"{pitch}_{yaw}"
+    if yaw:
+        return _BARE_LOOK_DIRECTIONS.get(yaw, yaw)
+    if pitch:
+        return _BARE_LOOK_DIRECTIONS.get(pitch, pitch)
+    if re.search(r"\b(?:center|centre|front|forward|ahead|straight ahead)\b", clean):
+        return "center"
+    return None
 _LOOK_DIRECTION_META_RE = re.compile(
     r"^look\s+(?:to\s+)?(?:your\s+)?(?:left|right|up|down)\s+"
     r"(?:is|was|means|meant|sounds|refers|phrase|word)\b",
@@ -454,9 +509,11 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
         embedded = _EMBEDDED_LOOK_DIRECTION_RE.search(original or "")
         if embedded is None:
             return None
-        direction = embedded.group("direction").lower()
+        direction = _look_axis_direction(_plain(embedded.group("clause")))
+        if direction is None:
+            return None
         return {
-            "direction": _BARE_LOOK_DIRECTIONS.get(direction, direction),
+            "direction": direction,
             "target_hint": "",
             "search_target": False,
             "utterance": original.strip(),
@@ -466,19 +523,7 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
     if clean in {"look around", "look alive"}:
         return None
 
-    direction = None
-    if re.search(r"\b(?:the\s+)?other\s+way\b|\bopposite\s+way\b", clean):
-        direction = "other_way"
-
-    for word in ("left", "right", "up", "down"):
-        if direction is None and re.search(rf"\b(?:your\s+)?{word}\b", clean):
-            direction = word
-            break
-
-    if direction is None and re.search(
-        r"\b(?:center|centre|front|forward|ahead|straight ahead)\b", clean
-    ):
-        direction = "center"
+    direction = _look_axis_direction(clean)
 
     target_hint = ""
     m_at = re.match(r"look\s+at\s+(.+)$", clean)

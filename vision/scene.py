@@ -1208,6 +1208,14 @@ def _analyze_directed_attention_locked(
         "down": "Rex has tilted his camera downward.",
         "center": "Rex has centered his gaze.",
         "current": "Rex is inspecting the current view; the user may be pointing or showing something nearby.",
+        # A diagonal is the strongest prior this prompt ever gets -- the user
+        # localized the target to one quadrant. Field 2026-08-13: the target was
+        # a dog on the floor to Rex's left; falling through to the generic
+        # "inspecting the current view" note throws that away.
+        "down_left": "Rex has turned his head toward his own left AND tilted his camera downward: the target is low and to his left, likely on the floor.",
+        "down_right": "Rex has turned his head toward his own right AND tilted his camera downward: the target is low and to his right, likely on the floor.",
+        "up_left": "Rex has turned his head toward his own left AND tilted his camera upward: the target is high and to his left.",
+        "up_right": "Rex has turned his head toward his own right AND tilted his camera upward: the target is high and to his right.",
     }.get(direction, "Rex is inspecting the current view.")
 
     name_directive = ""

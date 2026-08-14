@@ -348,9 +348,28 @@ class CompoundLookCommandTests(unittest.TestCase):
         self.assertFalse(move.called, "no direction → no head-turn")
         self.assertEqual(resp, "A desk.")
 
-    def test_plain_directional_look_still_greets_visible_face(self):
+    def test_plain_directional_look_reports_the_view_instead_of_greeting(self):
+        """A directed look must not be hijacked by a greeting.
+
+        _visible_known_face_candidate reads world_state (stale — face tracking is
+        suspended across the turn) and filters to person_name, i.e. the speaker
+        who gave the order, so the only line it can produce is "Oh hi, <whoever
+        is talking to me>". On 2026-08-13 21:02:45 that landed on top of a
+        "look down and then look left" aimed at a dog. With a frame in hand the
+        report path wins; the greet is the no-frame fallback only.
+        """
         from intelligence import command_parser, interaction
 
+        analysis = {
+            "target_summary": "A dog lying on the floor to the left",
+            "target_visible": True,
+            "subject_type": "animal",
+            "visible_people_count": 0,
+            "animals": [{"species": "dog", "position": "floor, left"}],
+            "notable_details": ["dog on the rug"],
+            "roast_angle": "",
+            "confidence": "high",
+        }
         match = command_parser.parse("look to your right")
         with (
             mock.patch.object(
@@ -358,6 +377,43 @@ class CompoundLookCommandTests(unittest.TestCase):
                 "_move_and_capture_gaze",
                 return_value=("right", self._fake_frame()),
             ),
+            mock.patch(
+                "vision.scene.analyze_directed_attention", return_value=analysis
+            ) as ada,
+            mock.patch.object(
+                interaction,
+                "_visible_known_face_candidate",
+                return_value={"name": "Bret", "person_id": 1},
+            ),
+            mock.patch.object(
+                interaction, "_greet_directed_face_once", return_value="Oh hi, Bret."
+            ) as greet,
+            mock.patch.object(
+                interaction.llm, "get_response", return_value="There is a dog down there."
+            ),
+            mock.patch.object(
+                interaction.llm, "clean_response_text", side_effect=lambda x: x
+            ),
+            mock.patch.object(interaction, "_speak_blocking"),
+        ):
+            resp = interaction._execute_directed_look_command(
+                match.args, 1, "Bret", "look to your right"
+            )
+        self.assertTrue(ada.called, "the captured frame must be analyzed, not discarded")
+        self.assertFalse(greet.called, "a greeting must not hijack a directed look")
+        self.assertEqual(resp, "There is a dog down there.")
+
+    def test_directional_look_falls_back_to_greeting_without_a_frame(self):
+        """Camera off / capture failed: the greeting is the only social signal
+        left, so it stays as the last resort."""
+        from intelligence import command_parser, interaction
+
+        match = command_parser.parse("look to your right")
+        with (
+            mock.patch.object(
+                interaction, "_move_and_capture_gaze", return_value=("right", None)
+            ),
+            mock.patch("vision.scene.analyze_directed_attention") as ada,
             mock.patch.object(
                 interaction,
                 "_visible_known_face_candidate",
@@ -370,6 +426,7 @@ class CompoundLookCommandTests(unittest.TestCase):
             resp = interaction._execute_directed_look_command(
                 match.args, 1, "Bret", "look to your right"
             )
+        self.assertFalse(ada.called)
         self.assertTrue(greet.called)
         self.assertEqual(resp, "Oh hi, Bret.")
 

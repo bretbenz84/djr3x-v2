@@ -15255,10 +15255,18 @@ def _directional_search_sequence(
     start = (start_direction or "current").strip().lower()
     if start == "other_way":
         start = "current"
-    if start not in {"current", "left", "right", "up", "down", "center"}:
+    compound = start if start in {"down_left", "down_right", "up_left", "up_right"} else None
+    if compound is None and start not in {"current", "left", "right", "up", "down", "center"}:
         start = "current"
 
-    if start == "down":
+    if compound:
+        # The user named a quadrant, so sweep that quadrant first and only then
+        # widen to its two axes. Coercing a compound to "current" here threw the
+        # quadrant away and restarted the generic room sweep -- the search would
+        # have walked right past a dog the user had already localized for us.
+        pitch, yaw = compound.split("_")
+        base = [compound, yaw, pitch, "center"]
+    elif start == "down":
         base = ["down", "left", "right", "center"]
     elif start == "up":
         base = ["up", "left", "right", "center"]
@@ -15612,6 +15620,13 @@ def _directed_look_label(direction: str) -> str:
         "down": "downward",
         "center": "straight ahead",
         "current": "at what they were showing you",
+        # Compound gaze: say the diagonal out loud, or the prompt tells the model
+        # Rex looked "at what they were showing you" when he actually tilted down
+        # and turned left, and the reply stops matching what he did.
+        "down_left": "down and to your left",
+        "down_right": "down and to your right",
+        "up_left": "up and to your left",
+        "up_right": "up and to your right",
     }.get((direction or "current").lower(), "at what they were showing you")
 
 
@@ -15760,14 +15775,6 @@ def _execute_directed_look_command(
                 person_name=person_name,
             )
 
-        if bare_directional:
-            visible_face = _visible_known_face_candidate(person_name)
-            if visible_face:
-                return (
-                    _greet_directed_face_once(visible_face, person_name)
-                    or _silent_command_response("directed_look.face_found")
-                )
-
         if target_hint and target_kind == "scene":
             return _analyze_directed_view_once(
                 frame=frame,
@@ -15794,6 +15801,52 @@ def _execute_directed_look_command(
             _directed_look_context["bare_count"] = int(
                 _directed_look_context.get("bare_count") or 0
             ) + 1
+
+            # A bare directional look is an INSPECTION order, not a servo
+            # command: the person aimed Rex's head somewhere because something is
+            # THERE. _move_and_capture_gaze already took the photo above, and the
+            # old code threw it away — so "Look down and to your left", said five
+            # different ways at a dog on the floor, produced a silent turn, then
+            # "What am I looking for?", then "Oh hi, Bret." while pointed at the
+            # dog (field 2026-08-13 21:01:45-21:02:53). Silence WAS the failure.
+            # Report the new view: one VISION_MODEL look at a frame whose servo
+            # time is already spent. The local COCO detectors deliberately do NOT
+            # gate this — that same night the dog scored 0.215/0.246/0.300
+            # against the 0.30 accept bar and never confirmed, while a phantom
+            # "cat" did, so a local gate would have shipped silence for the exact
+            # incident it was meant to fix.
+            if frame is not None and bool(
+                getattr(config, "DIRECTED_LOOK_REPORT_VIEW", True)
+            ):
+                _log.info(
+                    "[directed_look] reporting view direction=%s bare_count=%d",
+                    actual_direction,
+                    _directed_look_context["bare_count"],
+                )
+                return _analyze_directed_view_once(
+                    frame=frame,
+                    direction=actual_direction,
+                    target_hint=target_hint,
+                    raw_text=raw_text,
+                    person_id=person_id,
+                    person_name=person_name,
+                )
+
+            # No frame (camera off / capture failed) or reporting disabled. ONLY
+            # here does the face-greet earn a turn, and it is last on purpose: its
+            # candidate comes from world_state rather than the frame just taken,
+            # and _visible_known_face_candidate filters to person_name — the
+            # speaker who gave the order — so the only line it can ever produce is
+            # "Oh hi, <whoever is talking to me>", which is what hijacked the dog
+            # inspection above. A genuinely new person in the new view is served
+            # better by the report path, which names people it recognizes.
+            visible_face = _visible_known_face_candidate(person_name)
+            if visible_face:
+                return (
+                    _greet_directed_face_once(visible_face, person_name)
+                    or _silent_command_response("directed_look.face_found")
+                )
+
             clarify_after = int(getattr(config, "DIRECTED_LOOK_CLARIFY_AFTER_COMMANDS", 3))
             if (
                 _directed_look_context["bare_count"] >= max(1, clarify_after)

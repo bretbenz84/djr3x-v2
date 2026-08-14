@@ -1419,7 +1419,23 @@ def _current_lateral_direction() -> str | None:
     return None
 
 
+# A compound gaze is one pose on two axes: yaw on the neck channel, pitch on
+# headlift+headtilt. Canonical form is "{pitch}_{yaw}" -- pitch first, always.
+_COMPOUND_DIRECTED_LOOKS = {"down_left", "down_right", "up_left", "up_right"}
+
+
 def _opposite_direction() -> str:
+    # Mirror BOTH axes of a compound before consulting the neck read: the
+    # opposite of "down and to the left" is up and to the right, but
+    # _current_lateral_direction() only knows yaw and would answer a bare
+    # "right", quietly leaving the camera pointed at the floor.
+    last = (_last_directed_look or "").strip().lower()
+    if last in _COMPOUND_DIRECTED_LOOKS:
+        pitch, yaw = last.split("_")
+        return "{}_{}".format(
+            "up" if pitch == "down" else "down",
+            "right" if yaw == "left" else "left",
+        )
     lateral = _current_lateral_direction()
     if lateral == "left":
         return "right"
@@ -1464,6 +1480,12 @@ def directed_look_pose(direction: str = "current", target: str = "") -> str:
         norm = _opposite_direction()
     elif norm in {"centre", "front", "forward", "ahead", "straight"}:
         norm = "center"
+    elif norm.replace("-", "_").replace(" ", "_") in _COMPOUND_DIRECTED_LOOKS:
+        # Accept a diagonal. Without this the whitelist below coerced
+        # "down_left" to "current" and the head never moved at all -- the
+        # second half of the 2026-08-13 dog-on-the-floor failure, and the
+        # reason a compound could not simply be threaded through by the parser.
+        norm = norm.replace("-", "_").replace(" ", "_")
     elif norm not in {"left", "right", "up", "down", "center", "current"}:
         norm = "current"
 
@@ -1481,23 +1503,32 @@ def directed_look_pose(direction: str = "current", target: str = "") -> str:
     visor_ch = int(visor_cfg["ch"])
 
     targets = {visor_ch: int(visor_cfg["max"])}
-    if norm == "left":
-        targets[neck_ch] = int(neck_cfg["min"])
-    elif norm == "right":
-        targets[neck_ch] = int(neck_cfg["max"])
-    elif norm == "up":
-        targets[lift_ch] = int(lift_cfg["max"])
-        # Headtilt is inverted: lower values tilt the head/camera upward.
-        targets[tilt_ch] = int(tilt_cfg["min"])
-    elif norm == "down":
-        targets[lift_ch] = int(lift_cfg["min"])
-        targets[tilt_ch] = int(tilt_cfg["max"])
-    elif norm == "center":
-        targets.update({
-            neck_ch: int(neck_cfg["neutral"]),
-            lift_ch: int(lift_cfg["neutral"]),
-            tilt_ch: int(tilt_cfg["neutral"]),
-        })
+    # One pose, not two moves. A compound ("down_left") puts its yaw and its
+    # pitch into the SAME move_to targets dict, so neck, headlift and headtilt
+    # interpolate together in a single glide -- posing the axes as two
+    # sequential calls would jerk the 5 lb head twice, which the inverted
+    # headtilt on its 8mm rod must never see. Per-axis values are byte-identical
+    # to the single-axis poses, so a diagonal never commands a tilt beyond what
+    # a plain "down" already commands: down_left is exactly down's lift/tilt
+    # plus left's neck.
+    for part in (norm.split("_") if "_" in norm else [norm]):
+        if part == "left":
+            targets[neck_ch] = int(neck_cfg["min"])
+        elif part == "right":
+            targets[neck_ch] = int(neck_cfg["max"])
+        elif part == "up":
+            targets[lift_ch] = int(lift_cfg["max"])
+            # Headtilt is inverted: lower values tilt the head/camera upward.
+            targets[tilt_ch] = int(tilt_cfg["min"])
+        elif part == "down":
+            targets[lift_ch] = int(lift_cfg["min"])
+            targets[tilt_ch] = int(tilt_cfg["max"])
+        elif part == "center":
+            targets.update({
+                neck_ch: int(neck_cfg["neutral"]),
+                lift_ch: int(lift_cfg["neutral"]),
+                tilt_ch: int(tilt_cfg["neutral"]),
+            })
 
     with _motion_lock:
         servos.move_to(targets, step_us=step_us, step_delay=step_delay)

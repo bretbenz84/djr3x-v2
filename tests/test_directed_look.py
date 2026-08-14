@@ -165,6 +165,7 @@ class DirectedLookTests(unittest.TestCase):
                 mock.patch.object(interaction, "_visible_known_face_candidate", return_value=None),
                 mock.patch("vision.scene.analyze_directed_attention") as analyze,
                 mock.patch.object(interaction, "_speak_blocking") as speak,
+                mock.patch.object(interaction.config, "DIRECTED_LOOK_REPORT_VIEW", False),
             ):
                 response = interaction._execute_directed_look_command(
                     {"direction": "left", "target_hint": "", "search_target": False},
@@ -173,11 +174,68 @@ class DirectedLookTests(unittest.TestCase):
                     raw_text="look left",
                 )
 
+            # DIRECTED_LOOK_REPORT_VIEW is patched off below, so this still
+            # asserts the silent-turn behavior — now the OFF branch rather than
+            # the default. The default (report the view) is covered by
+            # test_bare_directional_look_reports_what_it_sees.
             move.assert_called_once()
             detect_faces.assert_not_called()
             analyze.assert_not_called()
             speak.assert_not_called()
             self.assertTrue(interaction._is_silent_command_response(response))
+            self.assertEqual(interaction._directed_look_context["bare_count"], 1)
+        finally:
+            interaction._directed_look_context.update(old_context)
+
+    def test_bare_directional_look_reports_what_it_sees(self):
+        """Field 2026-08-13 21:01:45-21:02:53 — the failure this fixes.
+
+        The owner's dog was on the floor down-left. He said "look down and to
+        your left" five different ways and got: a silent gaze change, then
+        "What am I looking for?", then "Oh hi, Bret." while pointed at the dog.
+        _move_and_capture_gaze had the frame the whole time and threw it away.
+        """
+        from intelligence import interaction
+
+        old_context = dict(interaction._directed_look_context)
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        analysis = {
+            "target_summary": "A dog lying on the floor to the left",
+            "target_visible": True,
+            "subject_type": "animal",
+            "visible_people_count": 0,
+            "animals": [{"species": "dog", "position": "floor, left"}],
+            "notable_details": ["dog on the rug"],
+            "roast_angle": "",
+            "confidence": "high",
+        }
+        try:
+            interaction._reset_directed_look_context()
+            with (
+                mock.patch.object(interaction, "_move_and_capture_gaze",
+                                  return_value=("down_left", frame)),
+                mock.patch("vision.scene.analyze_directed_attention",
+                           return_value=analysis) as analyze,
+                mock.patch.object(interaction, "_visible_known_face_candidate",
+                                  return_value={"name": "Bret", "person_id": 1}),
+                mock.patch.object(interaction, "_greet_directed_face_once",
+                                  return_value="Oh hi, Bret.") as greet,
+                mock.patch.object(interaction.llm, "get_response",
+                                  return_value="There is a dog down there."),
+                mock.patch.object(interaction.llm, "clean_response_text",
+                                  side_effect=lambda x: x),
+                mock.patch.object(interaction, "_speak_blocking"),
+            ):
+                response = interaction._execute_directed_look_command(
+                    {"direction": "down_left", "target_hint": "", "search_target": False},
+                    person_id=1,
+                    person_name="Bret",
+                    raw_text="Look down and to your left.",
+                )
+            self.assertTrue(analyze.called, "the captured frame must be analyzed")
+            self.assertFalse(greet.called, "a greeting must not hijack a directed look")
+            self.assertEqual(response, "There is a dog down there.")
+            # The 25s gaze hold and the bare-count bookkeeping must survive.
             self.assertEqual(interaction._directed_look_context["bare_count"], 1)
         finally:
             interaction._directed_look_context.update(old_context)
@@ -195,6 +253,11 @@ class DirectedLookTests(unittest.TestCase):
                 mock.patch.object(interaction, "_visible_known_face_candidate", return_value=None),
                 mock.patch.object(interaction, "_speak_blocking") as speak,
                 mock.patch.object(interaction.config, "DIRECTED_LOOK_CLARIFY_AFTER_COMMANDS", 3),
+                # The clarify ladder is now the no-frame / reporting-off
+                # fallback: with the report on, Rex answers with what he SEES
+                # rather than asking what to look for. Without this patch the
+                # test would also make three live vision calls.
+                mock.patch.object(interaction.config, "DIRECTED_LOOK_REPORT_VIEW", False),
             ):
                 for _ in range(2):
                     self.assertTrue(interaction._is_silent_command_response(
