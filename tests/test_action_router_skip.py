@@ -22,7 +22,22 @@ class _LlmGuardMixin(unittest.TestCase):
             calls.append(1)
             raise RuntimeError("llm consulted")
 
-        with mock.patch.object(AR._client.chat.completions, "create", side_effect=_fake_create):
+        # The JSON-prose fallback is OFF by default since Phase 4 (2026-08-13), so
+        # "did the deterministic ladder save the call?" is only a meaningful
+        # question with it ON. Forcing it here keeps this module pinning the
+        # ROLLBACK path -- flip ACTION_ROUTER_LLM_FALLBACK_ENABLED in user_config.py
+        # and these are the routes you get back. The retirement itself is pinned in
+        # LlmFallbackRetirementTest below.
+        import config
+
+        with (
+            mock.patch.object(
+                config, "ACTION_ROUTER_LLM_FALLBACK_ENABLED", True, create=True
+            ),
+            mock.patch.object(
+                AR._client.chat.completions, "create", side_effect=_fake_create
+            ),
+        ):
             decision = AR.decide(text, context or {})
         return decision, len(calls)
 
@@ -134,6 +149,82 @@ class SelfQuerySkipTest(_LlmGuardMixin):
             # keep full routing exactly as it did before the migration.
             _d, llm_calls = self._decide_with_llm_guard("something about the weather maybe")
             self.assertEqual(llm_calls, 1)
+
+
+class LlmFallbackRetirementTest(unittest.TestCase):
+    """Phase 4 (2026-08-13): the JSON-prose fallback is RETIRED, not deleted.
+
+    Measured before flipping it: across 1,340 audited field turns the LLM branch
+    produced exactly TWO executions, both character.preference_query -- an action
+    retired the same day (6267d38). Every other router_takeover.* in the log
+    corpus came from decide()'s deterministic pre-LLM ladder.
+    """
+
+    def _calls_for(self, text, context=None):
+        calls = []
+
+        def _fake_create(**kw):
+            calls.append(1)
+            raise RuntimeError("llm consulted")
+
+        with mock.patch.object(
+            AR._client.chat.completions, "create", side_effect=_fake_create
+        ):
+            decision = AR.decide(text, context or {})
+        return decision, len(calls)
+
+    def test_default_off_pays_no_call_and_hands_the_turn_to_conversation(self):
+        # The phrasings that still reached the JSON router: a game phrasing
+        # command_parser misses, a bare gaze request, an off-pattern music ask.
+        # All three are LIVE tools on the reply call, which is why this is a
+        # handoff and not a loss.
+        for text in (
+            "let's do that trivia thing again",
+            "could you look over there",
+            "I want to hear a song",
+        ):
+            decision, llm_calls = self._calls_for(text)
+            self.assertEqual(llm_calls, 0, text)
+            self.assertEqual(decision.action, "conversation.reply", text)
+
+    def test_active_game_and_music_no_longer_buy_a_routing_call(self):
+        # These kept full routing so game.answer / a bare "stop" could win. Mid-game
+        # the active-game claim in interaction._handle_speech_segment returns before
+        # decide() is ever called, and game.answer is blocked "game_inactive"
+        # outside one -- so the call bought nothing in either state.
+        for ctx in ({"active_game": True}, {"active_music": True}):
+            _d, llm_calls = self._calls_for("purple elephants", ctx)
+            self.assertEqual(llm_calls, 0, str(ctx))
+
+    def test_rollback_flag_restores_the_call(self):
+        import config
+
+        with mock.patch.object(
+            config, "ACTION_ROUTER_LLM_FALLBACK_ENABLED", True, create=True
+        ):
+            _d, llm_calls = self._calls_for("let's do that trivia thing again")
+        self.assertEqual(llm_calls, 1)
+
+    def test_deterministic_lanes_are_untouched(self):
+        # The pre-LLM ladder is where every logged router_takeover.* actually came
+        # from, so it must survive the retirement unchanged.
+        self.assertEqual(
+            self._calls_for("I would like you to shut down.")[0].action,
+            "system.shutdown",
+        )
+        self.assertEqual(
+            self._calls_for("Call me JT.")[0].action, "identity.name_correction"
+        )
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertEqual(
+                self._calls_for("tell me a joke")[0].action, "humor.tell_joke"
+            )
+
+    def test_warmup_is_a_no_op_while_the_fallback_is_off(self):
+        # main.py warms this client on every boot; _client has no other caller.
+        with mock.patch.object(AR._client.chat.completions, "create") as create:
+            self.assertFalse(AR.warmup())
+        self.assertFalse(create.called)
 
 
 if __name__ == "__main__":

@@ -37,9 +37,59 @@ What Phase 2 changed:
 6267d38) rather than migrated: an opinion question is conversation. Its stored
 tastes became lean-brain context (`rex_preferences.prompt_lines`).
 
-Remaining: motion (Phase 3, deliberately last), then Phase 4 cleanup — delete
-the JSON-prose fallback router and the `_clearly_conversational` cue-word skip,
-which now only exist to avoid a call that no longer needs avoiding.
+PHASE 3 (motion) LIVE 2026-08-13, and it is NOT shaped like Phases 1–2b. Motion
+keeps its regex as the PRIMARY claim — `motion.*` is deliberately absent from
+`TOOL_ROUTER_OWNED_ACTIONS`, so a >=0.95 classifier match still executes
+immediately at today's latency and the tool governs only what it missed. The
+misses are real and numerous: `rotate ninety degrees`, `rotate 90 degrees`,
+`back yourself up a bit`, `back it up`, `scoot a little closer`, `get closer`,
+`drive up here`, `go straight`, `face me`, `swivel left`, `hang a left`,
+`veer right`, `scootch to your right` and `why don't you scoot forward` all
+classify as None today and become conversation.
+
+The evidence gate is the one place motion deviates from the other families.
+GUARDS-ONLY was measured and REJECTED here: built from the three shipped negative
+guards it admitted 31 of 31 figurative-motion utterances, including `let's move
+on`, `moving forward, I want to try something` and `I need to run to the store` —
+none of which carries a negator, a leading "why", or a speech verb. Guards-only
+works where refusal and narration are lexically marked; figurative motion shares
+its verbs with the literal sense. So `motion_command_refusal_reason` keeps a
+positive test, just a much LOOSER one than `classify_explicit_motion`: an
+imperative drive verb aimed at Rex (lead-ins stripped, base forms only), the
+existing negative guards re-run on the lead-stripped body, and a new figurative
+guard. Measured: admits 46/47 real misses, refuses 47/48 decoys, and refuses none
+of the commands the regex already claims.
+
+`motion.stop` did NOT migrate and never will (2.2) — the deterministic escape
+(`_errand_stop_demanded` + `motion_controller.is_moving()`, watched by the eager
+endpointer) claims it before any LLM sees the turn. `motion.explore` did not
+migrate either: `classify_explicit_exploration` is already the
+imperative-addressed-to-Rex test a tool gate would have to be, and an accepted
+invite seizes the floor for minutes. Also fixed in this stage: three silent
+arg-name drifts in the motion tool schemas (`degrees`/`distance`+`unit`/arc's
+lone `direction`) and one enum-VALUE drift — the move schema said `backward`
+while the executor tests `== "back"`, so "back up" would have driven Rex FORWARD.
+
+PHASE 4a LANDED 2026-08-13: the JSON-prose fallback router is RETIRED behind
+`ACTION_ROUTER_LLM_FALLBACK_ENABLED` (default False). The field logs made the
+case — across 1,340 audited turns the LLM branch produced TWO executions, both
+`character.preference_query`, retired the same day (6267d38). Every other
+`router_takeover.*` in the corpus came from decide()'s deterministic pre-LLM
+ladder. It cost 0.74s median on 30.5% of routed turns (42% of pre-reply
+latency), and its prompt was silently truncated at
+`ACTION_ROUTER_MAX_CONTEXT_CHARS` — `weather.query` and `web.search` fell off the
+end of the router's own catalog, so it had been running degraded for weeks.
+
+Retired behind a flag rather than deleted, deliberately: `_SYSTEM_PROMPT`,
+`_coerce_decision`, `_clearly_conversational` and `_ACTION_CUE_RE` all stay, so
+the rollback is a config flip rather than a code revert.
+
+Remaining (Phase 4b, once the flag has held off in the field): delete the retired
+branch and its now-dead helpers. `_clearly_conversational` has exactly one
+caller; nothing else in the repo consults it. `conversation.repair` is the only
+action the fallback was ever the sole route for, and it is deliberately NOT
+becoming a live tool — `repair_moves.detect` served all 48 logged repairs, and
+the router lane bypasses the bare-restatement and correction-reroute guards.
 
 Phase 1 record follows.
 

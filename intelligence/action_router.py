@@ -1922,6 +1922,17 @@ def _motion_dist_to_m(text: str) -> "float | None":
     return None
 
 
+def motion_distance_m(text: str) -> "float | None":
+    """Metres named in the utterance ("two feet", "50 cm", "half a meter"), or None.
+
+    PUBLIC 2026-08-13 for the Phase 3 motion tool path: the live dispatcher prefers
+    the distance parsed from the USER'S OWN WORDS over a model-supplied number, so
+    an LLM never does unit arithmetic for a drive base. Same parser the regex lane
+    uses, which means "back up two feet" is 0.6096 m down either route.
+    """
+    return _motion_dist_to_m(text)
+
+
 def classify_motion_continuation(
     text: str,
     previous: ActionDecision | None,
@@ -2719,6 +2730,188 @@ def has_game_start_request_evidence(text: str) -> bool:
     return bool(_GAME_START_REQUEST_RE.search(" ".join((text or "").split())))
 
 
+# ── Motion evidence for the TOOL path (Phase 3, docs/tool_router_scope.md §3) ──
+# Motion is the ONE family whose regex stays the PRIMARY claim: the fast lane still
+# fires at 0.95 and executes at today's latency (§3 — "if regex fires with >=0.95
+# confidence, it executes immediately; otherwise the tool choice governs"), which is
+# why motion.* is deliberately NOT in TOOL_ROUTER_OWNED_ACTIONS. The tool only ever
+# sees what the classifier MISSED.
+#
+# GUARDS-ONLY — the shape humor/memory/games got — was MEASURED here on 2026-08-13
+# and rejected. A gate built only from the three shipped negative guards
+# (_MOTION_EXPLANATION_RE / _MOTION_NEGATED_RE / _MOTION_REPORTED_SPEECH_RE) admitted
+# 31 of 31 figurative-motion utterances, including every one the owner named: "I think
+# we should move on from that topic", "let's move on", "moving forward, I want to try
+# something", "I need to run to the store". Not one contains a negator, a leading
+# "why", or a speech verb, so nothing was left to refuse them. Guards-only worked for
+# the other families because refusal and narration are lexically MARKED; figurative
+# motion is not — the literal and figurative senses share the same verbs. A wrong
+# humor call costs a joke; this one drives a robot across a real floor.
+#
+# So the positive half STAYS. It is just far looser than classify_explicit_motion,
+# which is the pattern list the tool exists to get past: the test is "an imperative
+# motion verb aimed at Rex", modelled on _EXPLORE_LEAD_RE/_EXPLORE_CORE_RE above —
+# the same problem, already solved this way for motion.explore. Measured on this
+# checkout: admits 46 of 47 real drive commands the regex misses ("rotate ninety
+# degrees", "back yourself up a bit", "scoot a little closer", "get closer", "back it
+# up", "hang a left", "face me", "drive up here", "why don't you scoot forward"),
+# refuses 47 of 48 figurative decoys, and refuses NONE of the commands the regex
+# already claims — so the JSON-prose router path does not regress. Known residuals,
+# left documented rather than hacked around: "Scoot over, I'm sitting down." is
+# admitted (a verb-first imperative that happens to be aimed at a human) and "give me
+# a spin" is refused. Both still need the MODEL to pick motion.* first.
+
+# Lead-ins that mark the imperative as ADDRESSED TO REX, stripped repeatedly off the
+# FRONT before the verb test. Two deliberate omissions: bare "let's" (which
+# _EXPLORE_LEAD_RE does carry) would reduce "let's move on" and "let's move past that"
+# to a bare imperative core and pass them; and "c'mon"/"come on" would eat the verb out
+# of "come on over here".
+_MOTION_TOOL_LEADIN_RE = re.compile(
+    r"^(?:"
+    r"hey|ok|okay|alright|so|now|please|rex|"
+    r"can\s+you|could\s+you|would\s+you|will\s+you|can\s+ya|"
+    r"why\s+don'?t\s+you|why\s+not|how\s+about\s+you|"
+    r"you\s+can|you\s+could|you\s+should|you\s+need\s+to|"
+    r"i\s+need\s+you\s+to|i\s+want\s+you\s+to|i'?d\s+like\s+you\s+to|"
+    r"let'?s\s+have\s+you|"
+    r"just|maybe|and\s+then|then"
+    r")\b[\s,!.]*",
+    re.I,
+)
+# The imperative drive verb, anchored to the START of the lead-stripped sentence.
+# BASE FORMS ONLY, and that is load-bearing: "moving"/"moved"/"turned" cannot match a
+# \b-terminated "move"/"turn", which is what drops the gerund discourse marker
+# ("moving forward, I want to try something") and past-tense narration ("she moved
+# forward with the plan") without a single extra rule. The verbs that double as idiom
+# heads (get/point/pull/hang/do) are restricted to their motion objects; go/head/face/
+# come stay broad and are handled by _MOTION_FIGURATIVE_RE below.
+_MOTION_TOOL_VERB_RE = re.compile(
+    r"^(?:"
+    r"turn|rotate|spin|pivot|swivel|swing|"
+    r"move|go|drive|roll|head|come|approach|"
+    r"scoot|scootch|slide|shift|step|shimmy|"
+    r"creep|inch|edge|ease|advance|nudge|wheel|reverse|veer|curve|bank|"
+    r"back\s*up|backup|back\s+(?:it|yourself|away|off|out)|"
+    r"face|"
+    r"get\s+(?:closer|back|over\s+here|going|out\s+of\s+the\s+way)|"
+    r"point\s+(?:yourself|your\s+(?:nose|front|face))|"
+    r"pull\s+(?:forward|back|up|over)|"
+    r"hang\s+a\s+(?:left|right)|"
+    r"do\s+a\s+(?:one[\s-]?eighty|180|three[\s-]?sixty|360|u[\s-]?turn|spin|twirl|lap)"
+    r")\b",
+    re.I,
+)
+# Figurative motion that IS verb-first imperative-shaped, so the positive test cannot
+# catch it on its own. Runs over the WHOLE utterance, like the narration guards in
+# humor_performance_refusal_reason. Note "back it up" / "back yourself up" are real
+# drive commands, so the support idiom is keyed on the PERSON object ("back me/him/
+# her/them/us up") rather than on the phrase; and "go right ahead" is here because
+# field 2026-08-13 already caught "Go right ahead and tell him." arcing the base.
+_MOTION_FIGURATIVE_RE = re.compile(
+    r"(?:"
+    r"\bmov(?:e|es|ed|ing)\s+(?:on|past|along)\b|"
+    r"\bmov(?:e|es|ed|ing)\s+(?:it|this|that|things)\s+along\b|"
+    r"^moving\s+forward\b|"
+    r"\brun(?:ning|s)?\s+(?:out\s+|over\s+|down\s+)?(?:to|by)\s+the\b|"
+    r"\b(?:have|has|had|need|needs|needed|got|gotta|going)\s+to\s+run\b|"
+    r"\bback(?:ed|s)?\s+(?:me|him|her|them|us)\s+up\b|"
+    r"\bcome\s+on\b(?!\s+over)|"
+    r"\bcome\s+to\s+think\s+of\s+it\b|"
+    r"\bgo\s+(?:figure|for\s+it)\b|"
+    r"\bgo\s+(?:right\s+)?ahead\b|"
+    r"\bhead\s+out\b|"
+    r"\bturn(?:ed|s|ing)?\s+(?:out|into|down)\b|"
+    r"\bface\s+(?:the\s+music|the\s+facts|reality|it)\b|"
+    r"\blet'?s\s+roll\b|\broll\s+with\s+it\b"
+    r")",
+    re.I,
+)
+_MOTION_TOOL_ACTIONS = frozenset({
+    "motion.turn", "motion.move", "motion.arc", "motion.come",
+})
+
+
+def _strip_motion_leadins(fragment: str) -> str:
+    """Peel addressed-to-Rex lead-ins off the front until nothing more matches."""
+    previous = None
+    while previous != fragment:
+        previous = fragment
+        fragment = _MOTION_TOOL_LEADIN_RE.sub("", fragment, count=1).lstrip()
+    return fragment
+
+
+def motion_command_refusal_reason(text: str, action: str) -> str | None:
+    """Block reason when a motion turn is not a drive command aimed at Rex.
+
+    PUBLIC on purpose, exactly like humor_performance_refusal_reason,
+    memory_boundary_refusal_reason and game_request_refusal_reason:
+    interaction._execute_tool_routed_action has no central evidence gate — every live
+    action hand-wires its own backstop — so a model that decides to drive on "let's
+    move on" is stopped by the same code whichever router chose it.
+
+    motion.stop is NOT loosened and never will be (docs/tool_router_scope.md 2.2). It
+    stays pinned to classify_explicit_motion here, and in practice bare "stop" never
+    reaches this function at all: interaction._explicit_motion_takeover synthesizes
+    the stop from _errand_stop_demanded() + motion_controller.is_moving(), which is
+    also what the eager-endpointing probe watches so the segment is cut early. This
+    branch is belt-and-braces — if anyone ever adds motion.stop to
+    TOOL_ROUTER_LIVE_ACTIONS, an LLM-chosen stop still has to satisfy the
+    deterministic classifier.
+
+    Reason string is unchanged from the classifier-agreement era on purpose: the
+    per-turn audit line (allowlist_result) and tools/tool_router_report.py join on it.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+    if action == "motion.stop":
+        explicit = classify_explicit_motion(cleaned)
+        return (
+            None if explicit is not None and explicit.action == "motion.stop"
+            else "missing_motion_command_evidence"
+        )
+    if action not in _MOTION_TOOL_ACTIONS:
+        return None
+    if _MOTION_FIGURATIVE_RE.search(cleaned):
+        _log.info("[action_router] motion blocked: figurative motion %r", cleaned)
+        return "missing_motion_command_evidence"
+    # ASR renders the imperative in past tense after a past-tense clause ("You went
+    # too far. Turned right a little bit." — field 2026-08-11 21:26), so restore it
+    # before the base-form verb test, exactly as classify_explicit_motion does.
+    restored = _restore_misheard_imperatives(cleaned)
+    # Per SENTENCE, because a real command often follows a report ("You went too far.
+    # Back up a bit."). Commas are deliberately NOT separators: splitting on them
+    # would reduce "moving forward, I want to try something" to fragments and hand
+    # the second half a clean slate, and that discourse marker is the exact phrase
+    # this gate exists to refuse.
+    for fragment in re.split(r"[.!?;]+", restored):
+        fragment = fragment.strip()
+        if not fragment:
+            continue
+        body = _strip_motion_leadins(fragment)
+        if _MOTION_TOOL_VERB_RE.match(body) is None:
+            continue
+        # The two shipped negative guards, kept, and now running on the LEAD-STRIPPED
+        # body — the same order humor_performance_refusal_reason uses with
+        # _REQUEST_IDIOM_LEADIN_RE. Stripping first is what finally admits "why don't
+        # you scoot forward", an ordinary invitation the "^why" guard has been
+        # refusing outright, while "why didn't you move forward?" still dies: the
+        # past-tense form is not a lead-in, so the guard still sees it.
+        if _MOTION_EXPLANATION_RE.search(body):
+            continue
+        if _MOTION_NEGATED_RE.search(body):
+            continue
+        # _MOTION_REPORTED_SPEECH_RE is deliberately NOT re-run here. It exists to
+        # stop "My sister said to come here for Thanksgiving." (field 2026-08-13), and
+        # the verb-first rule already refuses that utterance for a stronger reason —
+        # it leads with a subject, so no imperative core is ever exposed. The guard
+        # still protects the fast lane in classify_explicit_motion, where the come
+        # pattern CAN match mid-sentence.
+        return None
+    _log.info("[action_router] motion blocked: no imperative drive verb %r", cleaned)
+    return "missing_motion_command_evidence"
+
+
 def missing_required_evidence_reason(
     text: str,
     decision: ActionDecision | None,
@@ -2797,17 +2990,28 @@ def missing_required_evidence_reason(
         explicit = classify_explicit_exploration(cleaned)
         return None if explicit and explicit.action == action else "missing_explore_invite_evidence"
     if action in {"motion.turn", "motion.move", "motion.arc", "motion.come", "motion.stop"}:
-        # Same rule as motion.explore above, added 2026-08-13 when the motion.* keys
-        # joined ACTION_ROUTER_EXECUTE_ACTIONS: that also un-gated the LLM-decided
-        # motion branch in interaction._handle_router_takeover_action, which had been
-        # dead ONLY because the allowlist blocked it. Measured without this: a
-        # 0.9-confidence model read of "I think we should move on from that topic"
-        # becomes fully executable and drives the base. The deterministic takeovers
-        # are unaffected — they do not pass text, because the classifier is their
-        # evidence and their continuation ("more" after a turn) / errand-stop
-        # decisions are synthesized from live base state, not from re-matchable words.
-        explicit = classify_explicit_motion(cleaned)
-        return None if explicit and explicit.action == action else "missing_motion_command_evidence"
+        # Added 2026-08-13 when the motion.* keys joined ACTION_ROUTER_EXECUTE_ACTIONS:
+        # that also un-gated the LLM-decided motion branch in
+        # interaction._handle_router_takeover_action, which had been dead ONLY because
+        # the allowlist blocked it. Measured without any gate: a 0.9-confidence model
+        # read of "I think we should move on from that topic" becomes fully executable
+        # and drives the base.
+        #
+        # PHASE 3 (2026-08-13) replaced "the classifier must agree" with
+        # motion_command_refusal_reason. Classifier-agreement was the same ceiling that
+        # capped humor and games: it vetoed EVERY correct command the regex misses —
+        # "rotate ninety degrees", "back yourself up a bit", "scoot a little closer",
+        # "get closer", "back it up", "hang a left", "face me", "drive up here" all
+        # measured VETOED — which is exactly the set the motion tool exists to catch.
+        # It is NOT replaced by guards-only: see the block above for the 31-of-31
+        # figurative admissions that ruled that out. motion.stop keeps classifier
+        # agreement inside that function, so 2.2's rule is unchanged.
+        #
+        # The deterministic takeovers are unaffected either way — they do not pass
+        # text, because the classifier is their evidence and their continuation
+        # ("more" after a turn) / errand-stop decisions are synthesized from live base
+        # state, not from re-matchable words.
+        return motion_command_refusal_reason(cleaned, action)
     if action == "identity.who_is_speaking":
         return None if _WHO_SPEAKING_RE.search(cleaned) else "missing_identity_query_evidence"
     if action == "music.play":
@@ -3520,6 +3724,32 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
             context,
         )
 
+    # Phase 4 (2026-08-13): the JSON-prose router below is OFF by default. Every
+    # family it used to claim first now rides the lean reply call as a native tool
+    # (docs/tool_router_scope.md), so this call front-runs that decision by ~0.74s
+    # median to hand back an answer the reply call was about to make for free.
+    # Measured before flipping it: across 1,340 audited field turns the LLM branch
+    # produced TWO executions, both character.preference_query -- retired the same
+    # day in 6267d38. Zero others. conversation.reply is what those turns became.
+    #
+    # Everything ABOVE this line stays: the shutdown pre-pass and the three
+    # explicit classifiers are where every logged router_takeover.* actually came
+    # from, and offline they are the only routing Rex has.
+    #
+    # confidence 0.6 matches the sibling deterministic returns. It is logging-only
+    # for a conversation.reply -- interaction._router_execution_block_reason
+    # returns "not_executable" before it ever reads the confidence threshold.
+    if not bool(getattr(config, "ACTION_ROUTER_LLM_FALLBACK_ENABLED", False)):
+        return _apply_context_overrides(
+            ActionDecision(
+                action="conversation.reply",
+                confidence=0.6,
+                reason="tool router owns routing; JSON-prose fallback retired",
+            ),
+            text,
+            context,
+        )
+
     max_context_chars = int(getattr(config, "ACTION_ROUTER_MAX_CONTEXT_CHARS", 5000))
     user_payload = {
         "utterance": text,
@@ -3563,6 +3793,12 @@ def warmup() -> bool:
     """Open the action-router's OpenAI connection pool (a separate client from
     llm._client) so the first ambiguous turn doesn't pay cold TLS / HTTP setup.
     """
+    # Nothing to warm while the JSON-prose fallback is off: _client has no other
+    # caller, so an unconditional warmup is one hosted call per boot to open a
+    # connection pool that is never used again (Phase 4, 2026-08-13). Called from
+    # main.py's background _warm_openai thread.
+    if not bool(getattr(config, "ACTION_ROUTER_LLM_FALLBACK_ENABLED", False)):
+        return False
     try:
         from intelligence import llm_compat
         # max_tokens=16, not 1: GPT-5-family models 400 on a cap they cannot

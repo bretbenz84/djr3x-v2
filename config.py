@@ -5291,6 +5291,35 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # no-game-running case; mid-game the deterministic escape keeps the claim.
     # game.answer is NOT live and must not be (scope doc 2.2).
     "game.start", "game.stop",
+    # Phase 3 motion (2026-08-13) — the LAST family, and the only one that is NOT a
+    # detector-not-claim demotion. motion.* stays OUT of
+    # action_router.TOOL_ROUTER_OWNED_ACTIONS: the regex keeps the first claim, fires
+    # at 0.95 and executes at today's latency, and this tool only ever sees the turns
+    # it MISSED (docs/tool_router_scope.md §3's parallel fast lane). Measured against
+    # this checkout, every one of these classified as None and became conversation:
+    #   "rotate ninety degrees" / "rotate 90 degrees"  -> no direction word, and
+    #                                    _MOTION_BARE_TURN_DEG_RE needs the utterance
+    #                                    to END at the number
+    #   "back yourself up a bit" / "back it up"        -> back/up not adjacent
+    #   "scoot a little closer" / "get closer"         -> no approach pattern
+    #   "drive up here" / "go straight" / "advance"    -> no forward keyword
+    #   "face me" / "swivel left" / "hang a left"      -> verb not in the turn list
+    #   "why don't you scoot forward"                  -> refused by the "^why"
+    #                                    explanation GUARD, not by the pattern
+    # Safety stays downstream and is unchanged: ACTION_ROUTER_EXECUTE_ACTIONS below
+    # still gates every motion key (real kill switch — drop one and that maneuver
+    # stops executing), motion_controller.charging() keeps the wheels locked on the
+    # charger, motion_agency.no_drive_room() still declines the carpet rooms, and the
+    # no-base verbal denial is wired explicitly into the tool dispatcher. What is NEW
+    # is the evidence gate: action_router.motion_command_refusal_reason, which is a
+    # LOOSER POSITIVE test rather than the guards-only shape the other families got —
+    # guards-only was measured here and admitted 31 of 31 figurative-motion
+    # utterances ("let's move on", "I need to run to the store").
+    # motion.stop is ABSENT and must stay absent (scope doc 2.2 — latency and safety
+    # critical; the deterministic escape owns it). motion.explore is absent too: its
+    # invite classifier is already the imperative-addressed-to-Rex test a tool gate
+    # would have to be, and a wander seizes the floor for minutes.
+    "motion.turn", "motion.move", "motion.arc", "motion.come",
 )
 
 # Seconds the "say yes, remember this scene" confirmation slot stays open.
@@ -5387,6 +5416,31 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "motion.explore",
 }
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
+# The JSON-prose fallback router -- decide()'s blocking LLM call. OFF since
+# 2026-08-13 (tool-router Phase 4). It no longer routes anything; it only costs.
+# Measured on this checkout's own field logs before flipping it:
+#   * 1,340 audited turns -> the LLM branch produced exactly TWO executions, both
+#     character.preference_query, an action RETIRED the same day (6267d38). Every
+#     other router_takeover.* in the whole corpus (system.shutdown x8,
+#     memory.recent_discard x3, identity.name_correction x1) came from decide()'s
+#     DETERMINISTIC pre-LLM ladder, not from the model.
+#   * 567 routed turns carried a [latency] action_router sample: 30.5% paid the
+#     call, median 0.74s / p90 1.03s -- 42% of pre-reply turn latency on the turns
+#     that pay it, against a 1.77s median transcript->first-audio.
+#   * The prompt was silently TRUNCATED: _compact_json caps the payload at
+#     ACTION_ROUTER_MAX_CONTEXT_CHARS and the catalog alone is 5,310 chars, so
+#     weather.query and web.search fell off the end of the router's own catalog.
+#     It has been running degraded.
+# Everything it could still legally execute is either a LIVE tool on the reply
+# call or gated behind an evidence regex the deterministic lane already matched:
+# motion.* requires classify_explicit_motion to agree, so _explicit_motion_takeover
+# has always claimed those turns before decide() runs. That is why this lands
+# BEFORE motion Phase 3 rather than after it.
+# ROLLBACK = set this True in user_config.py. decide()'s ladder, the cue-word
+# skip, _SYSTEM_PROMPT and _coerce_decision are all still in place, so the flag is
+# a true revert, not a partial one. Offline it is inert either way --
+# connectivity.guard_client raises OfflineError before the request leaves.
+ACTION_ROUTER_LLM_FALLBACK_ENABLED = _env_bool("ACTION_ROUTER_LLM_FALLBACK_ENABLED", False)
 # Decoupled from LLM_MODEL 2026-08-02: gpt-4o-mini's ~1.08s median TTFT was the
 # whole cost of the blocking routing call; gpt-5.4-nano benchmarks at ~0.63s and
 # is priced/positioned for classification+routing. Calls go through llm_compat

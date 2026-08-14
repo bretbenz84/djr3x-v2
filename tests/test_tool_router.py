@@ -137,6 +137,11 @@ class LiveCutoverTest(unittest.TestCase):
             # Phase 2 games. game_answer is deliberately absent — mid-game
             # answer capture stays deterministic (scope doc 2.2).
             "game_start", "game_stop",
+            # Phase 3 motion (2026-08-13), the last family. motion_stop and
+            # motion_explore are deliberately absent: 2.2 keeps bare "stop"
+            # deterministic forever, and an explore invite already has a
+            # purpose-built imperative test plus a minutes-long floor grab.
+            "motion_turn", "motion_move", "motion_arc", "motion_come",
         })
 
     def test_physical_performance_tools_carry_canonical_enums(self):
@@ -174,8 +179,11 @@ class LiveCutoverTest(unittest.TestCase):
             self.assertIsNone(tool_router.live_reply_tools())
 
     def test_resolve_refuses_non_live_actions(self):
-        # motion_turn is a valid catalog tool but NOT live — must never execute.
-        self.assertIsNone(tool_router.resolve_tool_call("motion_turn", "{}"))
+        # game_answer is a valid catalog tool but NOT live — must never execute.
+        # (This used to use motion_turn, which went live in Phase 3.) game_answer
+        # is the right stand-in now: scope doc 2.2 keeps mid-game answer capture
+        # deterministic, so it is a tool that must never resolve.
+        self.assertIsNone(tool_router.resolve_tool_call("game_answer", "{}"))
         self.assertEqual(
             tool_router.resolve_tool_call("weather_query", "{}"),
             ("weather.query", {}),
@@ -227,7 +235,10 @@ class LeanStreamToolTest(unittest.TestCase):
         self.assertEqual("".join(out), "Sure thing.")
 
     def test_non_live_tool_call_degrades_to_hiccup_not_execution(self):
-        out = self._run([{"tool": "motion_turn", "args": '{"direction":"left"}'}])
+        # motion_turn went live in Phase 3 (2026-08-13), so this uses
+        # motion_explore — still deliberately NOT live, because a floor-seizing
+        # wander should not start from an ambient model read.
+        out = self._run([{"tool": "motion_explore", "args": "{}"}])
         self.assertTrue(out and "circuits" in out[0])
 
 
@@ -258,6 +269,104 @@ class DispatcherTest(unittest.TestCase):
         speak.assert_called_once_with("fallback words")
         self.assertEqual(resp, "fallback words")
         self.assertIsNone(interaction._consume_tool_routed_path())
+
+
+class MotionPhase3Test(unittest.TestCase):
+    """Phase 3 (docs/tool_router_scope.md §3): motion is the one family where the
+    regex KEEPS the first claim and the tool only catches what it missed."""
+
+    def test_motion_is_not_a_detector_demotion(self):
+        # Every other migrated family put its key in TOOL_ROUTER_OWNED_ACTIONS so the
+        # classifier stops claiming the turn. Motion must NOT: §3 keeps the >=0.95
+        # fast lane executing immediately at today's latency, and 2.2 keeps bare
+        # "stop" deterministic forever. This is the test that fails if someone
+        # "finishes" the migration by pattern-matching the other four stages.
+        from intelligence import action_router
+        self.assertEqual(
+            [a for a in action_router.TOOL_ROUTER_OWNED_ACTIONS
+             if a.startswith("motion")], [])
+
+    def test_live_motion_set_excludes_stop_and_explore(self):
+        self.assertEqual(
+            sorted(a for a in tool_router.live_actions() if a.startswith("motion")),
+            ["motion.arc", "motion.come", "motion.move", "motion.turn"])
+        self.assertIsNone(tool_router.resolve_tool_call("motion_stop", "{}"))
+        self.assertIsNone(tool_router.resolve_tool_call("motion_explore", "{}"))
+
+    def test_motion_schema_args_are_the_keys_the_executor_reads(self):
+        # Arg-name drift, three times over, every one silent: `degrees` (the executor
+        # reads `deg`), `distance`+`unit` (it reads `dist_m`) and arc's lone
+        # `direction` (it reads ang_dir/lin_dir) all shipped, so a commanded angle or
+        # distance became the default and every arc curved forward-LEFT. The move
+        # enum said "backward" while the executor tests == "back" and falls through
+        # to move_forward — "back up" would have driven him FORWARD.
+        byname = {t["function"]["name"]: t["function"]
+                  for t in tool_router.live_reply_tools()}
+        turn = byname["motion_turn"]["parameters"]["properties"]
+        self.assertEqual(set(turn), {"direction", "deg"})
+        self.assertIn("DEGREES", turn["deg"]["description"])
+        move = byname["motion_move"]["parameters"]["properties"]
+        self.assertEqual(set(move), {"direction", "dist_m"})
+        self.assertEqual(move["direction"]["enum"], ["forward", "back"])
+        self.assertIn("METRES", move["dist_m"]["description"])
+        arc = byname["motion_arc"]["parameters"]["properties"]
+        self.assertEqual(set(arc), {"ang_dir", "lin_dir", "small"})
+
+    def test_dispatcher_translates_tool_args_to_executor_keys(self):
+        from intelligence import interaction
+        self.assertEqual(
+            interaction._motion_args_from_tool(
+                "motion.move", {"direction": "backward", "distance": 2,
+                                "unit": "feet"}, "back yourself up two feet"),
+            {"direction": "back", "dist_m": 0.6096})
+        self.assertEqual(
+            interaction._motion_args_from_tool(
+                "motion.turn", {"direction": "right", "degrees": 90}, "turn right"),
+            {"direction": "right", "deg": 90.0})
+        self.assertEqual(
+            interaction._motion_args_from_tool(
+                "motion.arc", {"direction": "right"}, "scootch to your right"),
+            {"ang_dir": "right", "lin_dir": "forward", "small": False})
+
+    def test_gate_admits_the_commands_the_regex_misses(self):
+        # Every one of these classifies as None today and becomes conversation.
+        from intelligence import action_router
+        for text in ("rotate ninety degrees", "back yourself up a bit",
+                     "scoot a little closer", "get closer", "back it up",
+                     "hang a left", "face me", "drive up here",
+                     "point yourself at the window", "why don't you scoot forward"):
+            self.assertIsNone(action_router.classify_explicit_motion(text), text)
+            self.assertIsNone(
+                action_router.motion_command_refusal_reason(text, "motion.move"),
+                text)
+
+    def test_gate_refuses_figurative_motion_that_guards_only_admitted(self):
+        # The measurement that decided this design: a gate built only from
+        # _MOTION_NEGATED_RE / _MOTION_EXPLANATION_RE / _MOTION_REPORTED_SPEECH_RE
+        # admitted 31 of 31 of these, because not one carries a negator, a leading
+        # "why", or a speech verb for those guards to catch.
+        from intelligence import action_router
+        for text in ("I think we should move on from that topic", "let's move on",
+                     "moving forward, I want to try something",
+                     "I need to run to the store", "she moved forward with the plan",
+                     "can you back me up on this", "go right ahead and tell him",
+                     "come to think of it, that's wrong", "my head is spinning",
+                     "I'm going to head out soon"):
+            self.assertEqual(
+                action_router.motion_command_refusal_reason(text, "motion.move"),
+                "missing_motion_command_evidence", text)
+
+    def test_bare_stop_never_migrates(self):
+        # scope doc 2.2. The deterministic escape owns these
+        # (interaction._errand_stop_demanded + motion_controller.is_moving()), and an
+        # LLM-chosen motion.stop still has to satisfy classify_explicit_motion.
+        from intelligence import action_router
+        for text in ("stop", "whoa stop", "hold up", "cut it out"):
+            self.assertEqual(
+                action_router.motion_command_refusal_reason(text, "motion.stop"),
+                "missing_motion_command_evidence", text)
+        self.assertIsNone(
+            action_router.motion_command_refusal_reason("stop moving", "motion.stop"))
 
 
 if __name__ == "__main__":

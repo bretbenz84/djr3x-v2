@@ -972,6 +972,119 @@ class GamesMigrationTest(unittest.TestCase):
             self.assertEqual(jeopardy.strip_pass_hedge(text), "", text)
 
 
+class MotionPhase3Test(unittest.TestCase):
+    """Motion is the one family that KEEPS its regex as the primary claim."""
+
+    def test_real_commands_the_regex_misses_can_now_be_tool_routed(self):
+        # The regex fast lane still runs first and still wins on what it knows.
+        # These are the ~35 measured drive commands it simply does not parse, all
+        # of which became conversation before the tool went live.
+        cases = [
+            ("motion.turn", "rotate ninety degrees"),
+            ("motion.turn", "rotate 90 degrees"),   # no direction word at all
+            ("motion.turn", "face me"),
+            ("motion.turn", "hang a left"),
+            ("motion.move", "back yourself up a bit"),
+            ("motion.move", "scoot a little closer"),
+            ("motion.move", "drive straight ahead"),
+            ("motion.move", "why don't you scoot forward"),
+        ]
+        for action, text in cases:
+            self.assertIsNone(action_router.classify_explicit_motion(text), text)
+            self.assertIsNone(
+                action_router.missing_required_evidence_reason(
+                    text, action_router.ActionDecision(action=action, confidence=1.0)),
+                f"{action} {text!r}")
+
+    def test_figurative_motion_never_reaches_the_drive_base(self):
+        # A guards-only gate (the pattern used for humor/memory/games) was
+        # MEASURED here and admitted 31 of 31 of these, so motion keeps a looser
+        # POSITIVE test instead: refusal and narration are lexically marked, but
+        # figurative motion shares its verbs with the literal sense.
+        for text in ("I think we should move on from that topic",
+                     "let's move on",
+                     "moving forward, I want to try something",
+                     "I need to run to the store",
+                     "she moved forward with the plan",
+                     "my head is spinning",
+                     "that ship has sailed, let's move forward"):
+            self.assertIsNotNone(
+                action_router.missing_required_evidence_reason(
+                    text, action_router.ActionDecision(
+                        action="motion.move", confidence=1.0)), text)
+
+    def test_stop_and_explore_are_not_live_tools(self):
+        import config
+
+        # Bare "stop" never migrates (scope doc 2.2) and a floor-seizing wander
+        # must not start from an ambient model read.
+        self.assertNotIn("motion.stop", config.TOOL_ROUTER_LIVE_ACTIONS)
+        self.assertNotIn("motion.explore", config.TOOL_ROUTER_LIVE_ACTIONS)
+
+    def test_the_regex_fast_lane_still_claims_what_it_knows(self):
+        for text, expected in (("turn left", "motion.turn"),
+                               ("move forward two feet", "motion.move"),
+                               ("come here", "motion.come"),
+                               ("stop moving", "motion.stop")):
+            decision = action_router.classify_explicit_motion(text)
+            self.assertEqual(_act(decision), expected, text)
+
+
+class JsonProseRouterRetirementTest(unittest.TestCase):
+    """Phase 4: the fallback router is retired behind a flag, not deleted."""
+
+    def _calls(self, text, context=None):
+        seen = []
+
+        def _fake(**kwargs):
+            seen.append(1)
+            raise RuntimeError("llm consulted")
+
+        with mock.patch.object(
+            action_router._client.chat.completions, "create", side_effect=_fake
+        ):
+            decision = action_router.decide(text, context or {})
+        return decision, len(seen)
+
+    def test_default_off_costs_nothing_and_hands_the_turn_over(self):
+        # Across 1,340 audited field turns this branch produced TWO executions,
+        # both character.preference_query — an action retired the same day. It
+        # was 42% of pre-reply latency on the ~30% of turns that paid it.
+        for text in ("let's do that trivia thing again",
+                     "could you look over there",
+                     "I want to hear a song"):
+            decision, calls = self._calls(text)
+            self.assertEqual(calls, 0, text)
+            self.assertEqual(decision.action, "conversation.reply", text)
+
+    def test_rollback_flag_restores_it(self):
+        import config
+
+        with mock.patch.object(
+            config, "ACTION_ROUTER_LLM_FALLBACK_ENABLED", True, create=True
+        ):
+            _decision, calls = self._calls("let's do that trivia thing again")
+        self.assertEqual(calls, 1)
+
+    def test_the_deterministic_ladder_is_untouched(self):
+        # Every logged router_takeover.* came from this ladder, not the model.
+        self.assertEqual(
+            self._calls("I would like you to shut down.")[0].action,
+            "system.shutdown")
+        self.assertEqual(
+            self._calls("Call me JT.")[0].action, "identity.name_correction")
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertEqual(
+                self._calls("tell me a joke")[0].action, "humor.tell_joke")
+
+    def test_warmup_does_not_open_a_pool_for_a_retired_client(self):
+        with mock.patch.object(
+            action_router._client.chat.completions, "create"
+        ) as create:
+            self.assertFalse(action_router.warmup())
+        self.assertFalse(create.called)
+
+
 class LegacyMemoryWriteGateTest(unittest.TestCase):
     """Unmapped legacy keys skipped the evidence check entirely."""
 

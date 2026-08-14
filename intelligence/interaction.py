@@ -13981,6 +13981,86 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
             _speak_blocking(full)
         return full or ""
 
+    if action in _MOTION_ACTIONS:
+        # Phase 3 (2026-08-13, docs/tool_router_scope.md §3) — the LAST family, and
+        # the only one that did NOT get the detector-not-claim demotion. motion.* is
+        # deliberately absent from action_router.TOOL_ROUTER_OWNED_ACTIONS: the regex
+        # fast lane still claims a >=0.95 match and executes at today's latency, so
+        # this branch only ever sees turns the classifier MISSED. Measured on this
+        # checkout, all of these classify as None and became conversation: "rotate
+        # ninety degrees", "back yourself up a bit", "scoot a little closer", "get
+        # closer", "back it up", "hang a left", "face me", "drive up here", "point
+        # yourself at the window", "why don't you scoot forward".
+        #
+        # STEP 4 of the new-executable-action checklist, and the step that bit
+        # aa9acce: no motion.* key exists in _INTENT_ACTION_MAP, so WITHOUT this
+        # branch flipping the config flag makes the tail of this function log "live
+        # action motion.move has no intent mapping" and answer with a classic reply —
+        # Rex would SAY "Rolling forward." and not move.
+        decision = action_router.ActionDecision(
+            action=action, confidence=1.0,
+            args=_motion_args_from_tool(action, args, text),
+            requires_confirmation=False, reason="tool_router",
+        )
+        # _router_execution_block_reason, NOT the bare public guard the other families
+        # call, because this one drives a base: it is the single call that also applies
+        # config.ACTION_ROUTER_EXECUTE_ACTIONS (the motion kill switch added in
+        # c7ef872 — drop a key in user_config.py and that maneuver stops executing)
+        # on top of action_router.missing_required_evidence_reason ->
+        # motion_command_refusal_reason. The 0.85 confidence floor is passed trivially
+        # at 1.0, and that is stated rather than hidden: a tool call carries no
+        # self-reported confidence for the floor to judge, so on this path the
+        # evidence gate is the whole guard.
+        block = _router_execution_block_reason(decision, text=text)
+        if block:
+            _log.info("[tool_router] %s declined: %s args=%s", action, block, args)
+        elif not motion_controller.available():
+            # The one safety rail that does NOT come for free with the shared
+            # executor: _handle_router_motion_action returns None with no base, which
+            # would fall through to a reply that pretends the command landed —
+            # silence/pretence read as "he ignores my commands" (field 2026-07-23).
+            # _motion_no_base_denial_line is NOT reusable here: its evidence IS
+            # classify_explicit_motion, the classifier that by definition missed this
+            # turn, so it would always return None. Key the denial on the ACTION.
+            lines = list(getattr(config, "MOTION_NO_BASE_DENIAL_LINES", []) or [])
+            if lines and action in _MOTION_DRIVE_ACTIONS and bool(
+                getattr(config, "MOTION_NO_BASE_DENIAL_ENABLED", True)
+            ):
+                resp = random.choice(lines)
+                _log.info("[tool_router] %s with no base connected -> verbal denial: "
+                          "text=%r", action, text)
+                _speak_blocking(resp, emotion="neutral", log_text=False)
+        else:
+            try:
+                # Every other downstream rail lives INSIDE this executor and the
+                # migration does not touch any of them: motion_controller.charging()
+                # (wheels stay locked on the charger), motion_agency.no_drive_room()
+                # (the carpet / no-drive rule the owner set by voice, declined with
+                # the way out stated), note_user_motion()'s realign standdown,
+                # note_user_commanded_motion()'s overlay confirmation and
+                # _cancel_motion_sequence's supersede. The firmware ToF gate and the
+                # ±10 m / ±360° clamps sit downstream of that.
+                resp = _handle_router_motion_action(
+                    decision, requester_person_id=person_id
+                )
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+                resp = None
+            if resp:
+                # The executor returns the line; the FAST lane is what normally speaks
+                # it, so the tool path has to.
+                _speak_blocking(resp, emotion="neutral", log_text=False)
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        # Declined (evidence gate, allowlist, no base with denial lines off, or the
+        # base itself suppressed the command) — answer as conversation so the turn is
+        # never silent, same tail as game.start.
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action in ("music.stop", "music.skip"):
         key = "dj_stop" if action == "music.stop" else "dj_skip"
         try:
@@ -19987,6 +20067,98 @@ def _handle_router_motion_action(
         return None
 
     return None
+
+
+# ── Phase 3 motion tool path (docs/tool_router_scope.md §3) ──────────────────────
+# One room-crossing, deliberately well inside motion_controller.move()'s own ±10 m
+# clamp: that clamp exists to stop a firmware-level absurdity, not to make a
+# hallucinated "50" safe indoors. The angle cap matches the controller's ±360.
+_MOTION_TOOL_MAX_DIST_M = 3.0
+_MOTION_TOOL_MAX_DEG = 360.0
+
+
+def _motion_args_from_tool(action: str, args: dict, text: str) -> dict[str, Any]:
+    """Tool arguments -> the exact keys _handle_router_motion_action reads.
+
+    Arg-name drift is this migration's most-repeated bug (performance.impersonate
+    who->target, memory.forget_specific statement->target) and motion shipped with
+    THREE instances of it, every one failing SILENTLY: `degrees` where the executor
+    reads `deg` (a commanded angle became the default 90), `distance`+`unit` where it
+    reads `dist_m` (a commanded distance became the default 0.30 m nudge), and
+    motion.arc's lone `direction` where it reads `ang_dir`/`lin_dir` (every arc
+    curved forward-and-LEFT regardless). The move enum also said "backward" while the
+    executor tests `== "back"` and otherwise falls through to move_forward — "back
+    up" would have driven him FORWARD.
+
+    tool_router._TOOL_DEFS now speaks the executor's keys, so this function is the
+    belt: it accepts the old names as aliases (the same accepted-alias shape
+    _router_arg_text uses for impersonate) and CLAMPS, so a stale name never falls on
+    the floor as "the default" again.
+    """
+    src = dict(args or {})
+
+    def _word(*keys: str) -> str:
+        for key in keys:
+            value = str(src.get(key) or "").strip().lower()
+            if value:
+                return value
+        return ""
+
+    def _num(*keys: str) -> Optional[float]:
+        for key in keys:
+            if src.get(key) is None:
+                continue
+            try:
+                return float(src[key])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    out: dict[str, Any] = {}
+    if action == "motion.turn":
+        direction = _word("direction", "dir", "side")
+        if direction in ("around", "about", "180", "backward", "backwards"):
+            out["direction"] = "around"
+        elif direction.startswith("r") or direction == "clockwise":
+            out["direction"] = "right"
+        else:
+            out["direction"] = "left"
+        deg = _num("deg", "degrees", "angle", "amount")
+        if deg is None and out["direction"] == "around":
+            deg = 180.0
+        if deg is not None:
+            out["deg"] = min(abs(deg), _MOTION_TOOL_MAX_DEG)
+    elif action == "motion.move":
+        direction = _word("direction", "dir")
+        out["direction"] = (
+            "back" if direction.startswith("back") or direction == "reverse"
+            else "forward"
+        )
+        # The user's OWN WORDS are the authority on magnitude: motion_distance_m is
+        # the same imperial/metric parser the regex lane uses, so "back up two feet"
+        # is 0.6096 m whether or not the model did the conversion — and asking an LLM
+        # to do unit arithmetic for a drive base is exactly the class of mistake this
+        # avoids. The model's number is the fallback for phrasings that parser misses
+        # ("go a couple feet forward").
+        dist = action_router.motion_distance_m(text)
+        if dist is None:
+            dist = _num("dist_m", "distance", "dist", "meters", "metres")
+        if dist is not None:
+            out["dist_m"] = min(abs(dist), _MOTION_TOOL_MAX_DIST_M)
+    elif action == "motion.arc":
+        lateral = _word("ang_dir", "direction", "side", "dir")
+        out["ang_dir"] = "right" if lateral.startswith("r") else "left"
+        linear = _word("lin_dir", "linear")
+        out["lin_dir"] = (
+            "back" if linear.startswith("back") or linear == "reverse" else "forward"
+        )
+        out["small"] = bool(src.get("small"))
+    # motion.come deliberately takes NO args. behind / side / side_deg are bearing
+    # hints the regex lane SYNTHESIZES from "I'm behind you" / "I'm to your left"
+    # (owner spec 2026-08-11) — a model asserting a bearing it cannot observe would
+    # send the search sweeping the wrong hemisphere. With none set,
+    # motion_agency.request_come_here runs its normal search.
+    return out
 
 
 def _motion_no_base_denial_line(text: str) -> Optional[str]:

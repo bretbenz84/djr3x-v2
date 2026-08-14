@@ -41,10 +41,21 @@ class SleepEvidenceTest(unittest.TestCase):
             self.assertIsNone(self._reason(text), text)
 
     def test_extra_words_still_blocked(self):
-        for text in ("Go to sleep now please", "sleep is great",
-                     "I wish you would go to sleep"):
+        # "Go to sleep now please" MOVED to the passing set in c7ef872 (Fix G),
+        # deliberately: the audit found this lane so narrow that "Go to sleep,
+        # Rex." was refused by every route — and because the same regex is also
+        # the tool router's evidence gate, even a correct tool call was vetoed.
+        # A trailing vocative or particle is not extra content. What still has to
+        # block is narration and third-party wishes, which is what this pins.
+        for text in ("sleep is great", "I wish you would go to sleep",
+                     "I need to get some sleep", "the baby went to sleep"):
             self.assertEqual(
                 self._reason(text), "missing_system_mode_evidence", text)
+
+    def test_trailing_particles_and_vocatives_pass(self):
+        for text in ("Go to sleep now please", "Go to sleep, Rex.",
+                     "Go to sleep buddy.", "Shut down, Rex."):
+            self.assertIsNone(self._reason(text), text)
 
     def test_punctuated_sleep_passes_the_legacy_turn_policy_gate(self):
         from intelligence import command_parser

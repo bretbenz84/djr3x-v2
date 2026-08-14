@@ -211,21 +211,65 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
         "Asking about Rex's OWN battery, charge level, or state of charge.",
         {}, [],
     ),
+    # motion.turn/move/arc/come went LIVE 2026-08-13 (Phase 3, the last family).
+    # Unlike every other migration the regex fast lane KEEPS the first claim
+    # (docs/tool_router_scope.md §3), so these hints describe only what it misses,
+    # and they state UNITS, because the executor reads a bare number.
+    #
+    # EVERY arg name below is now the exact key interaction._handle_router_motion_
+    # action reads. The shadow-era schemas drifted on three of them and each failed
+    # SILENTLY: `degrees` was read by nobody (the executor reads `deg`), so a
+    # commanded angle became the default 90; `distance`+`unit` were read by nobody
+    # (it reads `dist_m`), so a commanded distance became the default 0.30 m nudge;
+    # and motion.arc's lone `direction` was read by nobody (it reads `ang_dir` and
+    # `lin_dir`), so EVERY tool-routed arc would have curved forward-and-LEFT no
+    # matter which way was asked. Worse than any of those, the move enum said
+    # "backward" while the executor tests `== "back"` and otherwise falls through to
+    # move_forward — "back up" would have driven him FORWARD, into the person who
+    # just asked him to move away. Same drift class as performance.impersonate
+    # who->target and memory.forget_specific statement->target, with wheels attached.
     "motion.turn": (
-        "Turn the drive base in place.",
-        {"direction": {"type": "string", "enum": ["left", "right", "around"]},
-         "degrees": {**_NUM, "description": "turn size if the user gave one"}},
+        "Rotate the drive base in place. Wheels only — a request to LOOK somewhere "
+        "is not a turn, and neither is a figure of speech ('the meeting turned into "
+        "a disaster').",
+        {"direction": {"type": "string", "enum": ["left", "right", "around"],
+                       "description": "'around' means a 180"},
+         "deg": {**_NUM, "description":
+                 "how far to rotate, in DEGREES (90 = a quarter turn, 180 = about "
+                 "face); omit when they did not say an amount"}},
         ["direction"]),
     "motion.move": (
-        "Drive straight forward or backward.",
-        {"direction": {"type": "string", "enum": ["forward", "backward"]},
-         "distance": {**_NUM, "description": "distance if given"},
-         "unit": {"type": "string", "enum": ["feet", "meters", "inches"]}},
+        "Drive the base straight forward or backward on the floor.",
+        {"direction": {"type": "string", "enum": ["forward", "back"]},
+         "dist_m": {**_NUM, "description":
+                    "how far, in METRES. Omit it unless they gave an amount — Rex "
+                    "re-reads any distance they actually said out of their own "
+                    "words, so never convert feet or inches yourself"}},
         ["direction"]),
     "motion.arc": (
-        "Drive in a curve while moving ('swing left as you go').",
-        {"direction": {"type": "string", "enum": ["left", "right"]}}, ["direction"]),
-    "motion.come": ("'Come here' — find the speaker and approach them.", {}, []),
+        "Drive a brief curve toward one side — the base cannot strafe, so this is "
+        "what 'scoot over to your right' / 'slide left' / 'swing left as you go' "
+        "become.",
+        {"ang_dir": {"type": "string", "enum": ["left", "right"],
+                     "description": "which side to curve toward"},
+         "lin_dir": {"type": "string", "enum": ["forward", "back"],
+                     "description": "curve while driving forward or while backing up"},
+         "small": {"type": "boolean",
+                   "description": "true when they asked for a little / a bit"}},
+        ["ang_dir"]),
+    "motion.come": (
+        "'Come here' / 'come closer' / 'roll over to me' — find the person speaking "
+        "and drive to them. Never the idioms ('come on', 'come to think of it') and "
+        "never someone else's invitation being retold.", {}, []),
+    # motion.stop and motion.explore are catalog tools for the SHADOW only and are
+    # deliberately absent from the live sets. Stop: docs/tool_router_scope.md 2.2 —
+    # a stop that waits for a reply-call round trip is a stop that arrives late, and
+    # the deterministic escape (interaction._errand_stop_demanded +
+    # motion_controller.is_moving(), watched by the eager endpointer) already claims
+    # it before any LLM sees the turn. Explore: an accepted invite seizes the floor
+    # for minutes via the autonomous worker, and classify_explicit_exploration is
+    # already a purpose-built "imperative addressed to Rex" test — the same thing the
+    # motion gate had to be rebuilt into — so there is nothing for a tool to add yet.
     "motion.stop": ("Stop moving RIGHT NOW ('stop', 'halt' while driving).", {}, []),
     "motion.explore": ("An invitation to wander/explore the room.", {}, []),
     "web.search": (
@@ -290,6 +334,17 @@ _DEFAULT_LIVE_ACTIONS = (
     # no-game-running case; mid-game the deterministic escape keeps the claim.
     # game.answer is NOT live and must not be (scope doc 2.2).
     "game.start", "game.stop",
+    # Phase 3 motion (2026-08-13) — the last family, and the only one where the regex
+    # KEEPS the first claim: motion.* is NOT in action_router.TOOL_ROUTER_OWNED_ACTIONS,
+    # so a >=0.95 classifier match still executes immediately at today's latency and
+    # the tool governs only what it missed (docs/tool_router_scope.md §3). Measured
+    # misses on this checkout, all currently answered as conversation: "rotate ninety
+    # degrees", "rotate 90 degrees", "back yourself up a bit", "scoot a little
+    # closer", "get closer", "back it up", "back away", "drive up here", "go straight",
+    # "face me", "swivel left", "hang a left", "veer right", "why don't you scoot
+    # forward", "scootch to your right".
+    # motion.stop and motion.explore are ABSENT ON PURPOSE — see _TOOL_DEFS above.
+    "motion.turn", "motion.move", "motion.arc", "motion.come",
 )
 
 
