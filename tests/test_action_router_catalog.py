@@ -16,7 +16,6 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertIn("identity.name_correction", keys)
         self.assertIn("memory.recent_discard", keys)
         self.assertIn("performance.mood_pose", keys)
-        self.assertIn("character.preference_query", keys)
         self.assertIn("vision.snapshot", keys)
         for key in keys:
             self.assertRegex(key, r"^[a-z]+(?:_[a-z]+)*\.[a-z]+(?:_[a-z]+)*$")
@@ -72,7 +71,6 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertIn("Use performance.dj_bit", prompt)
         self.assertIn("Use performance.body_beat", prompt)
         self.assertIn("Use performance.mood_pose", prompt)
-        self.assertIn("Use character.preference_query", prompt)
         self.assertIn("Use vision.snapshot", prompt)
         self.assertIn("Use identity.name_correction", prompt)
         self.assertIn("Use memory.recent_discard", prompt)
@@ -261,213 +259,61 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertEqual(routed.action, "conversation.reply")
         self.assertEqual(routed.reason, "dialogue act says utterance is a reply to Rex")
 
-    def test_explicit_character_preference_classifier_routes_rex_opinions(self):
+    def test_rex_opinions_are_context_not_a_routed_action(self):
+        """Retired 2026-08-13: an opinion question is conversation.
+
+        The classifier used to claim these at 0.95 and a canned answerer replied,
+        with a SHA1 hash bucket inventing a stance for anything off-table. The
+        authored tastes now ride the reply call as one context bullet.
+        """
+        from intelligence import action_router, rex_preferences
+
+        self.assertFalse(hasattr(action_router, "classify_explicit_character_preference"))
+        self.assertNotIn("character.preference_query", action_router.ACTION_CATALOG)
+
+        for text in ("do you like music", "what's your favorite color?",
+                     "do you prefer jazz or silence?"):
+            lines = rex_preferences.prompt_lines(text)
+            self.assertTrue(lines, text)
+            self.assertTrue(lines[0].startswith("YOUR OWN TASTE"), text)
+
+    def test_unknown_topic_gets_no_invented_stance(self):
+        """The hash bucket is gone: no opinion on file means no hint at all."""
+        from intelligence import rex_preferences
+
+        for text in ("How do you feel about Daniel?",
+                     "What do you think about my new haircut?",
+                     "What's your favorite memory of us?"):
+            self.assertEqual(rex_preferences.prompt_lines(text), [], text)
+
+    def test_human_preferences_produce_no_taste_hint(self):
+        from intelligence import rex_preferences
+
+        self.assertEqual(rex_preferences.prompt_lines("I like music"), [])
+        self.assertEqual(rex_preferences.prompt_lines("Bret likes music"), [])
+
+    def test_opinion_question_is_not_claimed_by_any_deterministic_lane(self):
+        """No regex claims it any more, so the model gets the turn.
+
+        "music" is an _ACTION_CUE_RE token, so this still consults the LLM router
+        rather than short-circuiting — the point is only that nothing deterministic
+        answers it with a canned line first.
+        """
         from intelligence import action_router
 
-        like = action_router.classify_explicit_character_preference("do you like music")
-        favorite = action_router.classify_explicit_character_preference("what's your favorite color?")
-        compare = action_router.classify_explicit_character_preference("do you prefer jazz or silence?")
-
-        self.assertEqual(like.action, "character.preference_query")
-        self.assertEqual(like.args["topic"], "music")
-        self.assertEqual(like.args["verb"], "like")
-        self.assertEqual(favorite.args["mode"], "favorite")
-        self.assertEqual(compare.args["mode"], "compare")
-        self.assertEqual(compare.args["options"], ["jazz", "silence"])
-
-    def test_explicit_character_preference_classifier_ignores_human_preferences(self):
-        from intelligence import action_router
-
-        self.assertIsNone(action_router.classify_explicit_character_preference("I like music"))
-        self.assertIsNone(action_router.classify_explicit_character_preference("Bret likes music"))
-
-    def test_body_beat_llm_decision_requires_known_beat(self):
-        from intelligence import action_router
-
-        valid = action_router._coerce_decision({
-            "action": "performance.body_beat",
-            "confidence": 0.99,
-            "args": {"gesture": "victory dance"},
-            "reason": "explicit physical request",
-        })
-        invalid = action_router._coerce_decision({
-            "action": "performance.body_beat",
-            "confidence": 0.99,
-            "args": {"gesture": "spin the dangerous servo"},
-            "reason": "unknown physical request",
-        })
-
-        self.assertEqual(valid.args["body_beat"], "tiny_victory_dance")
-        self.assertEqual(valid.confidence, 0.99)
-        self.assertLess(invalid.confidence, 0.85)
-
-    def test_mood_pose_llm_decision_requires_known_mood(self):
-        from intelligence import action_router
-
-        valid = action_router._coerce_decision({
-            "action": "performance.mood_pose",
-            "confidence": 0.99,
-            "args": {"emotion": "bashful"},
-            "reason": "explicit mood pose",
-        })
-        invalid = action_router._coerce_decision({
-            "action": "performance.mood_pose",
-            "confidence": 0.99,
-            "args": {"emotion": "danger servo"},
-            "reason": "unknown mood pose",
-        })
-
-        self.assertEqual(valid.args["mood"], "embarrassed")
-        self.assertEqual(valid.confidence, 0.99)
-        self.assertLess(invalid.confidence, 0.85)
-
-    def test_character_preference_llm_decision_requires_topic_or_options(self):
-        from intelligence import action_router
-
-        valid = action_router._coerce_decision({
-            "action": "character.preference_query",
-            "confidence": 0.99,
-            "args": {"topic": "music", "verb": "like"},
-            "reason": "asks Rex preference",
-        })
-        invalid = action_router._coerce_decision({
-            "action": "character.preference_query",
-            "confidence": 0.99,
+        payload = json.dumps({
+            "action": "conversation.reply",
+            "confidence": 0.4,
             "args": {},
-            "reason": "missing topic",
+            "reason": "opinion question",
         })
-
-        self.assertEqual(valid.action, "character.preference_query")
-        self.assertEqual(valid.confidence, 0.99)
-        self.assertLess(invalid.confidence, 0.85)
-
-    def test_vision_snapshot_requires_confirmation(self):
-        from intelligence import action_router
-
-        decision = action_router._coerce_decision({
-            "action": "vision.snapshot",
-            "confidence": 0.99,
-            "args": {"scope": "current_view"},
-            "requires_confirmation": False,
-            "reason": "remember current scene",
-        })
-
-        self.assertTrue(decision.requires_confirmation)
-
-    def test_vision_snapshot_downgrades_human_photo_plan(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="vision.snapshot",
-            confidence=0.90,
-            args={"scope": "current_view"},
-            requires_confirmation=True,
-            reason="privacy-sensitive current view request",
-        )
-
-        downgraded = action_router._apply_context_overrides(
-            decision,
-            "I wanna take a picture of the Leo triplet",
-            {},
-        )
-
-        self.assertEqual(downgraded.action, "conversation.reply")
-        self.assertFalse(downgraded.requires_confirmation)
-        self.assertLess(downgraded.confidence, 0.85)
-
-    def test_vision_snapshot_keeps_direct_rex_memory_request(self):
-        from intelligence import action_router
-
-        decision = action_router.classify_explicit_control(
-            "I want you to remember what you see"
-        )
-
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.action, "vision.snapshot")
-        self.assertTrue(decision.requires_confirmation)
-
-        self.assertIsNone(
-            action_router.classify_explicit_control("I'm going to save this view")
-        )
-
-    def test_decide_downgrades_llm_snapshot_for_human_photo_plan(self):
-        from intelligence import action_router
-
         response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=json.dumps({
-                            "action": "vision.snapshot",
-                            "confidence": 0.9,
-                            "args": {"scope": "current_view"},
-                            "requires_confirmation": True,
-                            "reason": "mentions taking a picture",
-                        })
-                    )
-                )
-            ]
+            choices=[SimpleNamespace(message=SimpleNamespace(content=payload))]
         )
-
-        with mock.patch.object(
-            action_router._client.chat.completions,
-            "create",
-            return_value=response,
-        ):
-            decision = action_router.decide(
-                "I wanna take a picture of the Leo triplet",
-                {},
-            )
-
-        self.assertEqual(decision.action, "conversation.reply")
-        self.assertFalse(decision.requires_confirmation)
-
-    def test_decide_short_circuits_explicit_humor_without_llm_router_call(self):
-        from intelligence import action_router
-
-        with mock.patch.object(action_router._client.chat.completions, "create") as create:
-            decision = action_router.decide("tell me a joke", {})
-
-        self.assertEqual(decision.action, "humor.tell_joke")
-        create.assert_not_called()
-
-    def test_decide_short_circuits_explicit_dj_bit_without_llm_router_call(self):
-        from intelligence import action_router
-
-        with mock.patch.object(action_router._client.chat.completions, "create") as create:
-            decision = action_router.decide("do your DJ thing", {})
-
-        self.assertEqual(decision.action, "performance.dj_bit")
-        create.assert_not_called()
-
-    def test_decide_short_circuits_explicit_body_beat_without_llm_router_call(self):
-        from intelligence import action_router
-
-        with mock.patch.object(action_router._client.chat.completions, "create") as create:
-            decision = action_router.decide("do a victory dance", {})
-
-        self.assertEqual(decision.action, "performance.body_beat")
-        self.assertEqual(decision.args["body_beat"], "tiny_victory_dance")
-        create.assert_not_called()
-
-    def test_decide_short_circuits_explicit_control_without_llm_router_call(self):
-        from intelligence import action_router
-
-        with mock.patch.object(action_router._client.chat.completions, "create") as create:
-            decision = action_router.decide("forget I said that", {})
-
-        self.assertEqual(decision.action, "memory.recent_discard")
-        create.assert_not_called()
-
-    def test_decide_short_circuits_rex_preference_without_llm_router_call(self):
-        from intelligence import action_router
-
-        with mock.patch.object(action_router._client.chat.completions, "create") as create:
+        with mock.patch("intelligence.llm_compat.create", return_value=response):
             decision = action_router.decide("do you like music?", {})
 
-        self.assertEqual(decision.action, "character.preference_query")
-        self.assertEqual(decision.args["topic"], "music")
-        create.assert_not_called()
+        self.assertEqual(decision.action, "conversation.reply")
 
 
 if __name__ == "__main__":

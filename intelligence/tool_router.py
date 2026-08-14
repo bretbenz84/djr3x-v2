@@ -88,9 +88,6 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     "performance.impersonate": (
         "An explicit request to impersonate someone.",
         {"who": {**_STR, "description": "person to impersonate; 'me' = the speaker"}}, ["who"]),
-    "character.preference_query": (
-        "Asking Rex about his OWN tastes/preferences.",
-        {"topic": _STR}, []),
     "game.start": (
         "Start a verbal game (Jeopardy, Trivia, I Spy, 20 Questions, Word Association).",
         {"game": _STR}, ["game"]),

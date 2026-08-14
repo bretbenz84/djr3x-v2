@@ -485,6 +485,96 @@ class IdentityRenameGuardTest(unittest.TestCase):
             self.assertEqual(interaction._extract_name_update(text), expected, text)
 
 
+class RexOpinionContextTest(unittest.TestCase):
+    """Opinion questions were answered from a SHA1 hash bucket."""
+
+    def test_no_stance_is_invented_for_unknown_topics(self):
+        # Measured over 20,000 unknown topics the bucket handed out like 29% /
+        # dislike 28% / complicated 26% / strong_dislike 16% — a coin flip in
+        # Rex's voice, and STABLE, so he repeated it every session.
+        from intelligence import rex_preferences
+
+        for text in (
+            "How do you feel about Daniel?",          # a friend
+            "What do you think about my new haircut?",
+            "How do you feel about chemotherapy?",    # not a taste question at all
+            "What do you think about my divorce?",
+            "What's your favorite memory of us?",     # belongs to memory
+        ):
+            self.assertEqual(rex_preferences.prompt_lines(text), [], text)
+
+    def test_no_fallback_stance_exists_at_all(self):
+        # The regression guard against someone re-adding a bucket.
+        from intelligence import rex_preferences
+
+        for topic in ("daniel", "hydrospanners", "my job", "zzzqqq", "the news today"):
+            self.assertIsNone(rex_preferences._opinion_for_topic(topic), topic)
+
+    def test_authored_character_survives_as_context(self):
+        # The whole point of keeping the table: Rex must not re-decide his own
+        # personality every session.
+        from intelligence import rex_preferences
+
+        for text in ("Do you like blue milk?", "What do you think about droids?",
+                     "Do you like music?", "How do you feel about silence?",
+                     "Do you prefer blue milk or music?", "What's your favorite color?"):
+            lines = rex_preferences.prompt_lines(text)
+            self.assertTrue(lines, text)
+            self.assertTrue(lines[0].startswith("YOUR OWN TASTE"), text)
+            # A stance to voice, never a line to recite — the canned-answer
+            # behavior is exactly what was removed.
+            self.assertRegex(lines[0].lower(), r"not a script|not scripts", text)
+
+    def test_group_rating_boundary_fires_in_every_mode(self):
+        # The guard used to run in only two of the four mode branches, so
+        # "do you prefer black people or white people?" answered
+        # "black people. Obviously." and "do you like muslims or christians?"
+        # answered "Hell to the no." off the hash bucket.
+        from intelligence import rex_preferences
+
+        for text in (
+            "Do you prefer black people or white people?",   # compare
+            "What's your favorite religion?",                # favorite
+            "Do you like gays?",                             # yes/no
+            "What do you think about immigrants?",           # open
+            "How do you feel about jewish people?",
+            "Do you like muslims or christians?",
+        ):
+            lines = rex_preferences.prompt_lines(text)
+            self.assertTrue(lines, text)
+            self.assertTrue(lines[0].startswith("BOUNDARY"), text)
+
+    def test_group_guard_no_longer_over_matches_ordinary_nouns(self):
+        # It used to refuse to discuss Rex's own home outpost.
+        from intelligence import rex_preferences
+
+        for text in ("white wine", "black coffee", "trans fats",
+                     "the black spire outpost"):
+            self.assertFalse(rex_preferences.is_group_rating_request(text), text)
+
+    def test_opinion_questions_are_no_longer_a_routed_action(self):
+        import config
+        from intelligence import action_router, tool_router
+
+        self.assertNotIn("character.preference_query", action_router.ACTION_CATALOG)
+        self.assertNotIn(
+            "character.preference_query", config.ACTION_ROUTER_EXECUTE_ACTIONS
+        )
+        self.assertNotIn(
+            "character.preference_query",
+            {schema["function"]["name"] for schema in tool_router.tool_schemas()},
+        )
+
+    def test_stance_hint_reaches_the_lean_brain_only_on_a_matching_turn(self):
+        from intelligence import lean_brain
+
+        self.assertTrue(lean_brain._taste_lines("Do you like blue milk?"))
+        self.assertEqual(lean_brain._taste_lines("How do you feel about Daniel?"), [])
+        # The directive path (greetings/proactive) passes "" — a greeting is not
+        # asking his opinion, so the hint costs nothing there.
+        self.assertEqual(lean_brain._taste_lines(""), [])
+
+
 class LegacyMemoryWriteGateTest(unittest.TestCase):
     """Unmapped legacy keys skipped the evidence check entirely."""
 

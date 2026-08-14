@@ -5267,7 +5267,6 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "performance.body_beat",
     "performance.mood_pose",
     "performance.impersonate",
-    "character.preference_query",
     "memory.query",
     "memory.recent_discard",
     "identity.who_is_speaking",

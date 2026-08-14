@@ -398,6 +398,32 @@ def _cadence_lines(person_id: Optional[int]) -> list[str]:
         return []
 
 
+def _taste_lines(user_text: str) -> list[str]:
+    """Rex's AUTHORED tastes (intelligence/rex_preferences.py) when THIS turn asks
+    about one — his stance as context, never a canned sentence to recite.
+
+    Keying it on user_text is what makes it free: the directive path passes "" (a
+    greeting is not asking his opinion), so a turn that is not a taste question
+    costs zero tokens.
+
+    Until 2026-08-13 this regex DECIDED the turn — action_router captured "what do
+    you think about X" at 0.95 and rex_preferences spoke a canned line, with a SHA1
+    hash bucket inventing a stance for anything its table did not hold. That is how
+    "How do you feel about Daniel?" became "Nope. Daniel is not clearing the board."
+    and STAYED that way, because the hash is stable across sessions. Demoted to a
+    hint: the authored tastes (blue milk, droids, roasting, organics) survive as
+    character, this call phrases them in context, and an unknown topic gets nothing.
+    """
+    if not str(user_text or "").strip():
+        return []
+    try:
+        from intelligence import rex_preferences
+        return rex_preferences.prompt_lines(user_text)
+    except Exception as exc:
+        _log.debug("[lean] taste hint skipped: %s", exc)
+        return []
+
+
 def _system_prompt(
     person_id: Optional[int],
     world: Optional[dict],
@@ -411,6 +437,7 @@ def _system_prompt(
         + _room_belief_lines()
         + _mood_lines()
         + _pride_lines()
+        + _taste_lines(user_text)
         + _reaction_lines(person_id)
         + _cadence_lines(person_id)
         + list(extra_lines or [])

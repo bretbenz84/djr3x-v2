@@ -20,7 +20,7 @@ from typing import Any
 import apikeys
 import config
 from intelligence.person_memory_targets import references_person_memory_target
-from intelligence import performance_plan, rex_preferences
+from intelligence import performance_plan
 from memory.name_validation import normalize_person_name
 from openai import OpenAI
 
@@ -154,12 +154,13 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "provided name.",
         executable=True,
     ),
-    ActionSpec(
-        "character.preference_query",
-        "character",
-        "User asks Rex about Rex's own likes, dislikes, favorites, beliefs, taste, or preference between options.",
-        executable=True,
-    ),
+    # character.preference_query was RETIRED 2026-08-13. An opinion question is
+    # conversation, and routing it to a canned answerer is what made "How do you feel
+    # about Daniel?" come back "Nope. Daniel is not clearing the board." from a SHA1
+    # hash bucket. Rex's authored tastes now ride the reply call as one context bullet
+    # (rex_preferences.prompt_lines -> lean_brain._taste_lines) and he phrases them
+    # himself. Do not re-add a spec here: the whole failure was a regex claiming the
+    # turn at 0.95 before the model ever saw it.
     ActionSpec(
         "game.start",
         "game",
@@ -400,12 +401,6 @@ Rules:
   in args.target — use "speaker" for the user themselves, otherwise the provided
   name. Do NOT use it for a passing compliment about an impression ("that was a
   good impression").
-- Use character.preference_query when the user asks Rex about Rex's own taste,
-  favorites, beliefs, or preferences: "do you like X?", "do you hate X?",
-  "how do you feel about X?", "what's your favorite X?", "do you prefer X or Y?".
-  Put args.topic when there is one, args.verb for like/hate/dislike/prefer
-  questions, args.mode="favorite" for favorites, and args.options for X-or-Y
-  comparisons. Do not use it when the human states their own preference.
 - Use vision.snapshot only when the user asks Rex/you to remember, save, store,
   or keep in mind what Rex currently sees, such as "remember what you see" or
   "take a look and keep that in mind". Set requires_confirmation=true. Do not
@@ -2378,22 +2373,6 @@ def classify_explicit_performance(text: str) -> ActionDecision | None:
     return None
 
 
-def classify_explicit_character_preference(text: str) -> ActionDecision | None:
-    """Classify obvious questions about Rex's own preferences without an LLM call."""
-    cleaned = " ".join((text or "").strip().split())
-    if not cleaned:
-        return None
-    parsed = rex_preferences.extract_preference_query(cleaned)
-    if not parsed:
-        return None
-    return ActionDecision(
-        action="character.preference_query",
-        confidence=0.95,
-        args=parsed,
-        reason="explicit Rex preference/opinion question",
-    )
-
-
 def missing_required_evidence_reason(
     text: str,
     decision: ActionDecision | None,
@@ -2455,12 +2434,6 @@ def missing_required_evidence_reason(
         # decisions are synthesized from live base state, not from re-matchable words.
         explicit = classify_explicit_motion(cleaned)
         return None if explicit and explicit.action == action else "missing_motion_command_evidence"
-    if action == "character.preference_query":
-        return (
-            None
-            if classify_explicit_character_preference(cleaned)
-            else "missing_rex_preference_query_evidence"
-        )
     if action == "identity.who_is_speaking":
         return None if _WHO_SPEAKING_RE.search(cleaned) else "missing_identity_query_evidence"
     if action == "music.play":
@@ -2603,19 +2576,6 @@ def _coerce_decision(payload: Any) -> ActionDecision:
             args["mood"] = canonical
         else:
             confidence = min(confidence, 0.45)
-    if action == "character.preference_query":
-        parsed = rex_preferences.extract_preference_query(
-            str(args.get("text") or args.get("utterance") or "")
-        )
-        if parsed:
-            merged = dict(parsed)
-            merged.update(args)
-            args = merged
-        topic = str(args.get("topic") or args.get("domain") or "").strip()
-        options = args.get("options") or []
-        if not topic and not options:
-            confidence = min(confidence, 0.45)
-
     reason = str(payload.get("reason") or "").strip()
     if len(reason) > 240:
         reason = reason[:237] + "..."
@@ -2965,9 +2925,6 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     explicit_performance = classify_explicit_performance(text)
     if explicit_performance is not None:
         return _apply_context_overrides(explicit_performance, text, context)
-    explicit_character_preference = classify_explicit_character_preference(text)
-    if explicit_character_preference is not None:
-        return _apply_context_overrides(explicit_character_preference, text, context)
 
     self_query_intent = _deterministic_self_query_intent(text, context)
     if self_query_intent is not None:

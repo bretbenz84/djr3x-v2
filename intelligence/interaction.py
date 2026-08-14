@@ -39,7 +39,7 @@ from audio import echo_cancel
 from audio import hardware_aec
 from audio import barge_guard
 from audio import prosody
-from intelligence import action_router, command_parser, llm, motion_controller, personality, rex_preferences
+from intelligence import action_router, command_parser, llm, motion_controller, personality
 from intelligence import rex_pov
 from intelligence import body_mood
 from intelligence import performance_output
@@ -19089,54 +19089,6 @@ def _handle_router_performance_action(
     return output.text
 
 
-def _handle_router_character_preference(
-    decision: action_router.ActionDecision,
-    text: str,
-    router_audit: Optional[_RouterDecisionAudit] = None,
-) -> str:
-    """Answer a question about Rex's own tastes with a stable line and motion."""
-    try:
-        reply = rex_preferences.answer_preference_query(text, decision.args)
-    except Exception as exc:
-        _log.debug("Rex preference response failed: %s", exc)
-        reply = rex_preferences.PreferenceReply(
-            text="Mmm. Preference circuits are recalibrating.",
-            emotion="curious",
-            body_beat="thinking_tilt",
-            stance="unknown",
-            topic="unknown",
-        )
-
-    body_beat_failed = False
-    if reply.body_beat:
-        try:
-            _play_performance_body_beat(reply.body_beat)
-        except Exception as exc:
-            body_beat_failed = True
-            _log.debug("Rex preference body beat failed: %s", exc)
-
-    completed = _speak_blocking(
-        reply.text,
-        emotion=reply.emotion,
-        pre_beat_ms=reply.pre_beat_ms,
-        post_beat_ms_override=reply.post_beat_ms,
-    )
-    _router_audit_note_result(
-        router_audit,
-        completed=completed,
-        handler_error="body_beat_failed" if body_beat_failed else None,
-        spoken_text=reply.text,
-    )
-    _log.info(
-        "[character] Rex preference reply topic=%r stance=%s beat=%s text=%r",
-        reply.topic,
-        reply.stance,
-        reply.body_beat,
-        reply.text,
-    )
-    return reply.text
-
-
 def _negation_is_answer(repair_move: Optional[dict], dialogue_decision) -> bool:
     """A bare "no/nope" that ANSWERS a question Rex just asked is CONTENT, not a
     conversational correction — the dialogue act already bound the turn as
@@ -19891,13 +19843,6 @@ def _handle_router_takeover_action(
             person_id, target, text,
         )
         return _handle_router_impersonation(decision, text, person_id, person_name, target)
-
-    if action == "character.preference_query":
-        return _handle_router_character_preference(
-            decision,
-            text,
-            router_audit=router_audit,
-        )
 
     if action == "memory.forget_specific":
         target = _router_arg_text(decision, "target", "topic", "memory")
