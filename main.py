@@ -1142,6 +1142,16 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     except Exception as exc:
         logger.debug("sd_guard install skipped: %s", exc)
 
+    # Serialize libsndfile opens/decodes before the first clip decode. Concurrent
+    # MP3 opens (TTS cache hit + a sound effect on another thread) race mpg123's
+    # non-thread-safe global init inside libsndfile and SIGBUS the process
+    # (Bus error: 10, 2026-08-14). See sndfile_guard.
+    try:
+        from audio import sndfile_guard
+        sndfile_guard.install()
+    except Exception as exc:
+        logger.debug("sndfile_guard install skipped: %s", exc)
+
     # Route playback to a specific output device (e.g. the ReSpeaker Lite, so its
     # onboard hardware AEC gets the reference). No-op unless configured.
     if not no_audio:
