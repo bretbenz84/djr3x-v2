@@ -182,13 +182,27 @@ class DialogueBreakoutTests(unittest.TestCase):
     def test_vision_question_breaks_out_of_answer_binding(self):
         from intelligence import interaction
 
-        self.assertIsNone(
-            interaction._intent_execution_block_reason(
-                "query_what_do_you_see",
-                text="can you see what I'm holding",
-                dialogue_decision=_answer_to_rex_decision(),
-            )
+        # Since the Stage 1 demotion (2026-08-13) vision.describe_scene is
+        # tool-router-owned, so this lane hands the turn to the reply call rather
+        # than claiming it. The property under test is unchanged: a camera
+        # question must NOT be swallowed as an answer to Rex's last turn.
+        reason = interaction._intent_execution_block_reason(
+            "query_what_do_you_see",
+            text="can you see what I'm holding",
+            dialogue_decision=_answer_to_rex_decision(),
         )
+        self.assertEqual(reason, "tool_router_owns_action")
+        self.assertNotEqual(reason, "blocked_by_dialogue_act")
+
+        # Offline the lane claims again and the breakout must still fire.
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertIsNone(
+                interaction._intent_execution_block_reason(
+                    "query_what_do_you_see",
+                    text="can you see what I'm holding",
+                    dialogue_decision=_answer_to_rex_decision(),
+                )
+            )
 
     def test_non_action_reply_still_blocked(self):
         from intelligence import interaction

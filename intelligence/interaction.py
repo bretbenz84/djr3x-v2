@@ -412,6 +412,13 @@ _anonymous_speaker_next_id: int = 1
 # threading the slot through every call site. {label, turns, recognized}.
 _current_turn_anonymous: Optional[dict] = None
 
+# Snapshot of the CURRENT turn's raw voice-ID evidence (the UNTHRESHOLDED top
+# candidate), for callers that run outside the speech loop's scope. The tool
+# router dispatches identity.who_is_speaking from inside the reply stream, where
+# raw_best_* are not in scope — without this the handler always took its
+# "nothing matched" branch. {raw_best_id, raw_best_name, raw_best_score}.
+_current_turn_speaker_evidence: Optional[dict] = None
+
 # Monotonic deadline before which VAD speech-onset detections are discarded.
 # Set at the end of each TTS utterance; prevents Rex's own voice tail from
 # immediately triggering a new speech segment.
@@ -1837,6 +1844,24 @@ def _intent_execution_block_reason(
     # what produced "It's 8:33 PM." in response to a pacing complaint).
     if (router_action or "") == "conversation.repair":
         return "router_classified_repair"
+    # Stage 1 of the tool-router migration: for the actions the LIVE tool router
+    # owns, this lane is a DETECTOR, not a claim. Returning a reason here IS the
+    # demotion — the caller sets intent="general", the turn falls through to
+    # conversation, and the lean reply call that was going to happen anyway picks
+    # the tool from the model's own reading of the utterance. That is what
+    # unblocks the phrasings the keyword nets get WRONG: measured on this
+    # checkout, "did you see the game last night" claimed vision.describe_scene
+    # and "I've been running a lot lately" claimed status.uptime, and BOTH passed
+    # the evidence gate below, so nothing else was ever going to stop them.
+    #
+    # Deliberately BEFORE the evidence call. That gate is the ceiling on this
+    # lane, not a safety property — it can only narrow the loose net back down to
+    # action_router's stricter regexes, which is exactly the set of phrasings the
+    # tool router was migrated off. It still runs offline and with the kill switch
+    # off, where tool_router_owns is False and this lane claims as before
+    # (docs/tool_router_scope.md 2.4 — the local reply model gets no tools).
+    if action_router.tool_router_owns(decision.action):
+        return "tool_router_owns_action"
     evidence_reason = action_router.missing_required_evidence_reason(
         text,
         decision,
@@ -13800,7 +13825,23 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
         intent = None
     if intent is not None:
         try:
-            resp = _handle_classified_intent(intent, text, person_id)
+            if intent == "query_who_is_speaking":
+                # This handler answers from BIOMETRIC ground truth, and the tool
+                # path was the only caller not passing it: the intent lane and
+                # _handle_router_takeover_action both thread raw_best_* through,
+                # so a tool-routed "who's speaking?" silently took the no-match
+                # branch ("no idea, who's asking?") even on a 0.9 voice score.
+                # Live since 2026-08-02, but Stage 1 makes the tool the PRIMARY
+                # route for the loose phrasings, so the gap had to close first.
+                ev = _current_turn_speaker_evidence or {}
+                resp = _handle_classified_intent(
+                    intent, text, person_id,
+                    raw_best_id=ev.get("raw_best_id"),
+                    raw_best_name=ev.get("raw_best_name"),
+                    raw_best_score=float(ev.get("raw_best_score") or 0.0),
+                )
+            else:
+                resp = _handle_classified_intent(intent, text, person_id)
         except Exception as exc:
             _log.error("[tool_router] executor failed for %s: %s", action, exc)
     else:
@@ -23608,8 +23649,13 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("speaker gaze intent note failed: %s", exc)
 
-        global _current_turn_anonymous
+        global _current_turn_anonymous, _current_turn_speaker_evidence
         _current_turn_anonymous = None
+        _current_turn_speaker_evidence = {
+            "raw_best_id": raw_best_id,
+            "raw_best_name": raw_best_name,
+            "raw_best_score": float(speaker_score or 0.0),
+        }
         anonymous_speaker_label, anonymous_speaker_match_score, resolved_voice_person = (
             _resolve_anonymous_speaker_slot(
                 audio_array,
@@ -26600,8 +26646,15 @@ def _handle_speech_segment(
                     ),
                 )
                 if intent_block_reason:
+                    # "tool_router_owns_action" is a HANDOFF, not a block — the
+                    # turn is about to be answered by the reply call's tool. Say
+                    # so, or every weather/vision/memory turn reads as a rejection
+                    # in the field logs.
                     _log.info(
-                        "[turn_policy] blocked intent=%s reason=%s text=%r",
+                        "[turn_policy] %s intent=%s reason=%s text=%r",
+                        "handed to tool router"
+                        if intent_block_reason == "tool_router_owns_action"
+                        else "blocked",
                         intent,
                         intent_block_reason,
                         text,

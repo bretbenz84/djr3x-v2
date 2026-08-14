@@ -316,14 +316,29 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             skip_action_router=True,
         )
 
-        self.assertIsNone(
-            interaction._intent_execution_block_reason(
-                "play_music",
-                text="drop some sick beats. Play some country music.",
-                context={},
-                dialogue_decision=act,
-            )
+        # Since the Stage 1 demotion (2026-08-13) music.play is tool-router-owned,
+        # so this lane hands the turn to the reply call instead of claiming it.
+        # What must NOT happen either way is the answer-frame swallow — that is
+        # the property this test exists for.
+        reason = interaction._intent_execution_block_reason(
+            "play_music",
+            text="drop some sick beats. Play some country music.",
+            context={},
+            dialogue_decision=act,
         )
+        self.assertEqual(reason, "tool_router_owns_action")
+        self.assertNotEqual(reason, "blocked_by_dialogue_act")
+
+        # Offline the lane claims again, and the breakout must still work.
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertIsNone(
+                interaction._intent_execution_block_reason(
+                    "play_music",
+                    text="drop some sick beats. Play some country music.",
+                    context={},
+                    dialogue_decision=act,
+                )
+            )
 
     def test_legacy_command_gate_requires_strong_evidence(self):
         from intelligence import command_parser, interaction
@@ -360,21 +375,46 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
 
         text = "The weather was awful."
         self.assertEqual(intent_classifier.classify_deterministic(text), "query_weather")
+        # Online this lane no longer executes weather at all — it hands the turn
+        # to the reply call, which will not call the weather tool for a past-tense
+        # statement. The evidence regex is still the filter OFFLINE, where the
+        # lane claims and nothing else would stop it.
         self.assertEqual(
             interaction._intent_execution_block_reason(
                 "query_weather",
                 text=text,
                 context={},
             ),
-            "missing_weather_query_evidence",
+            "tool_router_owns_action",
         )
-        self.assertIsNone(
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertEqual(
+                interaction._intent_execution_block_reason(
+                    "query_weather",
+                    text=text,
+                    context={},
+                ),
+                "missing_weather_query_evidence",
+            )
+        # The genuine question is handed to the reply call online, and still
+        # claimed by the lane offline — the point is that the STATEMENT and the
+        # QUESTION are no longer distinguished by a regex on the online path.
+        self.assertEqual(
             interaction._intent_execution_block_reason(
                 "query_weather",
                 text="What's the weather outside?",
                 context={},
-            )
+            ),
+            "tool_router_owns_action",
         )
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertIsNone(
+                interaction._intent_execution_block_reason(
+                    "query_weather",
+                    text="What's the weather outside?",
+                    context={},
+                )
+            )
 
     def test_deterministic_intent_classifier_never_calls_llm_fallback(self):
         from intelligence import intent_classifier

@@ -2758,6 +2758,30 @@ TOOL_ROUTER_OWNED_ACTIONS = frozenset({
     "performance.body_beat",
     "performance.mood_pose",
     "performance.impersonate",
+    # Stage 1 of the same migration: the intent_classifier keyword nets, the
+    # largest remaining first-claim lane. Measured with classify_deterministic on
+    # this checkout — "did you see the game last night" -> query_what_do_you_see,
+    # "I've been running a lot lately" -> query_uptime, "help me understand what
+    # you meant" -> query_memory. All three ALSO satisfy this module's evidence
+    # regexes, so they executed: Rex answered a football question by describing
+    # his room and a fitness remark with his uptime, and the model never saw the
+    # turn. Every one of these actions has been a LIVE tool since Phase 1/2, so
+    # the fix is not new plumbing — it is getting the regex out of the doorway.
+    #
+    # time.query and date.query are deliberately NOT here. Their handlers answer
+    # with ZERO LLM calls, so demoting them would trade Rex's fastest answer for a
+    # model round trip and buy nothing: no time/date misfire was measured, the
+    # nets carry explicit guards, and the tool already catches what they miss.
+    # Same reasoning that keeps command_parser.EXACT_COMMANDS its own lane.
+    "weather.query",
+    "status.capabilities",
+    "status.uptime",
+    "status.battery",
+    "vision.describe_scene",
+    "identity.who_is_speaking",
+    "memory.query",
+    "music.play",
+    "music.options",
 })
 
 
@@ -3043,6 +3067,21 @@ _SELF_QUERY_SKIP_INTENTS = {
     "query_who_is_speaking": "identity.who_is_speaking",
 }
 
+# Stage 1 additions, kept SEPARATE from the map above on purpose: these skip the
+# router only while tool_router_owns() says yes, so TOOL_ROUTER_LIVE_ENABLED=False
+# and offline mode route these turns exactly as they did pre-migration — which is
+# what makes the kill switch a true revert rather than a partial one. Measured on
+# this checkout, all four pay the ~0.8s JSON-prose call today and then get
+# answered by the deterministic lane anyway: "play some jazz", "what kind of music
+# can you play", "help me understand what you meant", "did you see the game last
+# night".
+_TOOL_ROUTED_SKIP_INTENTS = {
+    "query_what_do_you_see": "vision.describe_scene",
+    "query_memory": "memory.query",
+    "play_music": "music.play",
+    "query_music_options": "music.options",
+}
+
 
 def _deterministic_self_query_intent(text: str, context: dict[str, Any]) -> str | None:
     """Return the deterministic self-knowledge intent claiming this turn, if any.
@@ -3063,18 +3102,33 @@ def _deterministic_self_query_intent(text: str, context: dict[str, Any]) -> str 
         intent = intent_classifier.classify_deterministic(text)
     except Exception:
         return None
-    if intent not in _SELF_QUERY_SKIP_INTENTS:
+    if intent not in _SELF_QUERY_SKIP_INTENTS and intent not in _TOOL_ROUTED_SKIP_INTENTS:
         return None
-    action = _SELF_QUERY_SKIP_INTENTS[intent]
-    if action is not None:
-        evidence_reason = missing_required_evidence_reason(
-            text,
-            ActionDecision(action=action, confidence=0.94),
-            context=context,
-        )
-        if evidence_reason:
-            return None
-    return intent
+    # A compound turn that ALSO asks for a game keeps full routing. game.start is
+    # not a live tool yet, so skipping the router is the only thing standing
+    # between "what's the weather? let's play trivia" and a weather answer with no
+    # game.
+    if _GAME_START_REQUEST_RE.search(text) or _GAME_STOP_REQUEST_RE.search(text):
+        return None
+    if intent in _SELF_QUERY_SKIP_INTENTS:
+        action = _SELF_QUERY_SKIP_INTENTS[intent]
+        # Once the tool router owns the action, this evidence check is not a safety
+        # property — it is a latency tax. The decision is conversation.reply either
+        # way; the stricter regex only decides whether we pay the ~0.8s JSON-prose
+        # call on the way there. Offline / kill switch off, tool_router_owns is
+        # False and the check runs exactly as before — there the intent lane still
+        # CLAIMS, so the stricter regex is the only thing keeping "my coffee's
+        # cold" off the weather feed.
+        if action is not None and not tool_router_owns(action):
+            evidence_reason = missing_required_evidence_reason(
+                text,
+                ActionDecision(action=action, confidence=0.94),
+                context=context,
+            )
+            if evidence_reason:
+                return None
+        return intent
+    return intent if tool_router_owns(_TOOL_ROUTED_SKIP_INTENTS[intent]) else None
 
 
 def _clearly_conversational(text: str, context: dict[str, Any]) -> bool:

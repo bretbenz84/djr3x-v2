@@ -8229,13 +8229,28 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             }
         }
 
+        # Since the Stage 1 demotion (2026-08-13) music.play is tool-router-owned,
+        # so the reply call decides and this rail returns conversation.reply. The
+        # SAFETY direction is unchanged and still pinned below: a bare genre answer
+        # under this pending question must never start playback.
         routed = action_router._apply_context_overrides(
-            decision,
-            "play classical music",
-            context,
+            decision, "play classical music", context,
         )
+        self.assertEqual(routed.action, "conversation.reply")
 
-        self.assertEqual(routed.action, "music.play")
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertEqual(
+                action_router._apply_context_overrides(
+                    decision, "play classical music", context,
+                ).action,
+                "music.play",
+            )
+            self.assertEqual(
+                action_router._apply_context_overrides(
+                    decision, "classical music", context,
+                ).action,
+                "conversation.reply",
+            )
 
     def test_intent_classifier_does_not_treat_music_mention_as_options_query(self):
         from intelligence import intent_classifier
@@ -8474,13 +8489,22 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             reason="person memory question",
         )
 
+        # memory.query is tool-router-owned since Stage 1 (2026-08-13) — the reply
+        # call answers person-memory questions now. Offline the rail still keeps
+        # it as memory.query rather than downgrading it to general knowledge,
+        # which is the property this test was written for.
         routed = action_router._apply_context_overrides(
-            decision,
-            "What do you know about my dad?",
-            {},
+            decision, "What do you know about my dad?", {},
         )
+        self.assertEqual(routed.action, "conversation.reply")
 
-        self.assertEqual(routed.action, "memory.query")
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertEqual(
+                action_router._apply_context_overrides(
+                    decision, "What do you know about my dad?", {},
+                ).action,
+                "memory.query",
+            )
 
     def test_router_downgrades_named_day_as_date_query(self):
         from intelligence import action_router

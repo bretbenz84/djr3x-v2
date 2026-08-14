@@ -167,6 +167,7 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_allowlist_result="allowed",
                 expected_legacy_command=None,
                 expected_final_path="router_takeover.music.options",
+                offline=True,  # see RouterReplayCase.offline
             ),
             RouterReplayCase(
                 utterance="skip this",
@@ -181,6 +182,7 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_allowlist_result="allowed",
                 expected_legacy_command="vision_describe",
                 expected_final_path="router_takeover.vision.describe_scene",
+                offline=True,  # see RouterReplayCase.offline
             ),
             RouterReplayCase(
                 utterance="who is speaking?",
@@ -188,6 +190,7 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_allowlist_result="allowed",
                 expected_legacy_command=None,
                 expected_final_path="router_takeover.identity.who_is_speaking",
+                offline=True,  # see RouterReplayCase.offline
             ),
             RouterReplayCase(
                 utterance="what do you remember about me?",
@@ -195,6 +198,7 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_allowlist_result="allowed",
                 expected_legacy_command="memory_review",
                 expected_final_path="router_takeover.memory.query",
+                offline=True,  # see RouterReplayCase.offline
             ),
             RouterReplayCase(
                 utterance="what do you know about jazz?",
@@ -274,6 +278,7 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_legacy_command=None,
                 expected_final_path="router_takeover.music.play",
                 args={"music_query": "jazz"},
+                offline=True,  # see RouterReplayCase.offline
             ),
             RouterReplayCase(
                 utterance="forget I like Star Wars",

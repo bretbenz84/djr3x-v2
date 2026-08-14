@@ -707,6 +707,89 @@ class HumorPerformanceToolMigrationTest(unittest.TestCase):
         perf.assert_not_called()
 
 
+class IntentClassifierDemotionTest(unittest.TestCase):
+    """The keyword nets were the largest remaining first-claim lane."""
+
+    # Each of these EXECUTED before the demotion, and each also satisfied the
+    # evidence gate, so nothing downstream was going to stop them.
+    MISFIRES = [
+        ("did you see the game last night", "query_what_do_you_see"),
+        ("I've been running a lot lately", "query_uptime"),
+        ("help me understand what you meant", "query_memory"),
+        ("my coffee's cold", "query_weather"),
+    ]
+
+    def test_loose_nets_are_handed_to_the_reply_call(self):
+        from intelligence import intent_classifier
+
+        for text, intent in self.MISFIRES:
+            self.assertEqual(intent_classifier.classify_deterministic(text), intent, text)
+            self.assertEqual(
+                interaction._intent_execution_block_reason(intent, text=text),
+                "tool_router_owns_action",
+                text,
+            )
+
+    def test_zero_llm_handlers_keep_their_instant_lane(self):
+        # time/date answer with NO model call, so demoting them would trade Rex's
+        # fastest answer for a round trip and buy nothing.
+        from intelligence import intent_classifier
+
+        for text, intent in (("what time is it", "query_time"),
+                             ("what's the date", "query_date")):
+            self.assertEqual(intent_classifier.classify_deterministic(text), intent, text)
+            self.assertIsNone(
+                interaction._intent_execution_block_reason(intent, text=text), text
+            )
+
+    def test_offline_the_intent_lane_claims_as_before(self):
+        from intelligence import intent_classifier
+
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            for text in ("what do you see", "play some jazz", "what's your battery"):
+                intent = intent_classifier.classify_deterministic(text)
+                self.assertIsNone(
+                    interaction._intent_execution_block_reason(intent, text=text), text
+                )
+
+    def test_owned_intents_no_longer_pay_the_json_router_call(self):
+        # The stricter evidence regex used to decide whether to burn ~0.8s on the
+        # way to the same conversation.reply.
+        for text in ("something about the weather maybe", "play some jazz",
+                     "what do you remember about me?", "what do you see?"):
+            with mock.patch("intelligence.llm_compat.create") as create:
+                decision = action_router.decide(text, {})
+            self.assertEqual(decision.action, "conversation.reply", text)
+            self.assertFalse(create.called, text)
+
+    def test_who_is_speaking_tool_gets_biometric_evidence(self):
+        # The tool path was the only caller not threading raw_best_* through, so
+        # a tool-routed "who's speaking?" always took the no-match branch.
+        with mock.patch.object(interaction, "_current_turn_speaker_evidence",
+                               {"raw_best_id": 7, "raw_best_name": "Bret",
+                                "raw_best_score": 0.91}), \
+             mock.patch.object(interaction, "_handle_classified_intent",
+                               return_value="ok") as handler, \
+             mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            interaction._execute_tool_routed_action(
+                "identity.who_is_speaking", {}, "who's speaking?", None
+            )
+        self.assertTrue(handler.called)
+        kwargs = handler.call_args.kwargs
+        self.assertEqual(kwargs.get("raw_best_id"), 7)
+        self.assertEqual(kwargs.get("raw_best_name"), "Bret")
+        self.assertAlmostEqual(kwargs.get("raw_best_score"), 0.91)
+
+    def test_compound_game_turn_keeps_full_routing(self):
+        # game.start is not a live tool yet, so skipping the router would answer
+        # the weather half and silently drop the game.
+        self.assertIsNone(
+            action_router._deterministic_self_query_intent(
+                "what's the weather? let's play trivia", {}
+            )
+        )
+
+
 class LegacyMemoryWriteGateTest(unittest.TestCase):
     """Unmapped legacy keys skipped the evidence check entirely."""
 

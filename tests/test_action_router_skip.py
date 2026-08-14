@@ -42,9 +42,11 @@ class DeterministicSkipTest(_LlmGuardMixin):
             self.assertEqual(decision.action, "conversation.reply", text)
             self.assertIn("deterministic", decision.reason, text)
 
-    def test_action_cues_keep_the_llm_router(self):
+    def test_action_cues_without_an_owned_intent_keep_the_llm_router(self):
+        # Cue words that do NOT resolve to a tool-router-owned intent still pay
+        # the JSON-prose call. Games and the bare look/song phrasings are the
+        # families still on that lane (games migrate in Stage 3).
         for text in (
-            "something about the weather maybe",
             "let's do that trivia thing again",
             "could you look over there",
             "I want to hear a song",
@@ -90,12 +92,16 @@ class SelfQuerySkipTest(_LlmGuardMixin):
             self.assertEqual(decision.action, "conversation.reply", text)
             self.assertIn("self-query", decision.reason, text)
 
-    def test_loose_intent_claim_without_evidence_keeps_the_llm(self):
-        # classify_deterministic says query_weather, but the router's stricter
-        # evidence regex disagrees — same outcome the downstream execution gate
-        # would enforce, so full routing must stay on.
-        _d, llm_calls = self._decide_with_llm_guard("something about the weather maybe")
-        self.assertEqual(llm_calls, 1)
+    def test_loose_intent_claim_skips_the_llm_once_the_tool_owns_it(self):
+        # Was: classify_deterministic says query_weather, the router's stricter
+        # regex disagrees, so full routing stayed on. Since the Stage 1 demotion
+        # (2026-08-13) weather.query is tool-router-owned, so that stricter regex
+        # is no longer a safety property on this lane — it only decided whether to
+        # pay ~0.8s on the way to the same conversation.reply. The reply call now
+        # makes the call for free.
+        decision, llm_calls = self._decide_with_llm_guard("something about the weather maybe")
+        self.assertEqual(llm_calls, 0)
+        self.assertEqual(decision.action, "conversation.reply")
 
     def test_active_game_blocks_the_self_query_skip(self):
         # Jeopardy answers are phrased "what is ..." — game.answer must win.
@@ -108,11 +114,26 @@ class SelfQuerySkipTest(_LlmGuardMixin):
             _d, llm_calls = self._decide_with_llm_guard("What day is it?")
         self.assertEqual(llm_calls, 1)
 
-    def test_music_and_memory_intents_still_route(self):
-        # Deliberately excluded from the skip: router owns args / disambiguation.
-        for text in ("play some jazz", "what music can you play?", "what do you remember about me?"):
-            _d, llm_calls = self._decide_with_llm_guard(text)
-            self.assertEqual(llm_calls, 1, text)
+    def test_music_and_memory_intents_are_handed_to_the_reply_call(self):
+        # Was: "deliberately excluded from the skip — router owns args /
+        # disambiguation." Since Stage 1 the reply call owns all four
+        # (vision/memory/music.play/music.options), so the router has nothing left
+        # to add and the extra round-trip is pure cost.
+        for text in ("play some jazz", "what music can you play?",
+                     "what do you remember about me?", "what do you see?"):
+            decision, llm_calls = self._decide_with_llm_guard(text)
+            self.assertEqual(llm_calls, 0, text)
+            self.assertEqual(decision.action, "conversation.reply", text)
+
+    def test_offline_restores_the_pre_migration_routing(self):
+        from unittest import mock as _mock
+
+        with _mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            # Offline the intent lane CLAIMS again, so the stricter evidence regex
+            # is back to being the only filter — and a loose claim it rejects must
+            # keep full routing exactly as it did before the migration.
+            _d, llm_calls = self._decide_with_llm_guard("something about the weather maybe")
+            self.assertEqual(llm_calls, 1)
 
 
 if __name__ == "__main__":
