@@ -464,6 +464,10 @@ _animal_reacted_at: dict[str, float] = {}
 # cooldown keys on species:POSITION, so every new position was a "new" animal).
 _animal_species_reacted_at: dict[str, float] = {}
 _pending_animal_arrivals: dict[str, dict] = {}
+# Monotonic instant a directed-look report last described what Rex is pointed at.
+# See note_directed_look_reported: the report and the arrival remark are causally
+# coupled through world_state["animals"], not merely concurrent.
+_directed_look_reported_at: float = 0.0
 # Species-level PRESENCE ledger — the dynamic comings-and-goings bit (owner
 # 2026-08-03: "if the animal goes away and then comes back, he should mention it
 # as a joke; repeats can trigger more — but not too annoying"). Replaces the flat
@@ -841,6 +845,20 @@ def clear_directed_gaze_hold() -> None:
     """Release any directed-gaze hold so normal idle behavior resumes."""
     with _directed_gaze_hold_lock:
         _directed_gaze_hold.update({"until": 0.0, "direction": None, "started_at": 0.0})
+
+
+def _answering_a_directed_look() -> bool:
+    """True while the user's own "look over there" is still an open question.
+
+    A perception event that lands inside that window is a REPLY, not an
+    interruption — which is the whole difference between `salient` and
+    `reactive` at the governor.
+    """
+    try:
+        from intelligence import interaction as _intx  # lazy: interaction imports us
+        return bool(_intx.user_directed_look_active())
+    except Exception:
+        return False
 
 
 def request_face_acquisition_scan(reason: str = "startup") -> None:
@@ -2413,6 +2431,15 @@ def _fire_pending_animal_arrival_reaction() -> bool:
             _log.info("consciousness: pending furry remark dropped species=%s "
                       "(sibling furry species spoke first)", _fire_species)
             continue
+        # Dropped silently: Rex didn't spend a remark, so the presence ledger's
+        # session cap and _animal_species_reacted_at are deliberately untouched.
+        # The species stays marked present, so this won't re-stage on the next tick.
+        if _animal_remark_covered_by_report(animal, now):
+            _pending_animal_arrivals.pop(pending_key, None)
+            _log.info("consciousness: animal remark dropped species=%s "
+                      "(directed-look report already described this view)",
+                      _fire_species)
+            continue
         frame, line = _animal_reaction_frame_and_line(animal)
 
         _ep_species = (animal.get("species") or "creature")
@@ -2444,6 +2471,15 @@ def _fire_pending_animal_arrival_reaction() -> bool:
                 line,
             )
 
+        # An animal that shows up inside a commanded look is the ANSWER to that
+        # command. Field 2026-08-13: told "look down and to your left" at a dog on
+        # the floor, Rex detected it 3s in, composed the line, and the governor
+        # rejected it 46 consecutive times over 47 seconds — twice on gates that
+        # exist to pace UNPROMPTED chatter, while he sat silent. `salient` alone
+        # never cleared them, because the one gate that says "you asked a question,
+        # wait for the reply" only yields to `reactive`. Here the reply arrived
+        # through his own eyes.
+        _answers_look = _answering_a_directed_look()
         if _speak_async(
             line,
             frame.affect,
@@ -2452,9 +2488,43 @@ def _fire_pending_animal_arrival_reaction() -> bool:
                    f"{(animal.get('species') or 'creature').strip().lower()}"),
             on_spoke=_on_spoke,
             force_salient=True,
+            reactive=_answers_look,
         ):
+            if _answers_look:
+                _log.info(
+                    "consciousness: animal %s treated as reply to a directed look "
+                    "species=%s", _ep_kind, _fire_species,
+                )
             return True
     return False
+
+
+def note_directed_look_reported(when: Optional[float] = None) -> None:
+    """Mark that a directed-look report just described what Rex is pointed at.
+
+    624bddf made a commanded look REPORT the new view, and that report's vision call
+    publishes the animals it saw straight into world_state["animals"] — the same key
+    _stage_animal_arrivals reads. So the report doesn't merely race the arrival
+    remark, it CAUSES it: Rex says "a dog down there", the next tick stages a dog
+    arrival off his own description, and he greets the dog he just described.
+
+    Recorded here rather than fenced at the report's frame timestamp because the
+    staging happens AFTER the report — a cutoff taken when the frame was captured
+    would miss every duplicate it was meant to catch. _animal_remark_covered_by_report
+    reads this at fire time, which absorbs the tick lag.
+    """
+    global _directed_look_reported_at
+    _directed_look_reported_at = time.monotonic() if when is None else float(when)
+
+
+def _animal_remark_covered_by_report(pending: dict, now: float) -> bool:
+    """True when a directed-look report has already spoken for this sighting."""
+    reported_at = float(_directed_look_reported_at or 0.0)
+    if reported_at <= 0.0:
+        return False
+    grace = float(getattr(config, "DIRECTED_LOOK_REPORT_ANIMAL_GRACE_SECS", 6.0))
+    staged_at = float(pending.get("first_seen_at") or now)
+    return staged_at <= reported_at + grace
 
 
 # Scenery-change remark: a one-line "did we move?" when this run's startup scene differs
@@ -13667,7 +13737,7 @@ def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
     global _thread, _response_wait_until, _last_proactive_speech_at, _pending_departure_keys
     global _face_tracking_thread, _face_tracking_tracker
-    global _identity_prompt_reply_until
+    global _identity_prompt_reply_until, _directed_look_reported_at
     global _last_rex_utterance_text, _last_memory_hint_text, _last_memory_hint_at
     global _last_memory_hint_person_id
     global _recent_engaged_person_id, _recent_engaged_touch_at
@@ -13731,6 +13801,7 @@ def start() -> None:
     _animal_reacted_at.clear()
     _animal_species_reacted_at.clear()
     _pending_animal_arrivals.clear()
+    _directed_look_reported_at = 0.0
     _animal_presence.clear()
     _update_unknown_streak(False)   # reset unknown-face persistence streak
     _last_startle_sound_reaction_at = 0.0
@@ -13853,7 +13924,7 @@ def stop() -> None:
     """Stop the consciousness daemon thread and wait for it to exit."""
     global _thread, _response_wait_until, _last_rex_utterance_text
     global _face_tracking_thread, _face_tracking_tracker
-    global _identity_prompt_reply_until
+    global _identity_prompt_reply_until, _directed_look_reported_at
     global _last_memory_hint_text, _last_memory_hint_at, _last_memory_hint_person_id
     global _recent_engaged_person_id, _recent_engaged_touch_at
     global _last_pose_analysis_at
@@ -13882,6 +13953,7 @@ def stop() -> None:
     _animal_reacted_at.clear()
     _animal_species_reacted_at.clear()
     _pending_animal_arrivals.clear()
+    _directed_look_reported_at = 0.0
     _animal_presence.clear()
     _last_startle_sound_reaction_at = 0.0
     _last_notable_sound_reaction_at = 0.0

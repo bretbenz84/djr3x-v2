@@ -15171,6 +15171,20 @@ def _directed_context_fresh(now: Optional[float] = None) -> bool:
     return last_at > 0.0 and (now - last_at) <= ttl
 
 
+def user_directed_look_active(now: Optional[float] = None) -> bool:
+    """True while a look the USER commanded is still the open question.
+
+    Public because consciousness needs it: an animal that walks into frame during
+    a commanded look is the ANSWER to that command, not unsolicited chatter, and
+    the two are scored very differently. Deliberately NOT
+    `consciousness.directed_gaze_hold_active()` — that hold is also taken by
+    exploration and motion_agency for gazes nobody asked for. This context is
+    written only by the directed-look command handlers, and `found=True` clears
+    it, so it goes false the moment Rex has actually answered.
+    """
+    return _directed_context_fresh(now)
+
+
 def _reset_directed_look_context() -> None:
     _directed_look_context.update({
         "started_at": 0.0,
@@ -15539,6 +15553,15 @@ def _analyze_directed_view_once(
     )
     response = llm.get_response(prompt, person_id) or _fallback_directed_look_response(analysis)
     _speak_blocking(response)
+    # Rex has now said his piece about this view — so the animal-arrival remark that
+    # analyze_directed_attention just caused (it publishes what it saw into
+    # world_state["animals"], which is what stages arrivals) would be the same dog
+    # announced twice. Marked only here: the two early returns above are "I couldn't
+    # see anything", which describes nothing and so duplicates nothing.
+    try:
+        consciousness.note_directed_look_reported()
+    except Exception as exc:
+        _log.debug("directed-look report mark failed: %s", exc)
     return llm.clean_response_text(response)
 
 

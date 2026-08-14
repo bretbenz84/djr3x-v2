@@ -369,7 +369,29 @@ class ActionGovernor:
                 reasons.append("user_mid_sentence")
             if getattr(profile, "interaction_busy", False):
                 reasons.append("interaction_busy")
-            if getattr(profile, "suppress_proactive", False):
+            if getattr(profile, "suppress_proactive", False) and not (
+                _reactive and getattr(profile, "suppress_proactive_pacing_only", False)
+            ):
+                # suppress_proactive ORs three HARD conditions with two PACING ones
+                # (situation.py). The hard half is never waived here: user_mid_sentence
+                # and interaction_busy are their own reject reasons a few lines up, and
+                # QUIET/SLEEP/SHUTDOWN arrives as its own `can_speak` metadata — stamped
+                # on every governed candidate by governor_speech_metadata() and rejected
+                # below with no salient/reactive exemption, then re-checked by
+                # _can_speak() inside the deferred speak_fn. (SLEEP proves the gates are
+                # already separate: situation.py's state_suppresses is only QUIET and
+                # SHUTDOWN, so this reason never guarded SLEEP at all.) What's left —
+                # "Rex stopped talking
+                # <2s ago" / "the thread closed <5s ago" — is pure pacing, and pacing is
+                # exactly what `reactive` exists to waive. Without this split a reaction
+                # that IS the answer to a command starved: field 2026-08-13, a dog was
+                # detected 3s into a commanded "look down and to your left" and the
+                # remark was rejected 46 times across 47 seconds, twice on this reason
+                # alone with Rex silent and idle. A merely `salient` candidate still
+                # yields to pacing, so this is not a general over-talk loosening —
+                # and today the wave-back and room-change reactives speak with
+                # governed=False, so the only candidate that reaches this branch at
+                # all is an animal arriving during a commanded look.
                 reasons.append("situation_suppresses_proactive")
             if (
                 getattr(profile, "rapid_exchange", False)

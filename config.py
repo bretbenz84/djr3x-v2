@@ -2669,6 +2669,20 @@ DIRECTED_LOOK_HOLD_SECS = 25.0
 # face-greet and the "what am I looking for?" ladder come back with it).
 DIRECTED_LOOK_REPORT_VIEW = True
 
+# How long after a directed-look report an animal remark is treated as the SAME
+# sighting the report just described, and dropped unspoken.
+#
+# This is not paranoia about clock skew — the two paths are causally coupled. The
+# report's own vision call publishes the animals it saw into world_state["animals"]
+# (vision/scene.py, analyze_directed_attention), and world_state["animals"] is
+# exactly what _stage_animal_arrivals reads on the next consciousness tick. So a
+# commanded look at a dog MAKES the arrival it would then announce: without this
+# window Rex reports "a dog down there" and, a second later, "Well, hello, small
+# furry lifeform." One dog, two lines. Wide enough to cover the vision call, the
+# spoken report, and the tick that stages from it; short enough that a pet who
+# actually walks in afterwards still gets its own line.
+DIRECTED_LOOK_REPORT_ANIMAL_GRACE_SECS = 6.0
+
 # Wave gesture defaults for "wave to X".
 WAVE_COUNT = 3
 WAVE_STEP_QUS = 55

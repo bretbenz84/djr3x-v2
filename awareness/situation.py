@@ -52,6 +52,14 @@ class SituationProfile:
     being_discussed: bool           # Rex was referenced ABOUT-not-TO recently
     discussion_sentiment: str       # "positive" / "neutral" / "negative" of the last mention
     interaction_busy: bool          # interaction loop is recording/processing/responding
+    # suppress_proactive is an OR of five conditions with very different severities,
+    # and collapsing them lost the distinction every consumer actually needs. Three of
+    # them are HARD ("someone is talking", "a turn is in flight", "Rex is off") and two
+    # are PACING ("Rex just finished a line", "the thread just closed"). This flag is
+    # True only when the pacing half is the whole reason — the one case where a
+    # genuinely reactive move may still speak. It is never True unless
+    # suppress_proactive is. See action_governor._score.
+    suppress_proactive_pacing_only: bool = False
 
 
 class SituationAssessor:
@@ -227,13 +235,10 @@ class SituationAssessor:
             and (now - rex_stopped_at) < 2.0
         )
         state_suppresses = current_state in (State.QUIET, State.SHUTDOWN)
-        suppress_proactive = (
-            user_mid_sentence
-            or interaction_busy
-            or convo_just_ended
-            or rex_just_spoke
-            or state_suppresses
-        )
+        suppress_hard = user_mid_sentence or interaction_busy or state_suppresses
+        suppress_pacing = convo_just_ended or rex_just_spoke
+        suppress_proactive = suppress_hard or suppress_pacing
+        suppress_proactive_pacing_only = suppress_pacing and not suppress_hard
 
         # suppress_system_comments: conversation active OR speech within silence window
         sys_silence = getattr(config, "SYSTEM_COMMENT_SILENCE_SECS", 60)
@@ -272,6 +277,7 @@ class SituationAssessor:
             being_discussed=being_discussed,
             discussion_sentiment=discussion_sentiment,
             interaction_busy=interaction_busy,
+            suppress_proactive_pacing_only=suppress_proactive_pacing_only,
         )
 
 
