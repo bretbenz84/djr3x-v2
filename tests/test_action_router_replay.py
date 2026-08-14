@@ -17,6 +17,13 @@ class RouterReplayCase:
     args: dict = field(default_factory=dict)
     explicit_fast_path: bool = False
     active_game: bool = False
+    # humor.* / performance.* migrated to the live tool router 2026-08-13, so
+    # ONLINE their fast lane stands down and the reply call picks the tool. These
+    # cases still pin the OFFLINE lane, where the local model gets no tools and
+    # the deterministic classifier remains the only thing that performs
+    # (docs/tool_router_scope.md 2.4). The online contract is pinned separately in
+    # tests/test_regex_routing_guards.py::HumorPerformanceToolMigrationTest.
+    offline: bool = False
 
 
 class ActionRouterReplayTests(unittest.TestCase):
@@ -64,6 +71,7 @@ class ActionRouterReplayTests(unittest.TestCase):
         response = None
 
         with (
+            mock.patch("intelligence.connectivity.is_offline", return_value=case.offline),
             mock.patch.object(interaction, "_handle_classified_intent", return_value="classified response") as classified,
             mock.patch.object(interaction, "_execute_command", return_value="command response") as execute_command,
             mock.patch.object(interaction, "_speak_blocking", return_value=True),
@@ -226,6 +234,8 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_legacy_command=None,
                 expected_final_path="fast_local_takeover.performance.mood_pose",
                 explicit_fast_path=True,
+                offline=True,  # see RouterReplayCase.offline
+                
             ),
             RouterReplayCase(
                 utterance="remember what you see",
@@ -280,6 +290,8 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_legacy_command=None,
                 expected_final_path="fast_local_takeover.performance.body_beat",
                 explicit_fast_path=True,
+                offline=True,  # see RouterReplayCase.offline
+                
             ),
             RouterReplayCase(
                 utterance="look at this",

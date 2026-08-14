@@ -5239,6 +5239,21 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # executes directly; forget_person routes into the existing wipe-
     # confirmation flow and may only target the CURRENT speaker.
     "identity.name_correction", "memory.forget_person",
+    # Phase 2 humor + performance (2026-08-13). Deferred at Phase 1 because
+    # "their fast lanes work" — the routing audit (c7ef872) changed the answer:
+    # the regex lanes took 94.5% of all executions to the tool router's 8 of 440,
+    # and for these families the classifier IS the whole decision, so every
+    # phrasing outside the pattern list became prose ("give me a zinger", "be mean
+    # to me for a second", "pull a face" all classified as None). The reply call is
+    # already looking at the utterance — let it choose. Safety and args stay
+    # downstream: canonical_body_beat/canonical_mood_pose, the roast target/food
+    # rules, the refusal/narration guards (action_router
+    # .humor_performance_refusal_reason), the execute allowlist and confirmation.
+    # The deterministic classifiers are RETAINED for OFFLINE mode, where the local
+    # reply model is called with no tool surface (docs/tool_router_scope.md 2.4).
+    "humor.tell_joke", "humor.roast", "humor.free_bit",
+    "performance.dj_bit", "performance.body_beat", "performance.mood_pose",
+    "performance.impersonate",
 )
 
 # Seconds the "say yes, remember this scene" confirmation slot stays open.

@@ -113,9 +113,9 @@ class StartShadowTest(unittest.TestCase):
 
 
 class LiveCutoverTest(unittest.TestCase):
-    """Phase 1: the live subset rides the lean reply call as native tools."""
+    """Phase 1+2: the live subset rides the lean reply call as native tools."""
 
-    def test_live_tools_are_the_phase1_subset_only(self):
+    def test_live_tools_are_the_expected_subset_only(self):
         tools = tool_router.live_reply_tools()
         names = {t["function"]["name"] for t in tools}
         self.assertEqual(names, {
@@ -125,7 +125,43 @@ class LiveCutoverTest(unittest.TestCase):
             "event_cancel", "memory_query", "identity_who_is_speaking",
             "music_play", "music_stop", "music_skip", "vision_snapshot",
             "identity_name_correction", "memory_forget_person",
+            # Phase 2 (2026-08-13): humor + performance. Their regex fast lanes
+            # "worked", which is what the routing audit disputed — the classifier
+            # decided the whole turn and anything off-pattern became prose.
+            "humor_tell_joke", "humor_roast", "humor_free_bit",
+            "performance_dj_bit", "performance_body_beat",
+            "performance_mood_pose", "performance_impersonate",
         })
+
+    def test_physical_performance_tools_carry_canonical_enums(self):
+        """A free-text beat/pose would reach the servos as a shrug.
+
+        performance_plan coerces an unrecognized name to thinking_tilt/thinking,
+        so the schema is where an invented gesture has to become impossible.
+        """
+        from intelligence import performance_plan
+
+        byname = {t["function"]["name"]: t["function"] for t in tool_router.live_reply_tools()}
+        beat = byname["performance_body_beat"]["parameters"]
+        self.assertEqual(
+            set(beat["properties"]["body_beat"]["enum"]),
+            set(performance_plan.BODY_BEAT_NAMES),
+        )
+        self.assertEqual(beat["required"], ["body_beat"])
+        pose = byname["performance_mood_pose"]["parameters"]
+        self.assertEqual(
+            set(pose["properties"]["mood"]["enum"]),
+            set(performance_plan.MOOD_POSE_NAMES),
+        )
+
+    def test_impersonate_arg_is_target_across_every_router(self):
+        # The tool def said "who" while ActionSpec, the JSON-prose prompt and the
+        # regex classifier all said target — the same arg-name drift class as the
+        # documented tool_args/args bug.
+        byname = {t["function"]["name"]: t["function"] for t in tool_router.live_reply_tools()}
+        params = byname["performance_impersonate"]["parameters"]
+        self.assertIn("target", params["properties"])
+        self.assertEqual(params["required"], ["target"])
 
     def test_kill_switch_detaches_all_tools(self):
         with mock.patch.object(config, "TOOL_ROUTER_LIVE_ENABLED", False, create=True):

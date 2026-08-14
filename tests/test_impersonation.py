@@ -500,11 +500,18 @@ class PreDialogueGateTakeoverTest(unittest.TestCase):
     def tearDown(self):
         self.itn._pending_impersonation_capture = None
 
-    def test_takeover_fires_and_opens_capture_slot(self):
+    def test_offline_takeover_fires_and_opens_capture_slot(self):
         # End-to-end through the REAL resolve_target: known speaker, no stored
         # ref → the takeover must speak the capture prompt and open the slot.
+        #
+        # OFFLINE lane since 2026-08-13: performance.impersonate migrated to the
+        # live tool router, so online this pre-dialogue-gate takeover stands down
+        # (the reply call sees the utterance whether or not the dialogue act bound
+        # the turn as an answer). With the link down there is no tool surface, so
+        # this takeover is still what keeps "impersonate me" out of an answer frame.
         from audio import local_tts
-        with mock.patch.object(self.itn, "_speak_blocking") as speak, \
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True), \
+             mock.patch.object(self.itn, "_speak_blocking") as speak, \
              mock.patch.object(local_tts, "is_available", return_value=True), \
              mock.patch("features.impersonation.person_ref", return_value=None):
             result = self.itn._explicit_impersonation_takeover(
@@ -515,6 +522,19 @@ class PreDialogueGateTakeoverTest(unittest.TestCase):
         slot = self.itn._pending_impersonation_capture
         self.assertIsNotNone(slot)
         self.assertEqual(slot["person_id"], 1)
+
+    def test_online_takeover_stands_down_for_the_tool_router(self):
+        """Online the reply call owns it — this lane must not open a slot."""
+        from audio import local_tts
+        with mock.patch.object(self.itn, "_speak_blocking") as speak, \
+             mock.patch.object(local_tts, "is_available", return_value=True), \
+             mock.patch("features.impersonation.person_ref", return_value=None):
+            result = self.itn._explicit_impersonation_takeover(
+                "impersonate me", person_id=1, person_name="Bret",
+            )
+        self.assertIsNone(result)
+        speak.assert_not_called()
+        self.assertIsNone(self.itn._pending_impersonation_capture)
 
     def test_takeover_ignores_non_requests(self):
         self.assertIsNone(

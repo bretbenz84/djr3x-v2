@@ -33,6 +33,7 @@ from typing import Any, Optional
 import apikeys
 import config
 from intelligence.action_router import ACTION_SPECS
+from intelligence import performance_plan
 from openai import OpenAI
 
 _log = logging.getLogger(__name__)
@@ -45,6 +46,15 @@ _client = _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "to
 
 _NUM = {"type": "number"}
 _STR = {"type": "string"}
+
+# The physical-performance enums are GENERATED from performance_plan, never
+# retyped here. Both executors coerce an unrecognized name to a default
+# (canonical_body_beat(beat) or "thinking_tilt"), so a free-text arg lets the
+# model invent "spin the mystery servo" and Rex answers with a head tilt — which
+# reads as broken hardware, not a bad schema. Generating the list also keeps it
+# from rotting the day a new beat is added to performance_plan.
+_BODY_BEATS = sorted(performance_plan.BODY_BEAT_NAMES)
+_MOOD_POSES = sorted(performance_plan.MOOD_POSE_NAMES)
 
 _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     "conversation.reply": (
@@ -75,19 +85,55 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     "identity.introduce_person": (
         "The user introduces someone new who is present.",
         {"person_name": _STR}, []),
-    "humor.tell_joke": ("An explicit request for a joke.", {}, []),
+    # humor.* / performance.* went LIVE 2026-08-13 (config.TOOL_ROUTER_LIVE_ACTIONS).
+    # These hints carry the negative examples the regex families had learned the
+    # hard way, because the model is now the only thing standing between banter
+    # and a performance.
+    "humor.tell_joke": (
+        "An explicit request for a joke, pun, or one-liner — never banter that "
+        "merely MENTIONS jokes.", {}, []),
     "humor.roast": (
-        "An explicit invitation to roast someone.",
-        {"target": {**_STR, "description": "who to roast; empty = the speaker"}}, []),
-    "humor.free_bit": ("An explicit request to 'do a bit' / riff freely.", {}, []),
-    "performance.dj_bit": ("An explicit request for a DJ bit/announcement.", {}, []),
-    "performance.body_beat": ("An explicit request to dance/move to the music.", {}, []),
+        "An explicit invitation for Rex to roast or tease a PERSON ('roast me', "
+        "'roast Dave') — never narration or an idiom ('this heat could roast a "
+        "turkey' fired the regex, audit 2026-08-13).",
+        {"target": {**_STR, "description":
+                    "'speaker' for the person talking, 'room' for everyone "
+                    "present, otherwise the name they said; empty = the speaker"}},
+        []),
+    "humor.free_bit": (
+        "An open 'be funny' request ('say something funny', 'do a bit', 'make me "
+        "laugh') with no joke format and no roast target.", {}, []),
+    "performance.dj_bit": (
+        "A request for DJ patter, hype, or a station-break line — music_play is "
+        "the tool that actually starts audio.", {}, []),
+    # body_beat/mood_pose take a CANONICAL name: performance_plan coerces anything
+    # it doesn't recognize to thinking_tilt/thinking, so a free-text arg would let
+    # an invented pose reach the servos as a shrug. The enum makes that
+    # unrepresentable; interaction._router_execution_block_reason is the backstop
+    # that declines rather than performing the default.
+    "performance.body_beat": (
+        "A request for ONE named physical gesture — pick a beat from the enum, "
+        "and if nothing listed fits, call no tool rather than inventing a name.",
+        {"body_beat": {"type": "string", "enum": _BODY_BEATS,
+                       "description": "the beat to perform"}},
+        ["body_beat"]),
     "performance.mood_pose": (
-        "An explicit request to strike a pose/act out a mood.",
-        {"mood": _STR}, []),
+        "A request to physically ACT OUT an emotion ('act embarrassed', 'look "
+        "annoyed') — pick a mood from the enum, and if nothing listed fits, call "
+        "no tool.",
+        {"mood": {"type": "string", "enum": _MOOD_POSES,
+                  "description": "the emotion to pose"}},
+        ["mood"]),
+    # The arg is "target", not "who": ActionSpec, the JSON-prose router prompt and
+    # the regex classifier all say args.target, and the executor reads target
+    # first. One arg name across all three routers — arg-name drift is the same
+    # failure class as the tool_args/args bug documented below.
     "performance.impersonate": (
-        "An explicit request to impersonate someone.",
-        {"who": {**_STR, "description": "person to impersonate; 'me' = the speaker"}}, ["who"]),
+        "An explicit request to impersonate, imitate, or 'talk like' someone — a "
+        "passing compliment about an impression is not one.",
+        {"target": {**_STR, "description":
+                    "who to imitate: 'speaker' for the person talking, "
+                    "otherwise the name they said"}}, ["target"]),
     "game.start": (
         "Start a verbal game (Jeopardy, Trivia, I Spy, 20 Questions, Word Association).",
         {"game": _STR}, ["game"]),
@@ -184,6 +230,9 @@ _DEFAULT_LIVE_ACTIONS = (
     "event.cancel", "memory.query", "identity.who_is_speaking",
     "music.play", "music.stop", "music.skip", "vision.snapshot",
     "identity.name_correction", "memory.forget_person",
+    "humor.tell_joke", "humor.roast", "humor.free_bit",
+    "performance.dj_bit", "performance.body_beat", "performance.mood_pose",
+    "performance.impersonate",
 )
 
 

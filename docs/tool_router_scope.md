@@ -1,5 +1,48 @@
 # Tool-Calling Router — Scope & Migration Plan
 
+Status: PHASE 2 (humor + performance) LIVE 2026-08-13. The routing audit
+(commit c7ef872) measured the shipped split and it was not close: the regex
+lanes took **416 of 440** non-conversation executions (94.5%) across 1,141
+audited turns, while the tool router took **8**. Phase 1's reasoning for
+deferring humor/character — "their fast lanes work" — did not survive contact
+with that data: for these families the classifier WAS the whole decision, so
+every phrasing outside the pattern list became prose ("give me a zinger", "be
+mean to me for a second", "pull a face" all classified as None), and the
+matches only stayed safe because guards were hand-written one field incident at
+a time.
+
+What Phase 2 changed:
+- `humor.*` (tell_joke, roast, free_bit) and `performance.*` (dj_bit,
+  body_beat, mood_pose, impersonate) are in `TOOL_ROUTER_LIVE_ACTIONS`.
+- The classifiers are NOT deleted. Online they are a DETECTOR, not a claim:
+  `action_router.tool_router_owns()` converts a match into conversation.reply,
+  which skips the ~0.8s JSON-prose call AND lets the reply call pick the tool —
+  so the migration costs zero extra round-trips.
+- The evidence gate for these seven is now GUARDS-ONLY
+  (`humor_performance_refusal_reason`). Re-running the classifier as "evidence"
+  had capped the tool router at exactly the patterns it was migrated off — 25 of
+  31 valid off-pattern requests were vetoed. The refusal/narration/description
+  guards remain and now cover `humor.tell_joke` and `performance.impersonate`,
+  neither of which had them before.
+- `performance.body_beat` / `mood_pose` schemas carry ENUMS generated from
+  `performance_plan`; previously body_beat took no parameters at all, so the
+  model could not name the gesture and `plan_for_action` defaulted to a head
+  tilt. `performance.impersonate`'s arg was renamed `who` -> `target` to match
+  every other router.
+- OFFLINE keeps the deterministic classifiers (§2.4) — the local reply model is
+  called with no tool surface, so with the link down they are the only thing
+  that still performs. `TOOL_ROUTER_LIVE_ENABLED` reverts everything instantly.
+
+`character.preference_query` was RETIRED entirely on 2026-08-13 (commit
+6267d38) rather than migrated: an opinion question is conversation. Its stored
+tastes became lean-brain context (`rex_preferences.prompt_lines`).
+
+Remaining: motion (Phase 3, deliberately last), then Phase 4 cleanup — delete
+the JSON-prose fallback router and the `_clearly_conversational` cue-word skip,
+which now only exist to avoid a call that no longer needs avoiding.
+
+Phase 1 record follows.
+
 Status: PHASE 1 LIVE 2026-08-01 — the seven intent-backed actions (time/date/
 weather/capabilities/uptime/describe-scene/music-options) ride the lean reply
 call as native tools (`TOOL_ROUTER_LIVE_ENABLED`, instant kill switch): the

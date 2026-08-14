@@ -13670,6 +13670,53 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
         _tool_routed_path.append(f"tool_router.{action}")
         return resp
 
+    if action in _PLAN_ROUTER_ACTIONS or action == "performance.impersonate":
+        # humor.* / performance.* (migrated 2026-08-13). Same executors the regex
+        # fast lane calls — only the door changed. Two things this branch has to
+        # get right or the migration is worse than not doing it:
+        #   * The evidence gate is GUARDS-ONLY for these actions now
+        #     (action_router.humor_performance_refusal_reason), so passing text is
+        #     both safe and necessary: safe because the positive-pattern ceiling
+        #     that used to veto "give me a zinger" is gone, necessary because the
+        #     refusal/narration guards from c7ef872 must still stop a model that
+        #     decides to roast on "they mock me at school for my accent".
+        #   * impersonate is NOT a plan-pipeline action — plan_for_action returns
+        #     None for it, so _handle_router_performance_action would reject it as
+        #     "unsupported_performance_action" (the trap the fast lane documents
+        #     at 2026-07-19). It gets its own executor call.
+        # Arg canonicalization stays in _router_execution_block_reason, which
+        # rejects an invented beat/pose (unknown_body_beat / unknown_mood_pose)
+        # rather than letting performance_plan coerce it to a head tilt.
+        decision = action_router.ActionDecision(
+            action=action, confidence=1.0, args=dict(args or {}),
+            requires_confirmation=False, reason="tool_router",
+        )
+        block = _router_execution_block_reason(decision, text=text)
+        if block:
+            _log.info("[tool_router] %s declined: %s args=%s", action, block, args)
+        else:
+            try:
+                if action == "performance.impersonate":
+                    resp = _handle_router_impersonation(
+                        decision, text, person_id,
+                        _tool_router_person_name(person_id),
+                        _router_arg_text(decision, "target", "person", "who", "name"),
+                    )
+                else:
+                    resp = _handle_router_performance_action(decision, text, person_id)
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+                resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        # Declined (refusal guard, unknown pose name, failed generation) — answer
+        # as conversation so the turn is never silent, same tail as event.cancel.
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action in ("music.stop", "music.skip"):
         key = "dj_stop" if action == "music.stop" else "dj_skip"
         try:
@@ -18987,6 +19034,20 @@ def _explicit_impersonation_takeover(
     decision = action_router.classify_explicit_impersonation(text)
     if decision is None:
         return None
+    if action_router.tool_router_owns(decision.action):
+        # performance.impersonate went live on the tool router 2026-08-13. The
+        # pre-dialogue-gate breakout this function exists for is not needed
+        # online any more: the reply call sees the utterance whether or not the
+        # dialogue act bound the turn as an answer, so "impersonate me" inside an
+        # answer_to_rex frame reaches the model instead of being swallowed (the
+        # 2026-07-19 failure this takeover was written for). The call site stays
+        # exactly where it is — offline that ordering is still the only thing
+        # keeping the command out of the answer frame.
+        _log.info(
+            "[impersonation] explicit request handed to the tool router text=%r",
+            text,
+        )
+        return None
     _router_audit_note_decision(router_audit, decision)
     if not _router_decision_executable(decision, text=text):
         return None
@@ -20148,6 +20209,19 @@ def _handle_fast_local_takeover(
 ) -> Optional[str]:
     """Handle obvious local control commands before the blocking router call."""
     humor_decision = action_router.classify_explicit_humor(text)
+    if humor_decision is not None and action_router.tool_router_owns(
+        humor_decision.action
+    ):
+        # Migrated to the live tool router 2026-08-13: online the bit belongs to
+        # the reply call this turn is about to make anyway, so this lane stands
+        # down and lets the turn fall through to conversation. Nulling the
+        # decision (rather than skipping the classifier call) keeps the guards it
+        # carries — negation, narration, the roast food stoplist — as the thing
+        # that decides there is no bit here at all. Offline, or with the kill
+        # switch off, tool_router_owns is False and this lane performs exactly as
+        # before: the local reply model gets no tools, so nothing downstream
+        # would catch the handoff.
+        humor_decision = None
     if humor_decision is not None:
         _router_audit_note_decision(router_audit, humor_decision)
     if _router_decision_executable(humor_decision):
@@ -20158,6 +20232,12 @@ def _handle_fast_local_takeover(
             router_audit=router_audit,
         )
     performance_decision = action_router.classify_explicit_performance(text)
+    if performance_decision is not None and action_router.tool_router_owns(
+        performance_decision.action
+    ):
+        # Same handoff as humor above — covers dj_bit / body_beat / mood_pose AND
+        # the performance.impersonate branch below.
+        performance_decision = None
     if performance_decision is not None:
         _router_audit_note_decision(router_audit, performance_decision)
     if _router_decision_executable(performance_decision):

@@ -575,6 +575,138 @@ class RexOpinionContextTest(unittest.TestCase):
         self.assertEqual(lean_brain._taste_lines(""), [])
 
 
+class HumorPerformanceToolMigrationTest(unittest.TestCase):
+    """The classifier was the whole decision; now it is only a detector."""
+
+    OFF_PATTERN = [
+        ("humor.tell_joke", "Give me a zinger."),
+        ("humor.tell_joke", "Know any good ones?"),
+        ("humor.free_bit", "Hit me with something."),
+        ("humor.free_bit", "Do that thing you do."),
+        ("humor.roast", "Be mean to me for a second."),
+        ("humor.roast", "Let me have it."),
+        ("performance.dj_bit", "Give us some hype."),
+        ("performance.dj_bit", "Work the crowd."),
+        ("performance.body_beat", "Look like you just saw a ghost."),
+        ("performance.mood_pose", "Pull a face."),
+        ("performance.mood_pose", "Show me shocked."),
+        ("performance.impersonate", "Sound like my brother."),
+    ]
+
+    REFUSALS = [
+        ("humor.roast", "Don't roast me."),
+        ("humor.roast", "They mock me at school for my accent."),
+        ("humor.tell_joke", "Don't tell me a joke."),
+        ("humor.tell_joke", "He'd always tell me a joke before bed."),
+        ("humor.tell_joke", "That was a joke."),
+        ("performance.mood_pose", "Don't be sad."),
+        ("performance.body_beat", "You look sad today, buddy."),
+        ("performance.body_beat", "You're sad."),
+        ("performance.body_beat", "I agree with you."),
+        ("performance.impersonate", "That was a good impression."),
+        ("performance.impersonate", "Do you like my voice?"),
+        ("performance.impersonate", "Don't impersonate me."),
+    ]
+
+    def test_evidence_gate_no_longer_caps_the_tool_router(self):
+        # The gate used to re-run the very classifiers the migration demotes, so
+        # a CORRECT tool call for an off-pattern request was vetoed by the regex
+        # it was meant to replace — 9 of these 12 were blocked before.
+        for action, text in self.OFF_PATTERN:
+            decision = action_router.ActionDecision(action=action, confidence=0.95)
+            self.assertIsNone(
+                action_router.missing_required_evidence_reason(text, decision),
+                f"{action} {text!r}",
+            )
+
+    def test_refusal_and_narration_guards_still_gate_the_tool_path(self):
+        # Dropping the POSITIVE pattern must not drop the negative guards: a model
+        # that decides to roast on "they mock me at school" has to be stopped.
+        for action, text in self.REFUSALS:
+            decision = action_router.ActionDecision(action=action, confidence=0.95)
+            self.assertIsNotNone(
+                action_router.missing_required_evidence_reason(text, decision),
+                f"{action} {text!r}",
+            )
+
+    def test_online_the_classifier_only_detects(self):
+        """A match hands the turn to the reply call instead of claiming it."""
+        with mock.patch("intelligence.llm_compat.create") as create:
+            for text in ("tell me a joke", "roast me", "say something funny",
+                         "do a victory dance", "act surprised", "hype the room",
+                         "impersonate Jimmy Carter"):
+                self.assertEqual(
+                    action_router.decide(text, {}).action, "conversation.reply", text
+                )
+            # And it still skips the ~0.8s JSON-prose router call, because the
+            # regex match is itself proof the turn is actionable.
+            self.assertFalse(create.called)
+
+    def test_offline_the_classifier_still_claims_the_turn(self):
+        # docs/tool_router_scope.md 2.4 — the local reply model gets no tools, so
+        # with the link down the deterministic lane is all Rex has.
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            for text, expected in (("tell me a joke", "humor.tell_joke"),
+                                   ("do a victory dance", "performance.body_beat"),
+                                   ("impersonate Jimmy Carter", "performance.impersonate")):
+                self.assertEqual(action_router.decide(text, {}).action, expected, text)
+
+    def test_kill_switch_restores_pre_migration_routing(self):
+        import config
+
+        with mock.patch.object(config, "TOOL_ROUTER_LIVE_ENABLED", False, create=True):
+            self.assertEqual(
+                action_router.decide("tell me a joke", {}).action, "humor.tell_joke"
+            )
+
+    def test_tool_calls_reach_the_real_executors(self):
+        cases = [
+            ("humor.tell_joke", {}, "give me a zinger", "perf"),
+            ("humor.roast", {"target": "speaker"}, "be mean to me", "perf"),
+            ("performance.body_beat", {"body_beat": "tiny_victory_dance"},
+             "pull a face", "perf"),
+            ("performance.mood_pose", {"mood": "surprised"}, "show me shocked", "perf"),
+            ("performance.impersonate", {"target": "speaker"}, "sound like me", "imp"),
+        ]
+        for action, args, text, which in cases:
+            with mock.patch.object(interaction, "_handle_router_performance_action",
+                                   return_value="PERF") as perf, \
+                 mock.patch.object(interaction, "_handle_router_impersonation",
+                                   return_value="IMP") as imp, \
+                 mock.patch.object(interaction.llm, "get_response", return_value="prose"), \
+                 mock.patch.object(interaction, "_speak_blocking", return_value=True):
+                out = interaction._execute_tool_routed_action(action, args, text, None)
+            self.assertEqual(out, "PERF" if which == "perf" else "IMP", action)
+            self.assertEqual(perf.called, which == "perf", action)
+            self.assertEqual(imp.called, which == "imp", action)
+
+    def test_invented_gesture_declines_instead_of_shrugging(self):
+        # performance_plan coerces an unknown beat to thinking_tilt, so without
+        # the arg check an invented pose would silently perform a head tilt.
+        with mock.patch.object(interaction, "_handle_router_performance_action",
+                               return_value="PERF") as perf, \
+             mock.patch.object(interaction.llm, "get_response", return_value="prose"), \
+             mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            out = interaction._execute_tool_routed_action(
+                "performance.body_beat", {"body_beat": "spin the mystery servo"},
+                "do the thing", None,
+            )
+        self.assertEqual(out, "prose")
+        perf.assert_not_called()
+
+    def test_dispatcher_applies_the_refusal_guard(self):
+        with mock.patch.object(interaction, "_handle_router_performance_action",
+                               return_value="PERF") as perf, \
+             mock.patch.object(interaction.llm, "get_response", return_value="prose"), \
+             mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            out = interaction._execute_tool_routed_action(
+                "humor.roast", {"target": "speaker"},
+                "They mock me at school for my accent.", None,
+            )
+        self.assertEqual(out, "prose")
+        perf.assert_not_called()
+
+
 class LegacyMemoryWriteGateTest(unittest.TestCase):
     """Unmapped legacy keys skipped the evidence check entirely."""
 

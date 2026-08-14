@@ -956,7 +956,79 @@ _PERFORMANCE_NARRATION_RE = re.compile(
 # opens with "if" (audit 2026-08-13).
 _PERFORMANCE_DESCRIBES_REX_RE = re.compile(
     r"^(?:hey\s+)?(?:rex[,!]?\s+)?(?:so\s+|and\s+|but\s+|well\s+)?"
-    r"(?:you\s+(?:look|seem|sound|are|['’]re)|if)\b",
+    # The contraction has no space, so the ['’]re alternative sat behind \s+ and
+    # "You're sad." never matched (found 2026-08-13). It cost nothing while a
+    # positive beat pattern also had to fire — "you're sad" carries no bare "be
+    # sad" for _BODY_BEAT_PATTERNS — but with the humor/performance evidence gate
+    # down to guards only, this is the ONLY thing between a model's mood_pose tool
+    # call and a droop, so the hole is now load-bearing.
+    r"(?:you(?:\s+(?:look|seem|sound|are)|['’]re)|if)\b",
+    re.IGNORECASE,
+)
+# ── humor.* / performance.* evidence: keep the NEGATIVE half only (2026-08-13) ─
+# The guards above are the INVERSION half added in c7ef872 — "this turn is a
+# refusal, a narration, or a description of Rex, so do not perform it." They keep
+# gating every path, the tool router included.
+#
+# What stops gating is the POSITIVE half. missing_required_evidence_reason used to
+# re-run _TELL_JOKE_RE / classify_explicit_humor / classify_explicit_performance to
+# ask whether a REGEX also read the turn as a request — which capped the tool router
+# at exactly the patterns it was migrated off. Every one of these was a correct tool
+# call the gate vetoed, measured 2026-08-13: "give me a zinger", "hit me with
+# something", "lay one on me", "know any good ones", "be mean to me for a second",
+# "tear into me", "let me have it", "do that thing you do", "entertain us", "give us
+# some hype", "work the crowd", "pull a face", "look like you just saw a ghost",
+# "show me shocked", "strike a sad pose". Same shape as "Go to sleep, Rex." (field
+# 2026-08-13): the gate demanded a phrasing the model had no reason to produce.
+#
+# The classifiers are NOT deleted — they are the offline path
+# (docs/tool_router_scope.md §2.4), and the fast lane never passes text to this gate
+# anyway (interaction._handle_fast_local_takeover calls _router_decision_executable
+# with no text=, so the evidence check is skipped entirely there).
+_HUMOR_TOOL_ACTIONS = frozenset({"humor.tell_joke", "humor.roast", "humor.free_bit"})
+_PERFORMANCE_TOOL_ACTIONS = frozenset({
+    "performance.dj_bit", "performance.body_beat", "performance.mood_pose",
+    "performance.impersonate",
+})
+# An interrogative negative is a REQUEST idiom, not a refusal. "Why don't you tell me
+# a joke?" is allowed today ONLY because the tell_joke branch was positive-only and
+# never consulted _HUMOR_NEGATION_RE; wiring that guard in without this exemption
+# would newly veto it, and "can't you do a little dance" with it. Only the LEAD-IN is
+# exempt — the guards re-run on what follows, so "why don't you stop roasting me" is
+# still a refusal.
+_REQUEST_IDIOM_LEADIN_RE = re.compile(
+    r"^(?:so\s+|and\s+|but\s+|well\s+|hey\s+|ok(?:ay)?,?\s+|come\s+on,?\s+)*"
+    r"(?:rex[,!]?\s+)?"
+    r"(?:why\s+(?:don['’]?t|doesn['’]?t|won['’]?t|not)|"
+    r"(?:can['’]?t|won['’]?t|couldn['’]?t|wouldn['’]?t)\s+you|"
+    r"don['’]?t\s+you\s+(?:want|wanna|have))\b",
+    re.IGNORECASE,
+)
+# Commentary ON a bit that already happened. It carries no negator and no narrating
+# subject, so neither guard above sees it — and once the positive pattern is gone,
+# nothing else does either. "That was a joke." is the case
+# tests/test_action_router_execution_gate.py pins; "that was a good impression" is the
+# one docs/local_tts_impersonation_plan.md §5.1 assumed this gate already covered (it
+# never did — performance.impersonate had no branch here at all). A demonstrative plus
+# a copula must sit in front of the performance noun, so "give me a joke" and "do an
+# impression of my brother" are untouched.
+_HUMOR_PERFORMANCE_COMMENTARY_RE = re.compile(
+    r"\b(?:that|it|this)(?:['’]s|\s+(?:was|is|wasn['’]?t|isn['’]?t))\s+"
+    r"(?:[\w'’-]+\s+){0,3}?"
+    r"(?:jokes?|puns?|one[- ]liners?|bit|riff|roast|impression|impersonation|"
+    r"dance|pose|announcement|funny|hilarious|comedy)\b|"
+    r"\b(?:was|is)\s+(?:that|it|this)\s+(?:[\w'’-]+\s+){0,3}?"
+    r"(?:jokes?|puns?|one[- ]liners?|bit|riff|roast|impression|impersonation)\b",
+    re.IGNORECASE,
+)
+# Same clause-scoped shape as _HUMOR_NEGATION_RE, over the impersonation verbs.
+# _IMPERSONATE_NEGATION_RE is a BARE negator anywhere in the turn, which is safe
+# inside classify_explicit_impersonation (a positive pattern has already matched by
+# then) but as a standalone gate would veto "don't hold back, do my brother's voice".
+_IMPERSONATE_NEGATION_CLAUSE_RE = re.compile(
+    r"\b(?:don['’]?t|do\s+not|never|stop|quit|no\s+more|shouldn['’]?t|should\s+not|"
+    r"won['’]?t|will\s+not|can['’]?t|cannot|couldn['’]?t|mustn['’]?t)\b"
+    r"[^.,;!?]{0,24}?\b(?:impersonat\w*|imitat\w*|mimic\w*|impression|accent|voice)\b",
     re.IGNORECASE,
 )
 _BODY_BEAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -2373,6 +2445,70 @@ def classify_explicit_performance(text: str) -> ActionDecision | None:
     return None
 
 
+def humor_performance_refusal_reason(text: str, action: str) -> str | None:
+    """Block reason when a humor/performance turn is the OPPOSITE of a request.
+
+    The negative half of the old evidence gate for the seven tool-routed
+    humor.*/performance.* actions: refusal, narration, second-person description of
+    Rex, and commentary on a bit that already happened. Nothing here asks whether a
+    regex ALSO reads the turn as a request — that positive test was the router's
+    ceiling, not a safety property (see the guard block above).
+
+    PUBLIC on purpose. interaction._execute_tool_routed_action has no central
+    evidence gate — every live action hand-wires its own backstop (the
+    command_parser re-check on system.*, the same-speaker check on
+    memory.forget_person, the confirmation offer on vision.snapshot) — so the
+    dispatcher must call THIS for these seven. Otherwise going live silently drops
+    the c7ef872 guards on the one path that needs them: a model that decides to
+    roast on "they mock me at school for my accent" has to be stopped by the same
+    code whether the LLM router or the reply call chose it.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+    humor = action in _HUMOR_TOOL_ACTIONS
+    if not humor and action not in _PERFORMANCE_TOOL_ACTIONS:
+        return None
+    # Reason strings are unchanged from the positive-pattern era on purpose: the
+    # per-turn audit line (allowlist_result) and tools/tool_router_report.py join on
+    # them, and "this turn carries no evidence of a request" is still what they mean
+    # — it is now established by the turn refusing rather than by a pattern missing.
+    reason = (
+        "missing_joke_request_evidence" if action == "humor.tell_joke"
+        else "missing_roast_request_evidence" if action == "humor.roast"
+        else "missing_free_bit_request_evidence" if action == "humor.free_bit"
+        else "missing_performance_request_evidence"
+    )
+    if _HUMOR_PERFORMANCE_COMMENTARY_RE.search(cleaned):
+        return reason
+    # Strip an interrogative-negative lead-in before the negation guards, never
+    # before the narration guards (those carry no negator to be fooled by).
+    idiom = _REQUEST_IDIOM_LEADIN_RE.match(cleaned)
+    body = cleaned[idiom.end():].lstrip() if idiom else cleaned
+    if humor:
+        if _HUMOR_NEGATION_RE.search(body):
+            return reason
+        if _HUMOR_NOT_A_REQUEST_RE.search(cleaned):
+            return reason
+        return None
+    if action == "performance.impersonate":
+        # Impersonation carries its OWN guards and never had the other three:
+        # classify_explicit_performance runs classify_explicit_impersonation before
+        # them, and this gate had no impersonate branch at all until today.
+        if _IMPERSONATE_QUESTION_RE.match(cleaned):
+            return reason
+        if _IMPERSONATE_NEGATION_CLAUSE_RE.search(body):
+            return reason
+        return None
+    if _PERFORMANCE_NEGATION_RE.search(body):
+        return reason
+    if _PERFORMANCE_NARRATION_RE.search(cleaned):
+        return reason
+    if _PERFORMANCE_DESCRIBES_REX_RE.match(cleaned):
+        return reason
+    return None
+
+
 def missing_required_evidence_reason(
     text: str,
     decision: ActionDecision | None,
@@ -2406,17 +2542,24 @@ def missing_required_evidence_reason(
         return None if _is_recent_discard_request(cleaned) else "missing_recent_discard_evidence"
     if action == "memory.forget_specific":
         return None if _FORGET_SPECIFIC_REQUEST_RE.search(cleaned) else "missing_forget_evidence"
-    if action == "humor.tell_joke":
-        return None if _TELL_JOKE_RE.search(cleaned) else "missing_joke_request_evidence"
-    if action == "humor.roast":
-        explicit = classify_explicit_humor(cleaned)
-        return None if explicit and explicit.action == action else "missing_roast_request_evidence"
-    if action == "humor.free_bit":
-        explicit = classify_explicit_humor(cleaned)
-        return None if explicit and explicit.action == action else "missing_free_bit_request_evidence"
-    if action in {"performance.dj_bit", "performance.body_beat", "performance.mood_pose"}:
-        explicit = classify_explicit_performance(cleaned)
-        return None if explicit and explicit.action == action else "missing_performance_request_evidence"
+    if action in _HUMOR_TOOL_ACTIONS or action in _PERFORMANCE_TOOL_ACTIONS:
+        # GUARDS ONLY (2026-08-13). These branches used to re-run the very
+        # classifiers the tool-router migration demotes, so a correct tool call for
+        # an off-pattern request was vetoed by the regex it was meant to replace:
+        # "give me a zinger", "be mean to me for a second", "give us some hype",
+        # "pull a face" and "look like you just saw a ghost" all measured VETOED
+        # against the shipped gate. The refusal/narration guards stay — see
+        # humor_performance_refusal_reason, which the live tool dispatcher calls too.
+        #
+        # performance.impersonate JOINS the gate here; it had no branch before, so
+        # docs/local_tts_impersonation_plan.md §5.1's "a stray 'that was a good
+        # impression' can't trigger it" was aspirational until now.
+        #
+        # Arg validation is NOT here and does not move: unknown_body_beat /
+        # unknown_mood_pose live in interaction._router_execution_block_reason and
+        # run before this call, so a model-invented beat or mood is still rejected
+        # by performance_plan.canonical_body_beat / canonical_mood_pose.
+        return humor_performance_refusal_reason(cleaned, action)
     if action == "motion.explore":
         # A floor-seizing physical wander must not fire on an ambient LLM read of the
         # turn — require the deterministic imperative-invite classifier to agree.
@@ -2597,12 +2740,77 @@ def _pending_question_context(context: dict[str, Any]) -> dict[str, Any] | None:
     return question if isinstance(question, dict) else None
 
 
+# Actions whose FIRST claim moved from the regex classifiers above to the LIVE
+# tool router on 2026-08-13 (docs/tool_router_scope.md Phase 2). The classifiers
+# are NOT deleted and still run in decide()'s ladder — online they act as a
+# DETECTOR rather than a claim: a match means "this turn is a bit request", the
+# turn is handed to conversation WITHOUT paying the ~0.8s JSON-prose router call,
+# and the lean reply call that was going to happen anyway picks the
+# humor_*/performance_* tool (arguments included) for zero extra round trips.
+# They are retained on purpose for OFFLINE mode, where the local reply model is
+# called with NO tool surface — with the link down these classifiers are the only
+# thing that still makes Rex tell a joke or dance.
+TOOL_ROUTER_OWNED_ACTIONS = frozenset({
+    "humor.tell_joke",
+    "humor.roast",
+    "humor.free_bit",
+    "performance.dj_bit",
+    "performance.body_beat",
+    "performance.mood_pose",
+    "performance.impersonate",
+})
+
+
+def tool_router_owns(action: str) -> bool:
+    """True when the LIVE tool router owns this action ON THIS TURN.
+
+    Three ways this says False, checked in ONE place so every caller (this
+    module's ladder, interaction's pre-dialogue-gate takeovers, the fast local
+    lane) agrees about who owns the turn: the action was never migrated; the kill
+    switch dropped it (config.TOOL_ROUTER_LIVE_ENABLED / TOOL_ROUTER_LIVE_ACTIONS
+    — flipping either restores pre-migration behavior instantly); or we are
+    OFFLINE, where the reply call carries no tools and the deterministic
+    classifier must claim the turn exactly as it did before.
+
+    Both imports are deferred: tool_router imports THIS module at module scope.
+    """
+    if action not in TOOL_ROUTER_OWNED_ACTIONS:
+        return False
+    try:
+        from intelligence import connectivity
+        if connectivity.is_offline():
+            return False
+    except Exception:
+        pass
+    try:
+        from intelligence import tool_router
+    except Exception:
+        return False
+    return action in tool_router.live_actions()
+
+
 def _apply_context_overrides(
     decision: ActionDecision,
     text: str,
     context: dict[str, Any],
 ) -> ActionDecision:
     """Deterministic safety rails for contexts the LLM router often misses."""
+    # Humor + performance ride the lean REPLY call as native tools now, so this
+    # module must not claim them from EITHER lane: not from the explicit
+    # classifiers (whose match is only a detector now) and not from the JSON-prose
+    # fallback, which would otherwise front-run the reply call by ~0.8s and re-take
+    # exactly the turns being handed over. Every decide() return passes through
+    # here, which is why the handoff lives in one place. Offline or with the kill
+    # switch off, tool_router_owns is False and the decision stands unchanged.
+    if tool_router_owns(decision.action):
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason=f"{decision.action} is tool-router-owned; the reply call decides",
+        )
+
     dialogue = (context or {}).get("dialogue_act") or {}
     if isinstance(dialogue, dict) and dialogue.get("label") == "answer_to_rex":
         blocked = {

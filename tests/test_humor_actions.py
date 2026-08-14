@@ -76,10 +76,16 @@ class HumorActionExecutionTests(unittest.TestCase):
         beat.assert_not_called()
         self.assertIsNotNone(speak.call_args.kwargs.get("on_audio_end"))
 
-    def test_fast_local_takeover_handles_explicit_free_humor_without_router_flag(self):
+    # OFFLINE lane since 2026-08-13: humor + performance migrated to the live
+    # tool router, so ONLINE this fast lane stands down and the reply call picks
+    # the tool (action_router.tool_router_owns). With the link down the local
+    # model gets no tools, so the deterministic classifier is still the only
+    # thing that performs — that is the lane these tests now cover.
+    def test_offline_fast_local_takeover_handles_explicit_free_humor_without_router_flag(self):
         from intelligence import interaction
 
         with (
+            mock.patch("intelligence.connectivity.is_offline", return_value=True),
             mock.patch.object(interaction.llm, "get_response", return_value="Funny line.") as get_response,
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
             mock.patch("sequences.animations.play_body_beat"),
@@ -143,10 +149,16 @@ class HumorActionExecutionTests(unittest.TestCase):
         self.assertEqual(speak.call_args.kwargs["emotion"], "happy")
         beat.assert_called_once_with("proud_dj_pose")
 
-    def test_fast_local_takeover_handles_explicit_dj_bit(self):
+    # OFFLINE lane since 2026-08-13: humor + performance migrated to the live
+    # tool router, so ONLINE this fast lane stands down and the reply call picks
+    # the tool (action_router.tool_router_owns). With the link down the local
+    # model gets no tools, so the deterministic classifier is still the only
+    # thing that performs — that is the lane these tests now cover.
+    def test_offline_fast_local_takeover_handles_explicit_dj_bit(self):
         from intelligence import interaction
 
         with (
+            mock.patch("intelligence.connectivity.is_offline", return_value=True),
             mock.patch.object(interaction.llm, "get_response", return_value="Hype line.") as get_response,
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
             mock.patch("sequences.animations.play_body_beat"),
@@ -192,10 +204,16 @@ class HumorActionExecutionTests(unittest.TestCase):
         self.assertEqual(speak.call_args.args[0], response)
         self.assertEqual(speak.call_args.kwargs["emotion"], "curious")
 
-    def test_fast_local_takeover_handles_explicit_body_beat(self):
+    # OFFLINE lane since 2026-08-13: humor + performance migrated to the live
+    # tool router, so ONLINE this fast lane stands down and the reply call picks
+    # the tool (action_router.tool_router_owns). With the link down the local
+    # model gets no tools, so the deterministic classifier is still the only
+    # thing that performs — that is the lane these tests now cover.
+    def test_offline_fast_local_takeover_handles_explicit_body_beat(self):
         from intelligence import interaction
 
         with (
+            mock.patch("intelligence.connectivity.is_offline", return_value=True),
             mock.patch.object(interaction.llm, "get_response") as get_response,
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
             mock.patch("sequences.animations.play_body_beat") as beat,
