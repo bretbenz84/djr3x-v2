@@ -5254,10 +5254,46 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     "humor.tell_joke", "humor.roast", "humor.free_bit",
     "performance.dj_bit", "performance.body_beat", "performance.mood_pose",
     "performance.impersonate",
+    # Phase 2b memory writes + boundary (2026-08-13). These three are the last
+    # regex-owned actions that DELETE rows or write a durable consent record, and
+    # the audit caught all three claiming turns they had no business claiming.
+    # Measured against this checkout:
+    #   "Forget the traffic, we made it!"    -> forget_specific, target
+    #                                          "traffic, we made it" -> 4 SUBSTRING
+    #                                          terms across ten tables, no confirm
+    #   "Forget it, I'll do it myself."      -> forget_specific, term "i'll", which
+    #                                          substring-matches nearly every stored
+    #                                          conversation summary
+    #   "Remove the lid before microwaving." -> forget_specific: delete/remove/erase/
+    #                                          wipe/clear are ordinary English, and
+    #                                          the evidence gate was the same regex
+    #                                          that fired
+    #   "Don't ask me how I got it, long story."
+    #                                       -> a DURABLE never-ask row, minted from
+    #                                          an INVITATION to ask
+    #   "Let's talk about the topic of my dissertation."
+    #                                       -> subject_change: Rex steers AWAY from
+    #                                          the one topic just requested
+    # Same shape as humor/performance: the classifier IS the whole decision, so a
+    # phrasing outside the list becomes prose and an idiom inside it deletes.
+    # Safety stays DOWNSTREAM and gets STRONGER, not weaker: forget_specific now
+    # arms a spoken confirmation naming what would go (interaction.
+    # _offer_specific_forget) rather than deleting from a tool call at all, the
+    # refusal/idiom/housekeeping guards live in one public place (action_router.
+    # memory_boundary_refusal_reason) that the live dispatcher calls too, and
+    # c7ef872's "don't forget = keep, not discard" inversion (_MEMORY_KEEP_INTENT_RE)
+    # is untouched. RETAINED for OFFLINE, where the local reply model is called with
+    # no tool surface (docs/tool_router_scope.md 2.4).
+    "memory.forget_specific", "memory.recent_discard", "emotional.boundary",
 )
 
 # Seconds the "say yes, remember this scene" confirmation slot stays open.
 SCENE_SNAPSHOT_CONFIRM_TIMEOUT_SECS = 30.0
+
+# Seconds the targeted-forget confirmation stays open before the offer lapses and
+# nothing is deleted. Matched to the memory-wipe window on purpose — the same
+# question is being asked, at a smaller scope.
+SPECIFIC_FORGET_CONFIRM_TIMEOUT_SECS = 30.0
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True
 ACTION_ROUTER_EXECUTE_ENABLED = True
@@ -5284,6 +5320,23 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "performance.impersonate",
     "memory.query",
     "memory.recent_discard",
+    # memory.forget_specific + emotional.boundary added 2026-08-13, for exactly the
+    # reason motion.* was added below: they were ALREADY executing while this policy
+    # said they were blocked. forget_specific deletes rows through
+    # legacy_command.forget_specific and fast_local_takeover.memory.forget_specific
+    # (interaction._execute_command), and emotional.boundary writes
+    # person_conversation_boundaries through legacy.conversation_boundary
+    # (_handle_conversation_boundary) — neither path consults
+    # _router_execute_allowlist(), so every one of those turns logged an
+    # allowlist_result that did not describe what happened. Listing them makes the
+    # audit line true and gives both a real kill switch (drop a key in
+    # user_config.py and that write stops executing instead of being logged as if it
+    # had). It also un-deadens two branches that the allowlist alone had been
+    # blocking: _handle_router_takeover_action's memory.forget_specific arm and the
+    # router emotional.boundary block — both now clear
+    # action_router.missing_required_evidence_reason first.
+    "memory.forget_specific",
+    "emotional.boundary",
     "identity.who_is_speaking",
     "identity.name_correction",
     "music.play",

@@ -39,13 +39,23 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
         # remaining destructive / state-changing actions stay off the auto-execute
         # path and on the legacy route.
         self.assertTrue({
-            "memory.forget_specific",
             "memory.forget_person",
             "event.cancel",
             "game.start",
             "vision.snapshot",
             "system.sleep",
         }.isdisjoint(allowed))
+        # memory.forget_specific + emotional.boundary joined the allowlist
+        # 2026-08-13 for the same reason motion.* did: they were ALREADY executing
+        # (legacy_command.forget_specific / legacy.conversation_boundary) while
+        # this policy said they were blocked, so every such turn logged an
+        # allowlist_result that did not describe what happened. Listing them makes
+        # the audit true and gives both a real kill switch. The DELETE itself is
+        # gated by an armed spoken confirmation, not by this list.
+        self.assertTrue({
+            "memory.forget_specific",
+            "emotional.boundary",
+        }.issubset(allowed))
 
     def test_allowed_high_confidence_action_is_executable(self):
         from intelligence import action_router, interaction
@@ -145,11 +155,13 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
     def test_executable_but_unallowlisted_action_is_blocked(self):
         from intelligence import action_router, interaction
 
+        # memory.forget_specific joined the allowlist 2026-08-13, so this uses
+        # event.cancel — still deliberately off the auto-execute path.
         decision = action_router.ActionDecision(
-            action="memory.forget_specific",
+            action="event.cancel",
             confidence=0.99,
-            args={"target": "Disneyland"},
-            reason="explicit forget",
+            args={"event_hint": "Lake Folsom"},
+            reason="explicit cancellation",
         )
 
         self.assertFalse(interaction._router_decision_executable(decision))
@@ -668,12 +680,18 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "fast_local_takeover.music.stop",
         )
 
-    def test_fast_local_specific_memory_forget_audit_remains_legacy_path(self):
+    def test_offline_fast_local_specific_memory_forget_uses_the_legacy_path(self):
+        # OFFLINE lane since 2026-08-13 (see the discard test above). NOTE the
+        # allowlist_result assertion changed from "not_in_execute_allowlist" to
+        # "allowed": that action was EXECUTING while the audit line said it was
+        # blocked, which is exactly the lie fixed by listing it in
+        # ACTION_ROUTER_EXECUTE_ACTIONS.
         from intelligence import interaction
 
         audit = interaction._new_router_audit("forget I like Star Wars", {})
 
-        with mock.patch.object(interaction, "_execute_command", return_value="Forgotten.") as execute:
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True), \
+             mock.patch.object(interaction, "_execute_command", return_value="Forgotten.") as execute:
             response = interaction._handle_fast_local_takeover(
                 "forget I like Star Wars",
                 person_id=1,
@@ -684,19 +702,27 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
         self.assertEqual(response, "Forgotten.")
         self.assertEqual(execute.call_args.args[0].command_key, "forget_specific")
         self.assertEqual(audit.router_action, "memory.forget_specific")
-        self.assertEqual(audit.allowlist_result, "not_in_execute_allowlist")
+        self.assertEqual(audit.allowlist_result, "allowed")
         self.assertEqual(audit.legacy_command, "forget_specific")
+        # The path label moved with the allowlist entry: the fast local takeover
+        # is what actually ran this, and now that the policy admits it the audit
+        # says so instead of attributing it to the legacy lane.
         self.assertEqual(
             interaction._router_audit_fast_local_final_path(audit),
-            "legacy_command.forget_specific",
+            "fast_local_takeover.memory.forget_specific",
         )
 
-    def test_fast_local_recent_discard_uses_stable_action_path(self):
+    def test_offline_fast_local_recent_discard_uses_stable_action_path(self):
+        # OFFLINE lane since 2026-08-13: memory.recent_discard migrated to the
+        # live tool router, so online this fast lane hands the turn to the reply
+        # call. With the link down the local model gets no tools, so the
+        # deterministic lane is still the only thing that discards.
         from intelligence import interaction
 
         audit = interaction._new_router_audit("forget I said that", {})
 
-        with mock.patch.object(
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True), \
+             mock.patch.object(
             interaction,
             "_execute_memory_boundary_command",
             return_value="Recent memory discarded.",

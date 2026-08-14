@@ -8356,13 +8356,22 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             reason="explicit forget request",
         )
 
+        # memory.forget_specific is tool-router-owned since Phase 2b
+        # (2026-08-13) — and it no longer deletes from a routed decision at all:
+        # the tool arms a spoken confirmation naming what would go. Offline the
+        # old routing is intact.
         routed = action_router._apply_context_overrides(
-            decision,
-            "Forget Disneyland from your memory",
-            {},
+            decision, "forget that I like Disneyland", {},
         )
+        self.assertEqual(routed.action, "conversation.reply")
 
-        self.assertEqual(routed.action, "memory.forget_specific")
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertEqual(
+                action_router._apply_context_overrides(
+                    decision, "forget that I like Disneyland", {},
+                ).action,
+                "memory.forget_specific",
+            )
 
     def test_router_downgrades_bare_sensitive_topic_as_boundary(self):
         from intelligence import action_router
@@ -8393,13 +8402,21 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             reason="explicit boundary",
         )
 
+        # emotional.boundary is tool-router-owned since Phase 2b (2026-08-13):
+        # the durable consent row is the model's call now, so this rail hands the
+        # turn to the reply call. Offline the old routing is intact.
         routed = action_router._apply_context_overrides(
-            decision,
-            "Please don't ask me about back pain again",
-            {},
+            decision, "Please don't ask me about back pain again", {},
         )
+        self.assertEqual(routed.action, "conversation.reply")
 
-        self.assertEqual(routed.action, "emotional.boundary")
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertEqual(
+                action_router._apply_context_overrides(
+                    decision, "Please don't ask me about back pain again", {},
+                ).action,
+                "emotional.boundary",
+            )
 
     def test_router_downgrades_general_topic_knowledge_from_memory_query(self):
         from intelligence import action_router

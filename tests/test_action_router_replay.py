@@ -230,6 +230,7 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_legacy_command="memory_boundary",
                 expected_final_path="fast_local_takeover.memory.recent_discard",
                 explicit_fast_path=True,
+                offline=True,  # see RouterReplayCase.offline
             ),
             RouterReplayCase(
                 utterance="act embarrassed",
@@ -283,10 +284,13 @@ class ActionRouterReplayTests(unittest.TestCase):
             RouterReplayCase(
                 utterance="forget I like Star Wars",
                 router_action="memory.forget_specific",
-                expected_allowlist_result="not_in_execute_allowlist",
+                # 2026-08-13: memory.forget_specific joined the execute allowlist.
+                # It had been EXECUTING while the audit said it was blocked.
+                expected_allowlist_result="allowed",
                 expected_legacy_command="forget_specific",
-                expected_final_path="legacy_command.forget_specific",
+                expected_final_path="router_takeover.memory.forget_specific",
                 args={"target": "I like Star Wars"},
+                offline=True,  # see RouterReplayCase.offline
             ),
             RouterReplayCase(
                 utterance="do a victory dance",

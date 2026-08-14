@@ -131,6 +131,9 @@ class LiveCutoverTest(unittest.TestCase):
             "humor_tell_joke", "humor_roast", "humor_free_bit",
             "performance_dj_bit", "performance_body_beat",
             "performance_mood_pose", "performance_impersonate",
+            # Phase 2b (2026-08-13): the last regex-owned writes/deletes.
+            "memory_forget_specific", "memory_recent_discard",
+            "emotional_boundary",
         })
 
     def test_physical_performance_tools_carry_canonical_enums(self):

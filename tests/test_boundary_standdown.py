@@ -137,10 +137,15 @@ class BanLabelTest(unittest.TestCase):
 
 
 class ConversationBoundaryHandlerTest(_TempDb):
-    def test_field_sentence_stores_boundary_and_bans_website(self):
+    def test_offline_field_sentence_stores_boundary_and_bans_website(self):
+        # OFFLINE lane since 2026-08-13: emotional.boundary migrated to the live
+        # tool router, so ONLINE the durable row is the model's call and this
+        # handler only applies the reversible 90s ban (pinned separately below).
+        # With the link down the regex remains the only thing that records consent.
         from intelligence import interaction as I
         banned = []
-        with mock.patch.object(I, "_record_banned_topic", side_effect=banned.append), \
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True), \
+             mock.patch.object(I, "_record_banned_topic", side_effect=banned.append), \
              mock.patch.object(I, "_boundary_fallback_topic", return_value=None):
             reply = I._handle_conversation_boundary(1, FIELD_SENTENCE)
         self.assertIsNotNone(reply)
@@ -148,9 +153,10 @@ class ConversationBoundaryHandlerTest(_TempDb):
         self.assertIn(("mention", "website"), self._boundary_rows())
         self.assertIn("website", [str(b) for b in banned])
 
-    def test_unresolvable_pronoun_form_stores_no_junk_row(self):
+    def test_offline_unresolvable_pronoun_form_stores_no_junk_row(self):
         from intelligence import interaction as I
-        with mock.patch.object(I, "_boundary_fallback_topic", return_value=None), \
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True), \
+             mock.patch.object(I, "_boundary_fallback_topic", return_value=None), \
              mock.patch.object(I.llm, "get_response",
                                return_value="Fine. New subject: how was lunch?"):
             reply = I._handle_conversation_boundary(
@@ -158,6 +164,28 @@ class ConversationBoundaryHandlerTest(_TempDb):
         self.assertIsNotNone(reply)
         self.assertEqual(self._boundary_rows(), [],
                          "placeholder topic must not become a stored boundary")
+
+    def test_online_boundary_is_reversible_only_and_the_row_is_the_models_call(self):
+        """The durable consent write left the regex on 2026-08-13.
+
+        The audit found this handler minting permanent rows from an INVITATION
+        ("Don't ask me how I got it, long story.") and steering AWAY from a topic
+        that had just been requested ("Let's talk about the topic of my
+        dissertation."). Online it now applies only the reversible in-memory ban
+        and hands the turn to the reply call, which decides whether to make it
+        permanent via the emotional_boundary tool.
+        """
+        from intelligence import interaction as I
+        banned = []
+        with mock.patch.object(I, "_record_banned_topic", side_effect=banned.append), \
+             mock.patch.object(I, "_boundary_fallback_topic", return_value=None):
+            reply = I._handle_conversation_boundary(1, FIELD_SENTENCE)
+        self.assertIsNone(reply, "the turn must reach the reply call")
+        self.assertEqual(self._boundary_rows(), [],
+                         "the durable row is the model's call now")
+        self.assertIn("website", [str(b) for b in banned],
+                      "the reversible ban still fires this turn")
+
 
 
 # ── Lean wiring ─────────────────────────────────────────────────────────────────

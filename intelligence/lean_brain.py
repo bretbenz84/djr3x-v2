@@ -148,10 +148,20 @@ def _person_lines(person_id: Optional[int], user_text: str = "") -> list[str]:
             str(b.get("topic") or "").strip() for b in bans if b.get("topic")
         }))
         if topics:
+            # The second sentence is new 2026-08-13 (tool-router Phase 2b). The
+            # durable consent row used to be written by a regex before this call
+            # ever ran (interaction._handle_conversation_boundary); now the
+            # transient ban above is deterministic and the PERMANENT record is the
+            # model's call, so the instruction has to say so. Without it Rex honors
+            # the topic for 90 seconds and forgets by the next session.
             out.append(
                 "They JUST asked to drop this topic — do NOT raise, return to, or "
                 "joke about it, even in passing: " + topics + ". Follow them to "
-                "whatever they bring up instead."
+                "whatever they bring up instead. If they asked you to stop for "
+                "GOOD (not just for now), call the emotional_boundary tool with "
+                "the topic so it sticks past this conversation — but not for a "
+                "passing 'let's talk about something else', and not when they are "
+                "actually inviting the question."
             )
     except Exception as exc:
         _log.debug("[lean] topic-ban injection skipped: %s", exc)

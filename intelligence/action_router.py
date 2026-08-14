@@ -642,6 +642,55 @@ _BOUNDARY_REQUEST_RE = re.compile(
     r"no more check-?ins?)\b",
     re.IGNORECASE,
 )
+# ── memory.*/boundary evidence: keep the NEGATIVE half only (2026-08-13) ──────
+# Phase 2b, same split as humor/performance below. The POSITIVE patterns
+# (_FORGET_SPECIFIC_REQUEST_RE, _BOUNDARY_REQUEST_RE) stop being the evidence once
+# the tool router owns these actions; what stays is the set of turns that must
+# NEVER reach a delete or a durable consent write, whichever router chose it.
+#
+# 1. The dismissal idiom. A real forget request ENDS at its target ("forget about
+#    my dog Scout"); the idiom keeps going into a new clause. Measured on this
+#    checkout: "Forget the traffic, we made it!" produced target
+#    "traffic, we made it" -> terms {traffic, made, "traffic made", "traffic we
+#    made it"}, and "Forget it, I'll do it myself." produced the term "i'll" —
+#    forgetting.text_matches_terms is a SUBSTRING test, so that one word matches
+#    nearly every stored conversation summary. Ten tables, no undo. The comma plus
+#    a following clause is the whole difference between the idiom and the command.
+_FORGET_DISMISSAL_RE = re.compile(
+    r"^(?:please\s+)?(?:forget|nevermind)\b[^,;:!?]*[,;:]\s*\S+.*\b"
+    r"(?:i|we|you|he|she|they|it|that|there)\b\s*\S",
+    re.IGNORECASE,
+)
+# 2. delete/remove/erase/wipe/clear are ordinary English about ordinary objects;
+#    only FORGET is inherently about memory. _FORGET_SPECIFIC_REQUEST_RE's second
+#    alternative accepts ANY tail after any of the six verbs, so "Remove the lid
+#    before microwaving.", "Delete the extra whitespace in that file." and "Clear
+#    the table when you're done." all cleared the gate (measured 2026-08-13). The
+#    other five verbs now need a memory anchor; "forget" needs none, because saying
+#    "forget X" to a droid IS the anchor.
+_FORGET_HOUSEKEEPING_VERB_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:delete|remove|erase|wipe|clear)\b",
+    re.IGNORECASE,
+)
+_FORGET_MEMORY_ANCHOR_RE = re.compile(
+    r"\b(?:memor(?:y|ies)|remember(?:ed|ing)?|recall|about\s+me\b|"
+    r"that\s+i\s+(?:said|told)|i\s+(?:said|told)\s+you|you\s+know\s+about)\b",
+    re.IGNORECASE,
+)
+# 3. Releasing a boundary is its exact inverse and must never mint one.
+#    memory.boundaries._CLEAR_PAT already reads "you can ask about that again" as
+#    action="clear"; this stops a model tool call from writing an ADD off the same
+#    words. Boundary-side twin of the "don't forget" inversion _MEMORY_KEEP_INTENT_RE
+#    catches for discards (c7ef872).
+_BOUNDARY_RELEASE_RE = re.compile(
+    r"\b(?:you\s+can|it['’]?s\s+ok(?:ay)?\s+to|it\s+is\s+ok(?:ay)?\s+to|"
+    r"feel\s+free\s+to|you\s+may|go\s+ahead\s+and)\s+"
+    r"(?:ask|mention|roast|tease|joke\s+about|talk\s+about|bring\s+up)\b",
+    re.IGNORECASE,
+)
+_MEMORY_WRITE_TOOL_ACTIONS = frozenset({
+    "memory.forget_specific", "memory.recent_discard", "emotional.boundary",
+})
 _REPAIR_REQUEST_RE = re.compile(
     r"\b(?:you\s+(?:misheard|misunderstood|got\s+that\s+wrong|got\s+it\s+wrong)|"
     r"that'?s\s+(?:wrong|incorrect|not\s+what\s+i\s+said)|"
@@ -2509,6 +2558,59 @@ def humor_performance_refusal_reason(text: str, action: str) -> str | None:
     return None
 
 
+def memory_boundary_refusal_reason(text: str, action: str) -> str | None:
+    """Block reason when a memory-write/boundary turn is NOT a request to write.
+
+    The negative half of the evidence gate for the three actions migrated in Phase
+    2b: the dismissal idiom, ordinary housekeeping verbs, the "don't forget = keep"
+    inversion, and the RELEASE of a boundary. Nothing here asks whether a regex ALSO
+    reads the turn as a request — that positive test was the router's ceiling, not a
+    safety property (see the guard block above).
+
+    PUBLIC on purpose, exactly like humor_performance_refusal_reason.
+    interaction._execute_tool_routed_action has no central evidence gate — every
+    live action hand-wires its own backstop — so the dispatcher must call THIS.
+    These three DELETE rows and write durable consent records; going live without
+    it would drop the guards on the one path that needs them most.
+
+    Reason strings are deliberately one-per-action rather than one-per-guard: the
+    per-turn audit line (allowlist_result) and tools/tool_router_report.py join on
+    them, and "this turn carries no evidence of a request" is still what they mean.
+    The specific guard is logged instead.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned or action not in _MEMORY_WRITE_TOOL_ACTIONS:
+        return None
+    if action == "memory.recent_discard":
+        # The ONE place a positive pattern still runs, and on purpose: a discard is
+        # scoped to "the thing I just said", so with no such phrase in the turn there
+        # is nothing to scope it to and an ambient LLM read is not enough to wipe a
+        # turn. _is_recent_discard_request carries c7ef872's inversion guard, so
+        # "don't forget that we have dinner tomorrow" still cannot reach the handler.
+        if _is_recent_discard_request(cleaned):
+            return None
+        _log.debug("[action_router] recent_discard blocked: no scoped discard phrase")
+        return "missing_recent_discard_evidence"
+    if action == "memory.forget_specific":
+        if _FORGET_DISMISSAL_RE.match(cleaned):
+            _log.info("[action_router] forget blocked: dismissal idiom %r", cleaned)
+            return "missing_forget_evidence"
+        if (
+            _FORGET_HOUSEKEEPING_VERB_RE.match(cleaned)
+            and not _FORGET_MEMORY_ANCHOR_RE.search(cleaned)
+        ):
+            _log.info("[action_router] forget blocked: housekeeping verb %r", cleaned)
+            return "missing_forget_evidence"
+        if _MEMORY_KEEP_INTENT_RE.search(cleaned):
+            _log.info("[action_router] forget blocked: keep intent %r", cleaned)
+            return "missing_forget_evidence"
+        return None
+    if _BOUNDARY_RELEASE_RE.search(cleaned):
+        _log.info("[action_router] boundary blocked: release, not add %r", cleaned)
+        return "missing_boundary_request_evidence"
+    return None
+
+
 def missing_required_evidence_reason(
     text: str,
     decision: ActionDecision | None,
@@ -2538,10 +2640,31 @@ def missing_required_evidence_reason(
         )
     if action == "conversation.repair":
         return None if _REPAIR_REQUEST_RE.search(cleaned) else "missing_repair_evidence"
-    if action == "memory.recent_discard":
-        return None if _is_recent_discard_request(cleaned) else "missing_recent_discard_evidence"
-    if action == "memory.forget_specific":
-        return None if _FORGET_SPECIFIC_REQUEST_RE.search(cleaned) else "missing_forget_evidence"
+    if action in _MEMORY_WRITE_TOOL_ACTIONS:
+        # GUARDS ONLY (2026-08-13, Phase 2b) — same redesign as the humor/performance
+        # branch below. These two branches used to re-run the very classifiers this
+        # phase demotes, and this gate ALSO vets the LLM's tool choice, so a CORRECT
+        # forget call on any phrasing outside the regex ("scrub the dog from your
+        # memory", "you can let go of what I told you about my ex", "I'd like that
+        # gone") was vetoed by the pattern it was migrated off — the same ceiling that
+        # blocked "give me a zinger" and "Go to sleep, Rex.".
+        #
+        # emotional.boundary JOINS the gate here; it had NO branch at all before, so
+        # its only guard was the _apply_context_overrides demotion below — which is
+        # unreachable for a tool-router-owned action, because tool_router_owns() is
+        # checked at the top of that function. Going live without this branch would
+        # leave an LLM consent write completely ungated.
+        #
+        # What does NOT move: memory_boundary_refusal_reason still calls
+        # _is_recent_discard_request, so c7ef872's "don't forget that we have dinner
+        # tomorrow" inversion guard (_MEMORY_KEEP_INTENT_RE) is intact and still
+        # blocks a discard down all three routes.
+        #
+        # And the delete's real backstop is NOT here: memory.forget_specific arms a
+        # spoken confirmation naming what would go (interaction._offer_specific_forget),
+        # the same KIND of gate memory.forget_person has had since it shipped. This
+        # gate only decides whether that offer is made at all.
+        return memory_boundary_refusal_reason(cleaned, action)
     if action in _HUMOR_TOOL_ACTIONS or action in _PERFORMANCE_TOOL_ACTIONS:
         # GUARDS ONLY (2026-08-13). These branches used to re-run the very
         # classifiers the tool-router migration demotes, so a correct tool call for
@@ -2782,6 +2905,14 @@ TOOL_ROUTER_OWNED_ACTIONS = frozenset({
     "memory.query",
     "music.play",
     "music.options",
+    # Phase 2b, 2026-08-13. Same detector-not-claim demotion, higher stakes: a
+    # wrong humor call costs a joke, a wrong call here deletes rows or writes a
+    # durable consent record. classify_explicit_control's recent_discard branch
+    # needs no edit of its own — every decide() return passes through
+    # _apply_context_overrides.
+    "memory.forget_specific",
+    "memory.recent_discard",
+    "emotional.boundary",
 })
 
 

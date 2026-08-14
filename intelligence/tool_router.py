@@ -64,19 +64,57 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     "memory.query": (
         "Recall stored memory about a person ('what do you remember about me/Jeff?').",
         {"subject": {**_STR, "description": "who or what to recall"}}, []),
+    # memory.* / emotional.boundary went LIVE 2026-08-13 (Phase 2b). These hints
+    # carry the negative examples the regex family learned the expensive way,
+    # because the model is now the first thing standing between an idiom and a
+    # delete.
+    #
+    # The arg is "target", not "statement": ActionSpec, the JSON-prose router prompt,
+    # _apply_context_overrides, _handle_router_takeover_action and _execute_command
+    # ALL say args.target, so a "statement" arg arrived in a key nobody read and the
+    # executor took its empty-target branch. Same arg-name drift class as
+    # performance.impersonate's who->target fix.
     "memory.forget_specific": (
-        "Delete one stored fact/preference the user names.",
-        {"statement": {**_STR, "description": "the thing to forget, as said"}}, ["statement"]),
+        "The user asks Rex to forget a specific thing he has STORED about them — a "
+        "named fact, preference, person, pet, or topic. Never a dismissive idiom "
+        "('forget it, I'll do it myself', 'forget the traffic, we made it') and "
+        "never ordinary housekeeping ('remove the lid', 'delete that file'). Rex "
+        "does not delete on this call: he reads back what would go and asks for a "
+        "yes first.",
+        {"target": {**_STR, "description":
+                    "the thing to forget, in the user's own words "
+                    "('my dog Scout', 'what I said about my job')"}}, ["target"]),
     "memory.recent_discard": (
-        "The user disowns or is baffled by something Rex just attributed to them.", {}, []),
+        "The user disowns, retracts, or is baffled by something Rex just attributed "
+        "to them ('forget I said that', \"don't store that\") — scoped to the last "
+        "turn, never to a named stored fact, and never 'don't forget X', which is "
+        "the opposite request.", {}, []),
     "memory.forget_person": (
         "Forget an entire person (requires confirmation downstream).",
         {"person_name": _STR}, ["person_name"]),
     "event.cancel": (
         "A planned event the user says is off/cancelled.",
         {"event_hint": {**_STR, "description": "which event"}}, []),
+    # topic/behavior are new 2026-08-13: with no parameters the model could not name
+    # what was being closed, so _handle_router_emotional_boundary guessed from
+    # _boundary_fallback_topic() — the guessing that let an unattributed "Drop it."
+    # mute the wrong topic (audit 2026-08-13) — and always wrote behavior="mention",
+    # the BROADEST kind (boundaries.is_blocked treats a mention row as blocking ask
+    # and roast too), so "don't joke about my weight" silently became "never mention
+    # weight". Both stay optional: an unnamed topic still falls back exactly as before.
     "emotional.boundary": (
-        "The user sets a topic boundary ('don't ask about my ex').", {}, []),
+        "The user asks Rex to STOP raising a topic for good ('don't ask about my "
+        "ex', 'stop bringing up my job'). This writes a durable consent record, so "
+        "it is not for a passing mood, not for 'let's talk about something else' "
+        "(that is just conversation — follow them), not for an invitation dressed "
+        "as a refusal ('don't ask how I got it, long story' WANTS the question), "
+        "and never for the release of a boundary ('you can ask about that again').",
+        {"topic": {**_STR, "description":
+                   "what to stop raising, in a word or two; omit if unclear"},
+         "behavior": {"type": "string", "enum": ["mention", "ask", "roast"],
+                      "description":
+                      "mention = don't bring it up at all (broadest), ask = don't "
+                      "ask about it, roast = don't joke about it"}}, []),
     "identity.who_is_speaking": (
         "'Who am I?' / 'do you know who's speaking?' — immediate identity check.", {}, []),
     "identity.name_correction": (
@@ -233,6 +271,7 @@ _DEFAULT_LIVE_ACTIONS = (
     "humor.tell_joke", "humor.roast", "humor.free_bit",
     "performance.dj_bit", "performance.body_beat", "performance.mood_pose",
     "performance.impersonate",
+    "memory.forget_specific", "memory.recent_discard", "emotional.boundary",
 )
 
 

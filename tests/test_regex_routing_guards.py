@@ -22,6 +22,7 @@ the shapes below (ASR past-tense "Turned right a little bit.", the comma'd
 "Turn left, 15 degrees.") are themselves field fixes from earlier sessions.
 """
 
+import time
 import unittest
 from unittest import mock
 
@@ -788,6 +789,113 @@ class IntentClassifierDemotionTest(unittest.TestCase):
                 "what's the weather? let's play trivia", {}
             )
         )
+
+
+class MemoryWriteMigrationTest(unittest.TestCase):
+    """The last regex-owned deletes, and the delete that had no confirmation."""
+
+    def test_dismissal_idioms_never_reach_a_delete(self):
+        # These are the measured blast radius, not hypotheticals: "Forget it,
+        # I'll do it myself." produced the SUBSTRING search term "i'll", which
+        # matches nearly every stored conversation summary, across ten tables,
+        # with no undo and (until 2026-08-13) no confirmation.
+        for text in ("Forget it, I'll do it myself.",
+                     "Forget the traffic, we made it!"):
+            self.assertIsNotNone(
+                action_router.memory_boundary_refusal_reason(
+                    text, "memory.forget_specific"), text)
+
+    def test_housekeeping_verbs_are_not_memory_commands(self):
+        # delete/remove/erase/wipe/clear are ordinary English about ordinary
+        # objects; only "forget" is inherently about memory.
+        for text in ("Remove the lid before microwaving.",
+                     "Delete the extra whitespace in that file.",
+                     "Clear the table when you're done."):
+            self.assertIsNotNone(
+                action_router.memory_boundary_refusal_reason(
+                    text, "memory.forget_specific"), text)
+
+    def test_real_forget_requests_pass_including_off_pattern(self):
+        for text in ("Forget about my dog Scout.",
+                     "forget what I told you about my job",
+                     "scrub the dog from your memory",
+                     "erase what you know about my ex"):
+            self.assertIsNone(
+                action_router.memory_boundary_refusal_reason(
+                    text, "memory.forget_specific"), text)
+
+    def test_discard_inversion_guard_survives_the_migration(self):
+        # c7ef872's "don't forget = keep, not discard" must hold on every route.
+        for text in ("Don't forget that we have dinner tomorrow.",
+                     "I'll never forget that trip."):
+            self.assertIsNotNone(
+                action_router.memory_boundary_refusal_reason(
+                    text, "memory.recent_discard"), text)
+        for text in ("Forget what I just said.", "Don't remember that."):
+            self.assertIsNone(
+                action_router.memory_boundary_refusal_reason(
+                    text, "memory.recent_discard"), text)
+
+    def test_releasing_a_boundary_never_mints_one(self):
+        self.assertIsNotNone(
+            action_router.memory_boundary_refusal_reason(
+                "you can ask about that again", "emotional.boundary"))
+
+    def test_a_tool_routed_delete_arms_a_confirmation_instead_of_deleting(self):
+        with mock.patch.object(interaction, "_execute_command",
+                               return_value="deleted") as execute, \
+             mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            interaction._pending_specific_forget = None
+            line = interaction._execute_tool_routed_action(
+                "memory.forget_specific", {"target": "my dog Scout"},
+                "forget about my dog Scout", 1,
+            )
+        execute.assert_not_called()
+        slot = interaction._pending_specific_forget
+        self.assertIsNotNone(slot)
+        self.assertEqual(slot["target"], "my dog Scout")
+        self.assertIn("scout", (line or "").lower())
+
+    def test_confirmed_delete_runs_the_same_executor_the_regex_ran(self):
+        interaction._pending_specific_forget = {
+            "person_id": 1, "target": "my dog Scout", "asked_at": time.monotonic(),
+        }
+        with mock.patch.object(interaction, "_execute_command",
+                               return_value="Forgotten.") as execute, \
+             mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            line = interaction._handle_specific_forget_confirmation("yes", 1)
+        execute.assert_called_once()
+        self.assertEqual(line, "Forgotten.")
+
+    def test_forget_it_is_not_a_yes(self):
+        # The single most likely way to mean the opposite at a delete prompt.
+        interaction._pending_specific_forget = {
+            "person_id": 1, "target": "my dog Scout", "asked_at": time.monotonic(),
+        }
+        with mock.patch.object(interaction, "_execute_command") as execute, \
+             mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            interaction._handle_specific_forget_confirmation("forget it", 1)
+        execute.assert_not_called()
+
+    def test_boundary_write_is_the_models_call_online(self):
+        from memory import boundaries as boundary_memory
+
+        with mock.patch.object(boundary_memory, "apply_detected_boundary") as write, \
+             mock.patch.object(interaction, "_apply_topic_boundary_side_effects") as ban, \
+             mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            out = interaction._handle_conversation_boundary(
+                1, "Don't ask me how I got it, long story.")
+        write.assert_not_called()      # no durable row from a regex
+        self.assertTrue(ban.called)    # the reversible ban still fires
+        self.assertIsNone(out)         # and the turn reaches the reply call
+
+    def test_offline_the_memory_lanes_claim_as_before(self):
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            for text in ("Forget about my dog Scout.", "forget what I just said"):
+                match = command_parser.parse(text)
+                self.assertIsNone(
+                    interaction._legacy_command_execution_block_reason(
+                        match, text=text), text)
 
 
 class LegacyMemoryWriteGateTest(unittest.TestCase):

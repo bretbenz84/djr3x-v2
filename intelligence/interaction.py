@@ -711,6 +711,12 @@ _pending_impersonation_target: Optional[dict] = None
 # Scene-snapshot confirmation slot ("say yes, remember this scene") — see
 # _offer_scene_snapshot / _handle_scene_snapshot_confirmation.
 _pending_scene_snapshot: Optional[dict] = None
+# Targeted-forget confirmation slot. memory.forget_specific DELETES rows from ten
+# tables by SUBSTRING match and until 2026-08-13 had no confirmation at all — the
+# only thing in front of it was the same regex that triggered it. See
+# _offer_specific_forget / _handle_specific_forget_confirmation.
+#   keys: person_id, target, asked_at
+_pending_specific_forget: Optional[dict] = None
 
 # "Tell me about someone" pre-briefing flow ("I'd like to tell you about my
 # coworker Daniel"). The subject is NOT present; Rex collects gossip/facts and
@@ -1804,6 +1810,27 @@ def _legacy_command_execution_block_reason(
         # audit 2026-08-13). Benign unmapped keys still pass; the keys that write
         # people.db now answer for themselves.
         return _legacy_unmapped_memory_write_block_reason(match)
+    if action_router.tool_router_owns(decision.action):
+        # Phase 2b handoff for the command_parser lanes, in ONE place: this gate is
+        # the only thing BOTH legacy call sites pass through — the fast lane
+        # (_handle_fast_local_takeover, which claims forget_specific and
+        # memory_boundary before the router call even happens) and the main legacy
+        # dispatch after the router. Demoting here rather than inside
+        # command_parser.parse keeps parse()'s contract — and its offline behavior —
+        # byte-identical, which matters because offline these regexes are the ONLY
+        # thing that still forgets anything (docs/tool_router_scope.md 2.4).
+        #
+        # The classifier is not wasted: its match is still the DETECTOR, and the
+        # turn falls through to the reply call that was going to happen anyway, so
+        # the handoff costs zero round trips.
+        #
+        # Note this also covers the memory_forget_fact key, which maps to
+        # memory.forget_specific — same action, same delete, so the same handoff.
+        _log.info(
+            "[turn_policy] legacy command=%s handed to the tool router (action=%s)",
+            match.command_key, decision.action,
+        )
+        return "tool_router_owns_action"
     return action_router.missing_required_evidence_reason(
         text,
         decision,
@@ -13695,6 +13722,75 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
         _tool_routed_path.append(f"tool_router.{action}")
         return resp
 
+    if action in ("memory.forget_specific", "memory.recent_discard",
+                  "emotional.boundary"):
+        # Phase 2b (2026-08-13). STEP 4 of the migration pattern, and the step that
+        # bit aa9acce: none of these three is in _INTENT_ACTION_MAP (verified against
+        # the reverse map on this checkout — all three resolve to None), so without
+        # this branch flipping the config flag would log "live action ... has no
+        # intent mapping" and answer with a classic reply. Rex would SAY he forgot
+        # and delete nothing, silently.
+        #
+        # The guards are GUARDS-ONLY for these actions now
+        # (action_router.memory_boundary_refusal_reason), so passing text is both
+        # safe and necessary: safe because the positive-pattern ceiling is gone,
+        # necessary because a model that picks forget_specific on "Remove the lid
+        # before microwaving." has to be stopped by the same code whichever router
+        # chose it.
+        decision = action_router.ActionDecision(
+            action=action, confidence=1.0, args=dict(args or {}),
+            requires_confirmation=False, reason="tool_router",
+        )
+        block = action_router.memory_boundary_refusal_reason(text, action)
+        if block:
+            _log.info("[tool_router] %s declined: %s args=%s", action, block, args)
+        else:
+            try:
+                if action == "memory.forget_specific":
+                    # A DELETE NEVER EXECUTES FROM A TOOL CALL. The tool ARMS the
+                    # confirmation and reads back what would go, the same way
+                    # memory.forget_person routes into the wipe-confirmation flow
+                    # instead of deleting. The user's next "yes" runs the identical
+                    # _execute_command("forget_specific") the regex lane ran — the
+                    # door changed, not the executor. "statement" is accepted only
+                    # because older logged tool calls used that name.
+                    target = _router_arg_text(
+                        decision, "target", "topic", "memory", "statement"
+                    ) or (forgetting.extract_specific_forget_target(text) or "")
+                    resp = _offer_specific_forget(person_id, target) if target else None
+                    if resp:
+                        _speak_blocking(resp, emotion="neutral")
+                elif action == "memory.recent_discard":
+                    # Speaks for itself (the confusion-grounding branch quotes the
+                    # diary), so no _speak_blocking here.
+                    resp = _execute_memory_boundary_command(
+                        person_id, utterance=str(text or "")
+                    )
+                else:
+                    resp = _handle_router_emotional_boundary(
+                        person_id,
+                        text,
+                        topic_hint=_router_arg_text(decision, "topic") or (
+                            _session_router_control_topics.get(int(person_id))
+                            if person_id is not None else None
+                        ),
+                        behavior=_router_arg_text(decision, "behavior"),
+                    )
+                    if resp:
+                        _speak_blocking(resp, emotion="neutral")
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+                resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        # Declined (guard, no resolvable target, nothing recent to discard) — answer
+        # as conversation so the turn is never silent, same tail as event.cancel.
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action in _PLAN_ROUTER_ACTIONS or action == "performance.impersonate":
         # humor.* / performance.* (migrated 2026-08-13). Same executors the regex
         # fast lane calls — only the door changed. Two things this branch has to
@@ -18440,6 +18536,7 @@ def _handle_router_emotional_boundary(
     text: str,
     *,
     topic_hint: Optional[str] = None,
+    behavior: Optional[str] = None,
 ) -> Optional[str]:
     """Fallback boundary action when the action router catches user intent."""
     if person_id is None:
@@ -18456,11 +18553,20 @@ def _handle_router_emotional_boundary(
             _log.debug("router boundary release hold failed: %s", exc)
 
         topic = (topic_hint or "").strip() or _boundary_fallback_topic() or "current topic"
+        # behavior was hardcoded "mention" until 2026-08-13, and "mention" is the
+        # BROADEST of the three — boundaries.is_blocked treats a mention row as
+        # blocking ask and roast as well — so "don't joke about my weight" quietly
+        # became "never mention weight". The tool can now say which one it heard;
+        # anything unrecognized falls back to the old default rather than inventing
+        # a narrower boundary than the person asked for.
+        chosen = (behavior or "").strip().lower()
+        if chosen not in {"mention", "ask", "roast"}:
+            chosen = "mention"
         applied = boundary_memory.apply_detected_boundary(
             person_id,
             {
                 "action": "add",
-                "behavior": "mention",
+                "behavior": chosen,
                 "topic": topic,
                 "description": f"Do not bring up {topic} unless the person does.",
                 "source_text": text.strip(),
@@ -18920,6 +19026,119 @@ _SCENE_SNAPSHOT_NO_RE = re.compile(
     r"cancel|skip|forget)\b",
     re.IGNORECASE,
 )
+# Targeted-forget confirmation. Anchored at the START and deliberately narrow:
+# this is the last thing between an utterance and an irreversible multi-table
+# delete, so anything that is not a clear yes lets the offer lapse. "forget it" is
+# NOT a yes here — it is the single most likely way to mean the opposite.
+_SPECIFIC_FORGET_YES_RE = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|sure|okay|ok|correct|confirm(?:ed|\s+it)?|"
+    r"do\s+it|go\s+ahead|delete\s+it|that'?s\s+right)\b",
+    re.IGNORECASE,
+)
+_SPECIFIC_FORGET_NO_RE = re.compile(
+    r"^\s*(?:no|nope|nah|naw|never\s*mind|nevermind|don'?t|do\s+not|cancel|"
+    r"stop|wait|hold\s+on|keep\s+it|leave\s+it)\b",
+    re.IGNORECASE,
+)
+
+
+def _specific_forget_confirm_timeout() -> float:
+    return float(getattr(config, "SPECIFIC_FORGET_CONFIRM_TIMEOUT_SECS", 30.0))
+
+
+def _offer_specific_forget(person_id: Optional[int], target: str) -> str:
+    """Arm the targeted-forget confirmation and return the spoken offer line.
+
+    memory.forget_specific is a DELETE across person_facts, person_events,
+    person_emotional_events, conversations, person_qa, person_preferences,
+    person_interests, person_callback_material, person_relationships and the rex.db
+    diary, matched by SUBSTRING (memory.forgetting.text_matches_terms is a plain
+    `term in haystack`), and until 2026-08-13 it ran with no confirmation of any
+    kind. memory.forget_person has had an armed confirmation since it shipped; a
+    one-topic delete is smaller in scope but identical in kind — irreversible, no
+    undo — and the measured blast radius says the scope claim is not even reliable:
+    "Forget it, I'll do it myself." yielded the search term "i'll", which
+    substring-matches nearly every stored conversation summary.
+
+    Deliberately NOT routed through _arm_memory_wipe_confirmation. That flow owns
+    person/all wipes, demands a fixed pass phrase plus FULL_MEMORY_WIPE_ACCESS_CODE,
+    and is the last line for the most destructive thing Rex can do; widening it to
+    take a third scope would weaken it. This is its own lighter slot, in the shape
+    _offer_scene_snapshot already uses. Nothing about the wipe flow changes.
+    """
+    global _pending_specific_forget
+    _pending_specific_forget = {
+        "person_id": person_id,
+        "target": (target or "").strip(),
+        "asked_at": time.monotonic(),
+    }
+    try:
+        consciousness.begin_response_wait(_specific_forget_confirm_timeout())
+    except Exception:
+        pass
+    _log.info(
+        "[memory] targeted-forget confirmation offered person_id=%s target=%r",
+        person_id, target,
+    )
+    said = (target or "").strip()
+    if re.match(r"(?i)^my\b", said):
+        said = re.sub(r"(?i)^my\b", "your", said, count=1)
+    return (
+        f"Before I do that — I'd be deleting everything I have about {said}: "
+        "facts, events, conversations, the lot. There's no undo. Say yes and it's gone."
+    )
+
+
+def _handle_specific_forget_confirmation(
+    text: str, person_id: Optional[int]
+) -> Optional[str]:
+    """Consume a pending targeted-forget confirmation, or let the offer lapse.
+
+    Same shape as _handle_scene_snapshot_confirmation: an unrelated turn drops the
+    slot quietly and falls through to conversation. A delete never happens on
+    silence, on a timeout, or on anything ambiguous — only on an explicit yes from
+    the identity that asked.
+    """
+    global _pending_specific_forget
+    ctx = _pending_specific_forget
+    if ctx is None:
+        return None
+    if (time.monotonic() - float(ctx.get("asked_at") or 0.0)
+            > _specific_forget_confirm_timeout()):
+        _pending_specific_forget = None
+        _log.info("[memory] targeted-forget confirmation expired")
+        return None
+    cleaned = (text or "").strip()
+    if _SPECIFIC_FORGET_NO_RE.match(cleaned):
+        _pending_specific_forget = None
+        _log.info("[memory] targeted forget declined: %r", text)
+        return "Kept it, then. Nothing deleted."
+    if _SPECIFIC_FORGET_YES_RE.match(cleaned):
+        pid = ctx.get("person_id")
+        # Same rule the wipe flow enforces: the confirmation has to come from the
+        # identity that asked. A second person in the room saying "yes" must not
+        # delete this person's memories.
+        if _confirmation_speaker_mismatch(
+            {"person_id": pid, "requester_id": pid}, person_id
+        ):
+            _pending_specific_forget = None
+            _log.info("[memory] targeted forget rejected: speaker mismatch")
+            return (
+                "Confirmation rejected. That did not come from the same identity. "
+                "Nothing deleted."
+            )
+        _pending_specific_forget = None
+        return _execute_command(
+            command_parser.CommandMatch(
+                "forget_specific", "confirmed", {"target": ctx.get("target") or ""}
+            ),
+            pid,
+            _tool_router_person_name(pid),
+            text,
+        )
+    _pending_specific_forget = None
+    _log.info("[memory] targeted-forget offer lapsed (unrelated turn): %r", text)
+    return None
 
 
 def _scene_snapshot_confirm_timeout() -> float:
@@ -20743,6 +20962,41 @@ def _handle_conversation_boundary(
             and str(detected.get("topic") or "") == "current topic"
         ):
             detected = dict(detected, kind="subject_change")
+        if action_router.tool_router_owns("emotional.boundary"):
+            # Phase 2b (2026-08-13): this function stops CONSUMING the turn. It ran
+            # before the LLM ever saw the utterance, wrote a durable
+            # person_conversation_boundaries row, muted matching check-in events,
+            # retired callback premises and answered with a canned sentence — all
+            # from a regex. Measured against this checkout, that meant
+            # "Don't ask me how I got it, long story." (an INVITATION) stored a
+            # permanent never-ask row, and "Let's talk about the topic of my
+            # dissertation." tripped the change-the-subject family and steered Rex
+            # AWAY from the one topic just requested.
+            #
+            # The split is deliberate, and it is the same one 6267d38 drew: the
+            # REVERSIBLE half stays deterministic, the DURABLE half goes to the
+            # model. _apply_topic_boundary_side_effects still fires here — a 90s
+            # in-memory proactive ban plus clearing steering/topic-thread — so Rex
+            # stops raising the topic THIS turn even if the model declines the tool.
+            # The durable row is written by the emotional_boundary tool call, and
+            # the context the model needs is already in front of it: lean_brain.
+            # _person_lines renders boundaries.summarize_for_prompt AND the
+            # recently_banned_topics directive, so no new plumbing is required.
+            #
+            # Returning None hands the turn to the reply call, which is what stops
+            # the canned "Understood. I won't bring up X unless you do." from being
+            # the whole answer. Offline, or with the kill switch off, everything
+            # below runs exactly as it did before.
+            topic = str(detected.get("topic") or "").strip()
+            _apply_topic_boundary_side_effects(
+                person_id, text,
+                banned_topic=topic if topic not in {"", "current topic", "anything"} else None,
+            )
+            _log.info(
+                "[boundaries] detected %s topic=%r handed to the tool router",
+                detected.get("kind"), topic,
+            )
+            return None
         if detected.get("kind") == "subject_change":
             # "Can we talk about something else?" is a TRANSIENT steer, not a durable
             # consent rule — don't persist a boundary (the old path stored garbage like
@@ -24440,6 +24694,24 @@ def _handle_speech_segment(
             conv_log.log_rex(intro_voice_response)
             _session_exchange_count += 1
             _register_rex_utterance(intro_voice_response)
+            return
+
+        # Targeted-forget confirmation, in the same pending-slot ladder as the scene
+        # snapshot and ahead of it: this slot is only ever open for one turn after
+        # Rex reads back what he would delete, and a bare "yes" must land here, not
+        # in a general reply.
+        forget_confirm_line = _handle_specific_forget_confirmation(text, person_id)
+        if forget_confirm_line is not None:
+            _record_heard_turn_once()
+            _speak_blocking(forget_confirm_line, emotion="neutral")
+            conv_memory.add_to_transcript("Rex", forget_confirm_line)
+            conv_log.log_rex(forget_confirm_line)
+            _session_exchange_count += 1
+            _register_rex_utterance(forget_confirm_line)
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
             return
 
         scene_confirm_line = _handle_scene_snapshot_confirmation(text, person_id)
