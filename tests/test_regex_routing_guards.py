@@ -898,6 +898,80 @@ class MemoryWriteMigrationTest(unittest.TestCase):
                         match, text=text), text)
 
 
+class GamesMigrationTest(unittest.TestCase):
+    """command_parser was the only thing that ever started a game."""
+
+    def test_off_pattern_start_requests_are_no_longer_vetoed(self):
+        # Every one of these was a correct start request the positive-pattern
+        # gate blocked, so the game simply never began.
+        for text in ("quiz me", "how about a game", "game time",
+                     "fire up trivia", "deal me in"):
+            self.assertIsNone(
+                action_router.game_request_refusal_reason(text, "game.start"), text)
+
+    def test_off_pattern_stop_requests_are_no_longer_vetoed(self):
+        for text in ("can we quit this", "I'm done with this game", "wrap it up"):
+            self.assertIsNone(
+                action_router.game_request_refusal_reason(text, "game.stop"), text)
+
+    def test_narration_and_refusal_still_blocked(self):
+        for action, text in (("game.start", "we played trivia last night"),
+                             ("game.start", "he's playing games with my head"),
+                             ("game.stop", "don't stop the game")):
+            self.assertIsNotNone(
+                action_router.game_request_refusal_reason(text, action),
+                f"{action} {text!r}")
+
+    def test_mid_game_stop_stays_deterministic(self):
+        """The player's only exit must not depend on a model call.
+
+        Mid-game the game owns the turn before any reply call happens, and if the
+        model answers in prose the tool is dropped entirely — the player would be
+        stuck inside the game with a chatty non-answer. Same rule the scope doc
+        gives bare "stop" during motion.
+        """
+        match = command_parser.parse("stop the game")
+        with mock.patch.object(interaction, "_game_active_for_router",
+                               return_value=True):
+            self.assertIsNone(
+                interaction._legacy_command_execution_block_reason(
+                    match, text="stop the game"))
+        with mock.patch.object(interaction, "_game_active_for_router",
+                               return_value=False):
+            self.assertEqual(
+                interaction._legacy_command_execution_block_reason(
+                    match, text="stop the game"),
+                "tool_router_owns_action")
+
+    def test_start_game_is_handed_over_online_and_claimed_offline(self):
+        match = command_parser.parse("let's play trivia")
+        self.assertEqual(match.command_key, "start_game")
+        self.assertEqual(
+            interaction._legacy_command_execution_block_reason(
+                match, text="let's play trivia"),
+            "tool_router_owns_action")
+        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
+            self.assertIsNone(
+                interaction._legacy_command_execution_block_reason(
+                    match, text="let's play trivia"))
+
+    def test_a_hedged_right_answer_is_not_recorded_as_a_pass(self):
+        # "I don't know, Paris?" is a guess with a disclaimer bolted to the front,
+        # but the hedge pattern matches ANYWHERE, so the answer was thrown away.
+        from features import jeopardy
+
+        self.assertEqual(jeopardy.strip_pass_hedge("I don't know, Paris?"), "paris")
+        self.assertEqual(jeopardy.strip_pass_hedge("no idea, maybe Lincoln"), "lincoln")
+
+    def test_a_bare_pass_is_still_a_pass(self):
+        # The residual may only ever PROMOTE to correct, never demote a shrug into
+        # a wrong answer with a deduction.
+        from features import jeopardy
+
+        for text in ("I don't know", "no idea", "pass", "beats me"):
+            self.assertEqual(jeopardy.strip_pass_hedge(text), "", text)
+
+
 class LegacyMemoryWriteGateTest(unittest.TestCase):
     """Unmapped legacy keys skipped the evidence check entirely."""
 

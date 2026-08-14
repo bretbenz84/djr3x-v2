@@ -1213,6 +1213,53 @@ def _game_active_for_router() -> bool:
         return False
 
 
+# Command keys that ESCAPE an active game instead of being graded as a move, plus
+# the bare words that mean "stop this game" only because a game is running.
+#
+# ONE definition for BOTH active-game claim sites in _handle_speech_segment. They
+# carried duplicated literals with DIFFERENT bare-word sets above them and had
+# already drifted: the EARLY site (which returns first, so it is the one that
+# decides) omitted "stop game", and command_parser.parse("stop game") is None — so
+# mid-game "stop game" was handed to the grader as an ANSWER while the later site,
+# which never runs, would have caught it (measured 2026-08-13).
+#
+# The start_* keys are new here (2026-08-13): asking for a different game mid-game
+# was graded as a move, even though games.start_game already stops the running game
+# first. They are safe to escape because no game ANSWER looks like "let's play
+# jeopardy". The query keys (time/date/vision/who-am-I) are deliberately NOT here:
+# a Jeopardy response is phrased "What is X?", the same shape as those queries,
+# which is exactly why action_router._deterministic_self_query_intent refuses to
+# skip routing while a game is active.
+_GAME_ESCAPE_COMMAND_KEYS = frozenset({
+    "stop_game", "sleep", "shutdown", "quiet_mode", "wake_up",
+    "dj_stop", "dj_skip", "volume_up", "volume_down",
+    "start_game", "start_trivia", "start_i_spy", "start_20_questions",
+    "start_jeopardy", "start_word_association",
+})
+_GAME_BARE_STOP_WORDS = frozenset({
+    "stop", "quit", "end", "stop game", "end game", "quit game",
+    "stop the game", "end the game", "quit the game", "stop playing",
+})
+
+
+def _game_escape_command(text: str) -> Optional[command_parser.CommandMatch]:
+    """The escape command an in-game utterance carries, or None to grade it."""
+    try:
+        match = command_parser.parse(text)
+    except Exception:
+        match = None
+    key = match.command_key if match is not None else None
+    normalized = " ".join((text or "").lower().split()).strip(" .!?")
+    if normalized in _GAME_BARE_STOP_WORDS and key in (None, "dj_stop"):
+        # A bare "stop"/"quit" parses as dj_stop (or as nothing at all); inside a
+        # game it means THIS game, not the music.
+        return command_parser.CommandMatch("stop_game", "active_game_stop", {})
+    if key == "dj_skip" and normalized == "skip":
+        # "skip" mid-game means skip the question — a MOVE, not an escape.
+        return None
+    return match if key in _GAME_ESCAPE_COMMAND_KEYS else None
+
+
 def _action_router_context(
     text: str,
     *,
@@ -1810,7 +1857,14 @@ def _legacy_command_execution_block_reason(
         # audit 2026-08-13). Benign unmapped keys still pass; the keys that write
         # people.db now answer for themselves.
         return _legacy_unmapped_memory_write_block_reason(match)
-    if action_router.tool_router_owns(decision.action):
+    owned_context = None
+    if decision.action == "game.stop":
+        # Only game.stop's ownership depends on live state, so only it pays the
+        # is_active() read. Read LIVE rather than trusting `context`: this gate is
+        # also called with context=None, and a missing key would read as "no game
+        # running" and hand the player's only escape hatch to the model.
+        owned_context = {"active_game": _game_active_for_router()}
+    if action_router.tool_router_owns_turn(decision.action, owned_context):
         # Phase 2b handoff for the command_parser lanes, in ONE place: this gate is
         # the only thing BOTH legacy call sites pass through — the fast lane
         # (_handle_fast_local_takeover, which claims forget_specific and
@@ -1860,6 +1914,22 @@ def _intent_execution_block_reason(
 ) -> Optional[str]:
     """Central turn-policy gate for deterministic intent-classifier claims."""
     if not intent or intent == "general":
+        return None
+    if intent == "query_games" and action_router.tool_router_owns("game.start"):
+        # query_games is the ONE deterministic intent with no action mapping and no
+        # evidence rule (action_router._SELF_QUERY_SKIP_INTENTS says exactly that),
+        # so it reaches _handle_classified_intent unchecked — and
+        # intent_classifier._GAMES_QUERY_RE claims "play a game" and "start a game"
+        # outright, answering a LAUNCH with the canned games menu. That was masked
+        # while command_parser executed start_game first; demoting start_game to the
+        # tool router unmasks it, and without this "play a game of jeopardy" would
+        # regress from starting Jeopardy to reading a list (measured 2026-08-13:
+        # classify_deterministic("play a game of jeopardy") == "query_games").
+        # Fails SAFE in both directions: when the start pattern misses, query_games
+        # keeps the turn exactly as today, and offline / kill-switch-off
+        # tool_router_owns is False so nothing changes at all.
+        if action_router.has_game_start_request_evidence(text):
+            return "tool_router_owned_game_start"
         return None
     decision = _intent_action_decision(intent)
     if decision is None:
@@ -13838,6 +13908,79 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
             _speak_blocking(full)
         return full or ""
 
+    if action == "game.start":
+        # Step 4 of the migration checklist: without THIS branch the tail of the
+        # function logs "live action game.start has no intent mapping" and answers
+        # with a classic reply — Rex would TALK instead of starting the game,
+        # silently (the aa9acce failure mode). game.start has no _INTENT_ACTION_MAP
+        # entry and never will; the executor is the legacy one, reached through a
+        # schema-validated door instead of a regex.
+        # Falling back to `text` when the model named no game mirrors
+        # _handle_router_takeover_action: games._normalize_game reads its aliases
+        # out of the raw sentence, and games.start_game answers an unknown name
+        # with the games list rather than failing.
+        game = str(
+            (args or {}).get("game") or (args or {}).get("game_name") or ""
+        ).strip()
+        block = action_router.game_request_refusal_reason(text, action)
+        if block:
+            _log.info("[tool_router] game.start declined: %s args=%s", block, args)
+        else:
+            try:
+                resp = _execute_command(
+                    command_parser.CommandMatch(
+                        "start_game", "tool_router", {"game": game or text},
+                    ),
+                    person_id,
+                    _tool_router_person_name(person_id),
+                    text,
+                )
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+                resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
+    if action == "game.stop":
+        # Two executors on purpose. With a game running, use the SAME fast stop the
+        # deterministic lane used (games.stop_game_fast, no LLM closing line), so
+        # the tool path is never slower than the regex path it replaces. With no
+        # game running, go through _execute_command: that branch carries the music
+        # salvage ("stop the game" while a track plays stops the track), behavior
+        # this migration must not drop on the floor.
+        block = action_router.game_request_refusal_reason(text, action)
+        if block:
+            _log.info("[tool_router] game.stop declined: %s", block)
+        else:
+            try:
+                from features import games as games_mod
+                if games_mod.is_active():
+                    resp = games_mod.stop_game_fast(person_id)
+                    if resp:
+                        _speak_blocking(resp, emotion="neutral")
+                else:
+                    resp = _execute_command(
+                        command_parser.CommandMatch("stop_game", "tool_router", {}),
+                        person_id,
+                        _tool_router_person_name(person_id),
+                        text,
+                    )
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+                resp = None
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action in ("music.stop", "music.skip"):
         key = "dj_stop" if action == "music.stop" else "dj_skip"
         try:
@@ -25510,24 +25653,12 @@ def _handle_speech_segment(
         try:
             from features import games as games_mod
             if games_mod.is_active():
-                game_match = command_parser.parse(text)
-                command_key = game_match.command_key if game_match is not None else None
-                normalized_game_text = " ".join(text.lower().strip().split())
-                if game_match is None and normalized_game_text in {"quit", "end", "end game", "quit game"}:
-                    command_key = "stop_game"
-                elif (
-                    command_key == "dj_stop"
-                    and normalized_game_text in {"stop", "quit", "end", "stop playing"}
-                ):
-                    command_key = "stop_game"
-                elif command_key == "dj_skip" and normalized_game_text == "skip":
-                    command_key = None
-
-                game_escape_commands = {
-                    "stop_game", "sleep", "shutdown", "quiet_mode", "wake_up",
-                    "dj_stop", "dj_skip", "volume_up", "volume_down",
-                }
-                if command_key not in game_escape_commands:
+                # This is the EARLY claim and it returns, so it is the one that
+                # decides who owns a mid-game turn. Its bare-word set used to be a
+                # near-copy of the later site's and had drifted (see
+                # _game_escape_command).
+                game_escape = _game_escape_command(text)
+                if game_escape is None:
                     game_response = games_mod.handle_input(text, person_id, audio_array)
                     completed = _speak_blocking(game_response)
                     response_text = game_response
@@ -26820,28 +26951,11 @@ def _handle_speech_segment(
             try:
                 from features import games as games_mod
                 if games_mod.is_active():
-                    command_key = match.command_key if match is not None else None
-                    normalized_game_text = " ".join(text.lower().strip().split())
-                    if match is None and normalized_game_text in {
-                        "stop", "quit", "end", "stop game", "end game", "quit game",
-                        "stop the game",
-                    }:
-                        match = command_parser.CommandMatch("stop_game", "active_game_stop", {})
-                        command_key = "stop_game"
-                    elif (
-                        command_key == "dj_stop"
-                        and normalized_game_text in {"stop", "quit", "end", "stop playing"}
-                    ):
-                        match = command_parser.CommandMatch("stop_game", "active_game_stop", {})
-                        command_key = "stop_game"
-                    elif command_key == "dj_skip" and normalized_game_text == "skip":
-                        command_key = None
-
-                    game_escape_commands = {
-                        "stop_game", "sleep", "shutdown", "quiet_mode", "wake_up",
-                        "dj_stop", "dj_skip", "volume_up", "volume_down",
-                    }
-                    if command_key not in game_escape_commands:
+                    # Same decision as the early claim above, from the same helper —
+                    # these two blocks are the pair that drifted.
+                    game_escape = _game_escape_command(text)
+                    match = game_escape
+                    if game_escape is None:
                         response_text = games_mod.handle_input(text, person_id, audio_array)
                         completed = _speak_blocking(response_text)
                         _router_audit_note_result(

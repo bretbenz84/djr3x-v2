@@ -948,3 +948,42 @@ def is_pass_or_timeout(text: str) -> bool:
         "i don t know", "i dont know", "dunno", "i dunno", "beats me",
         "no guess", "nothing", "next",
     }
+
+
+# A giving-up phrase is a LEAD-IN when real words follow it. The trailing group
+# eats the filler that separates the disclaimer from the guess ("no idea, maybe
+# Lincoln", "I don't know... is it Shakespeare?") so the residual is the answer
+# alone and normalize_answer's own lead-in stripping can finish the job.
+_PASS_HEDGE_LEADIN_RE = re.compile(
+    r"^(?:"
+    r"(?:i\s+)?(?:don\s+t|dont|do\s+not)\s+know|"
+    r"(?:i\s+(?:have|got)\s+)?no\s+(?:idea|clue|guess)|"
+    r"(?:i\s+m\s+|im\s+)?not\s+(?:really\s+|totally\s+|entirely\s+)?sure|"
+    r"i\s+(?:give\s+up|got\s+nothing|have\s+nothing)|"
+    r"(?:i\s+)?dunno|beats\s+me|pass|skip(?:\s+it)?"
+    r")\b"
+    r"(?:\s+(?:but|though|although|however|maybe|perhaps|possibly|probably|"
+    r"is\s+it|it\s+s|it\s+is|that\s+s|could\s+be|something\s+like|"
+    r"i\s+(?:think|guess|believe|d\s+say|ll\s+say|ll\s+guess)|"
+    r"my\s+guess\s+is|uh+|um+|er+|hmm+|well|ok(?:ay)?|so))*"
+)
+
+
+def strip_pass_hedge(text: str) -> str:
+    """What is LEFT after a giving-up lead-in, or "" when the turn is only a pass.
+
+    "I don't know, Paris?" is a guess with a disclaimer bolted to the front, but
+    is_pass_or_timeout says True because the hedge pattern matches ANYWHERE in the
+    turn — so games._jeopardy_handle recorded "No answer" with the board's own
+    answer sitting in the utterance (routing audit 2026-08-13).
+
+    The residual is used ONE WAY ONLY: it can promote a swallowed right answer to
+    correct, never demote a pass into a wrong answer with a deduction. That is what
+    keeps "I don't know what that is" (residual "what that is") from turning a
+    shrug into a lost $800.
+    """
+    plain = _plain(text)
+    match = _PASS_HEDGE_LEADIN_RE.match(plain)
+    if match is None:
+        return ""
+    return plain[match.end():].strip()

@@ -1912,6 +1912,20 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
 
     passed = bool(jeopardy_bank and jeopardy_bank.is_pass_or_timeout(text))
     correct = bool(jeopardy_bank and jeopardy_bank.is_correct(text, answer))
+    if passed and not correct and jeopardy_bank is not None:
+        # A hedge is a LEAD-IN when a real answer follows it. "no idea, maybe
+        # Lincoln" scored as "No answer" while Lincoln sat in the utterance
+        # (routing audit 2026-08-13): is_pass_or_timeout matches the hedge anywhere,
+        # and `passed` wins the branch below. Grade the residual so the answer
+        # counts. Deliberately ONE-WAY — the residual can only promote to CORRECT,
+        # never to a wrong answer with a deduction, so "I don't know what that is"
+        # (residual "what that is") stays a pass. The LLM judge is deliberately NOT
+        # re-run on the residual: that would add a hosted call to every "I don't
+        # know", and a hedged answer the lexical matcher cannot score fails safe to
+        # a pass rather than to a deduction.
+        residual = jeopardy_bank.strip_pass_hedge(text)
+        if residual and jeopardy_bank.is_correct(residual, answer):
+            correct = True
     if not correct and not passed and jeopardy_bank is not None:
         # Speech-transcript fallback: give a borderline miss one strict LLM look
         # before the deduction (phonetic mangling the lexical matcher can't score).
@@ -1931,7 +1945,10 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         return (_jeopardy_repeat_clue_reply(clue, player, prefix=prefix), False)
 
     done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
-    if passed:
+    # `and not correct`: a hedged RIGHT answer is right. Pass used to win this
+    # branch outright, which is how "I don't know, Paris?" lost a correct Paris even
+    # though is_correct had already said True (routing audit 2026-08-13).
+    if passed and not correct:
         _body_beat("suspicious_glance")
         _jeopardy_queue_clip("timesup")
         next_player = _jeopardy_offer_rebound()

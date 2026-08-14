@@ -456,6 +456,58 @@ _GAME_STOP_REQUEST_RE = re.compile(
     r"20\s+questions|twenty\s+questions|word\s+association)\b",
     re.IGNORECASE,
 )
+# ── game.* guards: the NEGATIVE half of the evidence gate (2026-08-13) ──────────
+# Same split the humor/performance migration made: the positive patterns above no
+# longer decide whether a tool call may execute (they capped the router at exactly
+# the phrasings it was migrated off), but these inversions still gate every path.
+# Clause-scoped like _HUMOR_NEGATION_RE — a bare negator anywhere in the turn would
+# veto "don't hold back, start the trivia round".
+_GAME_NEGATION_RE = re.compile(
+    r"\b(?:don['’]?t|do\s+not|never|no\s+more|not|nobody|no\s+one|stop|quit|"
+    r"shouldn['’]?t|should\s+not|won['’]?t|will\s+not|can['’]?t|cannot|"
+    r"couldn['’]?t|didn['’]?t|isn['’]?t)\b"
+    r"[^.,;!?]{0,24}?\b(?:play|playing|start|starting|game|games|trivia|jeopardy|quiz)\b",
+    re.IGNORECASE,
+)
+# Narration about a game that already happened, or someone else's game. Subject
+# pronoun + a PAST/progressive play verb, skipping over "you"/"rex" so "I want you
+# to start a trivia round" still launches. The contraction forms are listed
+# explicitly — "he's playing games with my head" is an idiom that the bare "he"
+# alternative cannot reach, because "he's" leaves no whitespace to match.
+_GAME_NARRATION_RE = re.compile(
+    r"\b(?:i|i['’]m|i['’]ve|we|we['’]re|we['’]ve|they|they['’]re|they['’]ve|he|he['’]s|"
+    r"she|she['’]s|it|it['’]s|everyone|everybody|nobody|people|kids|"
+    r"my\s+[\w'’]+|the\s+[\w'’]+)\s+"
+    r"(?:(?!\byou\b|\brex\b)[\w'’]+\s+){0,3}?"
+    r"(?:played|playing|won|lost|beat|used\s+to\s+play)\b",
+    re.IGNORECASE,
+)
+# "What games do you have?" asks for the LIST; starting a random one is the wrong
+# answer. The deterministic query_games intent still owns these turns — this guard
+# is what stops the model from front-running it with a launch.
+_GAME_LIST_QUESTION_RE = re.compile(
+    r"\b(?:what|which|any)\b[^.?!]{0,24}\bgames?\b[^.?!]{0,24}"
+    r"\b(?:do\s+you|can\s+you|have|know|play|are\s+there|got)\b|"
+    r"\b(?:do|can)\s+you\s+(?:know|have|play)\b[^.?!]{0,20}\bgames?\b",
+    re.IGNORECASE,
+)
+_GAME_STOP_NEGATION_RE = re.compile(
+    r"\b(?:don['’]?t|do\s+not|never|shouldn['’]?t|should\s+not|won['’]?t|will\s+not|"
+    r"can['’]?t|cannot|couldn['’]?t|didn['’]?t|nobody|no\s+one|"
+    r"why\s+(?:would|should))\b"
+    r"[^.,;!?]{0,24}?\b(?:stop|stopping|quit|quitting|end|ending|give\s+up|bail|cancel)\b",
+    re.IGNORECASE,
+)
+# THIRD person only, unlike the start guard. "can we quit this" and "I quit" are
+# genuine stop requests, so first-person subjects must not appear here — the
+# discriminator for narration is a third-party subject with a past-tense verb.
+_GAME_STOP_NARRATION_RE = re.compile(
+    r"\b(?:they|they['’]re|they['’]ve|he|he['’]s|she|she['’]s|it|it['’]s|"
+    r"everyone|everybody|nobody|people|kids|the\s+[\w'’]+|my\s+[\w'’]+)\s+"
+    r"(?:(?!\byou\b|\brex\b)[\w'’]+\s+){0,3}?"
+    r"(?:stopped|quit|ended|called\s+off|cancell?ed|bailed|gave\s+up)\b",
+    re.IGNORECASE,
+)
 _TIME_QUERY_RE = re.compile(
     r"\b(?:what(?:'s| is)?|tell me|give me|do you know)\b.{0,30}\b(?:time|clock)\b|"
     r"\b(?:time|clock)\b.{0,20}\b(?:now|is it)\b",
@@ -2611,6 +2663,62 @@ def memory_boundary_refusal_reason(text: str, action: str) -> str | None:
     return None
 
 
+def game_request_refusal_reason(text: str, action: str) -> str | None:
+    """Block reason when a game.start / game.stop turn is the OPPOSITE of a request.
+
+    The negative half of the evidence gate for the two migrated game actions.
+    PUBLIC for the same reason humor_performance_refusal_reason is:
+    interaction._execute_tool_routed_action has no central evidence gate — every
+    live action hand-wires its own backstop — so the live dispatcher calls THIS,
+    and a model that decides to start a game on "we played trivia last night" is
+    stopped by the same code whichever router chose it.
+
+    Nothing here asks whether a regex ALSO reads the turn as a request. That
+    positive test was the router's ceiling, not a safety property: measured
+    2026-08-13 against _GAME_START_REQUEST_RE, every one of "quiz me", "how about a
+    game", "game time", "give me a trivia question", "hit me with a trivia
+    question", "wanna play something", "fire up trivia", "set up a jeopardy board",
+    "deal me in" and "you pick a game" was a correct start request the gate vetoed
+    — and for stop, "can we quit this", "I'm done with this game", "enough of this
+    game", "wrap it up" and "kill the trivia".
+
+    Reason strings are unchanged from the positive-pattern era on purpose: the
+    per-turn audit line (allowlist_result) and tools/tool_router_report.py join on
+    them, and "this turn carries no evidence of a request" is still what they mean.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+    if action == "game.start":
+        if _GAME_NEGATION_RE.search(cleaned):
+            return "missing_game_start_evidence"
+        if _GAME_NARRATION_RE.search(cleaned):
+            return "missing_game_start_evidence"
+        if _GAME_LIST_QUESTION_RE.search(cleaned):
+            return "missing_game_start_evidence"
+        return None
+    if action == "game.stop":
+        if _GAME_STOP_NEGATION_RE.search(cleaned):
+            return "missing_game_stop_evidence"
+        if _GAME_STOP_NARRATION_RE.search(cleaned):
+            return "missing_game_stop_evidence"
+        return None
+    return None
+
+
+def has_game_start_request_evidence(text: str) -> bool:
+    """True when the turn reads as a request to START a game.
+
+    NOT an evidence gate — game.start's gate is guards-only now. This is the
+    OWNERSHIP SPLIT between the deterministic query_games intent (which answers
+    with the games LIST) and the game_start tool: intent_classifier._GAMES_QUERY_RE
+    claims "play a game" and "start a game" outright, and both are launches, not
+    menu questions. See interaction._intent_execution_block_reason, which is the
+    only caller and which fails SAFE when this returns False.
+    """
+    return bool(_GAME_START_REQUEST_RE.search(" ".join((text or "").split())))
+
+
 def missing_required_evidence_reason(
     text: str,
     decision: ActionDecision | None,
@@ -2717,15 +2825,31 @@ def missing_required_evidence_reason(
     if action == "music.options":
         return None if _MUSIC_OPTIONS_REQUEST_RE.search(cleaned) else "missing_music_options_evidence"
     if action == "game.start":
-        return None if _GAME_START_REQUEST_RE.search(cleaned) else "missing_game_start_evidence"
+        # GUARDS ONLY (2026-08-13) — see game_request_refusal_reason for the list of
+        # correct start requests the positive pattern vetoed. _GAME_START_REQUEST_RE
+        # is NOT deleted: it is still the ownership split that decides whether the
+        # deterministic query_games intent keeps the turn
+        # (has_game_start_request_evidence), and it is still the offline claim.
+        return game_request_refusal_reason(cleaned, action)
     if action == "game.stop":
+        # Guards-only PLUS the active_game condition, kept on purpose and now
+        # load-bearing for the first time. It used to be dead code: the first
+        # alternative of _GAME_STOP_REQUEST_RE already matched a bare
+        # "stop"/"quit"/"end" anchored end-to-end, so `active_game and bare_stop`
+        # could never be the deciding clause (verified 2026-08-13 — all three
+        # return True with no context at all). With the positive pattern gone,
+        # active_game is the ONLY thing separating "stop" meaning THIS game from
+        # "stop" meaning the music or a filler word, so it is inverted into a real
+        # condition here, and interaction._execute_tool_routed_action reads the same
+        # live state to choose stop_game_fast vs the music-salvage branch.
+        reason = game_request_refusal_reason(cleaned, action)
+        if reason:
+            return reason
         active_game = bool(context.get("active_game"))
         bare_stop = bool(re.match(r"^\s*(?:stop|quit|end)\s*$", cleaned, re.IGNORECASE))
-        return (
-            None
-            if _GAME_STOP_REQUEST_RE.search(cleaned) or (active_game and bare_stop)
-            else "missing_game_stop_evidence"
-        )
+        if bare_stop and not active_game:
+            return "missing_game_stop_evidence"
+        return None
     if action == "time.query":
         return None if _TIME_QUERY_RE.search(cleaned) else "missing_time_query_evidence"
     if action == "date.query":
@@ -2913,6 +3037,19 @@ TOOL_ROUTER_OWNED_ACTIONS = frozenset({
     "memory.forget_specific",
     "memory.recent_discard",
     "emotional.boundary",
+    # game.* joined 2026-08-13. game.start is the clear win: command_parser is the
+    # ONLY layer that has ever started a game (there is no explicit game classifier
+    # in decide()'s ladder), and it measured blind to "quiz me", "how about a game",
+    # "game time", "give me a trivia question", "fire up trivia" and "deal me in" —
+    # all of which fell to conversation. game.stop is migrated for the
+    # NO-GAME-RUNNING case only; while a game is actually running the deterministic
+    # escape keeps the claim, because mid-game the game owns the turn before any
+    # reply call happens and a model that answers in prose would leave the player
+    # stuck. That exception lives in tool_router_owns_turn() so every caller agrees.
+    # game.answer is deliberately NOT here: docs/tool_router_scope.md 2.2 keeps
+    # mid-game answer capture deterministic.
+    "game.start",
+    "game.stop",
 })
 
 
@@ -2944,6 +3081,32 @@ def tool_router_owns(action: str) -> bool:
     return action in tool_router.live_actions()
 
 
+def tool_router_owns_turn(action: str, context: dict[str, Any] | None = None) -> bool:
+    """tool_router_owns() plus the ONE state-dependent exception: game.stop.
+
+    Handing game.stop to the reply call while a game is RUNNING removes the only
+    exit the player has. Mid-game the active-game claim in
+    interaction._handle_speech_segment owns every utterance that is not a
+    deterministic escape command, so a handed-off stop only ever reaches the model
+    on turns the escape set already released — and if the model answers in prose
+    the tool is dropped entirely (intelligence/lean_brain.py logs "model emitted
+    prose AND tool -- prose wins"). The player would be left inside the game with a
+    chatty non-answer. So: with a game active the deterministic lane keeps the
+    claim, which is the same rule docs/tool_router_scope.md 2.2 gives bare "stop"
+    during motion; with nothing running there is no deterministic stop to protect
+    and the model is the better judge of whether "stop the game" means the game,
+    the music, or narration.
+
+    game.start needs no such exception — by definition no game is active when one
+    is being requested.
+    """
+    if not tool_router_owns(action):
+        return False
+    if action == "game.stop" and bool((context or {}).get("active_game")):
+        return False
+    return True
+
+
 def _apply_context_overrides(
     decision: ActionDecision,
     text: str,
@@ -2957,7 +3120,9 @@ def _apply_context_overrides(
     # exactly the turns being handed over. Every decide() return passes through
     # here, which is why the handoff lives in one place. Offline or with the kill
     # switch off, tool_router_owns is False and the decision stands unchanged.
-    if tool_router_owns(decision.action):
+    # game.stop is the one owned action whose ownership depends on live state, so
+    # the check takes context (see tool_router_owns_turn).
+    if tool_router_owns_turn(decision.action, context):
         return ActionDecision(
             action="conversation.reply",
             confidence=min(float(decision.confidence or 0.0), 0.40),

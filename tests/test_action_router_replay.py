@@ -255,6 +255,7 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_allowlist_result="allowed",
                 expected_legacy_command="stop_game",
                 expected_final_path="router_takeover.game.stop",
+                offline=True,  # see RouterReplayCase.offline
             ),
             RouterReplayCase(
                 utterance="Paris",

@@ -134,6 +134,9 @@ class LiveCutoverTest(unittest.TestCase):
             # Phase 2b (2026-08-13): the last regex-owned writes/deletes.
             "memory_forget_specific", "memory_recent_discard",
             "emotional_boundary",
+            # Phase 2 games. game_answer is deliberately absent — mid-game
+            # answer capture stays deterministic (scope doc 2.2).
+            "game_start", "game_stop",
         })
 
     def test_physical_performance_tools_carry_canonical_enums(self):

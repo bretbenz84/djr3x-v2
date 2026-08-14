@@ -172,10 +172,22 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
         {"target": {**_STR, "description":
                     "who to imitate: 'speaker' for the person talking, "
                     "otherwise the name they said"}}, ["target"]),
+    # game.* went LIVE 2026-08-13. These hints carry the negatives the guards in
+    # action_router.game_request_refusal_reason enforce, because the model is now
+    # the first thing standing between reminiscing about a game and starting one.
     "game.start": (
-        "Start a verbal game (Jeopardy, Trivia, I Spy, 20 Questions, Word Association).",
-        {"game": _STR}, ["game"]),
-    "game.stop": ("Stop/quit the current game.", {}, []),
+        "An explicit request to PLAY a verbal game now — Jeopardy, Trivia, I Spy, "
+        "20 Questions or Word Association ('quiz me', 'how about a game', 'fire up "
+        "trivia'). Never reminiscing ('we played trivia last night'), never an "
+        "idiom ('he's playing games with my head'), and never 'what games do you "
+        "have', which asks for the LIST. If they did not name a game, leave the "
+        "argument empty rather than picking one for them.",
+        {"game": {**_STR, "description":
+                  "the game they named, as said; empty if they named none"}}, []),
+    "game.stop": (
+        "An explicit request to end the game that is running ('stop the game', "
+        "\"I'm done with this\", 'wrap it up') — never a refusal ('don't stop "
+        "now') and never narration about some other game ending.", {}, []),
     "game.answer": (
         "An answer/guess for the ACTIVE game (context shows active_game).",
         {"answer": _STR}, ["answer"]),
@@ -272,6 +284,12 @@ _DEFAULT_LIVE_ACTIONS = (
     "performance.dj_bit", "performance.body_beat", "performance.mood_pose",
     "performance.impersonate",
     "memory.forget_specific", "memory.recent_discard", "emotional.boundary",
+    # Phase 2 games (2026-08-13): game.start is the win — command_parser was
+    # the only thing that ever started a game and it is blind to "quiz me",
+    # "game time", "fire up trivia", "deal me in". game.stop is live for the
+    # no-game-running case; mid-game the deterministic escape keeps the claim.
+    # game.answer is NOT live and must not be (scope doc 2.2).
+    "game.start", "game.stop",
 )
 
 

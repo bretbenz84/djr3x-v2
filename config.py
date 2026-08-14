@@ -5285,6 +5285,12 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # is untouched. RETAINED for OFFLINE, where the local reply model is called with
     # no tool surface (docs/tool_router_scope.md 2.4).
     "memory.forget_specific", "memory.recent_discard", "emotional.boundary",
+    # Phase 2 games (2026-08-13): game.start is the win — command_parser was
+    # the only thing that ever started a game and it is blind to "quiz me",
+    # "game time", "fire up trivia", "deal me in". game.stop is live for the
+    # no-game-running case; mid-game the deterministic escape keeps the claim.
+    # game.answer is NOT live and must not be (scope doc 2.2).
+    "game.start", "game.stop",
 )
 
 # Seconds the "say yes, remember this scene" confirmation slot stays open.
