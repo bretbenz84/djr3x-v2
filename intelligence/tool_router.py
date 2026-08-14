@@ -61,9 +61,19 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
         "DEFAULT: the user is just talking — reply in words, call no tool.", {}, []),
     "conversation.repair": (
         "The user says Rex misheard/misunderstood or asks him to try again.", {}, []),
+    # The in-session caveat is new 2026-08-13. This tool answers from the stored
+    # person dossier and CANNOT see the current conversation, so calling it for
+    # something said a minute ago throws the transcript away: "Do you remember what
+    # I said that they were gonna let you do?" ("they" = the radar sensors, Rex's
+    # own topic 19 seconds earlier) resolved to no person and Rex answered "Who's
+    # 'they,' Bret?" about a thing he had just been talking about.
     "memory.query": (
-        "Recall stored memory about a person ('what do you remember about me/Jeff?').",
-        {"subject": {**_STR, "description": "who or what to recall"}}, []),
+        "Recall STORED memory about a person from earlier sessions ('what do you "
+        "remember about me/Jeff?', 'what's my sister's name?'). NOT for anything "
+        "said in the CURRENT conversation — that is already in the transcript in "
+        "front of you, so just answer it, and resolve pronouns like 'they'/'it' "
+        "against what was said a moment ago rather than calling this.",
+        {"subject": {**_STR, "description": "the PERSON to recall"}}, []),
     # memory.* / emotional.boundary went LIVE 2026-08-13 (Phase 2b). These hints
     # carry the negative examples the regex family learned the expensive way,
     # because the model is now the first thing standing between an idiom and a

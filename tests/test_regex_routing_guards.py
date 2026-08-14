@@ -1200,6 +1200,62 @@ class StreamedToolCallAccumulationTest(unittest.TestCase):
         self.assertIn("circuits", spoken)
 
 
+class MemoryQueryCoreferenceTest(unittest.TestCase):
+    """Field 2026-08-13 20:32 — Rex asked "Who's 'they'?" about his own topic.
+
+    Verbatim from logs/conversation-2026-08-13-20-25-31.log:
+        20:31:47  "are you excited about your new radar sensors...?"
+        20:31:50  "Absolutely — I want the upgrades, Bret."
+        20:32:06  "Do you remember what I said that they were gonna let you do?"
+        20:32:08  "Who's "they," Bret?"
+
+    The audit line says final_executed_path=tool_router.memory.query. "Do you
+    remember what I said" is lexically a memory question, so the model called the
+    memory tool — which answers from the STORED person dossier and never sees the
+    live transcript. resolve_target found no person, and the handler's catch-all
+    prompt literally instructs "ask them to name the person". The referent was two
+    turns back, in the transcript the reply call already had.
+    """
+
+    def test_a_memory_question_with_no_person_falls_through_to_conversation(self):
+        from intelligence import memory_query
+
+        for text in ("Do you remember what I said that they were gonna let you do?",
+                     "do you remember what I said about the sensors",
+                     "what did I say they would let you do"):
+            target = memory_query.resolve_target(text, 1)
+            self.assertEqual(target.detail, "no_person_subject", text)
+            with mock.patch.object(interaction, "_speak_blocking", return_value=True):
+                self.assertIsNone(
+                    interaction._handle_classified_intent("query_memory", text, 1),
+                    text)
+
+    def test_real_person_memory_questions_still_use_the_dossier(self):
+        with mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            for text in ("what do you remember about me", "what's my sister's name"):
+                self.assertIsNotNone(
+                    interaction._handle_classified_intent("query_memory", text, 1),
+                    text)
+
+    def test_an_unidentified_speaker_is_still_asked_who_they_are(self):
+        # The fall-through is keyed on "we know who is talking but the question
+        # names no person". With NO speaker resolved, asking is still right.
+        from intelligence import memory_query
+
+        target = memory_query.resolve_target("do you remember what I said", None)
+        self.assertEqual(target.detail, "self_query_without_current_person")
+        with mock.patch.object(interaction, "_speak_blocking", return_value=True):
+            self.assertIsNotNone(
+                interaction._handle_classified_intent(
+                    "query_memory", "do you remember what I said", None))
+
+    def test_the_tool_hint_warns_off_in_session_references(self):
+        hint = next(s["function"]["description"] for s in tool_router.live_reply_tools()
+                    if s["function"]["name"] == "memory_query")
+        self.assertIn("current conversation", hint.lower())
+        self.assertIn("transcript", hint.lower())
+
+
 class LegacyMemoryWriteGateTest(unittest.TestCase):
     """Unmapped legacy keys skipped the evidence check entirely."""
 

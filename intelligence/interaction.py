@@ -22939,6 +22939,23 @@ def _handle_classified_intent(
                         target.name,
                     )
                     return None
+                if target.detail == "no_person_subject":
+                    # A memory question with no PERSON in it, from someone we have
+                    # identified — almost always a reference to the live
+                    # conversation, which this handler cannot see. Field 2026-08-13
+                    # 20:32: "Do you remember what I said that they were gonna let
+                    # you do?" ("they" = the radar sensors, Rex's own topic 19
+                    # seconds earlier) hit the catch-all below and Rex asked
+                    # "Who's 'they,' Bret?" — the dossier lookup had discarded the
+                    # transcript that held the answer. Fall through to the normal
+                    # LLM path, which carries the recent turns, exactly as the
+                    # no_person_match branch above does.
+                    _log.info(
+                        "[interaction] query_memory: no person subject in %r — "
+                        "falling through to the conversational path",
+                        raw_text,
+                    )
+                    return None
                 return _say(
                     f"The user asked a memory question ({raw_text!r}), but you "
                     f"cannot resolve who it is about. In ONE short Rex-style line, "

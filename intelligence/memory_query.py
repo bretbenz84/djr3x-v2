@@ -331,6 +331,17 @@ def resolve_target(text: str, current_person_id: Optional[int]) -> MemoryTarget:
     ):
         return _current_speaker_target(int(current_person_id))
 
+    # Nothing person-shaped in the utterance. Split by whether we even know who is
+    # talking, because the caller treats the two very differently (field
+    # 2026-08-13 20:32): "Do you remember what I said that they were gonna let you
+    # do?" reached here with person_id=1 — "they" was the radar sensors, discussed
+    # 19 seconds earlier — and the caller's catch-all told Rex to "ask them to name
+    # the person", so he answered "Who's 'they,' Bret?" about his own last topic.
+    # A memory question we cannot pin to a PERSON, asked by someone we HAVE
+    # identified, is usually about the live conversation, which the reply call
+    # already holds.
+    if current_person_id is not None:
+        return MemoryTarget(mode="self", detail="no_person_subject")
     return MemoryTarget(mode="self", detail="self_query_without_current_person")
 
 
