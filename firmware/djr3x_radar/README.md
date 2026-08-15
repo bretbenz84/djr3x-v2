@@ -92,13 +92,31 @@ The Bluetooth bit is the one **persistent** thing boot config writes, and per
 the protocol doc it only goes live **on the module's next restart**. We don't
 send a reboot to force it: the modules run off the S3's 5 V, so they restart
 with the board, and every boot after the next power-cycle starts with the radio
-already dark. The command is re-asserted every boot, so a module swapped into
-the ring gets configured without anyone remembering to.
+already dark.
+
+Which means the write's ACK can't answer "is Bluetooth off?" — it only says the
+module took the write. So each sensor is **asked before it is written to**: boot
+config queries the module's Bluetooth MAC, which reads back as the fixed
+`08:05:04:03:02:01` once the radio is really down. The boot log reports that
+readback per sensor, and it decides whether to write:
+
+| `bt=` | Meaning |
+| --- | --- |
+| `off` | MAC readback says the radio is down. Nothing written. |
+| `on->off@next-boot` | Radio is up this session; disable written and ACKed. Power-cycle to make it real. |
+| `on,NO-ACK` | Radio is up and the module didn't ACK the disable. |
+| `unknown->off@next-boot` | MAC query went unanswered; disable written anyway. |
+| `unknown,NO-ACK` | Module answered neither. Usually absent/still booting. |
+| `skipped` | `RADAR_DISABLE_BLUETOOTH 0`. |
+
+So a ring that is already dark stops rewriting persistent config every boot,
+and a module swapped in with factory Bluetooth still configures itself without
+anyone remembering to. To confirm the whole ring in one shot, watch the boot
+log while power-cycling the board and look for `bt=off` on every sensor.
 
 Consequence worth knowing before you flash: once this has taken effect, **the
 HLKRadarTool phone app can no longer reach those modules** — the only way back
-is `RADAR_DISABLE_BLUETOOTH 0` plus a reflash. The boot log reports it per
-sensor as `bt=off@next-boot`, `bt=NO-ACK`, or `bt=skipped`.
+is `RADAR_DISABLE_BLUETOOTH 0` plus a reflash.
 
 ## Protocol
 
@@ -115,6 +133,19 @@ ignored), anything else acks `unknown_cmd`.
  "sens":[{"ok":true,"frames":1201,"bad":0,"drop":0}, ...],
  "errs":0}
 ```
+
+`hello` carries the per-sensor bring-up identity — `mount`, `cfg` (did boot
+config land), `fw` (the module's own firmware) and `bt` (its Bluetooth state,
+per the table above). Boot `log` lines are **dropped when no host is draining
+the port** (`setTxTimeoutMs(0)`), so `hello` — not the boot log — is the
+reliable way to ask a running ring where its radios stand:
+
+```bash
+venv/bin/python firmware/tools/radar_serial_smoketest.py
+```
+
+It prints a `bluetooth: N/3 radios off` line from that reply. A sensor with no
+`bt` at all never completed boot config (it will show `cfg:false` too).
 
 Per target: `b` bearing (deg, + = left/CCW), `r` range (m), `c` confidence
 (0–1, falls toward each sensor's ±60° FOV edges, raised when two sensors agree

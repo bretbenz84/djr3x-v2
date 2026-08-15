@@ -90,6 +90,13 @@
 // with the radio already dark. Issuing a reboot per sensor per boot instead
 // would mean guessing an undocumented settle time before frames resume, every
 // boot, forever — to save one session of a radio that has been on for weeks.
-// The command is re-asserted each boot: harmless, and it re-applies itself to a
-// module swapped into the ring without anyone remembering to configure it.
+//
+// Because of (2) the write's own ACK can only ever mean "the module accepted
+// it", never "the radio is off" — so boot config asks first: it reads each
+// module's Bluetooth MAC (LD2450_CMD_QUERY_MAC), which comes back as the
+// LD2450_MAC_BT_OFF sentinel once the radio is actually down. That readback is
+// what the boot log reports, and it decides whether to write at all: a ring
+// that is already dark stops rewriting persistent config on every boot, while a
+// module swapped in with factory Bluetooth still configures itself without
+// anyone remembering to.
 #define RADAR_DISABLE_BLUETOOTH  1

@@ -58,10 +58,12 @@ static bool cfg_transact(int i, uint16_t word, const uint8_t* value, size_t vlen
 }
 
 // Boot config per sensor (calib.h RADAR_SENSOR_BOOT_CONFIG): read the module
-// firmware version into the logs and force multi-target tracking. Read-only
-// otherwise — nothing persistent is changed.
+// firmware version into the logs, force multi-target tracking, and read back —
+// then, only if needed, write — the module's Bluetooth state. The Bluetooth bit
+// is the one persistent thing written here; everything else is volatile state
+// re-asserted every boot. No zone filters.
 static void boot_config(int i) {
-  char msg[96];
+  char msg[128];   // fw + multi + the longest bt= state, with room to spare
   if (!cfg_transact(i, LD2450_CMD_ENABLE_CONFIG, (const uint8_t*)"\x01\x00", 2,
                     nullptr, nullptr)) {
     snprintf(msg, sizeof(msg), "radar[%d] uart%u: no config ACK — module absent or still booting",
@@ -84,15 +86,39 @@ static void boot_config(int i) {
 
   // Bluetooth off (calib.h RADAR_DISABLE_BLUETOOTH). Persistent, and only live
   // after the module's next restart — we let the S3's own power cycle deliver
-  // that rather than rebooting each module every boot. Its ACK is reported but
-  // never gates cfg_ok: a module tracking people with its radio still on is a
-  // working sensor, and failing the ring over a power-saving nicety would turn
-  // a cosmetic problem into "I can't see".
+  // that rather than rebooting each module every boot. None of this gates
+  // cfg_ok: a module tracking people with its radio still on is a working
+  // sensor, and failing the ring over a power-saving nicety would turn a
+  // cosmetic problem into "I can't see".
+  //
+  // ASK FIRST, THEN WRITE. The Bluetooth command's ACK only says the module
+  // accepted a deferred write, so on its own it can never answer "is the radio
+  // off?" — for that there is exactly one readback, the MAC query, which
+  // reports LD2450_MAC_BT_OFF once the radio is actually down. Reading BEFORE
+  // the write also keeps the answer unambiguous: it describes the state the
+  // module BOOTED in, with no dependence on whether a fresh write updates the
+  // readback before the restart that makes it real. The write then only goes
+  // out to a module whose radio is still lit (or that wouldn't answer), so a
+  // ring that is already dark stops re-writing persistent config every boot,
+  // while a module swapped in with factory Bluetooth still configures itself.
   const char* bt = "skipped";
 #if RADAR_DISABLE_BLUETOOTH
-  const uint8_t bt_off[2] = {0x00, 0x00};
-  bt = cfg_transact(i, LD2450_CMD_BLUETOOTH, bt_off, sizeof(bt_off),
-                    nullptr, nullptr) ? "off@next-boot" : "NO-ACK";
+  uint8_t mac[6];
+  size_t maclen = sizeof(mac);
+  const bool mac_ok = cfg_transact(i, LD2450_CMD_QUERY_MAC,
+                                   (const uint8_t*)"\x01\x00", 2, mac, &maclen)
+                      && maclen >= sizeof(mac);
+  const bool radio_off = mac_ok && memcmp(mac, LD2450_MAC_BT_OFF,
+                                          sizeof(LD2450_MAC_BT_OFF)) == 0;
+  if (radio_off) {
+    bt = "off";                       // readback proves it — nothing to write
+  } else {
+    const uint8_t bt_off[2] = {0x00, 0x00};
+    const bool wrote = cfg_transact(i, LD2450_CMD_BLUETOOTH, bt_off,
+                                    sizeof(bt_off), nullptr, nullptr);
+    if (!mac_ok) bt = wrote ? "unknown->off@next-boot" : "unknown,NO-ACK";
+    else         bt = wrote ? "on->off@next-boot"      : "on,NO-ACK";
+  }
 #endif
 
   cfg_transact(i, LD2450_CMD_END_CONFIG, nullptr, 0, nullptr, nullptr);
@@ -100,6 +126,7 @@ static void boot_config(int i) {
   LOCK_STATE();
   g_ctx.sensors[i].cfg_ok = multi_ok;
   memcpy(g_ctx.sensors[i].fw, fw, sizeof(fw));
+  snprintf(g_ctx.sensors[i].bt, sizeof(g_ctx.sensors[i].bt), "%s", bt);
   UNLOCK_STATE();
   snprintf(msg, sizeof(msg), "radar[%d] uart%u mount%+d: %s fw=%s multi=%s bt=%s",
            i, RADAR_SENSORS[i].uart, (int)RADAR_SENSORS[i].mount_deg,

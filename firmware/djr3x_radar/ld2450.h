@@ -61,6 +61,27 @@
 // used (FF/FE/90/A0) match ESPHome's enum exactly, so A4 is from a namespace
 // this parser has already validated end-to-end.
 #define LD2450_CMD_BLUETOOTH     0x00A4
+// Query the module's Bluetooth MAC — the only READBACK of what the radio is
+// actually doing. The Bluetooth command above is write-only and deferred (it
+// takes effect at the next restart), so its ACK proves the module accepted the
+// write, never that the radio is dark; this does. Cross-checked 2026-08-15
+// against the same two sources: (a) official protocol doc V1.03 §2.2.11 — word
+// 0x00A5, command value 0x0001, send frame FD FC FB FA | 04 00 | A5 00 | 01 00
+// | 04 03 02 01, ACK FD FC FB FA | 0A 00 | A5 01 | 00 00 | 8F 27 2E B8 0F 65 |
+// 04 03 02 01 ("the queried mac address is 8F272EB80F65" — note the doc's prose
+// miscounts it as "1 byte fixed type + 3 bytes MAC"; its own worked ACK carries
+// SIX MAC bytes after the 2-byte status, and the 0x000A length agrees);
+// (b) ESPHome core ld2450.cpp — CMD_QUERY_MAC_ADDRESS = 0xA5, get_mac_() sends
+// {0x01, 0x00}, and the handler reads six bytes.
+#define LD2450_CMD_QUERY_MAC     0x00A5
+
+// The MAC a module reports when its Bluetooth is OFF. This one is NOT in the
+// official doc — it is ESPHome's, whose handler reads the six MAC bytes and
+// sets bluetooth_on_ = memcmp(mac, NO_MAC, 6) != 0 with
+// NO_MAC = {0x08, 0x05, 0x04, 0x03, 0x02, 0x01}. Treat a match as "radio off"
+// and a mismatch as "radio on"; a module that won't answer the query at all is
+// a third state (unknown), never silently folded into either.
+static const uint8_t LD2450_MAC_BT_OFF[6] = {0x08, 0x05, 0x04, 0x03, 0x02, 0x01};
 
 struct Ld2450Target {
   int16_t  x_mm;      // + = right of sensor per official convention (see header)

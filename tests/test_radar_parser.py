@@ -62,6 +62,14 @@ def parse(data: bytes) -> tuple[list[dict], dict]:
     return [m["targets"] for m in out if "targets" in m], out[-1]["summary"]
 
 
+def build_cmd(word: str, value: str = "") -> str:
+    return _run(["build", word] + ([value] if value else []), b"")[0]["cmd"]
+
+
+def find_ack(word: str, data: bytes) -> dict:
+    return _run(["ack", word], data)[0]
+
+
 def fuse(ticks: list[list[tuple]], flip: bool = False) -> list[list[dict]]:
     """ticks: each a list of (sensor, mount_deg, x_mm, y_mm, speed_cms)."""
     lines = []
@@ -140,6 +148,57 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(summary["frames_ok"], 42)
         self.assertEqual(summary["frames_bad"], 0)
         self.assertEqual(summary["bytes_dropped"], 0)
+
+
+class ConfigCommandTest(unittest.TestCase):
+    """The Bluetooth write + MAC readback, pinned to the protocol doc's own
+    worked byte examples (V1.03 §2.2.10 / §2.2.11). These command words are the
+    two things boot config can't get wrong quietly: a bad word ACKs nothing and
+    looks exactly like an absent module."""
+
+    # ld2450.h's sentinel: the MAC a module reports once its radio is down.
+    MAC_BT_OFF = "080504030201"
+
+    def test_bluetooth_off_frame_matches_doc(self):
+        # Doc §2.2.10 shows the ON frame; off is the same with value 0x0000.
+        self.assertEqual(build_cmd("00a4", "0100"), "fdfcfbfa0400a400010004030201")
+        self.assertEqual(build_cmd("00a4", "0000"), "fdfcfbfa0400a400000004030201")
+
+    def test_mac_query_frame_matches_doc(self):
+        # Doc §2.2.11 send data, byte for byte.
+        self.assertEqual(build_cmd("00a5", "0100"), "fdfcfbfa0400a500010004030201")
+
+    def test_mac_ack_yields_six_address_bytes(self):
+        # Doc §2.2.11 ACK: status 0000 then the MAC 8F272EB80F65. The value the
+        # firmware gets back is status-stripped, so a module with its radio ON
+        # can never be mistaken for the off sentinel.
+        ack = bytes.fromhex("fdfcfbfa0a00a50100008f272eb80f6504030201")
+        got = find_ack("00a5", ack)
+        self.assertTrue(got["found"])
+        self.assertEqual(got["value"], "00008f272eb80f65")
+        self.assertNotEqual(got["value"][4:], self.MAC_BT_OFF)
+
+    def test_mac_ack_reports_bluetooth_off_sentinel(self):
+        ack = bytes.fromhex("fdfcfbfa0a00a5010000" + self.MAC_BT_OFF + "04030201")
+        got = find_ack("00a5", ack)
+        self.assertTrue(got["found"])
+        self.assertEqual(got["value"][4:], self.MAC_BT_OFF)
+
+    def test_mac_ack_found_among_interleaved_data_frames(self):
+        # Config mode pauses data reporting, but frames already in flight land
+        # in the same read buffer — the readback must survive that.
+        ack = bytes.fromhex("fdfcfbfa0a00a5010000" + self.MAC_BT_OFF + "04030201")
+        stream = synth.build_frame([(250, 1500, 10)]) + ack + \
+            synth.build_frame([(250, 1500, 10)])
+        got = find_ack("00a5", stream)
+        self.assertTrue(got["found"])
+        self.assertEqual(got["value"][4:], self.MAC_BT_OFF)
+
+    def test_ack_for_a_different_word_is_not_matched(self):
+        # A firmware-version ACK must never be read as a MAC — that would
+        # decode fw bytes as an address and report a phantom "radio on".
+        ack = bytes.fromhex("fdfcfbfa0c00a00100000100020416022206" + "04030201")
+        self.assertFalse(find_ack("00a5", ack)["found"])
 
 
 class FusionTest(unittest.TestCase):

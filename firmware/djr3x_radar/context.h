@@ -24,6 +24,12 @@ struct RadarSensorState {
   uint32_t    bytes_dropped = 0;
   bool        cfg_ok = false;     // boot config transaction completed
   char        fw[24] = {0};       // sensor firmware version ("" = unknown)
+  // Bluetooth state as the module's MAC readback reported it at boot ("off",
+  // "on->off@next-boot", ... — see calib.h RADAR_DISABLE_BLUETOOTH). Kept in
+  // state, not just the boot log, because boot logs are dropped when no host is
+  // draining the port (setTxTimeoutMs(0)) — this makes "is the whole ring dark?"
+  // answerable at any time by asking for a hello.
+  char        bt[24] = {0};       // "" = never determined
 };
 
 struct RadarContext {

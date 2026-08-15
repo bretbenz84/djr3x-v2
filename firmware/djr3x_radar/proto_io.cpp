@@ -45,11 +45,13 @@ void emit_hello() {
   uint32_t bid;
   bool cfg[RADAR_SENSOR_COUNT];
   char fw[RADAR_SENSOR_COUNT][24];
+  char bt[RADAR_SENSOR_COUNT][24];
   LOCK_STATE();
   bid = g_ctx.boot_id;
   for (int i = 0; i < RADAR_SENSOR_COUNT; i++) {
     cfg[i] = g_ctx.sensors[i].cfg_ok;
     memcpy(fw[i], g_ctx.sensors[i].fw, sizeof(fw[i]));
+    memcpy(bt[i], g_ctx.sensors[i].bt, sizeof(bt[i]));
   }
   UNLOCK_STATE();
   JsonDocument doc;
@@ -64,14 +66,15 @@ void emit_hello() {
   caps.add("radar");
   doc["boot_id"] = bid;
   // Per-sensor identity for bring-up: did the boot config transaction land,
-  // and what module firmware answered (empty until the real-HW build talks to
-  // a live module).
+  // what module firmware answered, and where the module's Bluetooth radio
+  // stands (all empty until the real-HW build talks to a live module).
   JsonArray sens = doc["sensors"].to<JsonArray>();
   for (int i = 0; i < RADAR_SENSOR_COUNT; i++) {
     JsonObject s = sens.add<JsonObject>();
     s["mount"] = RADAR_SENSORS[i].mount_deg;
     s["cfg"] = cfg[i];
     if (fw[i][0]) s["fw"] = fw[i];
+    if (bt[i][0]) s["bt"] = bt[i];
   }
   tx_line(doc);
 }

@@ -18,6 +18,11 @@
 //     stdin: one target per line, "sensor mount_deg x_mm y_mm speed_cms";
 //     a blank line ends a tick -> prints one JSON line
 //     {"fused":[{"b":..,"r":..,"c":..,"s":..,"m":..}]} for it.
+//   radar_parse_host build <word_hex> [value_hex]
+//     prints {"cmd":"<hex>"} — the config frame ld2450_build_cmd() would send.
+//   radar_parse_host ack <word_hex>
+//     stdin: raw bytes (ACKs, optionally with data frames interleaved).
+//     prints {"found":true,"value":"<hex>"} or {"found":false}.
 #include "../djr3x_radar/ld2450.h"
 #include "../djr3x_radar/fusion.h"
 #include "../djr3x_radar/calib.h"
@@ -89,12 +94,77 @@ static int run_fuse(bool flip) {
   return 0;
 }
 
+// "01ff" -> {0x01, 0xff}. Returns the byte count, or -1 on a malformed string.
+static int unhex(const char* s, uint8_t* out, size_t cap) {
+  const size_t len = strlen(s);
+  if (len % 2 || len / 2 > cap) return -1;
+  for (size_t i = 0; i < len; i += 2) {
+    char byte[3] = {s[i], s[i + 1], 0};
+    char* end = nullptr;
+    const long v = strtol(byte, &end, 16);
+    if (end != byte + 2) return -1;
+    out[i / 2] = (uint8_t)v;
+  }
+  return (int)(len / 2);
+}
+
+static void print_hex(const uint8_t* b, size_t n) {
+  for (size_t i = 0; i < n; i++) printf("%02x", b[i]);
+}
+
+static int run_build(const char* word_hex, const char* value_hex) {
+  uint8_t wbuf[2], value[64];
+  if (unhex(word_hex, wbuf, sizeof(wbuf)) != 2) {
+    fprintf(stderr, "build: word must be 2 hex bytes\n");
+    return 2;
+  }
+  const uint16_t word = (uint16_t)((wbuf[0] << 8) | wbuf[1]);   // 00a5 -> 0x00A5
+  int vlen = 0;
+  if (value_hex && (vlen = unhex(value_hex, value, sizeof(value))) < 0) {
+    fprintf(stderr, "build: bad value hex\n");
+    return 2;
+  }
+  uint8_t out[128];
+  const size_t n = ld2450_build_cmd(word, vlen ? value : nullptr, (size_t)vlen, out);
+  printf("{\"cmd\":\"");
+  print_hex(out, n);
+  printf("\"}\n");
+  return 0;
+}
+
+static int run_ack(const char* word_hex) {
+  uint8_t wbuf[2];
+  if (unhex(word_hex, wbuf, sizeof(wbuf)) != 2) {
+    fprintf(stderr, "ack: word must be 2 hex bytes\n");
+    return 2;
+  }
+  const uint16_t word = (uint16_t)((wbuf[0] << 8) | wbuf[1]);
+  uint8_t buf[512];
+  size_t n = 0;
+  int c;
+  while ((c = getchar()) != EOF && n < sizeof(buf)) buf[n++] = (uint8_t)c;
+  const uint8_t* value; size_t vlen;
+  if (!ld2450_find_ack(buf, n, word, &value, &vlen)) {
+    printf("{\"found\":false}\n");
+    return 0;
+  }
+  printf("{\"found\":true,\"value\":\"");
+  print_hex(value, vlen);
+  printf("\"}\n");
+  return 0;
+}
+
 int main(int argc, char** argv) {
   if (argc >= 2 && !strcmp(argv[1], "parse")) return run_parse();
   if (argc >= 2 && !strcmp(argv[1], "fuse")) {
     const bool flip = argc >= 3 && !strcmp(argv[2], "--flip");
     return run_fuse(flip);
   }
-  fprintf(stderr, "usage: %s parse|fuse [--flip]\n", argv[0]);
+  if (argc >= 3 && !strcmp(argv[1], "build")) {
+    return run_build(argv[2], argc >= 4 ? argv[3] : nullptr);
+  }
+  if (argc >= 3 && !strcmp(argv[1], "ack")) return run_ack(argv[2]);
+  fprintf(stderr, "usage: %s parse|fuse [--flip]|build <word> [value]|ack <word>\n",
+          argv[0]);
   return 2;
 }

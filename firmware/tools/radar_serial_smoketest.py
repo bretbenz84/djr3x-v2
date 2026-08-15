@@ -171,6 +171,14 @@ def main() -> int:
             sensors = hello.get("sensors") or []
             check("sensor table present", len(sensors) >= 1,
                   f"{len(sensors)} sensors, mounts={[s.get('mount') for s in sensors]}")
+            # Bluetooth: reported, never failed. "off" is the MAC readback
+            # saying the radio is really down; "on->off@next-boot" means the
+            # disable is written and waiting on a power cycle. Absent on the
+            # stub build (no module to ask), so this only reports what it sees.
+            bt = [s.get("bt") for s in sensors if s.get("bt")]
+            if bt:
+                dark = sum(1 for b in bt if b == "off")
+                print(f"     bluetooth: {dark}/{len(bt)} radios off — {bt}")
 
         print("\n2) telemetry stream")
         c.clear()
