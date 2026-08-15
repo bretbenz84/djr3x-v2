@@ -39,8 +39,18 @@ struct RadarSensorPin {
 
 #define RADAR_SENSOR_COUNT 3
 
+// Ring layout (2026-08-15): TWO FORWARD-QUARTER modules + ONE REAR. Mounts stay
+// 120° apart, so the ring is the original 0°/±120° arrangement turned 60°: the
+// pair straddles the front and the lone module points dead astern. With ±60°
+// FOV per module the seams (where two sensors overlap at their FOV edges and
+// fusion.cpp dedups) now fall at 0° — DEAD AHEAD — and at ±120°; the rear
+// module's boresight sits on the ±180° wrap. A person straight in front is at
+// BOTH forward modules' 60° edge, so his bearing there is the two-sensor merge,
+// not a boresight read (the camera owns the front anyway — the radar is a
+// prior). If your modules sit in different slots, edit ONLY the mount_deg
+// column: the UART/pin columns describe the harness, not the ring.
 static const RadarSensorPin RADAR_SENSORS[RADAR_SENSOR_COUNT] = {
-  {1, 5,  4,    0.0f},   // S0 — front
-  {2, 7,  6,  120.0f},   // S1 — left-rear  (+120° CCW)
-  {0, 9,  8, -120.0f},   // S2 — right-rear (120° CW)
+  {1, 5,  4,   60.0f},   // S0 — front-left  (+60° CCW)
+  {2, 7,  6,  -60.0f},   // S1 — front-right (60° CW)
+  {0, 9,  8,  180.0f},   // S2 — rear (dead astern; +180 is the wrapped value)
 };

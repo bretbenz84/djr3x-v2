@@ -55,9 +55,9 @@ class FakeRadarSerial:
             if cmd == "hello" and self.reply_hello:
                 self._emit({"v": 1, "type": "hello", "proto": self.proto,
                             "fw": "fake-radar", "caps": self.caps, "boot_id": 777,
-                            "sensors": [{"mount": 0.0, "cfg": True},
-                                        {"mount": 120.0, "cfg": True},
-                                        {"mount": -120.0, "cfg": True}]})
+                            "sensors": [{"mount": 60.0, "cfg": True},    # pins.h ring:
+                                        {"mount": -60.0, "cfg": True},   # forward pair
+                                        {"mount": 180.0, "cfg": True}]})  # + rear
         return len(data)
 
     def _telemetry(self):

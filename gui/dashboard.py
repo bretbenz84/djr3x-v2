@@ -1670,7 +1670,9 @@ class RadarRingWidget(QWidget):
 
     _MAX_M = 8.0                          # LD2450 spec range — the display reach
     _HALF_FOV_DEG = 60.0                  # ±60° azimuth per module
-    _FALLBACK_MOUNTS = (0.0, 120.0, -120.0)   # pins.h defaults, until hello arrives
+    # pins.h defaults, until hello arrives: two forward-quarter modules (±60°)
+    # + one rear (180°) — wedges meet dead ahead and at ±120°.
+    _FALLBACK_MOUNTS = (60.0, -60.0, 180.0)
     _STALE_SECS = 1.0                     # telemetry freshness bar (radar_ok())
 
     def __init__(self, parent=None) -> None:

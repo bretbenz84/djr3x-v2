@@ -16,8 +16,12 @@ misidentification.
 
 - 3× HLK-LD2450 24 GHz FMCW radar modules
 - 1× ESP32-S3 dev board, already connected to the Mac Mini over USB
-- Modules mount inside the base ring at 0° / 120° / 240°, behind 3 mm PETG
-  (radar-transparent; no cutouts)
+- Modules mount inside the base ring 120° apart, behind 3 mm PETG
+  (radar-transparent; no cutouts). **Orientation revised 2026-08-15:** two
+  forward-quarter modules at ±60° plus one rear module at 180° ("two in front,
+  one in back"), replacing the original 0° / 120° / 240° layout (one forward,
+  two rear). The seams are therefore at 0° and ±120°. `firmware/djr3x_radar/pins.h`
+  is the authoritative table.
 - Each module: ±60° azimuth, ±35° tilt, 8 m range, 0.75 m range resolution,
   2°–20° angle accuracy, UART at 256000 baud
 

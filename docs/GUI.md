@@ -49,8 +49,10 @@ matrix) | gamepad mirror, attitude, and raw ESP32 feedback.
 The **RADAR RING** panel is a top-down scope of the LD2450 bearing-prior ring,
 polled from `hardware.radar` on the telemetry tick: front is up, + bearing =
 left/CCW, dashed rings every 2 m to the 8 m full scale. Each sensor's ±60° FOV
-wedge (mounts from the board's hello) turns red when that sensor stops
-delivering; fused targets plot at (bearing, range) as confidence-colored dots
+wedge (mounts from the board's hello — the ring is two forward-quarter modules
+at ±60° plus one rear at 180°, so the wedges meet dead ahead and at ±120°; the
+widget falls back to that layout until the hello arrives) turns red when that
+sensor stops delivering; fused targets plot at (bearing, range) as confidence-colored dots
 (green ≥ 0.55, amber ≥ 0.30, gray below) with a radial speed tail and a white
 halo when two sensors agreed across a seam. An empty live frame with
 `radar.targets()` still latching draws hollow dots under a LATCHED chip —

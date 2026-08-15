@@ -49,11 +49,13 @@
 #define RADAR_CONF_BEYOND_EDGE 0.20f
 
 // ---- Seam dedup -----------------------------------------------------------
-// A person near a 120° mount boundary is reported by BOTH adjacent sensors.
-// Robot-frame targets within both thresholds merge into one (confidence-
-// weighted; agreement RAISES confidence — see fusion.cpp). Bearing threshold
-// covers the worst-case ±20° edge accuracy of two sensors disagreeing; range
-// threshold covers the module's 0.75 m range resolution.
+// A person near a mount boundary is reported by BOTH adjacent sensors. With
+// the pins.h layout (mounts +60/-60/180) the seams are at 0° — dead ahead,
+// between the two forward modules — and at ±120°, between each forward module
+// and the rear one. Robot-frame targets within both thresholds merge into one
+// (confidence-weighted; agreement RAISES confidence — see fusion.cpp). Bearing
+// threshold covers the worst-case ±20° edge accuracy of two sensors
+// disagreeing; range threshold covers the module's 0.75 m range resolution.
 #define RADAR_DEDUP_BEARING_DEG 15.0f
 #define RADAR_DEDUP_RANGE_M     0.80f
 

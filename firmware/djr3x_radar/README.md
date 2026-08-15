@@ -70,9 +70,26 @@ during bring-up by dropping a row and `RADAR_SENSOR_COUNT`). Defaults:
 
 | Sensor | Mount (robot frame) | UART | ESP RX ← module TX | ESP TX → module RX |
 | --- | --- | --- | --- | --- |
-| S0 | 0° (front) | 1 | GPIO 4 | GPIO 5 |
-| S1 | +120° (left-rear) | 2 | GPIO 6 | GPIO 7 |
-| S2 | −120° (right-rear) | 0 | GPIO 8 | GPIO 9 |
+| S0 | +60° (front-left) | 1 | GPIO 4 | GPIO 5 |
+| S1 | −60° (front-right) | 2 | GPIO 6 | GPIO 7 |
+| S2 | 180° (rear) | 0 | GPIO 8 | GPIO 9 |
+
+**Ring layout (since 2026-08-15): two forward-quarter modules + one rear.**
+The mounts are still 120° apart — this is the original one-forward/two-rear
+(0°/±120°) ring turned 60°, so the pair straddles the front and the lone
+module points dead astern. Consequences worth holding in your head:
+
+- The **seams** — where two sensors overlap at their ±60° FOV edges and the
+  firmware dedups — are now at **0° (dead ahead)** and **±120°**. A person
+  straight in front is at *both* forward modules' 60° edge, so his bearing
+  there is a two-sensor merge (`m` = 3, the white halo on the scope), not a
+  boresight read. That's fine for a bearing prior — the camera owns the front.
+- The rear module's boresight sits on the **±180° wrap**; its bearings come out
+  as `+180` exactly astern, `+170` a little to the left, `−170` a little to the
+  right (`radar_wrap180`).
+- If your modules sit in different slots than the table, edit **only the
+  `mount_deg` column** in `pins.h` and reflash — the UART/pin columns describe
+  the harness, not the ring, and nothing else hard-codes a mount.
 
 Mount angles use the project-wide sign convention
 ([docs/motion_protocol.md](../../docs/motion_protocol.md) §4): 0 = robot

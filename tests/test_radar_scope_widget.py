@@ -10,8 +10,10 @@ a Qt platform isn't available.
 from __future__ import annotations
 
 import os
+import re
 import time
 import unittest
+from pathlib import Path
 
 # Force headless BEFORE any QApplication is created.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -61,9 +63,19 @@ class PolarMathTest(unittest.TestCase):
         self.assertAlmostEqual(p.y(), 100.0, places=5)
 
     def test_negative_bearing_is_screen_right(self):
-        p = self._pt(-120.0, 2.0)                          # right-rear mount direction
+        p = self._pt(-60.0, 2.0)                           # front-right mount direction
         self.assertGreater(p.x(), 100.0)
-        self.assertGreater(p.y(), 100.0)
+        self.assertLess(p.y(), 100.0)                      # forward quarter -> above center
+
+    def test_rear_mount_bearing_is_straight_down(self):
+        # The rear module's boresight is +180 (the wrapped value) — it must plot
+        # straight below the body, and -180 must land on the same pixel.
+        p = self._pt(180.0, 4.0)                           # half range -> r = 10 + 40
+        self.assertAlmostEqual(p.x(), 100.0, places=5)
+        self.assertAlmostEqual(p.y(), 150.0, places=5)
+        q = self._pt(-180.0, 4.0)
+        self.assertAlmostEqual(q.x(), p.x(), places=5)
+        self.assertAlmostEqual(q.y(), p.y(), places=5)
 
     def test_range_clamps_at_full_scale(self):
         far = self._pt(0.0, 20.0)
@@ -112,6 +124,23 @@ class SetStateTest(unittest.TestCase):
         self.assertEqual(self.w._cfg, (True, False))
         self.w.set_state(_tel([]), [], None, True)
         self.assertEqual(self.w._mounts, RadarRingWidget._FALLBACK_MOUNTS)
+
+    def test_fallback_mounts_mirror_the_firmware_pin_table(self):
+        # The fallback is what the scope draws until the board's hello arrives
+        # (and in --demo). It must be the SAME ring pins.h describes, or the
+        # wedges lie about where the modules point until the link is up.
+        pins_h = (Path(__file__).resolve().parents[1]
+                  / "firmware" / "djr3x_radar" / "pins.h").read_text()
+        table = pins_h.split("RADAR_SENSORS[RADAR_SENSOR_COUNT] = {", 1)[1].split("};", 1)[0]
+        mounts = tuple(
+            float(m.group(1))
+            for m in re.finditer(r"^\s*\{\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(-?[\d.]+)f?\s*\}",
+                                 table, re.MULTILINE)
+        )
+        self.assertEqual(len(mounts), 3, table)
+        self.assertEqual(mounts, RadarRingWidget._FALLBACK_MOUNTS)
+        # And it IS the two-forward / one-rear ring: pair at ±60°, lone at 180°.
+        self.assertEqual(sorted(mounts), [-60.0, 60.0, 180.0])
 
     def test_disconnected_and_clear_reset(self):
         self.w.set_state(_tel([_WIRE_TARGET]), [], None, True)

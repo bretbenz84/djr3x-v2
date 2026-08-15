@@ -85,14 +85,30 @@ def local_from_robot(bearing_deg: float, range_m: float, mount_deg: float
 
 # ---- Scripted scenarios (the spec's list) ---------------------------------
 
-def scenario_seam_crossing(mount_deg: float = 0.0, other_mount_deg: float = 120.0,
+def wrap180(deg: float) -> float:
+    """(-180, 180], matching the firmware's radar_wrap180."""
+    d = (deg + 180.0) % 360.0
+    return d - 180.0 if d != 0.0 else 180.0
+
+
+def seam_between(mount_a_deg: float, mount_b_deg: float) -> float:
+    """Robot bearing of the seam between two mounts: the circular midpoint —
+    (60, -60) -> 0 (the ring's front seam), (60, 180) -> 120, (0, 120) -> 60."""
+    return wrap180(mount_a_deg + wrap180(mount_b_deg - mount_a_deg) / 2.0)
+
+
+def scenario_seam_crossing(mount_deg: float = 60.0, other_mount_deg: float = -60.0,
                            steps: int = 21) -> list[tuple[bytes, bytes]]:
     """A single person walking across the seam between two sensors at 3 m:
-    robot bearing sweeps 30°..90°, so they leave sensor A's FOV as they enter
-    sensor B's, overlapping in the middle. Returns (frame_a, frame_b) pairs."""
+    robot bearing sweeps ±30° around the seam, so they leave sensor A's FOV as
+    they enter sensor B's, overlapping in the middle. Defaults to the ring's
+    FRONT seam (pins.h: forward pair at ±60°, so the seam is dead ahead, 0°) —
+    the sweep runs -30°..+30°, right-to-left across the robot's nose. Returns
+    (frame_a, frame_b) pairs."""
+    seam = seam_between(mount_deg, other_mount_deg)
     frames = []
     for i in range(steps):
-        bearing = 30.0 + 60.0 * i / (steps - 1)
+        bearing = wrap180(seam - 30.0 + 60.0 * i / (steps - 1))
         pair = []
         for mount in (mount_deg, other_mount_deg):
             xy = local_from_robot(bearing, 3.0, mount)
