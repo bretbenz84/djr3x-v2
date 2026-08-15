@@ -568,6 +568,15 @@ was confirmed on this machine:
   `classify_explicit_performance` path (LLM-router only) — a deterministic match
   would be dropped by the fast-local performance-plan pipeline, which only serves
   dj_bit/body_beat/mood_pose.
+- WHO to impersonate is decided by the utterance, not by the reply call
+  (2026-08-14). `performance.impersonate` migrated to the live tool router on
+  2026-08-13 and the named-target half came back the next day, after a run where
+  "Impersonate Barack Obama." was performed as BRET, in Bret's cloned voice, off
+  a `target='speaker'` argument the model had carried over from the previous
+  turn — and four other explicit requests were answered by the model doing the
+  impression itself, in Rex's own voice, with no tool call at all. Only a request
+  that names nobody is handed to the model now. Full account in
+  docs/tool_router_scope.md ("Phase 2 carve-out, 2026-08-14").
 
 ### Owed live verification (ask Bret first — house rule)
 

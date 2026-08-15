@@ -503,12 +503,6 @@ class PreDialogueGateTakeoverTest(unittest.TestCase):
     def test_offline_takeover_fires_and_opens_capture_slot(self):
         # End-to-end through the REAL resolve_target: known speaker, no stored
         # ref → the takeover must speak the capture prompt and open the slot.
-        #
-        # OFFLINE lane since 2026-08-13: performance.impersonate migrated to the
-        # live tool router, so online this pre-dialogue-gate takeover stands down
-        # (the reply call sees the utterance whether or not the dialogue act bound
-        # the turn as an answer). With the link down there is no tool surface, so
-        # this takeover is still what keeps "impersonate me" out of an answer frame.
         from audio import local_tts
         with mock.patch("intelligence.connectivity.is_offline", return_value=True), \
              mock.patch.object(self.itn, "_speak_blocking") as speak, \
@@ -523,8 +517,15 @@ class PreDialogueGateTakeoverTest(unittest.TestCase):
         self.assertIsNotNone(slot)
         self.assertEqual(slot["person_id"], 1)
 
-    def test_online_takeover_stands_down_for_the_tool_router(self):
-        """Online the reply call owns it — this lane must not open a slot."""
+    def test_online_takeover_keeps_a_named_target(self):
+        """ONLINE, a request that NAMES someone stays deterministic (2026-08-14).
+
+        performance.impersonate migrated to the live tool router 2026-08-13 and this
+        lane stood down for it entirely. Eight explicit requests in one sitting later:
+        the reply call routed 3, did the impression itself in prose (in Rex's OWN
+        voice) on 4, and called the tool with the PREVIOUS turn's target on the
+        eighth. The named-target shapes are unambiguous imperatives and belong here.
+        """
         from audio import local_tts
         with mock.patch.object(self.itn, "_speak_blocking") as speak, \
              mock.patch.object(local_tts, "is_available", return_value=True), \
@@ -532,9 +533,68 @@ class PreDialogueGateTakeoverTest(unittest.TestCase):
             result = self.itn._explicit_impersonation_takeover(
                 "impersonate me", person_id=1, person_name="Bret",
             )
+        self.assertIsNotNone(result)
+        speak.assert_called_once()
+        self.assertIsNotNone(self.itn._pending_impersonation_capture)
+
+    def test_online_takeover_stands_down_when_nobody_is_named(self):
+        """A bare "Impersonate." still goes to the model — it can read a subject out
+        of the conversation that the classifier cannot see."""
+        from audio import local_tts
+        with mock.patch.object(self.itn, "_speak_blocking") as speak, \
+             mock.patch.object(local_tts, "is_available", return_value=True), \
+             mock.patch("features.impersonation.person_ref", return_value=None):
+            result = self.itn._explicit_impersonation_takeover(
+                "Impersonate.", person_id=1, person_name="Bret",
+            )
         self.assertIsNone(result)
         speak.assert_not_called()
         self.assertIsNone(self.itn._pending_impersonation_capture)
+
+    def test_online_takeover_performs_the_named_famous_target(self):
+        """The 22:45:55 failure, end to end: "Impersonate Barack Obama." must resolve
+        to Obama's clip, never to the speaker."""
+        from audio import local_tts
+        from features import impersonation as imp
+        ref = local_tts.VoiceRef("/tmp/obama.wav", "four score", "famous:barack-obama")
+        with mock.patch.object(self.itn, "_speak_blocking"), \
+             mock.patch.object(local_tts, "is_available", return_value=True), \
+             mock.patch.object(imp, "find_famous_ref", return_value=ref) as find, \
+             mock.patch.object(imp, "person_ref") as person_ref, \
+             mock.patch.object(imp, "perform", return_value="bit") as perform:
+            result = self.itn._explicit_impersonation_takeover(
+                "Impersonate Barack Obama.", person_id=1, person_name="Bret",
+            )
+        self.assertEqual(result, "bit")
+        find.assert_called_once_with("Barack Obama")
+        person_ref.assert_not_called()
+        self.assertIs(perform.call_args.args[0], ref)
+        self.assertEqual(perform.call_args.args[2], None)   # person_id — not Bret
+
+    def test_tool_target_overridden_by_the_named_utterance(self):
+        """Backstop for the paths that skip the takeover: the model's 'speaker' loses
+        to the name actually spoken."""
+        from intelligence import action_router as ar
+        decision = ar.ActionDecision(
+            action="performance.impersonate", confidence=1.0,
+            args={"target": "speaker"}, reason="tool_router",
+        )
+        self.assertEqual(
+            self.itn._impersonation_tool_target(decision, "Impersonate Barack Obama."),
+            "Barack Obama",
+        )
+
+    def test_tool_target_kept_when_the_utterance_names_nobody(self):
+        """A phrasing the classifier does not read leaves the model's arg alone."""
+        from intelligence import action_router as ar
+        decision = ar.ActionDecision(
+            action="performance.impersonate", confidence=1.0,
+            args={"target": "a pirate"}, reason="tool_router",
+        )
+        self.assertEqual(
+            self.itn._impersonation_tool_target(decision, "talk like a pirate"),
+            "a pirate",
+        )
 
     def test_takeover_ignores_non_requests(self):
         self.assertIsNone(

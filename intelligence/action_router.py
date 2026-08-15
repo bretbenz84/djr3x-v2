@@ -971,11 +971,37 @@ _IMPERSONATE_BARE_RE = re.compile(
 )
 _IMPERSONATE_SELF_RE = re.compile(r"^(?:me|myself|my|mine)$", re.IGNORECASE)
 
+# Every capture above runs to END OF UTTERANCE (`.+$`), which is fine for a
+# one-sentence command and wrong for anything that keeps talking: "Impersonate me.
+# Max, Nisha." yielded the target 'me. Max, Nisha' (field 2026-08-14), which is
+# neither the speaker nor anyone findable. Tightening the patterns themselves would
+# cost the names that legitimately carry a period, so the clause cut happens here,
+# once, with the abbreviation cases spelled out.
+_IMPERSONATE_TARGET_BOUNDARY_RE = re.compile(r"[.!?,;:]+(?:\s|$)")
+# A period after one of these is part of the NAME, not the end of the sentence —
+# "Dr. Evil", "St. Nick", "George W. Bush" (any single letter is an initial).
+_IMPERSONATE_TARGET_ABBREVS = frozenset({
+    "mr", "mrs", "ms", "dr", "st", "sr", "jr", "prof", "rev", "gen", "sgt", "lt", "hon",
+})
+
+
+def _trim_impersonate_target_to_clause(raw: str) -> str:
+    """Cut a captured target at the first real sentence/clause boundary."""
+    for m in _IMPERSONATE_TARGET_BOUNDARY_RE.finditer(raw):
+        if m.group(0)[0] == ".":
+            word = re.search(r"([A-Za-z]+)$", raw[: m.start()])
+            token = (word.group(1) if word else "").lower()
+            if len(token) == 1 or token in _IMPERSONATE_TARGET_ABBREVS:
+                continue
+        return raw[: m.start()]
+    return raw
+
 
 def _clean_impersonate_target(raw: str) -> str:
-    """Normalize a captured impersonation target: strip punctuation/filler, map
-    self-references to the canonical 'speaker'."""
+    """Normalize a captured impersonation target: cut at the clause boundary, strip
+    punctuation/filler, map self-references to the canonical 'speaker'."""
     target = " ".join((raw or "").strip().split())
+    target = _trim_impersonate_target_to_clause(target)
     target = re.sub(r"[.!?,;:]+$", "", target).strip()
     # Trailing politeness/filler: "impersonate me please", "... for me"
     target = re.sub(r"\b(?:please|for\s+(?:me|us)|right\s+now|now)$", "", target,

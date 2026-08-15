@@ -33,6 +33,36 @@ What Phase 2 changed:
   called with no tool surface, so with the link down they are the only thing
   that still performs. `TOOL_ROUTER_LIVE_ENABLED` reverts everything instantly.
 
+**Phase 2 carve-out, 2026-08-14 — `performance.impersonate` with a NAMED target
+is deterministic again.** Everything above still holds for the phrasings the
+classifier does not read; the named-target imperatives came back. Eight explicit
+requests in one sitting (log `djr3x-2026-08-14-22-43-04`), and the reply call
+routed three of them:
+
+- four turns got no tool call at all — the model simply performed the impression
+  itself, in prose, so it came out in Rex's ElevenLabs voice instead of the clone
+  (`lean_brain`: *model emitted prose AND tool — prose wins*);
+- on "Impersonate Barack Obama." it called the tool with `target='speaker'`, the
+  argument from the previous turn, so Rex performed the SPEAKER — Bret's memory
+  material in Bret's cloned voice;
+- the `[tool_router_shadow]` line for those same utterances returned
+  `target='Barack Obama'` / `'Donald Trump'` every time. Routing was never the
+  hard part; a persona-loaded reply call at conversational temperature was.
+
+So `interaction._explicit_impersonation_takeover` stands down only when
+`classify_explicit_impersonation` names NOBODY (a bare "Impersonate.", where the
+model can read a subject out of the conversation that the classifier cannot see).
+The reasoning is `tool_router_owns_turn`'s game.stop exception, applied to a
+second action: when a handed-off turn can be answered in prose, and answering it
+in prose is a plausible reply, the deterministic lane keeps the claim. This also
+restores the answer_to_rex breakout, which the handoff had made a no-op — turn 11
+of that log was `skip_router=True` and nothing downstream could have saved it.
+Two supporting fixes: the target capture is now cut at the first clause boundary
+(`_trim_impersonate_target_to_clause` — abbreviations and initials excepted;
+"Impersonate me. Max, Nisha." had been yielding the target `me. Max, Nisha`), and
+`interaction._impersonation_tool_target` lets a named utterance override the
+model's argument on the tool-routed path, for the routes that skip the takeover.
+
 `character.preference_query` was RETIRED entirely on 2026-08-13 (commit
 6267d38) rather than migrated: an opinion question is conversation. Its stored
 tastes became lean-brain context (`rex_preferences.prompt_lines`).

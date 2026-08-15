@@ -13891,7 +13891,7 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
                     resp = _handle_router_impersonation(
                         decision, text, person_id,
                         _tool_router_person_name(person_id),
-                        _router_arg_text(decision, "target", "person", "who", "name"),
+                        _impersonation_tool_target(decision, text),
                     )
                 else:
                     resp = _handle_router_performance_action(decision, text, person_id)
@@ -19101,6 +19101,33 @@ def _impersonation_capture_fresh(ctx: Optional[dict]) -> bool:
     return (time.monotonic() - float(ctx.get("asked_at") or 0.0)) <= ttl
 
 
+def _impersonation_tool_target(
+    decision: "action_router.ActionDecision", text: str
+) -> str:
+    """Who to impersonate for a TOOL-ROUTED request: the model decides THAT this is
+    an impersonation, the utterance decides WHO.
+
+    The reply call carries the whole transcript, and on 2026-08-14 it answered
+    "Impersonate Barack Obama." with target='speaker' — the argument it had used one
+    turn earlier — so Rex performed the speaker instead. When the utterance names a
+    target outright, that name wins; the model's argument only stands for the softer
+    phrasings the classifier does not read ("talk like a pirate", "do him").
+
+    _explicit_impersonation_takeover already claims the named-target turns before
+    the reply call happens, so this is the backstop for the paths that skip it:
+    offline, the kill switch, and a decision that reaches the dispatcher some other
+    way."""
+    model_target = _router_arg_text(decision, "target", "person", "who", "name")
+    said = _router_arg_text(action_router.classify_explicit_impersonation(text), "target")
+    if not said or said.strip().lower() == model_target.strip().lower():
+        return model_target
+    _log.info(
+        "[impersonation] tool target %r overridden by the utterance: %r",
+        model_target, said,
+    )
+    return said
+
+
 def _handle_router_impersonation(
     decision: "action_router.ActionDecision",
     text: str,
@@ -19593,24 +19620,35 @@ def _explicit_impersonation_takeover(
     decision = action_router.classify_explicit_impersonation(text)
     if decision is None:
         return None
-    if action_router.tool_router_owns(decision.action):
-        # performance.impersonate went live on the tool router 2026-08-13. The
-        # pre-dialogue-gate breakout this function exists for is not needed
-        # online any more: the reply call sees the utterance whether or not the
-        # dialogue act bound the turn as an answer, so "impersonate me" inside an
-        # answer_to_rex frame reaches the model instead of being swallowed (the
-        # 2026-07-19 failure this takeover was written for). The call site stays
-        # exactly where it is — offline that ordering is still the only thing
-        # keeping the command out of the answer frame.
+    target = _router_arg_text(decision, "target")
+    if action_router.tool_router_owns(decision.action) and not target:
+        # performance.impersonate went live on the tool router 2026-08-13, and this
+        # lane stood down for it completely. It stands down only for the NO-TARGET
+        # case now — a bare "Impersonate." where the model can read a subject out of
+        # the conversation that this classifier cannot see.
+        #
+        # When the utterance NAMES someone, the deterministic lane keeps the claim,
+        # for the same reason game.stop keeps it mid-game
+        # (action_router.tool_router_owns_turn): the reply call is free to answer in
+        # prose, and when it does the tool is dropped entirely
+        # (lean_brain: "model emitted prose AND tool -- prose wins"). Field
+        # 2026-08-14, eight explicit requests in one sitting: the reply call routed
+        # 3, answered 4 by doing the impression itself IN REX'S OWN VOICE, and on
+        # "Impersonate Barack Obama." called the tool with target='speaker' — the
+        # previous turn's argument — so Rex performed BRET, from Bret's memory, in
+        # Bret's cloned voice. The shadow router, asked to route that same utterance
+        # on its own, returned target='Barack Obama' every single time. Routing an
+        # unambiguous imperative through a persona-loaded reply call was the whole
+        # bug; softer phrasings ("talk like a pirate") match no pattern here and
+        # still belong to the model.
         _log.info(
-            "[impersonation] explicit request handed to the tool router text=%r",
+            "[impersonation] no target named — handed to the tool router text=%r",
             text,
         )
         return None
     _router_audit_note_decision(router_audit, decision)
     if not _router_decision_executable(decision, text=text):
         return None
-    target = _router_arg_text(decision, "target")
     _log.info(
         "[impersonation] explicit request (pre-dialogue-gate) person_id=%s target=%r",
         person_id, target,
