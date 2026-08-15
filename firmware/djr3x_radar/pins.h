@@ -49,8 +49,11 @@ struct RadarSensorPin {
 // not a boresight read (the camera owns the front anyway — the radar is a
 // prior). If your modules sit in different slots, edit ONLY the mount_deg
 // column: the UART/pin columns describe the harness, not the ring.
+//
+// Slot assignment confirmed on the robot 2026-08-15: the module on UART1 (the
+// original "front" sensor) is the one that now points astern.
 static const RadarSensorPin RADAR_SENSORS[RADAR_SENSOR_COUNT] = {
-  {1, 5,  4,   60.0f},   // S0 — front-left  (+60° CCW)
+  {1, 5,  4,  180.0f},   // S0 — rear (dead astern; +180 is the wrapped value)
   {2, 7,  6,  -60.0f},   // S1 — front-right (60° CW)
-  {0, 9,  8,  180.0f},   // S2 — rear (dead astern; +180 is the wrapped value)
+  {0, 9,  8,   60.0f},   // S2 — front-left  (+60° CCW)
 };

@@ -213,10 +213,10 @@ class ConfigCommandTest(unittest.TestCase):
 
 class FusionTest(unittest.TestCase):
     """Rotation + seam dedup, exercised on the ring pins.h actually describes:
-    forward pair at +60° (S0) / -60° (S1), rear at 180° (S2). Seams are dead
-    ahead (0°) and at ±120°; the rear boresight sits on the ±180° wrap."""
+    S0 rear at 180°, S1 front-right at -60°, S2 front-left at +60°. Seams are
+    dead ahead (0°) and at ±120°; the rear boresight sits on the ±180° wrap."""
 
-    S0, S1, S2 = 60.0, -60.0, 180.0   # mount_deg per sensor index, as pins.h
+    S0, S1, S2 = 180.0, -60.0, 60.0   # mount_deg per sensor index, as pins.h
 
     def _local(self, bearing: float, range_m: float, mount: float) -> tuple[int, int]:
         xy = synth.local_from_robot(bearing, range_m, mount)
@@ -224,41 +224,41 @@ class FusionTest(unittest.TestCase):
         return xy
 
     def test_front_seam_dedup_merges_both_forward_sensors(self):
-        # One person dead ahead (0°), 3 m — on the seam between the +60° and
-        # -60° mounts, so BOTH forward modules report them at their 60° FOV edge.
-        # This is the ring's most important seam: it is where the robot faces.
-        x0, y0 = self._local(0.0, 3.0, self.S0)
+        # One person dead ahead (0°), 3 m — on the seam between the -60° (S1)
+        # and +60° (S2) mounts, so BOTH forward modules report them at their 60°
+        # FOV edge. This is the ring's most important seam: where the robot faces.
         x1, y1 = self._local(0.0, 3.0, self.S1)
-        (fused,) = fuse([[(0, self.S0, x0, y0, 20), (1, self.S1, x1, y1, 20)]])
+        x2, y2 = self._local(0.0, 3.0, self.S2)
+        (fused,) = fuse([[(1, self.S1, x1, y1, 20), (2, self.S2, x2, y2, 20)]])
         self.assertEqual(len(fused), 1)
         t = fused[0]
         self.assertAlmostEqual(t["b"], 0.0, delta=1.0)
         self.assertAlmostEqual(t["r"], 3.0, delta=0.1)
-        self.assertEqual(t["m"], 0b011)          # both forward sensors contributed
+        self.assertEqual(t["m"], 0b110)          # both forward sensors, S1|S2
         # Agreement raises confidence above what either edge return carries.
-        (solo,) = fuse([[(0, self.S0, x0, y0, 20)]])
+        (solo,) = fuse([[(2, self.S2, x2, y2, 20)]])
         self.assertGreater(t["c"], solo[0]["c"])
 
     def test_side_seams_dedup_forward_with_rear(self):
-        # +120°: seen by S0 (local +60) and the rear S2 (local -60) -> one target
-        # at +120 with m = S0|S2. Mirror at -120°: S1 + S2.
-        xl0, yl0 = self._local(120.0, 2.5, self.S0)
+        # +120°: seen by front-left S2 (local +60) and the rear S0 (local -60)
+        # -> one target at +120 with m = S0|S2. Mirror at -120°: S0 + S1.
         xl2, yl2 = self._local(120.0, 2.5, self.S2)
+        xl0, yl0 = self._local(120.0, 2.5, self.S0)
         xr1, yr1 = self._local(-120.0, 4.0, self.S1)
-        xr2, yr2 = self._local(-120.0, 4.0, self.S2)
-        (fused,) = fuse([[(0, self.S0, xl0, yl0, 0), (2, self.S2, xl2, yl2, 0),
-                          (1, self.S1, xr1, yr1, 0), (2, self.S2, xr2, yr2, 0)]])
+        xr0, yr0 = self._local(-120.0, 4.0, self.S0)
+        (fused,) = fuse([[(2, self.S2, xl2, yl2, 0), (0, self.S0, xl0, yl0, 0),
+                          (1, self.S1, xr1, yr1, 0), (0, self.S0, xr0, yr0, 0)]])
         self.assertEqual(len(fused), 2)
         by_side = {("L" if t["b"] > 0 else "R"): t for t in fused}
         self.assertAlmostEqual(by_side["L"]["b"], 120.0, delta=1.0)
         self.assertEqual(by_side["L"]["m"], 0b101)
         self.assertAlmostEqual(by_side["R"]["b"], -120.0, delta=1.0)
-        self.assertEqual(by_side["R"]["m"], 0b110)
+        self.assertEqual(by_side["R"]["m"], 0b011)
 
     def test_distinct_targets_stay_separate(self):
-        xa, ya = self._local(70.0, 2.0, self.S0)     # 10° left of S0's boresight
-        xb, yb = self._local(15.0, 4.0, self.S0)     # 45° right of it
-        (fused,) = fuse([[(0, self.S0, xa, ya, 0), (0, self.S0, xb, yb, 0)]])
+        xa, ya = self._local(70.0, 2.0, self.S2)     # 10° left of S2's boresight
+        xb, yb = self._local(15.0, 4.0, self.S2)     # 45° right of it
+        (fused,) = fuse([[(2, self.S2, xa, ya, 0), (2, self.S2, xb, yb, 0)]])
         self.assertEqual(len(fused), 2)
         bearings = sorted(t["b"] for t in fused)
         self.assertAlmostEqual(bearings[0], 15.0, delta=1.0)
@@ -273,19 +273,20 @@ class FusionTest(unittest.TestCase):
         self.assertLess(by_bearing[-5]["c"], 0.7)
 
     def test_rear_boresight_wraps_to_plus_180(self):
-        # The rear module's boresight IS the ±180 wrap. Dead astern must come
+        # The rear module (S0) boresight IS the ±180 wrap. Dead astern must come
         # out as exactly +180 (the (-180, 180] convention), at full confidence;
         # a little left of astern is +170, a little right is -170 — never a
         # jump through 0.
-        xa, ya = self._local(180.0, 2.5, self.S2)
-        xl, yl = self._local(170.0, 4.0, self.S2)
-        xr, yr = self._local(-170.0, 6.0, self.S2)
-        (fused,) = fuse([[(2, self.S2, xa, ya, 0), (2, self.S2, xl, yl, 0),
-                          (2, self.S2, xr, yr, 0)]])
+        xa, ya = self._local(180.0, 2.5, self.S0)
+        xl, yl = self._local(170.0, 4.0, self.S0)
+        xr, yr = self._local(-170.0, 6.0, self.S0)
+        (fused,) = fuse([[(0, self.S0, xa, ya, 0), (0, self.S0, xl, yl, 0),
+                          (0, self.S0, xr, yr, 0)]])
         self.assertEqual(len(fused), 3)
         by_range = {round(t["r"] * 2) / 2: t for t in fused}
         self.assertAlmostEqual(by_range[2.5]["b"], 180.0, delta=0.5)
         self.assertEqual(by_range[2.5]["c"], 1.0)
+        self.assertEqual(by_range[2.5]["m"], 0b001)
         self.assertAlmostEqual(by_range[4.0]["b"], 170.0, delta=1.0)
         self.assertAlmostEqual(by_range[6.0]["b"], -170.0, delta=1.0)
 
@@ -294,9 +295,9 @@ class FusionTest(unittest.TestCase):
         # rear module. Within dedup reach (10° apart), so they merge; a naive
         # bearing average would say 0° (dead AHEAD). The circular mean must keep
         # the merged target astern.
-        x1, y1 = self._local(175.0, 2.5, self.S2)
-        x2, y2 = self._local(-175.0, 2.5, self.S2)
-        (fused,) = fuse([[(2, self.S2, x1, y1, 0), (2, self.S2, x2, y2, 0)]])
+        x1, y1 = self._local(175.0, 2.5, self.S0)
+        x2, y2 = self._local(-175.0, 2.5, self.S0)
+        (fused,) = fuse([[(0, self.S0, x1, y1, 0), (0, self.S0, x2, y2, 0)]])
         self.assertEqual(len(fused), 1)
         self.assertGreater(abs(fused[0]["b"]), 179.0)
 
