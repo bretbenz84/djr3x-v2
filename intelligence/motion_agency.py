@@ -4,18 +4,28 @@ intelligence/motion_agency.py — autonomous base motion (owner spec 2026-07-06)
 Four behaviors, evaluated once per consciousness tick (~1 Hz), highest priority
 first:
 
-REQUESTED COME — after an explicit "come here" command, rotate in bounded search
-steps until face tracking acquires the REQUESTER (the voice-identified speaker, when
-known — other people's faces are skipped; an anonymous requester accepts any known
-face), use the tracked neck offset to turn the base toward them, then issue the
-firmware `come` command with a 1 m stop distance. Search legs sweep at a slower rate
-and each is followed by a settled-camera dwell (keyed to the firmware `done`, not
-command issue) so the detect→identify pipeline gets still frames to work with; after
-any turn, alignment measurements wait out a short settle so a mid-slew neck can't
-produce oscillating corrections (field 2026-08-11: he circled the room twice, swept
-past the owner repeatedly, and timed out while looking straight at him). The forward
-ToF target may be the person or an intervening obstacle, so furniture and walls stop
-the approach just as safely as the intended person does.
+REQUESTED COME — after an explicit "come here" command, find the REQUESTER (the
+voice-identified speaker, when known — other people's faces are skipped; an
+anonymous requester accepts any known face), square the base to them off the
+camera, then issue the firmware `come` command with a social stop distance. The
+search is RADAR-FIRST (owner spec 2026-08-15): the LD2450 ring on the base
+(hardware/radar.py) reports where bodies are, so with no face on camera he turns
+straight to the best radar body instead of sweeping blind, dwells for the camera
+to find the requester's face, and if that body is not them (no face, or someone
+else's) marks the spot rejected and turns to the next. Camera evidence always
+outranks radar: a visible/locked requester face goes straight to alignment, and a
+fresh sighting turns back toward the sighting before radar is consulted. Radar
+bearings smear while the base rotates, so radar decisions are made only from ring
+frames received after a turn's `done` plus a settle, and a body must persist over
+several frames. The blind sweep survives as the fallback when the ring is down,
+quiet, or has no unvisited body. Every leg is followed by a settled-camera dwell
+(keyed to the firmware `done`, not command issue) so the detect→identify pipeline
+gets still frames to work with; after any turn, alignment measurements wait out a
+short settle so a mid-slew neck can't produce oscillating corrections (field
+2026-08-11: he circled the room twice, swept past the owner repeatedly, and timed
+out while looking straight at him). The forward ToF target may be the person or an
+intervening obstacle, so furniture and walls stop the approach just as safely as
+the intended person does.
 
 FLINCH — a reflexive back-off when someone crowds Rex from the front, the way an
 animal edges back when you get in its face. Each front matrix ToF half (fl/fr,
@@ -77,6 +87,7 @@ MOTION_FACE_PERSON_ENABLED / MOTION_APPROACH_ENABLED per behavior.
 """
 
 import logging
+import math
 import threading
 import time
 from typing import Optional
@@ -235,6 +246,20 @@ _requested_come = {
                             # another base turn (field 2026-08-11: ±12-45 deg align
                             # oscillation never settled and the approach never launched)
     "skip_log_at": 0.0,     # throttle for the "seeing X, waiting for requester" log
+    # ── radar-first search (owner spec 2026-08-15) ─────────────────────────
+    "radar_since": 0.0,     # only ring frames received at/after this monotonic stamp
+                            # may drive a turn: a turn's `done` + settle, or the
+                            # errand start when the base was already still
+    "radar_turns": 0,       # radar-directed turns this errand (share the search budget)
+    "radar_pending_world": None,  # world bearing of the body we are turning to /
+                                  # dwelling on; becomes "visited" if the dwell finds
+                                  # no requester face
+    "radar_pending_since": 0.0,   # when that radar turn was issued (a sighting
+                                  # AFTER it means the spot is not empty — don't reject)
+    "radar_visited": [],    # world bearings of bodies already looked at and rejected
+    "heading_mode": "cmd",  # "imu": world = imu.yaw + bearing (the base publishes
+                            # a gyro heading); "cmd": world = sum of commanded turns
+    "cmd_heading": 0.0,     # running sum of turns THIS module issued (cmd mode)
 }
 
 # Flinch detector state, sampled every idle tick and reset whenever the base is
@@ -312,9 +337,19 @@ def request_come_here(person_id: "int | None" = None, *,
             exploration.stop("come-here request takes the base")
     except Exception:
         pass
+    now = time.monotonic()
+    # Radar frames from BEFORE the request are usable only if the base was
+    # already still (they are in the current frame); a base mid-motion means
+    # wait for a settled sample instead.
+    try:
+        base_still = motion.state() == "idle"
+    except Exception:
+        base_still = False
+    settle = _num("MOTION_COME_RADAR_SETTLE_SECS", 1.5)
+    sample = _num("MOTION_COME_RADAR_SAMPLE_SECS", 1.0)
     _requested_come.update(
         active=True,
-        started_at=time.monotonic(),
+        started_at=now,
         requester_id=person_id,
         search_turns=0,
         last_turn_at=0.0,
@@ -329,29 +364,31 @@ def request_come_here(person_id: "int | None" = None, *,
         approaches=0,
         align_turns=0,
         skip_log_at=0.0,
+        radar_since=(now - sample) if base_still else (now + settle),
+        radar_turns=0,
+        radar_pending_world=None,
+        radar_pending_since=0.0,
+        radar_visited=[],
+        heading_mode="imu" if _base_yaw_deg() is not None else "cmd",
+        cmd_heading=0.0,
     )
     _reset("neck_hits", "far_hits")
     if person_id is not None:
         _log.info("[motion_agency] requested come: searching for requester "
-                  "person %s", person_id)
+                  "person %s (radar-first, heading via %s)", person_id,
+                  _requested_come["heading_mode"])
     else:
-        _log.info("[motion_agency] requested come: searching for a visible person")
+        _log.info("[motion_agency] requested come: searching for a visible person "
+                  "(radar-first, heading via %s)", _requested_come["heading_mode"])
     if behind:
-        seq = motion_controller.turn(
-            180.0, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
-        )
+        seq = _issue_come_turn(180.0, now, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
         if seq is not None:
-            _requested_come["pending_turn_seq"] = seq
-            _requested_come["last_turn_at"] = time.monotonic()
             _log.info("[motion_agency] requested come: speaker says they're "
                       "behind — leading with an about-face")
     elif side_deg:
-        seq = motion_controller.turn(
-            float(side_deg), rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
-        )
+        seq = _issue_come_turn(float(side_deg), now,
+                               rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
         if seq is not None:
-            _requested_come["pending_turn_seq"] = seq
-            _requested_come["last_turn_at"] = time.monotonic()
             # If the swing doesn't find them, keep sweeping on THEIR side rather
             # than snapping back to the default left-first pattern.
             _requested_come["scan_sign"] = 1.0 if float(side_deg) > 0 else -1.0
@@ -386,12 +423,20 @@ def _adopt_voice_bearing_turn(seq: "int | None", where: str) -> None:
         pending_turn_seq=int(seq),
         last_turn_at=time.monotonic(),
         search_turns=0,          # fresh sweep budget at the new heading
+        radar_turns=0,
         align_turns=0,
         # Their voice IS a localization: keep the give-up clock fresh, but drop
         # any stored visual bearing — it predates this turn.
         last_seen_at=time.monotonic(),
         seen_deg=0.0,
         seen_sign=0.0,
+        # The human just said where they are; radar bodies rejected so far are
+        # moot, and any body we were about to check is superseded. In cmd
+        # heading mode the size of this externally-issued turn is unknown, so
+        # the visited list could not be kept in frame anyway.
+        radar_pending_world=None,
+        radar_pending_since=0.0,
+        radar_visited=[],
     )
     _log.info("[motion_agency] requested come: speaker says they're %s — "
               "adopting the turn as a search leg", where)
@@ -411,7 +456,233 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
                            seen_deg=0.0, front_near_hits=0, approach_at=0.0,
-                           approaches=0, align_turns=0, skip_log_at=0.0)
+                           approaches=0, align_turns=0, skip_log_at=0.0,
+                           radar_since=0.0, radar_turns=0,
+                           radar_pending_world=None, radar_pending_since=0.0,
+                           radar_visited=[], heading_mode="cmd", cmd_heading=0.0)
+
+
+# ── Radar-first search helpers ─────────────────────────────────────────────────
+# The LD2450 ring reports bodies as (bearing, range, confidence) in the BASE
+# frame, + = left/CCW — the very convention motion_controller.turn() takes, so a
+# radar bearing IS the turn command, no neck involved. The ring is a hint
+# source, never a detector: it says "a body is at 137°"; the camera dwell says
+# whether that body is the requester (docs/radar-bearing-prior-spec.md).
+
+def _wrap180(deg: float) -> float:
+    d = (float(deg) + 180.0) % 360.0
+    return d - 180.0 if d != 0.0 else 180.0
+
+
+def _base_yaw_deg() -> Optional[float]:
+    """The drive base's gyro heading (imu.yaw, deg, + = left/CCW, relative to
+    boot — drifts slowly, fine across a 45 s errand), or None when the base does
+    not publish a healthy IMU."""
+    try:
+        tele = motion.telemetry()
+        imu = tele.get("imu") if isinstance(tele, dict) else None
+        if isinstance(imu, dict) and imu.get("ok") and imu.get("yaw") is not None:
+            return float(imu["yaw"])
+    except Exception:
+        pass
+    return None
+
+
+def _come_heading_deg() -> Optional[float]:
+    """Absolute heading of the base for radar bookkeeping. The errand picks its
+    mode once at request time so a flickering IMU can't mix two frames: "imu"
+    reads the base's gyro yaw, "cmd" sums the turns this module issued. None
+    when the chosen source is currently unavailable — callers then skip the
+    visited filter rather than trust a bearing in the wrong frame."""
+    if _requested_come.get("heading_mode") == "imu":
+        return _base_yaw_deg()
+    return float(_requested_come.get("cmd_heading") or 0.0)
+
+
+def _issue_come_turn(deg: float, now: float, *, rate: Optional[float] = None) -> Optional[int]:
+    """Every base turn the errand issues goes through here so the cmd-mode
+    heading stays in step (pending seq + issue stamp bookkeeping too)."""
+    seq = (motion_controller.turn(deg, rate=rate) if rate is not None
+           else motion_controller.turn(deg))
+    if seq is not None:
+        _requested_come["pending_turn_seq"] = seq
+        _requested_come["last_turn_at"] = now
+        _requested_come["cmd_heading"] = _wrap180(
+            float(_requested_come.get("cmd_heading") or 0.0) + float(deg))
+    return seq
+
+
+def _radar_visited_now(heading: Optional[float]) -> "list[float]":
+    """Rejected bodies as bearings in the CURRENT base frame (from their stored
+    world bearings), or [] when the heading is unavailable."""
+    if heading is None:
+        return []
+    return [_wrap180(w - heading) for w in (_requested_come.get("radar_visited") or [])]
+
+
+def _radar_mark_pending_visited(now: float) -> None:
+    """The dwell after a radar-directed turn found no requester face: that body
+    is not them (or shows no face) — remember the spot so the next radar read
+    goes elsewhere. NOT applied if the requester was sighted at any point since
+    the turn was issued: the camera saw them there, the spot is not empty."""
+    world = _requested_come.get("radar_pending_world")
+    if world is None:
+        return
+    _requested_come["radar_pending_world"] = None
+    since = float(_requested_come.get("radar_pending_since") or 0.0)
+    if float(_requested_come.get("last_seen_at") or 0.0) >= since > 0.0:
+        return
+    visited = list(_requested_come.get("radar_visited") or [])
+    visited.append(float(world))
+    _requested_come["radar_visited"] = visited
+    _log.info("[motion_agency] requested come: radar body rejected — no requester "
+              "face after the dwell (%d spot%s ruled out)", len(visited),
+              "" if len(visited) == 1 else "s")
+
+
+def _radar_bodies(now: float) -> "tuple[list[dict], bool]":
+    """Cluster the ring's post-settle frames into bodies in the current base
+    frame. Returns (bodies, ready): ``ready`` False means the ring is delivering
+    but the sample window since radar_since isn't full yet (caller may wait);
+    an unavailable ring returns ([], True) so the caller falls straight through.
+    Each body: {bearing_deg, range_m, confidence, hits, frames}, best first —
+    most persistent, then most confident, then least turning."""
+    try:
+        from hardware import radar
+        if not (radar.connected() and radar.radar_ok()):
+            return [], True
+        since = float(_requested_come.get("radar_since") or 0.0)
+        sample = _num("MOTION_COME_RADAR_SAMPLE_SECS", 1.0)
+        window = sample + _num("MOTION_COME_RADAR_WAIT_SECS", 3.0) + 2.0
+        frames = radar.recent_targets(window_secs=window, since=since)
+    except Exception as exc:
+        _log.debug("radar read failed: %s", exc)
+        return [], True
+    if not frames or (frames[-1][0] - frames[0][0]) < max(0.0, sample - 0.25):
+        return [], False                       # sample not full yet
+    min_conf = _num("MOTION_COME_RADAR_MIN_CONFIDENCE", 0.15)
+    cluster_deg = _num("MOTION_COME_RADAR_CLUSTER_DEG", 15.0)
+    clusters: "list[dict]" = []               # {sx, sy, w, range, conf_max, frame_ids}
+    for fidx, (_stamp, targets) in enumerate(frames):
+        for t in targets:
+            try:
+                b = float(t["bearing_deg"]); r = float(t["range_m"]); c = float(t["confidence"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if c < min_conf:
+                continue
+            home = None
+            for cl in clusters:
+                if abs(_wrap180(b - cl["bearing"])) <= cluster_deg:
+                    home = cl
+                    break
+            if home is None:
+                home = {"sx": 0.0, "sy": 0.0, "w": 0.0, "range": 0.0,
+                        "conf_max": 0.0, "frame_ids": set(), "bearing": b}
+                clusters.append(home)
+            w = max(c, 0.05)
+            home["sx"] += w * math.cos(math.radians(b))
+            home["sy"] += w * math.sin(math.radians(b))
+            home["w"] += w
+            home["range"] += w * r
+            home["conf_max"] = max(home["conf_max"], c)
+            home["frame_ids"].add(fidx)
+            home["bearing"] = math.degrees(math.atan2(home["sy"], home["sx"]))
+    min_frames = max(1, int(_num("MOTION_COME_RADAR_MIN_FRAMES", 3)))
+    bodies = []
+    for cl in clusters:
+        hits = len(cl["frame_ids"])
+        if hits < min_frames or cl["w"] <= 0.0:
+            continue
+        bodies.append({
+            "bearing_deg": _wrap180(cl["bearing"]),
+            "range_m": cl["range"] / cl["w"],
+            "confidence": cl["conf_max"],
+            "hits": hits,
+            "frames": len(frames),
+        })
+    bodies.sort(key=lambda b: (-b["hits"], -b["confidence"], abs(b["bearing_deg"])))
+    return bodies, True
+
+
+def _step_come_radar(now: float) -> "bool | None":
+    """Radar-directed leg. Returns True when it consumed the tick (turned, or is
+    waiting for a settled sample), None when the sweep should take over (radar
+    off/unavailable, or no unvisited body)."""
+    if not _flag("MOTION_COME_RADAR_ENABLED", True):
+        return None
+    bodies, ready = _radar_bodies(now)
+    if not ready:
+        since = float(_requested_come.get("radar_since") or 0.0)
+        if (now - since) < _num("MOTION_COME_RADAR_WAIT_SECS", 3.0):
+            return True                        # let the ring settle after the turn
+        return None                            # ring is quiet — sweep instead
+    if not bodies:
+        return None
+    heading = _come_heading_deg()
+    visited = _radar_visited_now(heading)
+    visited_deg = _num("MOTION_COME_RADAR_VISITED_DEG", 25.0)
+    facing_deg = _num("MOTION_COME_RADAR_FACING_DEG", 12.0)
+    # Has the camera seen the requester since the current look began (the last
+    # turn we issued, or the hold on a body already ahead)? Then whatever is
+    # dead ahead is NOT an empty spot, however the dwell ended.
+    look_began = max(float(_requested_come.get("last_turn_at") or 0.0),
+                     float(_requested_come.get("radar_pending_since") or 0.0))
+    seen_since_look = (look_began > 0.0
+                       and float(_requested_come.get("last_seen_at") or 0.0) >= look_began)
+    fresh = []
+    for body in bodies:
+        b = body["bearing_deg"]
+        if any(abs(_wrap180(b - v)) <= visited_deg for v in visited):
+            continue
+        if (abs(b) <= facing_deg
+                and float(_requested_come.get("turn_done_at") or 0.0) > 0.0
+                and not seen_since_look):
+            # Already facing this body and the dwell just looked at it without
+            # finding the requester — it's ruled out, not a place to turn to.
+            if heading is not None:
+                vis = list(_requested_come.get("radar_visited") or [])
+                vis.append(_wrap180(heading + b))
+                _requested_come["radar_visited"] = vis
+            continue
+        fresh.append(body)
+    if not fresh:
+        _log.info("[motion_agency] requested come: radar shows %d bod%s, all already "
+                  "checked — falling back to the sweep", len(bodies),
+                  "y" if len(bodies) == 1 else "ies")
+        return None
+    best = fresh[0]
+    turn_deg = float(best["bearing_deg"])
+    if abs(turn_deg) <= facing_deg:
+        # First decision of the errand with a body already dead ahead: no turn
+        # needed — dwell on it (the settled camera gets its still frames) and let
+        # the next pass either find the face or rule the spot out.
+        _requested_come["turn_done_at"] = now
+        _requested_come["radar_since"] = now + _num("MOTION_COME_RADAR_SETTLE_SECS", 1.5)
+        if heading is not None:
+            _requested_come["radar_pending_world"] = _wrap180(heading + turn_deg)
+            _requested_come["radar_pending_since"] = now
+        _log.info("[motion_agency] requested come: radar body already ahead "
+                  "(%+.0f°, %.1fm) — holding for the camera", turn_deg, best["range_m"])
+        return True
+    seq = _issue_come_turn(turn_deg, now, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
+    if seq is None:
+        return None
+    _requested_come["radar_turns"] = int(_requested_come.get("radar_turns") or 0) + 1
+    _requested_come["scan_sign"] = 1.0 if turn_deg >= 0 else -1.0
+    _requested_come["search_turns"] = 0      # a fresh sweep budget from this heading
+    if heading is not None:
+        _requested_come["radar_pending_world"] = _wrap180(heading + turn_deg)
+        _requested_come["radar_pending_since"] = now
+    _log.info(
+        "[motion_agency] requested come: radar shows %d bod%s (%s) — turning %+.0f° "
+        "to the best (%.1fm, c=%.2f, %d/%d frames)%s",
+        len(bodies), "y" if len(bodies) == 1 else "ies",
+        ", ".join(f"{b['bearing_deg']:+.0f}°/{b['range_m']:.1f}m" for b in bodies),
+        turn_deg, best["range_m"], best["confidence"], best["hits"], best["frames"],
+        "" if len(fresh) == len(bodies) else f", {len(bodies) - len(fresh)} already checked",
+    )
+    return True
 
 
 # ── Come-search dwell gaze ────────────────────────────────────────────────────
@@ -580,7 +851,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     # 2026-08-11). max_turns already resets on sightings, bounding each sweep.
     seen_at = float(_requested_come["last_seen_at"])
     anchor = max(float(_requested_come["started_at"]), seen_at)
-    if (now - anchor) >= timeout or int(_requested_come["search_turns"]) >= max_turns:
+    turns_used = (int(_requested_come["search_turns"])
+                  + int(_requested_come.get("radar_turns") or 0))
+    if (now - anchor) >= timeout or turns_used >= max_turns:
         cancel_requested_come("lost them again after sighting — giving up"
                               if seen_at > 0.0
                               else "no person found before search limit")
@@ -603,6 +876,15 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             verdict = "completed"       # `done` lost (comms hiccup) — assume settled
         _requested_come["pending_turn_seq"] = None
         _requested_come["turn_done_at"] = now
+        # Radar tracks smear while the base rotates: only ring frames received
+        # after this `done` plus a settle may drive the next radar decision.
+        _requested_come["radar_since"] = now + _num("MOTION_COME_RADAR_SETTLE_SECS", 1.5)
+        if verdict != "completed":
+            # The turn was cut short (blocked swing side, no traction): the
+            # camera never faced the radar body, so the coming dwell says
+            # nothing about that spot — don't let it be rejected. The next
+            # radar read sees the body at its new bearing and tries again.
+            _requested_come["radar_pending_world"] = None
 
     # The head LOCK is a head-behavior signal, not a visibility one — it drops
     # whenever anything else steers the head and flickers on a small far-away face.
@@ -648,12 +930,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                 turn_deg = _come_turn_for_bearing(seen_deg)
             else:
                 turn_deg = seen_sign * abs(_num("MOTION_COME_RESIGHT_TURN_DEG", 30.0))
-            seq = motion_controller.turn(
-                turn_deg, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
-            )
+            seq = _issue_come_turn(turn_deg, now,
+                                   rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
             if seq is not None:
-                _requested_come["last_turn_at"] = now
-                _requested_come["pending_turn_seq"] = seq
                 _requested_come["search_turns"] = 0
                 _requested_come["scan_sign"] = seen_sign
                 _requested_come["seen_deg"] = 0.0   # spent — don't re-turn on it
@@ -662,6 +941,18 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                     "turning back %+.0f deg toward it",
                     now - seen_at, turn_deg,
                 )
+            return True
+        # ── RADAR FIRST (owner spec 2026-08-15) ─────────────────────────────
+        # No face, no fresh sighting. The dwell that just ended was the camera's
+        # look at whatever body the last radar turn pointed at — if the requester
+        # wasn't found there, that spot is ruled out. Then ask the ring, from
+        # frames received only after the base settled, where the bodies ARE and
+        # turn straight to the best unvisited one; the camera dwell after that
+        # turn is what decides whether it is them. The blind sweep below is the
+        # fallback for a ring that is down, quiet, or has no unvisited body.
+        _radar_mark_pending_visited(now)
+        radar_step = _step_come_radar(now)
+        if radar_step:
             return True
         # Sweep AROUND the last-known side instead of spiraling one direction: net
         # offsets +45, -45, +90, -90, ... (x scan_sign), so the search stays centered
@@ -682,18 +973,19 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         # would burn a leg staring at the same view — take a plain leg instead.
         if abs(rel) < 1.0:
             rel = sign * deg
-        seq = motion_controller.turn(
-            rel, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0)
-        )
+        seq = _issue_come_turn(rel, now, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
         if seq is not None:
             _requested_come["search_turns"] = i
-            _requested_come["last_turn_at"] = now
-            _requested_come["pending_turn_seq"] = seq
             _log.info(
                 "[motion_agency] requested come: scan turn %d/%d (%+.0f deg, sweep)",
                 i, max_turns, rel,
             )
         return True
+
+    # The requester's face is on camera: whatever radar body we were checking is
+    # NOT a rejected spot (they may well be it), and from here on the camera loop
+    # owns the errand — radar is only consulted again if the face is lost.
+    _requested_come["radar_pending_world"] = None
 
     # SETTLE before trusting any alignment measurement: after one of our turns the
     # base and the neck are re-centring the SAME error at once, so sampling the neck
@@ -748,10 +1040,8 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             )
         else:
             deg = _come_turn_for_bearing(bearing)
-            seq = motion_controller.turn(deg)
+            seq = _issue_come_turn(deg, now)
             if seq is not None:
-                _requested_come["last_turn_at"] = now
-                _requested_come["pending_turn_seq"] = seq
                 _requested_come["align_turns"] = tries + 1
                 # Remember which side they were on: if the align turn loses them,
                 # the sweep starts back toward that side, not away from it.

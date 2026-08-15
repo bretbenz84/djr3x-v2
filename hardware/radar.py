@@ -7,12 +7,24 @@ firmware streams at 10 Hz. The wire contract mirrors docs/motion_protocol.md
 (NDJSON, v1); the firmware is firmware/djr3x_radar; the feature spec is
 docs/radar-bearing-prior-spec.md.
 
-This module is just the pipe, and nothing drives BEHAVIOR from it yet — the
-spec lands the data pipeline first and wires behavior later. Today's only
-consumer is read-only display: the Motivator Control radar scope
-(gui/dashboard.py RadarRingWidget) polls telemetry()/targets()/hello_info(),
-alongside the [radar] log lines. Consumers-to-be (the come-here search prior)
-should read `targets()` and treat the radar as a hint source, never a detector.
+This module is just the pipe. Consumers: the Motivator Control radar scope
+(gui/dashboard.py RadarRingWidget) polls telemetry()/targets()/hello_info() for
+display, and the come-here search (intelligence/motion_agency.py, radar-first
+since 2026-08-15) reads `recent_targets()` to decide where to turn first. Every
+consumer must treat the radar as a hint source, never a detector: it says
+"a body is at 137°", the camera says whether it is the requester.
+
+Two accessors, for two different questions:
+
+- `targets()` — "where was somebody, most recently?" The LATCHED list: keeps
+  returning the last non-empty frame for RADAR_TARGET_LATCH_SECS. Right for
+  display and for "is anyone around". WRONG for deciding a body turn right
+  after the base rotated: a latched bearing is in the PRE-turn frame.
+- `recent_targets(window_secs, since=stamp)` — "what has the ring seen since
+  this moment?" The raw per-frame history (empties included), so a caller can
+  read only frames received after a turn's `done` plus a settle, and can
+  demand a body show up in several frames before believing it (the LD2450
+  tracker flickers; a one-frame return is not a person).
 
 Differences from hardware/motion.py, each deliberate:
 
@@ -43,6 +55,7 @@ import json
 import logging
 import threading
 import time
+from collections import deque
 
 import serial
 from serial.tools import list_ports
@@ -68,6 +81,11 @@ _hello: "dict | None" = None
 _latest_telemetry: "dict | None" = None   # + rx_monotonic stamp
 _latched_targets: "list[dict]" = []       # last NON-EMPTY normalized target list
 _latched_at = 0.0                         # monotonic stamp of that list
+# Per-frame history for recent_targets(): (rx_monotonic, [normalized targets]),
+# EMPTY frames included — "the ring saw nobody at that instant" is data. Sized
+# for a few seconds at the firmware's 10 Hz; consumers ask for a window.
+_RECENT_FRAMES_MAX = 60
+_recent_frames: "deque[tuple[float, list[dict]]]" = deque(maxlen=_RECENT_FRAMES_MAX)
 _parse_errors = 0
 
 _last_log_at = 0.0                        # throttles the [radar] target INFO line
@@ -209,6 +227,7 @@ def connect(
     with _state_lock:
         _hello = None
         _latest_telemetry = None
+        _recent_frames.clear()
     _start_reader()
 
     # Handshake: send hello, await the hello reply. (Telemetry streams from
@@ -368,6 +387,7 @@ def _dispatch(msg: dict) -> None:
         ]
         with _state_lock:
             _latest_telemetry = msg
+            _recent_frames.append((msg["rx_monotonic"], targets))
             if targets:
                 _latched_targets = targets
                 _latched_at = msg["rx_monotonic"]
@@ -470,6 +490,25 @@ def targets() -> "list[dict]":
     if now - latched_at > _get_float("RADAR_TARGET_LATCH_SECS", 3.0):
         return []
     return latched
+
+
+def recent_targets(window_secs: float = 1.5,
+                   since: "float | None" = None) -> "list[tuple[float, list[dict]]]":
+    """The per-frame target history: ``[(rx_monotonic, [targets...]), ...]``,
+    oldest first, for frames received within the last ``window_secs`` AND (when
+    given) at or after the monotonic stamp ``since``. Empty frames are included
+    — they are how a caller can tell "the ring watched for a second and saw
+    nobody" from "the ring hasn't reported yet". Never latched: this is the
+    accessor for anyone about to act on a bearing (a body turn), where a
+    pre-rotation frame would point the wrong way. Each target dict is the same
+    normalized shape as targets(). [] when disconnected or nothing qualifies."""
+    if not connected():
+        return []
+    cutoff = time.monotonic() - max(0.0, float(window_secs))
+    if since is not None:
+        cutoff = max(cutoff, float(since))
+    with _state_lock:
+        return [(stamp, list(ts)) for stamp, ts in _recent_frames if stamp >= cutoff]
 
 
 def radar_ok() -> bool:

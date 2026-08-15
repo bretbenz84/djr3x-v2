@@ -195,6 +195,50 @@ class LatchTest(_RadarTestBase):
         self.assertAlmostEqual(t["bearing_deg"], -10.0)
 
 
+class RecentFramesTest(_RadarTestBase):
+    """recent_targets(): the un-latched per-frame history a body-turn decision
+    reads, so it can ignore everything received before a turn settled."""
+
+    def test_recent_frames_are_stamped_and_include_empties(self):
+        self._connect(targets=[_TARGET_WIRE])
+        time.sleep(0.05)
+        self.fake.targets_wire = []                # person freezes: empty frames
+        time.sleep(0.15)
+        frames = radar.recent_targets(window_secs=5.0)
+        self.assertGreater(len(frames), 2)
+        stamps = [s for s, _ in frames]
+        self.assertEqual(stamps, sorted(stamps))   # oldest first
+        self.assertTrue(any(ts for _, ts in frames))       # the occupied frames...
+        self.assertTrue(any(not ts for _, ts in frames))   # ...AND the empty ones
+        # Not latched: the LAST frames are empty even though targets() still
+        # remembers the person.
+        self.assertEqual(frames[-1][1], [])
+        self.assertEqual(len(radar.targets()), 1)
+
+    def test_since_excludes_frames_received_before_the_stamp(self):
+        self._connect(targets=[_TARGET_WIRE])
+        time.sleep(0.1)
+        self.fake.targets_wire = [{"b": -10.0, "r": 1.5, "c": 0.9, "s": 0.0, "m": 1}]
+        time.sleep(0.15)                          # old-bearing frames drain through
+        cut = time.monotonic()
+        time.sleep(0.15)
+        after = radar.recent_targets(window_secs=5.0, since=cut)
+        self.assertTrue(after)
+        self.assertTrue(all(stamp >= cut for stamp, _ in after))
+        # Everything after the cut is the new bearing; the earlier 137.2° frames
+        # (which the base may since have rotated away from) are not offered —
+        # yet they ARE still in the un-cut window, so it is `since` doing the
+        # excluding, not the buffer forgetting.
+        seen_after = {t["bearing_deg"] for _, ts in after for t in ts}
+        self.assertEqual(seen_after, {-10.0})
+        seen_all = {t["bearing_deg"] for _, ts in radar.recent_targets(window_secs=5.0)
+                    for t in ts}
+        self.assertIn(137.2, seen_all)
+
+    def test_disconnected_ring_offers_nothing(self):
+        self.assertEqual(radar.recent_targets(window_secs=5.0), [])
+
+
 class _FakePortInfo:
     def __init__(self, device, serial_number):
         self.device = device

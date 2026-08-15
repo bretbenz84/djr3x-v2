@@ -1627,3 +1627,350 @@ class FlinchEndToEndDefaultsTest(unittest.TestCase):
 
     def test_a_momentary_poke_does_not_fire(self):
         self.assertIsNone(self._run(0.025, hold_ticks=1))
+
+
+# ── Radar-first come-here search (owner spec 2026-08-15) ──────────────────────
+
+class _FakeRing:
+    """Stands in for hardware.radar as the come-here search sees it. ``bodies``
+    are (bearing_deg, range_m, confidence) in the CURRENT base frame — a test
+    re-states them after each turn exactly as the real ring would (it always
+    reports relative to wherever the base points now). ``flicker`` is a
+    bearing that shows in only 2 of the 10 frames per read (a tracker blip)."""
+
+    def __init__(self, bodies=(), *, up=True, flicker=None):
+        self.bodies = list(bodies)
+        self.up = up
+        self.flicker = flicker
+        self.reads = 0
+
+    def connected(self):
+        return self.up
+
+    def radar_ok(self):
+        return self.up
+
+    def recent_targets(self, window_secs=1.5, since=None):
+        self.reads += 1
+        now = time.monotonic()
+        frames = []
+        for k in range(10):
+            stamp = now + 0.001 * k          # "just received", after any past `since`
+            if since is not None and stamp < since:
+                continue
+            targets = [{"bearing_deg": b, "range_m": r, "confidence": c,
+                        "speed_mps": 0.0, "sensors": 1} for b, r, c in self.bodies]
+            if self.flicker is not None and k < 2:
+                targets.append({"bearing_deg": self.flicker, "range_m": 2.0,
+                                "confidence": 1.0, "speed_mps": 0.0, "sensors": 2})
+            frames.append((stamp, targets))
+        return frames
+
+
+class RadarFirstComeTest(unittest.TestCase):
+    """With no face on camera the search turns to radar bodies, not blind sweep
+    legs; a body whose dwell shows no requester face is rejected and the next
+    is visited; the sweep is only the fallback; camera evidence always wins."""
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
+                         last_approach_at=0.0, user_motion_at=0.0,
+                         realign_pending_seq=None, traction_fails=0,
+                         no_traction_until=0.0, hold_at=None)
+        self.ring = _FakeRing()
+        self._yaw = None                      # base publishes no IMU unless a test says so
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "turn", return_value=7),
+            mock.patch.object(MA.motion_controller, "come", return_value=8),
+            mock.patch.object(MA.motion, "done_result", return_value="completed", create=True),
+            mock.patch.object(MA.motion, "telemetry", side_effect=lambda: (
+                {"imu": {"ok": True, "yaw": self._yaw}} if self._yaw is not None else {})),
+            mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
+            mock.patch("sequences.animations.travel_glance_pose"),
+            mock.patch("hardware.radar.connected", side_effect=lambda: self.ring.connected()),
+            mock.patch("hardware.radar.radar_ok", side_effect=lambda: self.ring.radar_ok()),
+            mock.patch("hardware.radar.recent_targets",
+                       side_effect=lambda **kw: self.ring.recent_targets(**kw)),
+            # Timing collapsed so single ticks decide: no dwell, no align settle,
+            # no radar settle/sample wait. The waits get their own tests.
+            mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True),
+            mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 0.0, create=True),
+            mock.patch.object(config, "MOTION_COME_RADAR_SETTLE_SECS", 0.0, create=True),
+            mock.patch.object(config, "MOTION_COME_RADAR_SAMPLE_SECS", 0.0, create=True),
+        ]
+        started = [p.start() for p in self._patches]
+        self.turn, self.come = started[2], started[3]
+        self._tracking = {"locked": False, "visible": False}
+        self._neck = 5472
+        self._ws = mock.patch(
+            "world_state.world_state.get",
+            side_effect=lambda key: (
+                {"face_tracking": self._tracking,
+                 "servo_positions": {"neck": self._neck}}
+                if key == "self_state" else {}),
+        )
+        self._ws.start()
+
+    def tearDown(self):
+        MA.cancel_requested_come("test cleanup")
+        self._ws.stop()
+        for p in self._patches:
+            p.stop()
+
+    def _tick(self, snapshot=None):
+        MA.step(snapshot if snapshot is not None else _snapshot(visible=False), _profile())
+
+    def _turns(self):
+        return [c.args[0] for c in self.turn.call_args_list]
+
+    # ── radar first ─────────────────────────────────────────────────────────
+
+    def test_no_face_turns_to_the_radar_body_not_a_blind_leg(self):
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        # A radar bearing IS the turn (+ = left/CCW on both sides), at the scan
+        # rate so the sighting sampler can catch a face mid-turn — not the
+        # sweep's +90 opening leg.
+        self.turn.assert_called_once_with(135.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S)
+        self.come.assert_not_called()
+        self.assertEqual(MA._requested_come["radar_turns"], 1)
+        self.assertTrue(MA.requested_come_active())
+
+    def test_the_most_persistent_body_wins_then_confidence_then_least_turn(self):
+        # Two solid bodies at equal confidence: the smaller turn goes first.
+        self.ring.bodies = [(-150.0, 2.0, 0.9), (40.0, 4.0, 0.9)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.assertEqual(self._turns(), [40.0])
+
+    def test_a_flickering_return_is_not_a_body(self):
+        # A blip in 2 of 10 frames (MIN_FRAMES 3) must not draw a turn — even
+        # though it sits closer to dead ahead than the real body.
+        self.ring.bodies = [(120.0, 3.0, 0.9)]
+        self.ring.flicker = 15.0
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.assertEqual(self._turns(), [120.0])
+
+    def test_a_body_past_a_sensors_fov_edge_still_counts(self):
+        # A return the firmware stamps 0.20 (reported just outside a module's
+        # rated ±60°) is a poorly-located body, not junk — persistence over
+        # MIN_FRAMES is the junk filter. He turns to it; the dwell's neck sweep
+        # absorbs the bearing error.
+        self.ring.bodies = [(-100.0, 3.0, 0.2)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.assertEqual(self._turns(), [-100.0])
+
+    def test_a_pathological_confidence_is_ignored(self):
+        self.ring.bodies = [(-100.0, 3.0, 0.05)]     # below the sanity floor
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.assertEqual(self._turns(), [config.MOTION_COME_SEARCH_TURN_DEG])   # sweep
+
+    def test_a_cut_short_radar_turn_does_not_reject_the_body(self):
+        # The turn toward the body ended blocked/aborted (swing-side ToF, no
+        # traction): the camera never faced it, so the dwell must not rule the
+        # spot out; the next read turns to it again from its new bearing.
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.assertEqual(self._turns(), [135.0])
+        with mock.patch.object(MA.motion, "done_result", return_value="blocked", create=True):
+            self.ring.bodies = [(60.0, 3.0, 0.9)]     # only got partway round
+            self._tick()
+        self.assertEqual(MA._requested_come["radar_visited"], [])
+        self.assertEqual(self._turns(), [135.0, 60.0])
+
+    # ── reject and move on ──────────────────────────────────────────────────
+
+    def test_body_without_the_requester_is_rejected_and_the_next_visited(self):
+        # Bodies A (+135) and B (-80). Turn to A; the dwell after that turn shows
+        # nobody -> A is rejected; the ring now reports both in the NEW frame
+        # (A dead ahead, B at -80-135 = +145): A is recognised as the rejected
+        # spot and skipped, B gets the next turn.
+        self.ring.bodies = [(135.0, 3.0, 0.9), (-80.0, 2.5, 0.8)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.assertEqual(self._turns(), [135.0])
+        self.ring.bodies = [(0.0, 3.0, 1.0), (145.0, 2.5, 0.8)]   # after the +135 turn
+        self._tick()                                # done landed, dwell 0, nobody
+        self.assertEqual(self._turns(), [135.0, 145.0])
+        self.assertEqual(len(MA._requested_come["radar_visited"]), 1)
+        self.assertEqual(MA._requested_come["radar_turns"], 2)
+
+    def test_all_bodies_rejected_falls_back_to_the_sweep(self):
+        self.ring.bodies = [(135.0, 3.0, 0.9), (-80.0, 2.5, 0.8)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()                                # -> A (+135)
+        self.ring.bodies = [(0.0, 3.0, 1.0), (145.0, 2.5, 0.8)]
+        self._tick()                                # A rejected -> B (+145)
+        self.ring.bodies = [(-145.0, 3.0, 0.9), (0.0, 2.5, 1.0)]   # after +145: A at -145, B ahead
+        self._tick()                                # B rejected; both known -> sweep
+        self.assertEqual(self._turns()[:2], [135.0, 145.0])
+        self.assertEqual(self._turns()[2], config.MOTION_COME_SEARCH_TURN_DEG)
+        self.assertEqual(len(MA._requested_come["radar_visited"]), 2)
+
+    def test_someone_elses_face_at_the_body_rejects_it_too(self):
+        # JT (db 2) is the body at +135; Bret (db 1) asked. His face on camera
+        # after the turn is not a sighting of the requester -> spot rejected,
+        # search moves to the other body.
+        self.ring.bodies = [(135.0, 3.0, 0.9), (-80.0, 2.5, 0.8)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.ring.bodies = [(0.0, 3.0, 1.0), (145.0, 2.5, 0.8)]
+        self._tick(_snapshot(db_id=2))              # JT's face, dead ahead
+        self.assertEqual(self._turns(), [135.0, 145.0])
+        self.come.assert_not_called()
+
+    def test_a_glimpse_of_the_requester_keeps_the_spot(self):
+        # The requester was sighted after the radar turn (the sampler stamps
+        # last_seen_at); losing them again must NOT rule the spot out.
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        MA._requested_come["last_seen_at"] = time.monotonic()      # glimpsed mid-turn
+        MA._requested_come["seen_sign"] = 0.0                      # (no resight bearing)
+        self.ring.bodies = [(0.0, 3.0, 1.0)]
+        self._tick()
+        self.assertEqual(MA._requested_come["radar_visited"], [])
+
+    # ── camera outranks radar ───────────────────────────────────────────────
+
+    def test_a_visible_requester_face_goes_straight_to_the_camera_loop(self):
+        self.ring.bodies = [(-120.0, 3.0, 0.9)]     # a body behind-right...
+        self._tracking = {"locked": True, "visible": True, "lock_key": "db:1"}
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick(_snapshot(db_id=1, face_box=_CENTERED_FACE))
+        # ...is irrelevant: the requester is centred on camera, so he approaches.
+        self.come.assert_called_once_with(0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M)
+        self.turn.assert_not_called()
+        self.assertEqual(self.ring.reads, 0)
+
+    def test_a_fresh_sighting_turns_back_before_radar_is_consulted(self):
+        self.ring.bodies = [(-120.0, 3.0, 0.9)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        MA._requested_come["last_seen_at"] = time.monotonic() - 1.0
+        MA._requested_come["seen_sign"] = 1.0
+        MA._requested_come["seen_deg"] = -20.0      # face was 20° to his left
+        self._tick()
+        # Resight turn (+20 for a -20 bearing), not the radar body.
+        self.assertEqual(len(self._turns()), 1)
+        self.assertAlmostEqual(self._turns()[0], 20.0)
+        self.assertEqual(self.ring.reads, 0)
+
+    # ── settle: decide only from frames after the base stopped ─────────────
+
+    def test_radar_frames_before_the_settle_are_ignored_and_it_waits(self):
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        with mock.patch.object(config, "MOTION_COME_RADAR_SETTLE_SECS", 5.0, create=True):
+            self.assertTrue(MA.request_come_here(person_id=1))
+            self._tick()                            # first decision: pre-request frames OK
+            self.assertEqual(self._turns(), [135.0])
+            self.ring.bodies = [(0.0, 3.0, 1.0), (145.0, 2.5, 0.8)]
+            self._tick()                            # done landed -> radar_since = now + 5
+            # Nothing usable yet: no second turn, still searching (waiting).
+            self.assertEqual(self._turns(), [135.0])
+            self.assertTrue(MA.requested_come_active())
+        # Once the settle has passed, the next read is honoured.
+        MA._requested_come["radar_since"] = time.monotonic() - 1.0
+        self._tick()
+        self.assertEqual(self._turns(), [135.0, 145.0])
+
+    def test_a_ring_that_stays_quiet_past_the_wait_hands_over_to_the_sweep(self):
+        # The ring is up but has delivered no frame since the base settled (a
+        # stalled stream): after WAIT the sweep takes the search rather than the
+        # errand hanging on a sample that never fills.
+        with mock.patch("hardware.radar.recent_targets", return_value=[]), \
+             mock.patch.object(config, "MOTION_COME_RADAR_WAIT_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here(person_id=1))
+            MA._requested_come["radar_since"] = time.monotonic() - 10.0   # settled long ago
+            self._tick()
+        self.assertEqual(self._turns(), [config.MOTION_COME_SEARCH_TURN_DEG])
+
+    def test_a_base_still_moving_at_request_waits_for_a_settled_sample(self):
+        # Requested while the base was mid-turn: pre-request frames are in the
+        # wrong frame, so the first radar decision waits for since (= request +
+        # settle) to pass instead of turning on stale bearings.
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        with mock.patch.object(MA.motion, "state", return_value="turning"), \
+             mock.patch.object(config, "MOTION_COME_RADAR_SETTLE_SECS", 30.0, create=True):
+            self.assertTrue(MA.request_come_here(person_id=1))
+        self.assertGreater(MA._requested_come["radar_since"], time.monotonic())
+        self._tick()
+        self.turn.assert_not_called()
+        self.assertTrue(MA.requested_come_active())
+
+    def test_a_body_already_dead_ahead_holds_for_the_camera_first(self):
+        # First decision, body at +5°: no turn — dwell on it; if the dwell finds
+        # nobody it is ruled out and the OTHER body gets the turn.
+        self.ring.bodies = [(5.0, 2.0, 1.0), (-100.0, 3.0, 0.9)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.turn.assert_not_called()
+        self.assertGreater(MA._requested_come["turn_done_at"], 0.0)
+        self._tick()                                # dwell (0) over, nobody -> ahead spot rejected
+        self.assertEqual(self._turns(), [-100.0])
+
+    # ── heading bookkeeping ─────────────────────────────────────────────────
+
+    def test_imu_yaw_keeps_rejected_spots_in_frame_across_turns(self):
+        self._yaw = 30.0                            # base publishes a gyro heading
+        self.ring.bodies = [(135.0, 3.0, 0.9), (-80.0, 2.5, 0.8)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self.assertEqual(MA._requested_come["heading_mode"], "imu")
+        self._tick()                                # -> +135 (world 165)
+        self._yaw = 165.0                           # the base really turned
+        self.ring.bodies = [(0.0, 3.0, 1.0), (145.0, 2.5, 0.8)]
+        self._tick()
+        self.assertEqual(self._turns(), [135.0, 145.0])
+        self.assertAlmostEqual(MA._requested_come["radar_visited"][0], 165.0)
+
+    def test_without_imu_the_commanded_turns_are_summed(self):
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self.assertEqual(MA._requested_come["heading_mode"], "cmd")
+        self._tick()
+        self.assertAlmostEqual(MA._requested_come["cmd_heading"], 135.0)
+
+    def test_a_voice_hint_turn_forgets_rejected_spots(self):
+        # "I'm behind you" mid-search: the human localized themself; rejected
+        # radar spots (and the body being checked) are moot.
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        MA._requested_come["radar_visited"] = [10.0]
+        MA.note_behind_turn(42)
+        self.assertEqual(MA._requested_come["radar_visited"], [])
+        self.assertIsNone(MA._requested_come["radar_pending_world"])
+
+    # ── switches ────────────────────────────────────────────────────────────
+
+    def test_radar_search_can_be_disabled(self):
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        with mock.patch.object(config, "MOTION_COME_RADAR_ENABLED", False, create=True):
+            self.assertTrue(MA.request_come_here(person_id=1))
+            self._tick()
+        self.assertEqual(self._turns(), [config.MOTION_COME_SEARCH_TURN_DEG])
+        self.assertEqual(self.ring.reads, 0)
+
+    def test_a_ring_that_is_down_means_the_old_sweep(self):
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        self.ring.up = False
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.assertEqual(self._turns(), [config.MOTION_COME_SEARCH_TURN_DEG])
+
+    def test_radar_turns_share_the_search_budget(self):
+        self.ring.bodies = [(135.0, 3.0, 0.9)]
+        with mock.patch.object(config, "MOTION_COME_SEARCH_MAX_TURNS", 1, create=True):
+            self.assertTrue(MA.request_come_here(person_id=1))
+            self._tick()                            # radar turn 1 (budget spent)
+            self.ring.bodies = [(0.0, 3.0, 1.0), (145.0, 2.5, 0.8)]
+            self._tick()
+        self.assertEqual(self._turns(), [135.0])
+        self.assertFalse(MA.requested_come_active())

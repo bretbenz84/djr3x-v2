@@ -8,9 +8,11 @@ streamed to the Mac at 10 Hz over **native USB CDC**. Feature spec:
 The Mac consumer is `hardware/radar.py`.
 
 The radar is a **bearing prior, not a detector** — it tells the come-here
-search where to look first; the camera confirms. This board moves nothing, so
-there is no watchdog/estop machinery: it boots streaming (no handshake
-required) and reports `radar.ok:false` honestly when no sensor is delivering.
+search where to look first (`intelligence/motion_agency.py`, radar-first since
+2026-08-15: turn to the best body, dwell for the camera, reject and move on);
+the camera confirms. This board moves nothing, so there is no watchdog/estop
+machinery: it boots streaming (no handshake required) and reports
+`radar.ok:false` honestly when no sensor is delivering.
 
 ## Board
 

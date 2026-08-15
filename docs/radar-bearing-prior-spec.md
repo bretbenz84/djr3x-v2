@@ -117,6 +117,19 @@ penetration, tune the dedup thresholds and confidence falloff.
   returns no targets.
 - No changes to ToF handling.
 
+> **Behavior wiring landed 2026-08-15** (`intelligence/motion_agency.py`,
+> `MOTION_COME_RADAR_*` in `config.py`): the come-here search is radar-first.
+> With no requester face on camera he turns straight to the best radar body
+> (bearing = turn, at the scan rate), dwells for the camera, and if that body
+> is not the requester (no face, or someone else's) marks the spot rejected —
+> tracked in a world frame via the base's `imu.yaw` (commanded-turn sum as the
+> fallback) — and turns to the next. Camera evidence always outranks radar (a
+> visible/locked face → alignment; a fresh sighting → turn back first). Radar
+> decisions use only ring frames received after a turn's `done` + settle, over
+> a sample window, with a body required in several frames — the ring drifts
+> while the base rotates, so turns are computed only when stationary. The
+> haphazard sweep survives exactly as the fallback described above.
+
 ## Notes
 
 - Power: sensors run off USB 5 V through the S3 board. ~80 mA each, ~240 mA

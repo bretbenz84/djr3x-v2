@@ -8585,6 +8585,30 @@ MOTION_COME_ALIGN_GOOD_ENOUGH_DEG = 24.0
 # MOTION_COME_SEARCH_TIMEOUT_SECS, stops him butting at a permanent obstruction.
 MOTION_COME_RETRY_GAP_SECS = 2.0
 MOTION_COME_MAX_APPROACHES = 4
+# ── RADAR-FIRST come-here search (owner spec 2026-08-15) ──────────────────────
+# The LD2450 ring (hardware/radar.py) says where BODIES are, in the base frame,
+# so the search no longer turns blind: with no face on camera it turns straight
+# to the best radar body, dwells for the camera to find the requester's face,
+# and if that body is not them (no face / someone else's face) marks the spot
+# rejected and turns to the next. Camera evidence always outranks radar — a
+# visible/locked requester face goes straight to the camera-loop alignment, and
+# a fresh sighting turns back toward the sighting before radar is consulted.
+# The blind sweep survives as the fallback when the ring has no unvisited body.
+# Radar bearings drift while the base rotates, so decisions are made only from
+# frames received AFTER a turn's `done` plus SETTLE, over a SAMPLE window, and a
+# body must show up in MIN_FRAMES of them (the LD2450 tracker flickers).
+MOTION_COME_RADAR_ENABLED = True
+MOTION_COME_RADAR_SETTLE_SECS = 1.5      # ignore ring frames older than done + this
+MOTION_COME_RADAR_SAMPLE_SECS = 1.0      # frames to accumulate before deciding (10 Hz)
+MOTION_COME_RADAR_MIN_FRAMES = 3         # a body must appear in this many sampled frames
+MOTION_COME_RADAR_MIN_CONFIDENCE = 0.15  # per-return sanity floor only: a body a module
+                                         # reports just past its rated FOV edge (0.20)
+                                         # is still a body — persistence over MIN_FRAMES
+                                         # is the junk filter, not confidence
+MOTION_COME_RADAR_CLUSTER_DEG = 15.0     # returns within this bearing are one body
+MOTION_COME_RADAR_VISITED_DEG = 25.0     # a body this close to a rejected spot IS that spot
+MOTION_COME_RADAR_FACING_DEG = 12.0      # a body already this close to dead ahead needs no turn
+MOTION_COME_RADAR_WAIT_SECS = 3.0        # max wait for a full post-settle sample before sweeping
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
 # the body, and realign was rotating it straight back toward their face (field
