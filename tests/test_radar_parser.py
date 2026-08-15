@@ -318,6 +318,24 @@ class FusionTest(unittest.TestCase):
         self.assertEqual(len(fused), 1)
         self.assertAlmostEqual(fused[0]["r"], 2.0, delta=0.01)
 
+    def test_shell_echo_band_is_dropped_before_fusion(self):
+        # The base shell bounces the chirp back as a permanent static target at
+        # 0.26-0.47 m on every module (measured 2026-08-15, calib.h
+        # RADAR_RANGE_MIN_M). Those returns must never reach the fused list —
+        # near boresight they carry confidence 1.0 and would rank FIRST, ahead
+        # of a real person at the FOV edge. Pinned to the measured band, not the
+        # constant, so the floor can be tuned within reason without breaking this.
+        shell = [(1, -60.0, 0, 260, 0), (1, -60.0, 120, 330, -10),   # S1: 26 cm, 35 cm
+                 (2, 60.0, -200, 300, 0), (2, 60.0, 0, 470, 10),     # S2: 36 cm, 47 cm
+                 (0, 180.0, 0, 340, 0)]                              # S0: 34 cm
+        person = (2, 60.0, 0, 1000, 0)                               # 1 m, real
+        (fused,) = fuse([shell + [person]])
+        self.assertEqual(len(fused), 1)
+        self.assertAlmostEqual(fused[0]["r"], 1.0, delta=0.01)
+        self.assertEqual(fused[0]["m"], 0b100)
+        (empty,) = fuse([shell])
+        self.assertEqual(empty, [])
+
     def test_speed_passthrough_and_units(self):
         (fused,) = fuse([[(0, 0.0, 0, 3000, -40)]])   # -40 cm/s -> -0.4 m/s
         self.assertAlmostEqual(fused[0]["s"], -0.4, delta=0.01)

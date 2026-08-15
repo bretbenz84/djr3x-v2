@@ -69,18 +69,23 @@ static int run_fuse(bool flip) {
   char line[128];
   RadarTargetRobot raw[RADAR_MAX_RAW_TARGETS];
   int n_raw = 0;
+  bool pending = false;   // target lines read since the last flush — even if
+                          // every one was discarded, that tick must still be
+                          // reported (as an empty fused list), not swallowed
   while (fgets(line, sizeof(line), stdin)) {
     int sensor, x, y, speed;
     float mount;
     if (line[0] == '\n' || line[0] == '\r') {
       flush_tick(raw, n_raw);
       n_raw = 0;
+      pending = false;
       continue;
     }
     if (sscanf(line, "%d %f %d %d %d", &sensor, &mount, &x, &y, &speed) != 5) {
       fprintf(stderr, "fuse: bad line: %s", line);
       return 2;
     }
+    pending = true;
     Ld2450Target t;
     t.x_mm = (int16_t)x; t.y_mm = (int16_t)y; t.speed_cms = (int16_t)speed;
     t.res_mm = 360; t.present = true;
@@ -90,7 +95,7 @@ static int run_fuse(bool flip) {
       raw[n_raw++] = r;
     }
   }
-  if (n_raw > 0) flush_tick(raw, n_raw);
+  if (pending) flush_tick(raw, n_raw);   // unterminated final tick
   return 0;
 }
 

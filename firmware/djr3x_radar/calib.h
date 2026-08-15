@@ -34,7 +34,21 @@
 // Flag flipped to 1; the math in fusion.cpp is untouched and still matches the
 // official doc, which is where it should stay.
 #define RADAR_FLIP_X          1
-#define RADAR_RANGE_MIN_M     0.20f    // closer than this is the robot's own shell/PETG
+
+// Near-field floor. Every module holds a permanent static "target" at
+// 0.26-0.47 m (peak 0.30-0.35 m) — the base shell / PETG bouncing the chirp
+// straight back — MEASURED 2026-08-15 on the robot over several minutes of a
+// quiet room: 1 ghost per sensor per frame, bearing wandering across the whole
+// FOV, speed ~0, confidence 1.0 because it sits near boresight. That last part
+// is why the floor needs real margin above the cluster: a ghost that leaked
+// past it would rank FIRST in the fused list (best-first by confidence), ahead
+// of a real person at the FOV edge, and the Mac's 3 s latch would then hold it.
+// 0.60 m from a sensor at the base rim is someone touching the droid — the
+// camera has them, and the ring exists to find people at room range. Above
+// ~0.5 m everything observed was real (a wall leg astern at ~1 m, people).
+// If the shell/mount changes, re-measure with the near-field histogram before
+// moving this (a 5 cm-bin range histogram of fused targets in an empty room).
+#define RADAR_RANGE_MIN_M     0.60f    // measured shell echo tops out at 0.47 m
 #define RADAR_RANGE_MAX_M     8.00f    // module spec ceiling; beyond is noise
 
 // ---- Confidence falloff ---------------------------------------------------

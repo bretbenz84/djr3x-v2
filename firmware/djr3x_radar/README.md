@@ -173,6 +173,16 @@ bitmask of contributing sensors. Targets are sorted best-first. `radar.ok`
 false = **no sensor is delivering** ("I can't see"), distinct from an empty
 `targets` list ("I see nobody").
 
+**Near-field floor.** Returns closer than `RADAR_RANGE_MIN_M` (calib.h, **0.60 m**)
+are dropped on the S3 before fusion and never reach the Mac. Every module holds
+a permanent static ghost at 0.26–0.47 m — the base shell / PETG bouncing the
+chirp straight back (measured 2026-08-15: one per sensor per frame in an empty
+room, bearing wandering across the whole FOV, confidence 1.0). Nobody the ring
+exists to find stands 0.6 m from the base rim, and a leaked ghost would rank
+*first* in the fused list. If you ever see a rock-steady target hugging the body
+circle on the scope again, re-measure the near-field histogram before touching
+the constant.
+
 ## Parser provenance (do not "fix" from another driver)
 
 The LD2450 byte layout in `ld2450.h`/`ld2450.cpp` was cross-checked against
