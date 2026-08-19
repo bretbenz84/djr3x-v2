@@ -2415,6 +2415,37 @@ other animal state) so return remarks say "Hi again, Max. Probably." Kill switch
 REAL people DB (on the robot Mac it finds Bret's dogs and swaps the line —
 which is how the wiring was first confirmed).
 
+### Decision ledger — "why did you do that?" answered from the record (2026-08-18)
+
+`intelligence/decision_ledger.py`. Owner note: the model invented reasons that
+were plausible and false. Now the sites that already KNOW their reason write a
+plain-words, first-person `why` into a session ring (`record(kind, why, said=,
+detail=)`), and when the utterance looks like a why-question
+(`looks_like_why_question`: "why did/'d you…", "how come you…", "what made
+you…", "what was that about", "who were you looking for"…) the reply gets a
+directive with the newest entries and their ages, plus the order: **answer from
+this record; past its edge say honestly you're not sure — never invent a
+mechanism**; opinion/preference questions answer normally. Deliberately
+minimal (owner: only what's feasible and easy):
+
+- Instrumented: every accepted governor line (`speech_engine.speak_async` /
+  `generate_and_speak` → `why_for_purpose(purpose, label)`, a purpose→phrase
+  table with a humanized fallback); every interaction-side proactive line
+  (`_speak_proactive(..., why=)` on completion, label→phrase table); the lean
+  impulse (`_lean_impulse_why(kind, quiet, long_silence)` — which cue won and
+  how long the room was quiet); the reply frame each turn (`_reply_frame_why`:
+  purpose / comedy stance / roast level / banked callback — recorded AFTER the
+  why-directive is built so the current turn's frame isn't in its own answer;
+  capped to the two newest in the directive so it can't crowd out a turn or a
+  bit); the pet-name guess; an unprompted impression; an idle head wander; a
+  speaker gaze search STARTING (`_record_face_tracking_state` edge); a flinch
+  retreat. Not instrumented: micro gaze aversions, come-here/explore internals,
+  emotion orchestrator, mood — those get "honestly, I'm not sure" (mood is
+  already in the prompt via `rex_mood.prompt_lines`).
+- Kill switch `DECISION_LEDGER_ENABLED`; `DECISION_LEDGER_WHY_WINDOW_SECS` (240)
+  / `_WHY_LIMIT` (6). Grep `[decision_ledger]` in a session log to see what he
+  had on record when asked. Tests: `tests/test_decision_ledger.py` (20).
+
 ## Likely Future Work
 
 - **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The

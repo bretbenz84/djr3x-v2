@@ -1928,6 +1928,18 @@ IMPERSONATION_OUTRO_LINES = [
     "That's my closer. Everything after this is just encore material.",
 ]
 
+# ── Decision ledger (intelligence/decision_ledger.py) ─────────────────────────
+# "Why did you do that?" is answered from a record of what the code actually
+# decided (proactive line + governor purpose, lean-impulse cue, reply frame,
+# pet-name guess, unprompted impression, head wander, gaze search, flinch),
+# each with a plain-words reason written by the site that decided. Past the
+# record's edge the directive tells him to say he's honestly not sure — never
+# to invent a mechanism. Session memory only.
+DECISION_LEDGER_ENABLED = True
+DECISION_LEDGER_SIZE = 80
+DECISION_LEDGER_WHY_WINDOW_SECS = 240.0   # how far back a "why?" may reach
+DECISION_LEDGER_WHY_LIMIT = 6             # entries handed to the reply model
+
 # ── Unprompted impressions (features/organic_impersonation.py) ──────────────
 # Rex slips an impression in when the conversation hands him one: somebody
 # mentions a famous person he has a voice for, or the speaker (whose voice he has

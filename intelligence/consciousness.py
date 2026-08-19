@@ -2457,6 +2457,17 @@ def _pet_name_guess_line(species: str) -> Optional[str]:
         _animal_guessed_pet[species_key] = (first, names[0])
         _log.info("consciousness: animal remark guesses pet name species=%s owner=%s "
                   "pets=%s same_species=%s", species_key, owner, names, bool(same))
+        try:
+            from intelligence import decision_ledger
+            decision_ledger.record(
+                "pet_guess",
+                f"I spotted a {species_key} and {first} had been here recently and has "
+                f"told me about {' and '.join(names[:2])}, so I asked if that's who it was"
+                + ("" if same else f" (my detector said {species_key}, which didn't match)"),
+                said=line, detail={"owner": owner, "pets": names, "species": species_key},
+            )
+        except Exception:
+            pass
         return line
     return None
 
@@ -11351,6 +11362,16 @@ def _start_idle_head_wander(now: float) -> None:
         "consciousness: idle head wander started (%d waypoints, %.1fs) — looking around.",
         len(waypoints), dur,
     )
+    try:
+        from intelligence import decision_ledger
+        decision_ledger.record(
+            "head_wander",
+            "the conversation had lulled, so I let my attention wander and looked "
+            "around the room for a few seconds before coming back",
+            detail={"waypoints": len(waypoints), "secs": round(dur, 1)},
+        )
+    except Exception:
+        pass
 
 
 def idle_wander_neck_age_secs() -> float:
@@ -12514,6 +12535,23 @@ def _record_face_tracking_state(
     try:
         self_state = world_state.get("self_state")
         tracking = dict(self_state.get("face_tracking") or {})
+        if searching and not bool(tracking.get("searching")):
+            # A search STARTING is a head turn the person will notice — ledger it
+            # with the reason the search was requested.
+            try:
+                from intelligence import decision_ledger
+                _r = str(search_reason or "")
+                _why = {
+                    "startup": "I'd just started up and turned my head to see who's here",
+                    "off_camera_unknown": "I heard a voice from off-camera and turned to look for it",
+                }.get(_r, "I heard someone talking but couldn't see a face, so I turned my "
+                          "head to look for them")
+                decision_ledger.record(
+                    "gaze_search", _why,
+                    detail={"reason": search_reason, "pose": search_pose},
+                )
+            except Exception:
+                pass
         rest_lift, rest_tilt = _adaptive_head_rest_target()
         tracking.update({
             "locked": bool(locked),

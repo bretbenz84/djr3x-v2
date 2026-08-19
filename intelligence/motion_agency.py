@@ -1510,6 +1510,16 @@ def _flinch_retreat(front: float, rear: Optional[float], now: float, reason: str
     )
     _state["last_flinch_at"] = now
     _reset_flinch()  # fresh baselines after the move
+    try:
+        from intelligence import decision_ledger
+        decision_ledger.record(
+            "flinch",
+            f"something came at my front sensor fast ({str(reason).replace('_', ' ')}, "
+            f"about {front:.1f} m away) and I backed off {backup:.1f} m",
+            detail={"reason": reason, "front_m": round(front, 2), "backup_m": round(backup, 2)},
+        )
+    except Exception:
+        pass
     return True
 
 

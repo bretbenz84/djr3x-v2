@@ -589,6 +589,19 @@ def _perform(prep: _Prep) -> None:
         if prep.kind == "self" and prep.person_id is not None:
             _voice_last_fire[f"person:{prep.person_id}"] = now
 
+    try:
+        from intelligence import decision_ledger
+        decision_ledger.record(
+            "impression",
+            (f"{prep.subject_name} said something mock-worthy (\"{prep.utterance[:80]}\") "
+             f"and I have their voice on file, so I played it back at them"
+             if prep.kind == "self" else
+             f"someone mentioned {prep.subject_name} (\"{prep.utterance[:80]}\") and I "
+             f"have that voice on file, so I slipped in an impression"),
+            said=prep.script or "", detail={"trigger": prep.trigger},
+        )
+    except Exception:
+        pass
     _say(_bridge_line(prep), "amused" if prep.kind == "self" else "excited", log_text=True)
     if prep.cancelled or prep.take is None or prep.take.is_closed:
         return

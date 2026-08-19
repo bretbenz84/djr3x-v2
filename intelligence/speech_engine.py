@@ -241,6 +241,14 @@ def speak_async(
             except Exception:
                 pass
             _c._mark_governor_candidate(candidate_id, "accepted", "current_behavior_enqueued_speech")
+            try:
+                from intelligence import decision_ledger
+                decision_ledger.record(
+                    "proactive_line", decision_ledger.why_for_purpose(purpose, label),
+                    said=text, detail={"purpose": purpose, "label": label},
+                )
+            except Exception:
+                pass
             should_open_wait_on_done = (
                 on_done is None and (wait_secs is not None or _c._utterance_expects_reply(text))
             )
@@ -641,6 +649,14 @@ def generate_and_speak(
             )
             return False
     _c._mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
+    try:
+        from intelligence import decision_ledger
+        decision_ledger.record(
+            "proactive_line", decision_ledger.why_for_purpose(purpose, label),
+            detail={"purpose": purpose, "label": label},
+        )
+    except Exception:
+        pass
     threading.Thread(target=lambda: _task(token), daemon=True).start()
     return True
 

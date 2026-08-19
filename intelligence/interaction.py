@@ -2687,8 +2687,13 @@ def _speak_proactive(
     post_beat_ms_override: int = 0,
     label: str = "proactive",
     decided_at: Optional[float] = None,
+    why: str = "",
 ) -> bool:
     """Speak a self-initiated line, but yield the floor if the user has started.
+
+    `why` is the caller's plain-words reason, recorded in the decision ledger
+    when the line actually plays (so "why did you say that?" has a true answer);
+    it defaults to the label.
 
     Unlike a direct reply (where the user just spoke), a proactive line is decided
     on a silence timer and then spends ~1-2s in LLM + TTS generation before any
@@ -2771,7 +2776,32 @@ def _speak_proactive(
     if completed:
         global _last_proactive_line_at
         _last_proactive_line_at = time.monotonic()
+        try:
+            from intelligence import decision_ledger
+            decision_ledger.record(
+                "proactive_line",
+                why or _PROACTIVE_LABEL_WHY.get(label, f"a {label.replace('_', ' ')} impulse"),
+                said=text, detail={"label": label},
+            )
+        except Exception:
+            pass
     return completed
+
+
+# Plain-words reasons for the interaction-side proactive labels (the ledger pastes
+# these into Rex's prompt when someone asks "why did you say that?").
+_PROACTIVE_LABEL_WHY = {
+    "lean_impulse": "the room had gone quiet and I filled the silence",
+    "engagement_probe": "they'd gone quiet on me and I checked whether I was bothering them",
+    "idle_banter": "the room was quiet and I made idle banter",
+    "idle_outro": "the conversation had wound down and I signed off",
+    "room_question": "I noticed something in the room I didn't know and asked",
+    "interest_idle_followup": "a lull, so I followed up on one of their interests",
+    "low_memory_idle_question": "I barely know them, so I asked a getting-to-know-you question",
+    "onboarding_question": "they're new to me and I was getting the basics",
+    "onboarding_timeout": "the getting-to-know-you flow timed out",
+    "no_response_recovery": "I asked something and got no answer, so I let it go",
+}
 
 
 def _proactive_line_recently_fired(min_gap: Optional[float] = None) -> bool:
@@ -6172,6 +6202,34 @@ def _speak_engagement_probe(person_id: int) -> bool:
     return completed
 
 
+_LEAN_CUE_WHY = {
+    "celebration": "a remembered occasion of theirs came due",
+    "holiday_plan": "a holiday is coming up and I asked about plans",
+    "event_followup": "I remembered an event they'd mentioned and followed up",
+    "open_thread": "an open thread from an earlier conversation",
+    "callback_premise": "I called back to an earlier joke",
+    "workday_checkin": "the time of day — I checked in on their work day",
+    "place_question": "I wasn't sure which room this is and asked",
+    "room_question": "I noticed something in the room I didn't know and asked",
+    "visual_riff": "something I saw caught my eye and I riffed on it",
+    "weekend_plans": "the weekend, so I asked about plans",
+    "interest_discovery": "I was fishing for a new interest of theirs",
+    "mood_share": "I shared how my day was going",
+    "news_story": "a news story I'd picked up that fit their interests",
+    "memory_musing": "a memory of ours drifted up",
+}
+
+
+def _lean_impulse_why(kind: Optional[str], quiet: float, long_silence: bool) -> str:
+    cue = _LEAN_CUE_WHY.get(str(kind or ""), "")
+    quiet_txt = f"the room had been quiet about {int(quiet)} seconds" if quiet else "a lull"
+    if cue:
+        return f"{quiet_txt}, and {cue}"
+    if long_silence:
+        return f"{quiet_txt} — a long silence — and I tried to re-engage"
+    return f"{quiet_txt} and I filled the silence with whatever came to mind"
+
+
 def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bool:
     """Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, let Rex DECIDE — via the
     lean brain, grounded in perception + memory + mood — to say ONE motivated thing or just watch
@@ -6668,7 +6726,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         return False
 
     completed = _speak_proactive(
-        line, emotion="curious", priority=1, label="lean_impulse", decided_at=decided_at
+        line, emotion="curious", priority=1, label="lean_impulse", decided_at=decided_at,
+        why=_lean_impulse_why(_winning_kind, quiet, long_silence),
     )
     if completed:
         _last_proactive_line_at = time.monotonic()
@@ -14176,6 +14235,28 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
     return full or ""
 
 
+def _reply_frame_why(frame, comedy_mode, cb_claim) -> str:
+    """Plain words for how this reply was framed — the ledger's record of a
+    normal reply, so 'why did you roast me?' can be answered from the frame."""
+    purpose = str(getattr(frame, "purpose", "") or "").replace("_", " ")
+    roast = str(getattr(frame, "allow_roast", "") or "")
+    stance = str(getattr(comedy_mode, "label", "") or getattr(comedy_mode, "key", "") or "")
+    bits = [f"I framed my reply as '{purpose}'" if purpose else "I framed my reply"]
+    if stance and stance != "straight":
+        bits.append(f"in a '{stance}' comedy stance")
+    elif stance == "straight":
+        bits.append("played straight, no jokes")
+    if roast == "none":
+        bits.append("with roasting OFF")
+    elif roast in {"sharp", "normal"}:
+        bits.append(f"with a {roast} roast allowed")
+    if cb_claim is not None:
+        prem = " ".join(str(getattr(cb_claim, "premise", "") or "").split())[:80]
+        if prem:
+            bits.append(f"and called back to an earlier bit ({prem})")
+    return " ".join(bits)
+
+
 def _stream_llm_response(
     text: str,
     person_id: Optional[int],
@@ -14301,6 +14382,26 @@ def _stream_llm_response(
         if _organic_directive:
             lean_callback_directive = "\n".join(
                 s for s in (lean_callback_directive, _organic_directive) if s
+            )
+        # Decision ledger (intelligence/decision_ledger.py): the reply's framing
+        # is itself a decision the code made — record it — and when the person
+        # is asking WHY Rex did something, hand the model the real record.
+        try:
+            from intelligence import decision_ledger as _ledger
+            _why_directive = _ledger.why_directive(text) or ""
+            _ledger.record(
+                "reply_frame",
+                _reply_frame_why(frame, comedy_mode, cb_claim),
+                detail={"purpose": getattr(frame, "purpose", ""),
+                        "comedy_mode": getattr(comedy_mode, "key", ""),
+                        "roast": getattr(frame, "allow_roast", "")},
+            )
+        except Exception as exc:
+            _why_directive = ""
+            _log.debug("[decision_ledger] hook failed: %s", exc)
+        if _why_directive:
+            lean_callback_directive = "\n".join(
+                s for s in (lean_callback_directive, _why_directive) if s
             )
         if getattr(config, "TURN_PLANNER_SLIM_CONTRACT", True):
             # Phase 1 / "Bet 2": hand the LLM ONE compact contract instead of the
