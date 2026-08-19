@@ -8,7 +8,9 @@ import numpy as np
 
 
 @contextlib.contextmanager
-def _acquired_output_gate(_name):
+def _acquired_output_gate(_name, **_kw):
+    # **_kw absorbs the bounded-acquire timeout: every TTS hold passes one now,
+    # so a wedged holder can never mute Rex for the rest of the session.
     yield True
 
 

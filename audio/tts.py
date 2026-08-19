@@ -753,9 +753,9 @@ def _speak_streaming(
             logger.debug("[tts] conversation log write failed: %s", exc)
 
     min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
-    with output_gate.hold("tts") as acquired:
+    with output_gate.hold("tts", timeout=_gate_timeout()) as acquired:
         if not acquired:
-            logger.debug("[tts] streamed playback skipped — output gate busy")
+            _log_gate_timeout("streamed playback")
             return True   # handled: deliberately skipped, same as _play()
 
         with _speaking_lock:
@@ -864,6 +864,28 @@ def _speak_streaming(
         except Exception as exc:
             logger.debug("[tts] streamed cache write failed: %s", exc)
     return True
+
+
+# ── Output-gate acquisition ───────────────────────────────────────────────────
+# Every TTS acquire is BOUNDED. The gate holder calls into CoreAudio while
+# holding it (sound_effects' gated path plays inside its own hold), so a wedged
+# USB audio device strands the gate on a thread that will never release it —
+# and an unbounded acquire here made Rex permanently MUTE on top of permanently
+# deaf. Field 2026-08-18: the impersonation "thinking" chirp wedged mid-clip,
+# and the finished Jimmy Carter take then waited 91 s on a gate nobody would
+# ever hand back. Timing out costs one dropped line; not timing out costs the
+# rest of the session.
+
+def _gate_timeout() -> float:
+    return max(1.0, float(getattr(config, "TTS_OUTPUT_GATE_TIMEOUT_SECS", 30.0)))
+
+
+def _log_gate_timeout(what: str) -> None:
+    logger.warning(
+        "[tts] %s dropped — waited %.0fs for the output gate, still held by %r "
+        "(%.0fs). Suspect a wedged audio device.",
+        what, _gate_timeout(), output_gate.active_source(), output_gate.held_secs(),
+    )
 
 
 # ── ElevenLabs → local fallback circuit breaker ───────────────────────────────
@@ -1100,9 +1122,9 @@ def _speak_local(
             except Exception as exc:
                 logger.debug("[tts] conversation log write failed: %s", exc)
 
-        with output_gate.hold("tts") as acquired:
+        with output_gate.hold("tts", timeout=_gate_timeout()) as acquired:
             if not acquired:
-                logger.debug("[tts] local playback skipped — output gate busy")
+                _log_gate_timeout("local playback")
                 return True   # handled: deliberately skipped, same as _play()
 
             with _speaking_lock:
@@ -1220,9 +1242,9 @@ def _play(
         logger.error("[tts] sounddevice not installed — cannot play audio")
         return
 
-    with output_gate.hold("tts") as acquired:
+    with output_gate.hold("tts", timeout=_gate_timeout()) as acquired:
         if not acquired:
-            logger.debug("[tts] playback skipped — output gate busy")
+            _log_gate_timeout("playback")
             return
 
         with _speaking_lock:

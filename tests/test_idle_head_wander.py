@@ -169,13 +169,16 @@ class StepDecisionTest(_WanderBase):
             mock.patch("hardware.servos.listening_motion_active", servo.listening_motion_active),
         ]
 
-    def _run(self, patches, *, rand=0.0):
+    def _run(self, patches, *, rand=0.0, busy=False):
+        # interaction_busy must be set EXPLICITLY: a bare mock.Mock() answers every
+        # attribute with a truthy child, so an unset flag would silently look busy.
+        profile = mock.Mock(suppress_proactive=False, interaction_busy=busy)
         with mock.patch.object(c.random, "random", return_value=rand), \
              mock.patch.object(c, "_start_idle_head_wander") as start:
             for p in patches:
                 p.start()
             try:
-                c._step_idle_head_wander({"people": []}, mock.Mock(suppress_proactive=False))
+                c._step_idle_head_wander({"people": []}, profile)
             finally:
                 for p in reversed(patches):
                     p.stop()
@@ -187,6 +190,16 @@ class StepDecisionTest(_WanderBase):
 
     def test_no_start_when_chance_misses(self):
         start = self._run(self._start_ctx(), rand=0.99)
+        start.assert_not_called()
+
+    def test_no_start_while_a_turn_is_still_executing(self):
+        # The idle clock only counts HUMAN speech, so Rex talking, thinking, or
+        # rendering a clone take never resets it — and speech_motion_active() goes
+        # quiet in the gap between an intro line and the audio it was covering.
+        # Field 2026-08-18: the wander fired at exactly IDLE_HEAD_WANDER_IDLE_SECS
+        # into a Jimmy Carter impersonation, mid-synthesis, and the neck it parked
+        # then sent the WHEELS spinning.
+        start = self._run(self._start_ctx(), rand=0.0, busy=True)
         start.assert_not_called()
 
     def test_no_start_when_not_idle(self):

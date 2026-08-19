@@ -519,7 +519,7 @@ def _play_path(path: Path, key: str, mode: str = "gated") -> None:
 
 
 def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
-                abort=None) -> bool:
+                abort=None, player=None) -> bool:
     """Serialized, preemptible playback for motion/servo/head-lift accents: acquires the
     output gate (dropped if busy) and yields to any blocking source (TTS) within ~50 ms.
 
@@ -541,16 +541,24 @@ def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
             if mutes:
                 echo_cancel.set_playing(True)
             _log.info("[sfx] ▶ %s (%s)", path.stem, key)
-            sd.play(audio, samplerate, blocksize=2048)
-            deadline = time.monotonic() + (audio.shape[0] / float(samplerate)) + 0.1
-            while time.monotonic() < deadline:
-                if abort is not None and abort.is_set():
-                    sd.stop()
-                    break
-                if _yield_event.wait(timeout=0.05):
-                    sd.stop()          # speech wants the speaker — hand it over now
+            if player is not None:
+                # Loop pass on the shared stream: write() blocks for the clip and
+                # returns early on abort/yield, so it needs no poll loop — and it
+                # never reopens the device. See _LoopStream.
+                player.write(audio, samplerate, abort)
+                if _yield_event.is_set():
                     _log.debug("[sfx] yielded %s to a blocking source", path.stem)
-                    break
+            else:
+                sd.play(audio, samplerate, blocksize=2048)
+                deadline = time.monotonic() + (audio.shape[0] / float(samplerate)) + 0.1
+                while time.monotonic() < deadline:
+                    if abort is not None and abort.is_set():
+                        sd.stop()
+                        break
+                    if _yield_event.wait(timeout=0.05):
+                        sd.stop()      # speech wants the speaker — hand it over now
+                        _log.debug("[sfx] yielded %s to a blocking source", path.stem)
+                        break
         except Exception as exc:
             _log.debug("[sfx] playback error for %s: %s", path.name, exc)
         finally:
@@ -594,7 +602,7 @@ def _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key)
 
 
 def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key,
-                  abort=None) -> bool:
+                  abort=None, player=None) -> bool:
     """Motion accent that plays OVER speech, on its own output stream.
 
     A voice-COMMANDED move always ships a spoken confirmation ("Spinning
@@ -628,6 +636,10 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key,
         if mutes:
             echo_cancel.set_playing(True)
         _log.info("[sfx] ▶ %s (%s, overlay)", path.stem, key)
+        if player is not None:
+            # Loop pass: one long-lived stream for the whole loop instead of a
+            # fresh open/close per repeat (the drive whir loops for a ~9 s move).
+            return bool(player.write(audio, samplerate, abort, yieldable=False))
         stream = sd.OutputStream(
             samplerate=samplerate,
             channels=audio.shape[1],
@@ -673,6 +685,90 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key,
 # re-picking among a key's variants each pass so it doesn't read as a stuck tape.
 
 
+class _LoopStream:
+    """ONE OutputStream reused for every pass of a loop.
+
+    A loop used to open and close the device on every pass — sd.play() in the
+    gated path, a fresh OutputStream in the overlay path. On macOS an
+    open/close on the device the mic shares is exactly what silently kills the
+    input callback: audio/stream.py's module docstring names it, and it is also
+    where a wedged USB device hangs.
+
+    That made the thinking chirp the worst offender in the system. It covers the
+    LONGEST wait Rex has (~27 s of clone synthesis for an impersonation), so it
+    churned the device hardest at the moment he could least afford to go deaf.
+    Field 2026-08-18: one of those passes wedged mid-clip, took the mic with it,
+    and stranded the output gate it was holding — Rex went deaf AND mute while
+    still seeing and moving.
+
+    One open, one close, N writes.
+    """
+
+    __slots__ = ("_sd", "_stream", "_rate", "_channels")
+
+    def __init__(self, sd):
+        self._sd = sd
+        self._stream = None
+        self._rate = 0
+        self._channels = 0
+
+    def write(self, audio, samplerate: int, abort, *, yieldable: bool = True) -> bool:
+        """Play one clip through the shared stream. False if it never started.
+
+        ``yieldable`` mirrors the caller's preemption contract: the gated path
+        hands the speaker to a blocking source mid-clip, the OVERLAY path never
+        does — it is designed to ride UNDER speech, so honoring the yield event
+        there would silence the drive whir every time Rex talks over it.
+        """
+        if audio.ndim == 1:
+            audio = audio.reshape(-1, 1)
+        channels = int(audio.shape[1])
+        if self._stream is None or samplerate != self._rate or channels != self._channels:
+            self.close()
+            try:
+                self._stream = self._sd.OutputStream(
+                    samplerate=samplerate,
+                    channels=channels,
+                    blocksize=int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
+                    latency=str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
+                )
+                self._stream.start()
+            except Exception as exc:
+                _log.debug("[sfx] loop stream open failed: %s", exc)
+                self._stream = None
+                return False
+            self._rate = samplerate
+            self._channels = channels
+        # 50 ms writes so a stop or a TTS yield still lands inside the contract's
+        # ~50 ms, without reopening anything.
+        buf = audio.astype("float32")
+        step = max(1, int(samplerate * 0.05))
+        try:
+            for i in range(0, len(buf), step):
+                if abort is not None and abort.is_set():
+                    break
+                if yieldable and _yield_event.is_set():
+                    break
+                self._stream.write(buf[i:i + step])
+        except Exception as exc:
+            _log.debug("[sfx] loop stream write failed: %s", exc)
+            self.close()
+            return False
+        return True
+
+    def close(self) -> None:
+        stream, self._stream = self._stream, None
+        self._rate = 0
+        self._channels = 0
+        if stream is None:
+            return
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+
+
 class LoopHandle:
     """Handle for a running effect loop. Stop it with sound_effects.stop_loop()."""
 
@@ -712,14 +808,26 @@ def start_loop(key: str, *, mode: str = "gated", gap_secs: float = 0.15,
     deadline = time.monotonic() + max(0.0, float(max_secs))
 
     def _run() -> None:
-        while not handle._stop.is_set() and time.monotonic() < deadline:
-            played = _play_once(key, mode=mode, abort=handle._stop)
-            if handle._stop.is_set():
-                break
-            # A dropped pass means the speaker is busy (TTS holds the gate) — back
-            # off so the loop can't spin on a contended gate.
-            handle._stop.wait(max(0.05, gap_secs) if played else 0.5)
-        _log.debug("[sfx] loop %r ended", key)
+        # One output stream for every pass — see _LoopStream for why repeating the
+        # open/close is what deafens him.
+        player = None
+        try:
+            import sounddevice as sd
+            player = _LoopStream(sd)
+        except Exception as exc:
+            _log.debug("[sfx] loop stream unavailable (%s) — falling back per-pass", exc)
+        try:
+            while not handle._stop.is_set() and time.monotonic() < deadline:
+                played = _play_once(key, mode=mode, abort=handle._stop, player=player)
+                if handle._stop.is_set():
+                    break
+                # A dropped pass means the speaker is busy (TTS holds the gate) — back
+                # off so the loop can't spin on a contended gate.
+                handle._stop.wait(max(0.05, gap_secs) if played else 0.5)
+        finally:
+            if player is not None:
+                player.close()
+            _log.debug("[sfx] loop %r ended", key)
 
     thread = threading.Thread(target=_run, daemon=True, name=f"sfx-loop-{key}")
     handle._thread = thread
@@ -737,7 +845,7 @@ def stop_loop(handle: Optional[LoopHandle], *, join_timeout: float = 1.0) -> Non
         thread.join(timeout=max(0.0, join_timeout))
 
 
-def _play_once(key: str, *, mode: str = "gated", abort=None) -> bool:
+def _play_once(key: str, *, mode: str = "gated", abort=None, player=None) -> bool:
     """Synchronously play one pass of ``key``. Returns True if it actually started."""
     stems = _stems_for(key)
     if not stems:
@@ -765,9 +873,9 @@ def _play_once(key: str, *, mode: str = "gated", abort=None) -> bool:
         _last_key_at[key] = time.monotonic()
     if mode == "overlay":
         return bool(_play_overlay(sd, echo_cancel, output_gate, audio, samplerate,
-                                  path, key, abort=abort))
+                                  path, key, abort=abort, player=player))
     return bool(_play_gated(sd, echo_cancel, output_gate, audio, samplerate,
-                            path, key, abort=abort))
+                            path, key, abort=abort, player=player))
 
 
 def list_effects() -> dict:

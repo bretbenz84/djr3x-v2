@@ -18,6 +18,7 @@ initialises as a no-op and all read functions return empty arrays.
 
 import logging
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -59,8 +60,14 @@ _last_callback_at: float = 0.0
 _running: bool = False
 _last_reopen_at: float = 0.0
 _reopen_count: int = 0
+# time.monotonic() of the last callback BEFORE the current outage, or 0.0 when
+# the stream is healthy. Drives the fatal-escalation clock below.
+_down_since: float = 0.0
 _watchdog_thread: "threading.Thread | None" = None
 _watchdog_stop = threading.Event()
+
+# Exit code used when a wedged audio device forces a supervised restart.
+_DEAD_MIC_EXIT_CODE = 86
 
 
 # ── Callback ──────────────────────────────────────────────────────────────────
@@ -241,46 +248,153 @@ def stop() -> None:
 # ── Stall watchdog ────────────────────────────────────────────────────────────
 
 def _reopen(reason: str) -> bool:
-    """Tear down a stalled stream and open a fresh one. Called by the watchdog."""
-    global _stream, _reopen_count, _last_reopen_at
+    """Tear down a stalled stream and open a fresh one. Called by the watchdog.
 
-    with _stream_lock:
-        if not _running:
-            return False
-        _reopen_count += 1
-        _last_reopen_at = time.monotonic()
-        _log.warning(
-            "[stream_watchdog] mic input stalled (%s) — reopening (attempt %d).",
-            reason, _reopen_count,
+    The device work runs on a THROWAWAY daemon thread with a bounded join.
+    old.stop()/close() and _open_stream() are CoreAudio calls that block forever
+    when the USB device wedges, and the watchdog is the ONLY thread that would
+    ever retry — so calling them inline killed the retry loop along with the
+    attempt. Field 2026-08-18 18:20:46: "reopening (attempt 1)" was the last
+    audio log of the session; there was no attempt 2, no outcome line, and Rex
+    ran deaf for four minutes (still seeing and moving) until the operator
+    force-quit. e2dae47 bounded the SHUTDOWN paths against this same wedge; this
+    bounds the RECOVERY path.
+
+    An abandoned worker keeps _stream_lock, so later attempts fail fast on the
+    bounded acquire instead of piling up threads behind it.
+    """
+    global _reopen_count, _last_reopen_at
+
+    if not _running:
+        return False
+
+    _reopen_count += 1
+    _last_reopen_at = time.monotonic()
+    _log.warning(
+        "[stream_watchdog] mic input stalled (%s) — reopening (attempt %d).",
+        reason, _reopen_count,
+    )
+
+    budget = max(1.0, float(getattr(config, "AUDIO_STALL_REOPEN_TIMEOUT_SECS", 5.0)))
+    outcome: dict = {}
+
+    def _work() -> None:
+        global _stream
+        if not _stream_lock.acquire(timeout=budget):
+            outcome["lock_wedged"] = True
+            return
+        try:
+            if not _running:
+                return
+            old = _stream
+            _stream = None
+            if old is not None:
+                try:
+                    old.stop()
+                    old.close()
+                except Exception as exc:
+                    _log.warning("[stream_watchdog] error closing stalled stream: %s", exc)
+
+            # Drop the frozen audio so consumers don't keep reading the stale
+            # samples the wedged callback left behind.
+            with _buf_lock:
+                _buf.clear()
+
+            outcome["ok"] = _open_stream()
+        except Exception as exc:
+            outcome["error"] = exc
+        finally:
+            _stream_lock.release()
+
+    worker = threading.Thread(
+        target=_work, daemon=True, name=f"mic-reopen-{_reopen_count}",
+    )
+    worker.start()
+    worker.join(timeout=budget)
+
+    if worker.is_alive():
+        _log.error(
+            "[stream_watchdog] reopen wedged inside CoreAudio (>%.0fs) — abandoning that "
+            "thread. The watchdog stays up and keeps retrying.", budget,
         )
-
-        old = _stream
-        _stream = None
-        if old is not None:
-            try:
-                old.stop()
-                old.close()
-            except Exception as exc:
-                _log.warning("[stream_watchdog] error closing stalled stream: %s", exc)
-
-        # Drop the frozen audio so consumers don't keep reading the stale samples
-        # the wedged callback left behind.
-        with _buf_lock:
-            _buf.clear()
-
-        ok = _open_stream()
-
-    if ok:
+        return False
+    if outcome.get("lock_wedged"):
+        _log.error(
+            "[stream_watchdog] stream lock still held by an earlier wedged reopen — "
+            "the device has not come back yet."
+        )
+        return False
+    if outcome.get("error") is not None:
+        _log.error("[stream_watchdog] reopen raised: %s", outcome["error"])
+        return False
+    if outcome.get("ok"):
         _log.info("[stream_watchdog] mic input reopened.")
-    else:
-        _log.error("[stream_watchdog] mic reopen failed; will retry.")
-    return ok
+        return True
+    _log.error("[stream_watchdog] mic reopen failed; will retry.")
+    return False
+
+
+def _escalate_dead_mic(down_secs: float) -> None:
+    """No in-process recovery is coming — restart so the device comes back clean.
+
+    A wedged CoreAudio device is external (e2dae47's finding still holds), but
+    the wedged handles belong to THIS process, so exiting is what actually frees
+    them. rex_supervisor sees the child exit and returns to wake-word listening,
+    which reopens the device from scratch.
+
+    Staying up is the worse option: Rex keeps seeing, moving and turning, so he
+    LOOKS alive while ignoring everyone in the room. That is exactly the
+    2026-08-18 field report — the operator had to kill him by hand.
+    """
+    _log.error(
+        "[stream_watchdog] mic input dead for %.0fs across %d reopen attempts — the "
+        "audio device is wedged and will not come back in this process.",
+        down_secs, _reopen_count,
+    )
+    if not bool(getattr(config, "AUDIO_STALL_FATAL_RESTART_ENABLED", True)):
+        _log.error(
+            "[stream_watchdog] auto-restart disabled (AUDIO_STALL_FATAL_RESTART_ENABLED) "
+            "— Rex stays up but is DEAF until restarted by hand."
+        )
+        return
+
+    grace = max(1.0, float(getattr(config, "AUDIO_STALL_FATAL_EXIT_GRACE_SECS", 20.0)))
+    _log.error(
+        "[stream_watchdog] requesting shutdown so the supervisor can reopen the device "
+        "(hard exit in %.0fs if the clean path hangs).", grace,
+    )
+
+    def _exit_backstop() -> None:
+        # The graceful path plays a power-down clip and closes this same wedged
+        # device, so it can hang too. Give it the window, then leave hard.
+        time.sleep(grace)
+        _log.error(
+            "[stream_watchdog] clean shutdown did not finish in %.0fs — exiting hard.",
+            grace,
+        )
+        logging.shutdown()
+        os._exit(_DEAD_MIC_EXIT_CODE)
+
+    threading.Thread(target=_exit_backstop, daemon=True, name="mic-dead-exit").start()
+
+    try:
+        import state as state_module
+        state_module.set_state(state_module.State.SHUTDOWN)
+    except Exception as exc:
+        _log.error(
+            "[stream_watchdog] could not request a clean shutdown (%s) — exiting now.", exc,
+        )
+        logging.shutdown()
+        os._exit(_DEAD_MIC_EXIT_CODE)
 
 
 def _watchdog_loop() -> None:
+    global _down_since
+
     interval = max(0.05, float(getattr(config, "AUDIO_STALL_CHECK_INTERVAL_SECS", 0.5)))
     timeout = max(0.2, float(getattr(config, "AUDIO_STALL_TIMEOUT_SECS", 1.5)))
     min_spacing = max(0.0, float(getattr(config, "AUDIO_STALL_REOPEN_MIN_SPACING_SECS", 3.0)))
+    fatal_after = float(getattr(config, "AUDIO_STALL_FATAL_SECS", 60.0))
 
     while not _watchdog_stop.wait(interval):
         if not _running:
@@ -290,7 +404,20 @@ def _watchdog_loop() -> None:
             continue  # no callback since (re)open yet — still in the grace window
         now = time.monotonic()
         if now - last < timeout:
+            if _down_since > 0.0:
+                _log.info(
+                    "[stream_watchdog] mic input recovered after %.0fs down.",
+                    now - _down_since,
+                )
+                _down_since = 0.0
             continue  # healthy: callbacks are flowing
+        if _down_since <= 0.0:
+            _down_since = last
+        # A device that has ignored every reopen for this long is not coming back
+        # on its own — bail out to the supervisor rather than run on deaf.
+        if fatal_after > 0.0 and (now - _down_since) >= fatal_after:
+            _escalate_dead_mic(now - _down_since)
+            break
         if now - _last_reopen_at < min_spacing:
             continue  # reopened recently; give the new stream time to warm
         _reopen(f"no mic callback for {now - last:.1f}s")
@@ -360,6 +487,18 @@ def last_callback_age() -> float:
     if last <= 0.0:
         return float("inf")
     return time.monotonic() - last
+
+
+def mic_down_secs() -> float:
+    """Seconds the input has been stalled, or 0.0 when it is healthy.
+
+    Diagnostic hook: unlike last_callback_age() this stays anchored to the START
+    of the outage across reopen attempts, so it reflects how long Rex has
+    actually been deaf.
+    """
+    if _down_since <= 0.0:
+        return 0.0
+    return max(0.0, time.monotonic() - _down_since)
 
 
 def is_stalled() -> bool:

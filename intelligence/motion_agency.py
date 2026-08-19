@@ -1326,6 +1326,23 @@ def _come_turn_for_bearing(bearing_deg: float, *, floor: bool = True) -> float:
     return deg
 
 
+def _wander_owns_neck() -> bool:
+    """True while an idle head wander is driving the neck, or just settled it.
+
+    The grace covers face-tracking hauling the head back from the wander's last
+    waypoint: during that sweep the neck reads pegged even though nothing has
+    run out of travel.
+    """
+    if not _flag("MOTION_FACE_IGNORE_WANDER_NECK", True):
+        return False
+    try:
+        from intelligence import consciousness
+        age = consciousness.idle_wander_neck_age_secs()
+    except Exception:
+        return False
+    return age < _num("MOTION_FACE_WANDER_SETTLE_SECS", 6.0)
+
+
 def _tracked_person(snapshot: dict,
                     requester_id: "int | None" = None) -> Optional[dict]:
     """The world_state person entry the head is currently locked onto, or None.
@@ -1724,6 +1741,18 @@ def _step_inner(snapshot: dict, profile) -> None:
     # the extreme edge of the frame on that same side — i.e. face-tracking has
     # genuinely run out of neck and still can't hold them.
     if _flag("MOTION_FACE_PERSON_ENABLED", True) and frac is not None:
+        # The neck offset is only a TRACKING signal when face-tracking is what put
+        # the head there. An idle wander parks it at the travel limit for reasons
+        # that have nothing to do with a face, and any face that happens to be on
+        # that side then satisfies the edge test below — so the wheels turn on a
+        # forged signal. Field 2026-08-18: a wander during an impersonation left
+        # the neck at -99%, face-tracking was still hauling it back, and realign
+        # spun the base +59 deg mid-performance. Wait for tracking to own the neck
+        # again. (Same class as the come-here rework: one sensor, one number, one
+        # actuator owner.)
+        if _wander_owns_neck():
+            _reset("neck_hits", "far_hits")
+            return
         threshold = _num("MOTION_FACE_NECK_FRACTION", 0.85)
         edge = _num("MOTION_FACE_EDGE_FRACTION", 0.30)
         face_frac = _face_offset_fraction(person)

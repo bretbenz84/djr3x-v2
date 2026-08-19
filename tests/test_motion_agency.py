@@ -125,6 +125,30 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertLess(deg, 0)          # + neck frac (Rex's right) -> CW/negative turn
         self.assertGreaterEqual(abs(deg), 10.0)
 
+    def test_a_wander_parked_neck_does_not_turn_the_base(self):
+        # The neck offset only MEANS "tracking ran out of neck" when tracking is
+        # what put the head there. An idle head wander parks it at the travel
+        # limit for reasons that have nothing to do with a face, and whoever
+        # happens to be on that side then satisfies the edge test.
+        #
+        # Field 2026-08-18: a wander fired mid-impersonation, left the neck at
+        # -99% while face-tracking was still hauling it back, and realign spun
+        # the base +59 deg in the middle of the bit.
+        self._arm_realign()
+        with mock.patch.object(MA, "_wander_owns_neck", return_value=True):
+            self._tick(4)
+        self.turn.assert_not_called()
+
+    def test_the_base_turns_again_once_the_wander_lets_go(self):
+        # The guard is a hold, not a latch — normal realign must still work.
+        self._arm_realign()
+        with mock.patch.object(MA, "_wander_owns_neck", return_value=True):
+            self._tick(4)
+        self.turn.assert_not_called()
+        with mock.patch.object(MA, "_wander_owns_neck", return_value=False):
+            self._tick(2)
+        self.turn.assert_called_once()
+
     def test_moderate_neck_offset_never_turns_the_base(self):
         # The old trigger (neck ≥ 30% off-neutral) fired constantly. The neck servo
         # is the primary tracker now: 40% off-neutral is just the neck doing its job,

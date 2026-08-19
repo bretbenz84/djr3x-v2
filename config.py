@@ -3729,6 +3729,30 @@ AUDIO_STALL_CHECK_INTERVAL_SECS = 0.5
 # Minimum seconds between reopen attempts, so a truly-gone device (unplugged mic)
 # can't trigger a tight reopen storm — it retries on this cadence until it returns.
 AUDIO_STALL_REOPEN_MIN_SPACING_SECS = 3.0
+# How long a single reopen attempt may take before the watchdog abandons it. The
+# reopen runs on a throwaway thread precisely because old.stop()/close() and the
+# fresh open are CoreAudio calls that can block FOREVER on a wedged USB device —
+# and the watchdog is the only thread that would ever retry, so an inline call
+# took the retry loop down with it (field 2026-08-18: "reopening (attempt 1)" was
+# the last audio log of the session).
+AUDIO_STALL_REOPEN_TIMEOUT_SECS = 5.0
+# How long the input may stay dead — across ALL reopen attempts — before Rex
+# gives up and restarts. The wedged CoreAudio handles belong to this process, so
+# exiting is what actually frees them: rex_supervisor sees the child exit and
+# returns to wake-word listening, which reopens the device from scratch. Running
+# on deaf is worse than restarting — he still sees, moves and turns, so he looks
+# alive while ignoring the room. 0 disables the escalation.
+AUDIO_STALL_FATAL_SECS = 60.0
+AUDIO_STALL_FATAL_RESTART_ENABLED = True
+# Grace for the clean shutdown before a hard exit. The graceful path plays the
+# power-down clip through the SAME wedged device, so it can hang too.
+AUDIO_STALL_FATAL_EXIT_GRACE_SECS = 20.0
+# How long a TTS line waits for the shared output gate before giving up. The
+# holder plays through CoreAudio while holding the gate, so a wedged device
+# strands it on a thread that never releases — unbounded, that turned one hung
+# chirp into a permanently mute Rex (field 2026-08-18). Generous enough to sit
+# behind any real clip, short enough that he recovers his voice.
+TTS_OUTPUT_GATE_TIMEOUT_SECS = 30.0
 
 # ── Output routing for hardware AEC (ReSpeaker Lite) ─────────────────────────
 # To use the ReSpeaker Lite's ONBOARD acoustic echo cancellation, Rex's audio must
@@ -8722,6 +8746,11 @@ MOTION_FACE_EDGE_FRACTION = 0.30      # face must ALSO sit at least this far off
                                       # jitter (~0.06), NOT the physical frame edge (0.70 never fired:
                                       # field 2026-07-31, neck pinned at min, face 38% off, no turn)
 MOTION_FACE_CONFIRM_TICKS = 2         # consecutive ticks with both conditions before turning
+MOTION_FACE_IGNORE_WANDER_NECK = True  # don't read the neck as a tracking signal while an
+MOTION_FACE_WANDER_SETTLE_SECS = 6.0   # idle head wander owns it, or for this long after —
+                                       # the wander parks the neck at its limit for reasons
+                                       # unrelated to any face, and realign would spin the
+                                       # base on that (field 2026-08-18, mid-impersonation).
 MOTION_FACE_TURN_MAX_DEG = 60.0       # base turn at full neck deflection (proportional below)
 MOTION_FACE_TURN_MIN_DEG = 10.0       # smallest worthwhile correction
 MOTION_FACE_TURN_COOLDOWN_SECS = 8.0  # settle time between corrections (no oscillation)

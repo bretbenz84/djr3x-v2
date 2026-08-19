@@ -11248,6 +11248,23 @@ def _start_idle_head_wander(now: float) -> None:
     )
 
 
+def idle_wander_neck_age_secs() -> float:
+    """Seconds since an idle wander last OWNED the head, or inf if it hasn't.
+
+    0.0 while one is running. Consumers that read the neck angle as a tracking
+    signal must ignore it for a beat afterwards: the wander parks the head for
+    reasons that have nothing to do with where a face is, and face-tracking needs
+    time to pull it back before the offset means anything again.
+    """
+    with _idle_wander_lock:
+        if bool(_idle_wander.get("active")):
+            return 0.0
+        last = float(_idle_wander.get("last_at") or 0.0)
+    if last <= 0.0:
+        return float("inf")
+    return max(0.0, time.monotonic() - last)
+
+
 def _finish_idle_head_wander(now: float, *, allow_regreet: bool) -> None:
     with _idle_wander_lock:
         was_active = bool(_idle_wander.get("active"))
@@ -11750,6 +11767,17 @@ def _step_idle_head_wander(snapshot: dict, profile: "SituationProfile") -> None:
         if state_module.get_state() == State.SLEEP:
             return
         if is_waiting_for_response():
+            return
+        # A turn is still EXECUTING. The idle clock below only counts human
+        # speech (mark_engagement fires on identified speech segments), so Rex
+        # talking, thinking, or rendering a clone take never resets it — and the
+        # speech_motion_active() check below goes quiet in the gap between an
+        # intro line and the audio it was covering. Field 2026-08-18: the wander
+        # fired at exactly IDLE_HEAD_WANDER_IDLE_SECS into a Jimmy Carter
+        # impersonation, mid-synthesis, and the neck it parked then sent the
+        # WHEELS spinning (see motion_agency's realign). Approach was already
+        # gated on this flag; the wander never was.
+        if getattr(profile, "interaction_busy", False):
             return
         if directed_gaze_hold_active(now):
             return

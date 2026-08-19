@@ -15,6 +15,7 @@ _playback_lock = threading.Lock()
 _state_lock = threading.Lock()
 _active_source: Optional[str] = None
 _last_released_at: float = 0.0
+_acquired_at: float = 0.0
 
 # Yield hooks: fired by any BLOCKING acquirer right before it waits on the gate, so a
 # preemptible holder (sound_effects) can stop early and hand the speaker over instead
@@ -39,6 +40,19 @@ def active_source() -> Optional[str]:
     """Return the current holder label, or None when idle."""
     with _state_lock:
         return _active_source
+
+
+def held_secs() -> float:
+    """Seconds the current holder has owned the gate, or 0.0 when idle.
+
+    A value that keeps climbing past any real clip length means the holder is
+    wedged (a CoreAudio hang inside its play call) and every other source is
+    being starved behind it — see the timeout on the TTS acquire.
+    """
+    with _state_lock:
+        if _active_source is None or _acquired_at <= 0.0:
+            return 0.0
+        return max(0.0, time.monotonic() - _acquired_at)
 
 
 def seconds_since_release() -> float:
@@ -81,8 +95,9 @@ def hold(
         return
 
     with _state_lock:
-        global _active_source
+        global _active_source, _acquired_at
         _active_source = source
+        _acquired_at = time.monotonic()
 
     try:
         yield True
@@ -90,5 +105,6 @@ def hold(
         with _state_lock:
             global _last_released_at
             _active_source = None
+            _acquired_at = 0.0
             _last_released_at = time.monotonic()
         _playback_lock.release()

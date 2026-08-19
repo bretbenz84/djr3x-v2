@@ -310,17 +310,37 @@ class SoundEffectsTest(unittest.TestCase):
         # A clip shorter than the activity must keep going: the startup "thinking"
         # chirp is ~1.5 s but covers a much longer warmup, and the ~4 s drive whir
         # has to cover a ~9 s move (owner 2026-07-24).
-        path = sfx._resolve_stem("motion_whir")
+        # Repetition is counted in WRITES, not device opens: a loop now holds ONE
+        # output stream for its whole life (see _LoopStream), so counting opens
+        # would measure the churn that used to deafen him rather than the audio.
         with mock.patch.object(sfx, "_decode", return_value=(np.zeros(480, np.float32), 48000)):
             handle = sfx.start_loop("motion_move", gap_secs=0.01)
             self.assertIsNotNone(handle)
-            time.sleep(0.25)
-            self.assertGreater(len(self.sd.play_calls), 1, "loop must repeat")
-            sfx.stop_loop(handle)
+            try:
+                time.sleep(0.25)
+                self.assertGreater(len(self.sd.stream_writes), 1, "loop must repeat")
+            finally:
+                sfx.stop_loop(handle)
         self.assertFalse(handle.running)
-        after = len(self.sd.play_calls)
+        after = len(self.sd.stream_writes)
         time.sleep(0.15)
-        self.assertEqual(len(self.sd.play_calls), after, "no plays after stop")
+        self.assertEqual(len(self.sd.stream_writes), after, "no audio after stop")
+
+    def test_loop_opens_the_device_once_however_many_passes(self):
+        # The mic and the speaker share one CoreAudio device: repeating the
+        # open/close per pass is what silently kills the input callback (see
+        # audio/stream.py). Field 2026-08-18 — the impersonation thinking chirp
+        # churned it for ~27 s, wedged, and took the mic AND the output gate with
+        # it. Many passes, one open.
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(480, np.float32), 48000)):
+            handle = sfx.start_loop("motion_move", gap_secs=0.01)
+            try:
+                time.sleep(0.25)
+            finally:
+                sfx.stop_loop(handle)
+        self.assertGreater(len(self.sd.stream_writes), 1, "loop must have repeated")
+        self.assertEqual(self.sd.stream_starts, 1, "loop reopened the shared device")
+        self.assertEqual(self.sd.play_calls, [], "a loop must not use sd.play")
 
     def test_loop_is_cut_immediately_not_at_the_clip_end(self):
         # stop_loop must abort the in-flight pass, so the whir dies with the wheels
@@ -332,7 +352,11 @@ class SoundEffectsTest(unittest.TestCase):
             sfx.stop_loop(handle, join_timeout=2.0)
             elapsed = time.monotonic() - t0
         self.assertLess(elapsed, 1.0, "a 5s clip must not play out after stop")
-        self.assertGreater(self.sd.stop_calls, 0, "playback was actually cut")
+        # The cut is the chunked write breaking on the abort event rather than an
+        # sd.stop() on the module-global stream, so prove it by the audio ending.
+        after = len(self.sd.stream_writes)
+        time.sleep(0.15)
+        self.assertEqual(len(self.sd.stream_writes), after, "playback was actually cut")
 
     def test_loop_honors_the_family_kill_switch(self):
         with mock.patch.object(config, "SOUND_EFFECTS_MOTION_ENABLED", False, create=True):
@@ -355,9 +379,12 @@ class SoundEffectsTest(unittest.TestCase):
         with mock.patch.object(sfx, "_decode", return_value=(np.zeros(480, np.float32), 48000)):
             with output_gate.hold("tts"):
                 handle = sfx.start_loop("motion_move", mode="overlay", gap_secs=0.01)
-                time.sleep(0.2)
-                sfx.stop_loop(handle)
-        self.assertGreater(self.sd.stream_starts, 1, "overlay loop repeated")
+                try:
+                    time.sleep(0.2)
+                finally:
+                    sfx.stop_loop(handle)
+        self.assertGreater(len(self.sd.stream_writes), 1, "overlay loop repeated")
+        self.assertEqual(self.sd.stream_starts, 1, "overlay loop reopened the device")
         self.assertEqual(self.sd.play_calls, [], "overlay must never touch sd.play")
 
     def test_concurrent_leaves_suppression_to_tts(self):
