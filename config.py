@@ -1928,6 +1928,57 @@ IMPERSONATION_OUTRO_LINES = [
     "That's my closer. Everything after this is just encore material.",
 ]
 
+# ── Unprompted impressions (features/organic_impersonation.py) ──────────────
+# Rex slips an impression in when the conversation hands him one: somebody
+# mentions a famous person he has a voice for, or the speaker (whose voice he has
+# captured) says something mock-worthy. Nobody asked, so it must not SOUND like
+# the requested flow: no stall line, no thinking chirp. The ordinary ElevenLabs
+# reply covers the render; the bit plays after the reply, once the floor is free
+# and the clone is done, and is dropped silently if that moment doesn't come in
+# time. Rate-limited hard — a surprise that happens every turn is a tic.
+IMPERSONATION_ORGANIC_ENABLED = _env_bool("IMPERSONATION_ORGANIC_ENABLED", True)
+IMPERSONATION_ORGANIC_MIN_GAP_SECS = 600.0        # between ANY two unprompted bits
+IMPERSONATION_ORGANIC_VOICE_MIN_GAP_SECS = 3600.0 # same famous voice again
+IMPERSONATION_ORGANIC_MAX_PER_SESSION = 4
+IMPERSONATION_ORGANIC_MAX_WAIT_SECS = 60.0        # claim → must have played by, else dropped
+IMPERSONATION_ORGANIC_SCRIPT_MAX_WORDS = 30       # shorter than a requested bit: less render
+IMPERSONATION_ORGANIC_BRIDGE_STATE_PATH = ""      # default: assets/state/organic_bridge.json
+IMPERSONATION_ORGANIC_BRIDGE_LINES = [            # Rex's voice, right before the clone; {name}
+    "Oh — hang on. That reminds me. {name}, everybody:",
+    "Wait, wait. I've got {name} right here, actually.",
+    "Speaking of {name} — hold on, let me get them on the line.",
+    "You know who has thoughts about that? {name}. One second.",
+    "Funny you should mention {name}. Ahem.",
+    "Oh, this is too good. Give me a second — {name}:",
+]
+# Self-mock: the speaker's OWN captured voice, played back at them. Only fires
+# for someone who has already done "impersonate me" (that's where the ref comes
+# from), only when the social frame allows a roast, and only after ONE small LLM
+# call judges the line mock-worthy (it also writes the line, or says NONE).
+IMPERSONATION_SELF_MOCK_ENABLED = _env_bool("IMPERSONATION_SELF_MOCK_ENABLED", True)
+IMPERSONATION_SELF_MOCK_MIN_GAP_SECS = 900.0      # per person
+IMPERSONATION_SELF_MOCK_CONSIDER_PROB = 0.5       # dice roll before the judge call is spent
+IMPERSONATION_SELF_MOCK_MIN_UTTERANCE_WORDS = 4
+IMPERSONATION_SELF_MOCK_MAX_WORDS = 18
+IMPERSONATION_SELF_MOCK_MAX_WAIT_SECS = 35.0      # a playback of a line from a minute ago is confusing
+IMPERSONATION_SELF_MOCK_BRIDGE_STATE_PATH = ""    # default: assets/state/organic_self_mock_bridge.json
+IMPERSONATION_SELF_MOCK_BRIDGE_LINES = [
+    "Hang on. Let me play that back for you.",
+    "Here's what that sounded like from over here:",
+    "Okay. Instant replay.",
+    "I'm sorry — I have to. Ahem:",
+    "Let the record show:",
+]
+IMPERSONATION_SELF_MOCK_OUTRO_ENABLED = True
+IMPERSONATION_SELF_MOCK_OUTRO_STATE_PATH = ""     # default: assets/state/organic_self_mock_outro.json
+IMPERSONATION_SELF_MOCK_OUTRO_LINES = [
+    "That's you. That's what you sound like.",
+    "I'm not sorry.",
+    "Uncanny. I know.",
+    "Anyway. You were saying?",
+    "I have your voice on file. Choose your words.",
+]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — EXPRESSIVE VOICE (anti-monotone)
 # ─────────────────────────────────────────────────────────────────────────────

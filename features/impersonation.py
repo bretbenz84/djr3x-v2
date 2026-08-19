@@ -473,6 +473,7 @@ def _script_prompt(
     name: str, material: list[str], do_not: list[str], *,
     is_self: bool, famous: bool, stranger: bool = False,
     avoid: Optional[list[str]] = None, angle: Optional[str] = None,
+    context: Optional[str] = None,
 ) -> str:
     who = "yourself" if is_self else name
     parts = [
@@ -483,6 +484,15 @@ def _script_prompt(
         "obsessions, and signature quirks for a warm laugh, never mean. PG. No stage directions, "
         "no quotation marks, no emoji, no bracketed tags, no preamble — just the spoken parody.",
     ]
+    if context:
+        # Unprompted bit: the person just brought the subject up in conversation,
+        # so the impression should visibly grow out of what they said.
+        parts.append(
+            f"Nobody asked for this impression — it is a surprise. Someone in the room "
+            f"just said: \"{context}\". Tie the bit to THAT (the place, the plan, the "
+            f"thing they mentioned) so it lands as a response to them, and keep it "
+            f"SHORT — 2 sentences at most."
+        )
     if stranger:
         parts.append(
             "You met this person SECONDS ago — you know absolutely nothing about them except "
@@ -542,6 +552,8 @@ def build_parody_script(
     subject_name: str, person_id: Optional[int] = None, *,
     is_self: bool = False, stranger: bool = False,
     voice_key: Optional[str] = None,
+    context: Optional[str] = None,
+    max_words: Optional[int] = None,
 ) -> Optional[str]:
     """Generate the short parody line via a one-off LLM completion. Returns the
     cleaned script text, or None on failure. `stranger` = an anonymous live guest
@@ -561,6 +573,7 @@ def build_parody_script(
         famous=famous, stranger=stranger,
         avoid=_recent_scripts(subject_name, person_id, voice_key=voice_key),
         angle=(random.choice(_FAMOUS_ANGLES) if famous else None),
+        **({"context": context} if context else {}),
     )
     try:
         from intelligence import llm
@@ -571,20 +584,22 @@ def build_parody_script(
             max_tokens=180,
         )
         text = (resp.choices[0].message.content or "").strip()
-        return _cap_script_words(llm.clean_response_text(text)) or None
+        return _cap_script_words(llm.clean_response_text(text), max_words=max_words) or None
     except Exception as exc:
         logger.warning("[impersonation] script generation failed: %s", exc)
         return None
 
 
-def _cap_script_words(text: Optional[str]) -> Optional[str]:
+def _cap_script_words(text: Optional[str], *, max_words: Optional[int] = None) -> Optional[str]:
     """Hard cap the parody length at sentence boundaries. The prompt asks for
     2-3 short sentences but the model sometimes runs long, and every extra word
     is more local-synthesis time the room spends listening to the thinking loop
     (and was more stutter, before takes were prewarmed)."""
     if not text:
         return text
-    max_words = int(getattr(config, "IMPERSONATION_SCRIPT_MAX_WORDS", 45))
+    if max_words is None:
+        max_words = int(getattr(config, "IMPERSONATION_SCRIPT_MAX_WORDS", 45))
+    max_words = int(max_words)
     words_so_far = 0
     kept: list[str] = []
     for sentence in re.split(r"(?<=[.!?…])\s+", text.strip()):
@@ -615,6 +630,14 @@ def perform(
     the stranger script mode: no invented facts, no famous framing.
     """
     from audio import speech_queue
+
+    # An explicit request outranks any unprompted bit still waiting for its
+    # moment — and start_take below would evict its parked take anyway.
+    try:
+        from features import organic_impersonation
+        organic_impersonation.cancel("explicit_request")
+    except Exception:
+        pass
 
     stranger = (getattr(ref, "label", "") == "person:anon")
     if stranger and not (subject_name or "").strip():

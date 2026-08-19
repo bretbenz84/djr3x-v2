@@ -2347,6 +2347,53 @@ laughter, applause.
   for false fires (dishes → bang, TV → everything) before trusting reactions in
   DJ-adjacent rooms.
 
+### Unprompted impressions — famous mentions + self-mock (2026-08-18)
+
+`features/organic_impersonation.py`. Owner idea: Rex had a Jimmy Carter voice on
+file the whole time Bret was saying he's going to Plains, and nothing could reach
+for it — every performance capability was request-only. Now a reply turn can
+CLAIM an impression the way it claims banked callback humor:
+
+- **Trigger A — famous mention.** Deterministic roster scan of the utterance
+  against `assets/voices/famous/`: full name, alias slug (fdr/jfk/lbj/ike), or a
+  title + surname. A bare surname never fires (Ford, Bush, Carter, Johnson are
+  all people you might know). Explicit "impersonate …" phrasings are left to the
+  explicit flow (`_EXPLICIT_RE`).
+- **Trigger B — self-mock.** The speaker has a captured voice ref (from a past
+  "impersonate me"), the social frame allows a roast (`allow_roast` normal/sharp),
+  a probability dial passes, and ONE small LLM call both judges the line
+  mock-worthy and writes the ≤18-word playback (or answers NONE). Sad /
+  vulnerable / health / money / family / work-stress lines are NONE by prompt,
+  and the person's boundary terms ride along as hard NONE triggers.
+- **It must not SOUND like the requested flow** (owner note): no stall line, no
+  thinking chirp. `maybe_claim` (called in `interaction._stream_llm_response`,
+  right after the callback claim) starts the script + `local_tts.start_take` in
+  the background and returns only a directive telling the reply model NOT to do
+  the impression in prose or via the tool. Rex's ordinary ElevenLabs reply covers
+  the render. A player thread then waits for, in order: prep done → the reply
+  spoken (`note_reply_done()` from the main turn handler) → the clone rendered →
+  the floor free (`speech_queue.is_drained()` + `can_proactive_speak(reactive=True)`,
+  so heavy-moment / game / DJ / live-speech gates all apply). Only then: bridge
+  line in Rex's voice ("Oh — hang on. Jimmy Carter, everybody:") → the take →
+  the bow. If the moment never comes inside `IMPERSONATION_ORGANIC_MAX_WAIT_SECS`
+  (60; self-mock 35) the bit is dropped SILENTLY and the take released. In
+  `--local-tts` the take waits for the reply first (engine is serialized).
+- **Discipline:** one bit in flight; `IMPERSONATION_ORGANIC_MIN_GAP_SECS` (600)
+  between any two, `..._VOICE_MIN_GAP_SECS` (3600) per famous voice (alias
+  symlinks resolve to one key), `..._MAX_PER_SESSION` (4); self-mock
+  `IMPERSONATION_SELF_MOCK_MIN_GAP_SECS` (900) per person and
+  `..._CONSIDER_PROB` (0.5) before the judge call is spent. An explicit request
+  cancels a pending organic bit (`impersonation.perform` → `cancel`), and
+  `start_take` would evict its parked take anyway (`Take.is_closed` lets the
+  player notice). Kill switches `IMPERSONATION_ORGANIC_ENABLED`,
+  `IMPERSONATION_SELF_MOCK_ENABLED`.
+- Every fire records a `rex_episodes` row with `detail.trigger`
+  (`mention:famous:jimmy-carter` / `self_mock:judged`) and the utterance — the
+  first programmatically-true "why did you do that" record, ahead of the general
+  decision ledger discussed the same day. Tests: `tests/test_organic_impersonation.py`
+  (28). Live verification owed (house rule): a real mention → bit timing on the
+  robot, and a self-mock on Bret's captured ref.
+
 ## Likely Future Work
 
 - **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The

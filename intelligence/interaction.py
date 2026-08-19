@@ -14287,6 +14287,21 @@ def _stream_llm_response(
         except Exception as exc:
             cb_claim = None
             _log.debug("[callback_engine] reactive claim failed: %s", exc)
+        # Unprompted impression claim (features/organic_impersonation.py): a
+        # famous name in the utterance, or a mock-worthy line in a voice Rex has
+        # captured. Prep runs in the background behind THIS reply; the only thing
+        # it needs from the reply is a directive so the model doesn't perform the
+        # same impression in prose first. Speaks later, from its own thread.
+        try:
+            from features import organic_impersonation as _organic
+            _organic_directive = _organic.maybe_claim(text, person_id, frame=frame) or ""
+        except Exception as exc:
+            _organic_directive = ""
+            _log.debug("[organic_impersonation] claim failed: %s", exc)
+        if _organic_directive:
+            lean_callback_directive = "\n".join(
+                s for s in (lean_callback_directive, _organic_directive) if s
+            )
         if getattr(config, "TURN_PLANNER_SLIM_CONTRACT", True):
             # Phase 1 / "Bet 2": hand the LLM ONE compact contract instead of the
             # ~40-segment stacked block. frame + comedy_mode were computed from the
@@ -27525,6 +27540,13 @@ def _handle_speech_segment(
                 pass
         else:
             question_recovery_text = ""
+        # The reply this turn produced (if any) has been spoken: an unprompted
+        # impression claimed against it may now look for its moment.
+        try:
+            from features import organic_impersonation as _organic
+            _organic.note_reply_done()
+        except Exception:
+            pass
 
         # Post-greeting relationship hook: we just enrolled a newcomer while a
         # different known person was recently engaged. Ask them how they know

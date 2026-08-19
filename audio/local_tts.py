@@ -437,6 +437,13 @@ class Take:
         first_ready is set — which the producer also sets on giving up)."""
         return self._failed
 
+    @property
+    def is_closed(self) -> bool:
+        """True once close() ran — including when a NEWER start_take() evicted
+        this one from the parking slot, so a holder can tell its take was
+        pulled out from under it before trying to play it."""
+        return self._stop.is_set()
+
     def _produce(self) -> None:
         rendered = 0
         try:

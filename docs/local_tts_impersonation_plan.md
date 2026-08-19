@@ -578,6 +578,15 @@ was confirmed on this machine:
   that names nobody is handed to the model now. Full account in
   docs/tool_router_scope.md ("Phase 2 carve-out, 2026-08-14").
 
+### Unprompted impressions (2026-08-18)
+
+`features/organic_impersonation.py` adds the flow nobody asks for: a famous name
+dropped in conversation, or a mock-worthy line from someone whose voice Rex has
+captured, claims an impression against the reply turn. Deliberately NOT this
+plan's stall-line + thinking-loop shape — the ElevenLabs reply covers the render
+and the bit plays after it, only when the floor is free, or not at all. See
+CONTEXT.md "Unprompted impressions" for the gates and config.
+
 ### Owed live verification (ask Bret first — house rule)
 
 `python main.py --local-tts` end to end; barge-in mid-line; fallback with the
