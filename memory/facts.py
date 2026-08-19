@@ -461,6 +461,74 @@ def get_facts_by_category(person_id: int, category: str) -> list[dict]:
     return [_annotate_fact(dict(r)) for r in rows]
 
 
+# Pet facts arrive under whatever key the extractor minted that day — "dog",
+# "dog_name_2", "pet_name", "cat" — with the NAME as the value. This reads them
+# back as one list so a caller can ask "is that Max?" without knowing the key
+# vocabulary. Species is the leading key token when it is a known animal word.
+_PET_SPECIES_WORDS = {
+    "dog": "dog", "puppy": "dog", "pup": "dog", "hound": "dog",
+    "cat": "cat", "kitten": "cat", "kitty": "cat",
+    "bird": "bird", "parrot": "bird", "budgie": "bird", "cockatiel": "bird",
+    "rabbit": "rabbit", "bunny": "rabbit",
+    "hamster": "hamster", "guinea": "guinea pig", "ferret": "ferret",
+    "fish": "fish", "turtle": "turtle", "tortoise": "turtle",
+    "snake": "snake", "lizard": "lizard", "gecko": "lizard",
+    "horse": "horse", "pony": "horse", "chicken": "chicken", "goat": "goat",
+}
+_PET_NAME_RE = re.compile(r"^[A-Z][A-Za-z'\-]{1,20}(?: [A-Z][A-Za-z'\-]{1,20})?$")
+_PET_NAME_IN_VALUE_RE = re.compile(
+    r"\b(?:named|called|name is)\s+([A-Z][A-Za-z'\-]{1,20})\b"
+)
+
+
+def get_pets(person_id: int) -> list[dict]:
+    """[{name, species, confidence}] for a person's pets, best-attested first.
+
+    Only facts that yield a plausible proper NAME count — an age or a condition
+    ("blind") is not a pet. Species is "pet" when the key doesn't say."""
+    out: dict[str, dict] = {}
+    try:
+        facts = get_facts_by_category(person_id, "pet")
+    except Exception:
+        return []
+    for fact in facts:
+        key = str(fact.get("key") or "").strip().lower()
+        value = str(fact.get("value") or "").strip()
+        if not value:
+            continue
+        tokens = [t for t in re.split(r"[_\s\-]+", key) if t]
+        species = "pet"
+        for tok in tokens:
+            if tok in _PET_SPECIES_WORDS:
+                species = _PET_SPECIES_WORDS[tok]
+                break
+        name = None
+        if _PET_NAME_RE.match(value):
+            # "dog: Max", "dog_name_2: Toby", "pet_name: Max"; but not "dog_age: 3"
+            if any(t in {"age", "years", "condition", "breed", "color", "weight", "birthday"} for t in tokens):
+                continue
+            name = value
+        else:
+            m = _PET_NAME_IN_VALUE_RE.search(value)
+            if m:
+                name = m.group(1)
+                for tok in re.findall(r"[a-z]+", value.lower()):
+                    if tok in _PET_SPECIES_WORDS:
+                        species = _PET_SPECIES_WORDS[tok]
+                        break
+        if not name:
+            continue
+        conf = float(fact.get("confidence") or 0.0)
+        cur = out.get(name.lower())
+        if cur is None:
+            out[name.lower()] = {"name": name, "species": species, "confidence": conf}
+        else:
+            cur["confidence"] = max(cur["confidence"], conf)
+            if cur["species"] == "pet" and species != "pet":
+                cur["species"] = species
+    return sorted(out.values(), key=lambda p: -p["confidence"])
+
+
 def get_stale_facts(person_id: int, days: int) -> list[dict]:
     """Return facts that are stale or low-confidence, sorted by confirmation value."""
     facts = [

@@ -845,6 +845,26 @@ def _age_secs(stamp) -> Optional[float]:
     return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
 
 
+def recently_seen_people(max_age_secs: float) -> list[dict]:
+    """[{id, name, age_secs}] for named people whose stored `last_seen` is within
+    max_age_secs, most recent first. DB-backed on purpose: it survives a restart
+    and covers people the camera saw without a conversation."""
+    try:
+        rows = db.fetchall(
+            "SELECT id, name, last_seen FROM people WHERE name IS NOT NULL AND name != ''"
+        )
+    except Exception:
+        return []
+    out: list[dict] = []
+    for row in rows or []:
+        age = _age_secs(row["last_seen"])
+        if age is None or age > float(max_age_secs):
+            continue
+        out.append({"id": int(row["id"]), "name": str(row["name"]), "age_secs": age})
+    out.sort(key=lambda r: r["age_secs"])
+    return out
+
+
 def last_greeted_age_secs(person_id: int) -> Optional[float]:
     """Seconds since Rex last GREETED this person, or None if he never has.
 

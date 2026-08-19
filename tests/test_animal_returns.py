@@ -80,6 +80,17 @@ class ArrivalAndFlickerTest(_PresenceCase):
 
 
 class ReturnJokeTest(_PresenceCase):
+    def setUp(self):
+        super().setUp()
+        # The pet-name guess ("is that Max?") reads the REAL people DB — on the
+        # robot Mac that finds Bret's dogs and swaps the line. These tests are
+        # about the generic pools, so hold the guess off.
+        p = mock.patch.object(config, "ANIMAL_PET_NAME_GUESS_ENABLED", False, create=True)
+        p.start()
+        self.addCleanup(p.stop)
+        C._animal_guessed_pet.clear()
+        self.addCleanup(C._animal_guessed_pet.clear)
+
     def _depart(self, *, remark_ago=300.0, away_secs=300.0):
         rec = self._dog()
         rec["present"] = False

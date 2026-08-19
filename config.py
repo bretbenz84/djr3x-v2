@@ -6064,6 +6064,36 @@ ANIMAL_FRESH_ARRIVAL_AFTER_SECS = 1800.0  # absence this long resets the bit to 
 # has spoken a remark this recently, remarks for OTHER furry species stay
 # silent — presence is still tracked. 0 disables the guard.
 ANIMAL_FURRY_CROSS_SPECIES_REMARK_COOLDOWN_SECS = 180.0
+# "Is that Max?" — when someone Rex saw recently (visible, engaged, or in the DB's
+# last_seen inside the window) has told him about a pet, the furry-arrival remark
+# asks by NAME instead of announcing a "small furry lifeform" (owner note
+# 2026-08-18). memory.facts.get_pets reads the pet facts back whatever key the
+# extractor minted; a species mismatch (detector says cat, he knows a dog) still
+# asks, but says so. Placeholders: {first} owner's first name, {name}, {alt}
+# (second pet, TWO_LINES only), {species} (MISMATCH_LINES only).
+ANIMAL_PET_NAME_GUESS_ENABLED = True
+ANIMAL_PET_NAME_GUESS_RECENT_SECS = 900.0
+ANIMAL_PET_GUESS_LINES = (
+    "Wait — {first}, is that {name}?",
+    "Hold everything. Small furry lifeform... {first}, is that {name}?",
+    "Furry lifeform detected. My records say that might be {name}. {first}, am I right?",
+    "Is that {name}? {first}, tell me that's {name}.",
+    "Oh — {first}, did {name} just walk in?",
+)
+ANIMAL_PET_GUESS_TWO_LINES = (
+    "{first}, is that {name} or {alt}? My sensors don't do names.",
+    "Furry lifeform inbound. {name}? Or {alt}? Help me out, {first}.",
+    "Okay — {name} or {alt}? {first}, I can't tell them apart from up here.",
+)
+ANIMAL_PET_GUESS_MISMATCH_LINES = (
+    "{first}, is that {name}? My classifier says {species}, but it's been wrong before.",
+    "Small furry lifeform... {first}, that's {name}, right? Ignore the part of me that said {species}.",
+)
+ANIMAL_PET_RETURN_LINES = (
+    "The furry lifeform is back. Still calling it {name} until {first} tells me otherwise.",
+    "{name} — or whoever that is — has returned. Patrol route confirmed.",
+    "Re-entry detected. Hi again, {name}. Probably.",
+)
 FURRY_COMPANION_ANIMAL_SPECIES = {
     "dog",
     "puppy",

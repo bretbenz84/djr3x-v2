@@ -2368,6 +2368,99 @@ _ANIMAL_RETURN_LINES_GENERIC = (
 )
 
 
+# Species the arrival remark guessed a NAME for this run ({species: (owner_first,
+# pet_name)}), so a return can keep calling it that instead of "the furry lifeform".
+_animal_guessed_pet: dict[str, tuple[str, str]] = {}
+
+
+def _pet_owner_candidates(window_secs: float) -> list[tuple[int, str]]:
+    """(person_id, name) of known people who might own the animal Rex just saw:
+    visible now, then recently engaged, then anyone the DB saw inside the window
+    (survives a restart; covers people the camera saw without a conversation)."""
+    out: list[tuple[int, str]] = []
+    seen: set[int] = set()
+
+    def _add(pid, name) -> None:
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return
+        if pid in seen:
+            return
+        seen.add(pid)
+        out.append((pid, str(name or "")))
+
+    try:
+        for pid, name in episodic_hooks._visible_known_people():
+            _add(pid, name)
+    except Exception:
+        pass
+    try:
+        eng = get_recent_engagement(window_secs)
+        if eng and eng.get("person_id") is not None:
+            _add(eng["person_id"], eng.get("name"))
+    except Exception:
+        pass
+    try:
+        from memory import people as _people_mod
+        for row in _people_mod.recently_seen_people(window_secs):
+            _add(row["id"], row["name"])
+    except Exception:
+        pass
+    return out
+
+
+def _pet_name_guess_line(species: str) -> Optional[str]:
+    """"Is that Max?" — the furry-arrival remark, when someone who was just here
+    has told Rex about a pet. Owner note 2026-08-18: "small furry lifeform" is
+    dumb when he KNOWS I have a dog named Max. Same-species pets first; a
+    species mismatch still asks (the detector flip-flops dog/cat) but says so.
+    None when nobody recent has a named pet — the generic pool stays."""
+    if not bool(getattr(config, "ANIMAL_PET_NAME_GUESS_ENABLED", True)):
+        return None
+    species_key = str(species or "").strip().lower()
+    try:
+        from memory import facts as _facts_mod
+    except Exception:
+        return None
+    norm = getattr(_facts_mod, "_PET_SPECIES_WORDS", {}).get(species_key, species_key)
+    window = float(getattr(config, "ANIMAL_PET_NAME_GUESS_RECENT_SECS", 900.0))
+    for pid, owner in _pet_owner_candidates(window):
+        try:
+            pets = _facts_mod.get_pets(pid)
+        except Exception:
+            pets = []
+        if not pets:
+            continue
+        same = [p for p in pets if p.get("species") == norm]
+        furry = getattr(config, "FURRY_COMPANION_ANIMAL_SPECIES", set()) or set()
+        loose = [p for p in pets if p.get("species") in furry or p.get("species") == "pet"]
+        pick = same or loose
+        if not pick:
+            continue
+        first = (owner or "").strip().split(" ")[0] or "hey"
+        names = [str(p.get("name")) for p in pick]
+        fmt = {"first": first, "name": names[0], "alt": (names[1] if len(names) > 1 else ""),
+               "species": species_key or "creature"}
+        if not same:
+            pool = getattr(config, "ANIMAL_PET_GUESS_MISMATCH_LINES", ())
+        elif len(names) > 1:
+            pool = getattr(config, "ANIMAL_PET_GUESS_TWO_LINES", ())
+        else:
+            pool = getattr(config, "ANIMAL_PET_GUESS_LINES", ())
+        if not pool:
+            pool = ("Wait — {first}, is that {name}?",)
+        try:
+            line = random.choice(tuple(pool)).format(**fmt)
+        except Exception:
+            line = f"Wait — {first}, is that {names[0]}?"
+        _animal_guessed_pet[species_key] = (first, names[0])
+        _log.info("consciousness: animal remark guesses pet name species=%s owner=%s "
+                  "pets=%s same_species=%s", species_key, owner, names, bool(same))
+        return line
+    return None
+
+
 def _animal_reaction_frame_and_line(animal: dict):
     species = (animal.get("species") or "creature").strip().lower()
     if (animal.get("kind") or "arrival") == "return":
@@ -2386,6 +2479,15 @@ def _animal_reaction_frame_and_line(animal: dict):
             source="event",
             trigger=f"animal_return:{species}",
         )
+        guessed = _animal_guessed_pet.get(species)
+        if guessed and _animal_is_furry_companion(species, animal):
+            named_pool = tuple(getattr(config, "ANIMAL_PET_RETURN_LINES", ()) or ())
+            if named_pool:
+                try:
+                    return frame, random.choice(named_pool).format(
+                        first=guessed[0], name=guessed[1])
+                except Exception:
+                    pass
         return frame, random.choice(pool)
     if emotion_orchestrator.is_startling_animal(species):
         frame = emotion_orchestrator.frame_for_event("animal_detected", species=species)
@@ -2397,6 +2499,9 @@ def _animal_reaction_frame_and_line(animal: dict):
             source="event",
             trigger=f"animal_arrival:{species}",
         )
+        guess = _pet_name_guess_line(species)
+        if guess:
+            return frame, guess
         return frame, random.choice(_FURRY_ANIMAL_REACTION_LINES)
     frame = emotion_orchestrator.frame_for_event("animal_detected", species=species)
     return frame, random.choice(_GENERIC_ANIMAL_REACTION_LINES)
@@ -13831,6 +13936,7 @@ def start() -> None:
     _pending_animal_arrivals.clear()
     _directed_look_reported_at = 0.0
     _animal_presence.clear()
+    _animal_guessed_pet.clear()
     _update_unknown_streak(False)   # reset unknown-face persistence streak
     _last_startle_sound_reaction_at = 0.0
     _last_notable_sound_reaction_at = 0.0
@@ -13983,6 +14089,7 @@ def stop() -> None:
     _pending_animal_arrivals.clear()
     _directed_look_reported_at = 0.0
     _animal_presence.clear()
+    _animal_guessed_pet.clear()
     _last_startle_sound_reaction_at = 0.0
     _last_notable_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()

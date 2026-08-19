@@ -9306,6 +9306,8 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
                 mock.patch.object(consciousness, "_speak_async", side_effect=_speak_async_spoke) as speak,
                 mock.patch("sequences.animations.play_body_beat") as body_beat,
+                # the pet-name guess reads the real people DB; this test is about the pool line
+                mock.patch.object(consciousness, "_pet_name_guess_line", return_value=None),
             ):
                 consciousness._step_proactive_reactions(curr, profile)
         finally:
@@ -9388,6 +9390,8 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
                 mock.patch.object(consciousness, "_speak_async", side_effect=_speak_async_spoke) as speak,
                 mock.patch("sequences.animations.play_body_beat") as body_beat,
+                # the pet-name guess reads the real people DB; this test is about the pool line
+                mock.patch.object(consciousness, "_pet_name_guess_line", return_value=None),
             ):
                 consciousness._step_proactive_reactions(curr, profile)
         finally:

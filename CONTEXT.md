@@ -2394,6 +2394,27 @@ CLAIM an impression the way it claims banked callback humor:
   (28). Live verification owed (house rule): a real mention → bit timing on the
   robot, and a self-mock on Bret's captured ref.
 
+### "Is that Max?" — pet-name guess on furry arrivals (2026-08-18)
+
+Owner note: "small furry lifeform" is dumb when Rex knows I have a dog named Max.
+`consciousness._pet_name_guess_line(species)` now runs first in the furry-arrival
+branch of `_animal_reaction_frame_and_line`: it walks `_pet_owner_candidates`
+(visible known people → `get_recent_engagement` → `people.recently_seen_people`,
+DB `last_seen` inside `ANIMAL_PET_NAME_GUESS_RECENT_SECS`=900, restart-proof) and
+the first owner with pets wins. `memory.facts.get_pets(person_id)` reads the pet
+facts back as `[{name, species}]` regardless of the key the extractor minted
+(`dog`, `dog_name_2`, `pet_name`, "a cat named Pixel"; ages/conditions are not
+pets). Same-species pets → `ANIMAL_PET_GUESS_LINES` / `_TWO_LINES` ("Bret, is
+that Max or Toby?"); species mismatch (detector flip-flops dog/cat) still asks
+but says so (`_MISMATCH_LINES`); nobody recent with a named pet → the old pool.
+The guess is remembered per species (`_animal_guessed_pet`, cleared with the
+other animal state) so return remarks say "Hi again, Max. Probably." Kill switch
+`ANIMAL_PET_NAME_GUESS_ENABLED`. Tests: `tests/test_animal_pet_name_guess.py`
+(17); the two furry-pool tests in `test_animal_returns` /
+`test_audio_and_conversation_gating` hold the guess off because it reads the
+REAL people DB (on the robot Mac it finds Bret's dogs and swaps the line —
+which is how the wiring was first confirmed).
+
 ## Likely Future Work
 
 - **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The
