@@ -290,3 +290,113 @@ class SpokenLedgerTest(_PresenceCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReacquireAndConfirmTest(_PresenceCase):
+    """Field 2026-08-19 22:25: Rex wandered, oriented back to the couch, and
+    greeted the cat that never moved with 'the furry lifeform is BACK. Still
+    calling it Max until Bret tells me otherwise' — a departure that didn't
+    happen, hedged with a name the owner had ALREADY confirmed, in the third
+    person to the owner's face. Three fixes under test: base-motion gaps are
+    re-sights (not returns), confirmed names retire the hedge, and the
+    unconfirmed hedge speaks to the owner in the second person."""
+
+    def setUp(self):
+        super().setUp()
+        self._pose = {"v": (0.0, 0.0, 0.0)}
+        self._bp = mock.patch.object(C, "_base_pose",
+                                     side_effect=lambda: self._pose["v"])
+        self._bp.start()
+        self.addCleanup(self._bp.stop)
+        C._animal_guessed_pet.clear()
+        C._animal_confirmed_pet.clear()
+        self.addCleanup(C._animal_guessed_pet.clear)
+        self.addCleanup(C._animal_confirmed_pet.clear)
+
+    def _depart_dog(self):
+        rec = self._dog()
+        rec["last_seen_at"] = time.monotonic() - (
+            float(config.ANIMAL_DEPARTURE_GRACE_SECS) + 1.0)
+        self._tick()          # empty frame past grace -> departed
+        self.assertFalse(rec["present"])
+        C._pending_animal_arrivals.clear()   # the arrival remark is history
+
+    def test_base_motion_gap_is_a_resight_not_a_return(self):
+        self._tick("dog")
+        self._depart_dog()
+        self._pose["v"] = (0.0, 0.0, 1.0)    # Rex turned ~57 deg in the gap
+        self._tick("dog")
+        pending = C._pending_animal_arrivals.get("dog")
+        self.assertIsNotNone(pending)
+        self.assertTrue(pending.get("reacquired"))
+        self.assertEqual(self._dog()["return_count"], 0)   # no round trip counted
+
+    def test_still_base_gap_is_a_real_return(self):
+        self._tick("dog")
+        self._depart_dog()
+        self._tick("dog")                    # pose unchanged: the DOG left
+        pending = C._pending_animal_arrivals.get("dog")
+        self.assertIsNotNone(pending)
+        self.assertFalse(pending.get("reacquired", False))
+        self.assertEqual(self._dog()["return_count"], 1)
+
+    def test_reacquired_nonfurry_stays_silent(self):
+        C._stage_animal_arrivals({"animals": [{"species": "bird"}]})
+        rec = C._animal_presence["bird"]
+        rec["last_seen_at"] = time.monotonic() - (
+            float(config.ANIMAL_DEPARTURE_GRACE_SECS) + 1.0)
+        self._tick()
+        C._pending_animal_arrivals.clear()
+        self._pose["v"] = (0.5, 0.0, 0.0)    # Rex drove half a metre
+        C._stage_animal_arrivals({"animals": [{"species": "bird"}]})
+        self.assertNotIn("bird", C._pending_animal_arrivals)
+
+    def test_resight_line_names_the_confirmed_pet_without_back(self):
+        C._animal_confirmed_pet["dog"] = "Max"
+        animal = {"species": "dog", "furred": True, "kind": "return",
+                  "return_count": 0, "reacquired": True}
+        with mock.patch.object(C.random, "choice", side_effect=lambda s: s[0]):
+            _, line = C._animal_reaction_frame_and_line(animal)
+        self.assertIn("Max", line)
+        self.assertNotIn("back", line.lower())
+
+    def test_confirmed_return_drops_every_hedge(self):
+        C._animal_confirmed_pet["dog"] = "Max"
+        animal = {"species": "dog", "furred": True, "kind": "return",
+                  "return_count": 1}
+        with mock.patch.object(C.random, "choice", side_effect=lambda s: s[0]):
+            _, line = C._animal_reaction_frame_and_line(animal)
+        self.assertIn("Max", line)
+        for hedge in ("otherwise", "whoever", "probably"):
+            self.assertNotIn(hedge, line.lower())
+
+    def test_unconfirmed_hedge_speaks_to_the_owner(self):
+        C._animal_guessed_pet["dog"] = ("Bret", "Max", ())
+        animal = {"species": "dog", "furred": True, "kind": "return",
+                  "return_count": 1}
+        with mock.patch.object(C.random, "choice", side_effect=lambda s: s[0]):
+            _, line = C._animal_reaction_frame_and_line(animal)
+        self.assertIn("you tell me otherwise", line)
+        self.assertNotIn("Bret tells", line)
+
+    # ── the answer capture ──
+    def test_affirmative_answer_confirms_the_guess(self):
+        C._animal_guessed_pet["dog"] = ("Bret", "Max", ("Toby",))
+        C.note_pet_guess_answer("Yeah, it's Max.")
+        self.assertEqual(C._animal_confirmed_pet.get("dog"), "Max")
+
+    def test_bare_yes_confirms_too(self):
+        C._animal_guessed_pet["dog"] = ("Bret", "Max", ())
+        C.note_pet_guess_answer("Yep.")
+        self.assertEqual(C._animal_confirmed_pet.get("dog"), "Max")
+
+    def test_correction_confirms_the_sibling(self):
+        C._animal_guessed_pet["dog"] = ("Bret", "Max", ("Toby",))
+        C.note_pet_guess_answer("No, that's Toby.")
+        self.assertEqual(C._animal_confirmed_pet.get("dog"), "Toby")
+
+    def test_plain_denial_drops_the_guess(self):
+        C._animal_guessed_pet["dog"] = ("Bret", "Max", ())
+        C.note_pet_guess_answer("No, that's not him.")
+        self.assertNotIn("dog", C._animal_confirmed_pet)
+        self.assertNotIn("dog", C._animal_guessed_pet)

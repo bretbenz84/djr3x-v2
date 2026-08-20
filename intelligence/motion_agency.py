@@ -1810,15 +1810,22 @@ def _clear_idle_wander(reason: str = "") -> None:
 
 
 def _step_idle_wander_pending(now: float) -> bool:
-    """Advance an in-flight wander pair. True = this lane owns the tick."""
+    """Advance an in-flight wander sequence (a sway pair or a meander chain).
+    True = this lane owns the tick."""
     pending = _state.get("wander_pending")
     if pending is None:
         return False
     if (now - float(pending.get("at") or 0.0)) > _num(
         "MOTION_IDLE_WANDER_PENDING_TTL_SECS", 12.0
     ):
-        _clear_idle_wander("pair timed out")
+        _clear_idle_wander("step timed out")
         return False
+    steps = pending.get("steps") or []
+    idx = int(pending.get("idx") or 0)
+    if idx >= len(steps):
+        _clear_idle_wander("no steps left")
+        return False
+    step = steps[idx]
     try:
         verdict = motion.done_result(int(pending["seq"]))
     except Exception:
@@ -1827,10 +1834,11 @@ def _step_idle_wander_pending(now: float) -> bool:
     if verdict is None:
         return True                        # maneuver still executing
     if verdict != "completed":
-        # The out-leg died (blocked/aborted). Never chase it with the inverse —
-        # the residual offset is at most one wander amplitude. An aborted TURN is
-        # the same scrubbed-tyres signal the realign traction detector reads.
-        if pending.get("kind") == "turn" and verdict == "aborted":
+        # The leg died (blocked/aborted). Never chase it with the rest of the
+        # chain — the residual offset is at most one wander amplitude. An
+        # aborted TURN is the same scrubbed-tyres signal the realign traction
+        # detector reads.
+        if step.get("op") == "turn" and verdict == "aborted":
             _state["traction_fails"] = int(_state.get("traction_fails") or 0) + 1
             if _state["traction_fails"] >= int(_num("MOTION_TRACTION_FAIL_STREAK", 2)):
                 secs = _num("MOTION_TRACTION_STANDDOWN_SECS", 300.0)
@@ -1841,26 +1849,39 @@ def _step_idle_wander_pending(now: float) -> bool:
                     "commands still work.", _state["traction_fails"], secs,
                 )
                 _emit_traction_notice()
-        _clear_idle_wander("out-leg ended %s" % verdict)
+        _clear_idle_wander("leg ended %s" % verdict)
         return True
-    if pending.get("phase") == "out":
-        if now < float(pending.get("dwell_until") or 0.0):
-            return True                    # settle at the shifted pose a beat
-        if pending.get("kind") == "turn":
-            seq = motion_controller.turn(-float(pending["amount"]),
-                                         rate=float(pending["rate"]))
-        else:
-            seq = motion_controller.move(-float(pending["amount"]),
-                                         speed=float(pending["rate"]))
-        if seq is None:
-            _clear_idle_wander("inverse refused")
-            return False
-        pending.update(seq=int(seq), phase="back", at=now)
+    if step.get("op") == "turn":
+        _state["traction_fails"] = 0       # the wheels bit
+    if idx + 1 >= len(steps):
+        _clear_idle_wander()               # sequence complete
         return True
-    # Back-leg completed — the pair is closed, pose restored.
-    if pending.get("kind") == "turn":
-        _state["traction_fails"] = 0       # the wheels bit both ways
-    _clear_idle_wander()
+    if now < float(pending.get("dwell_until") or 0.0):
+        return True                        # settle at this pose a beat
+    nxt = steps[idx + 1]
+    if nxt.get("op") == "move":
+        # Re-gate the NEXT leg on live clearance — the chain was planned at
+        # start, the room may have changed (someone stepped in, he drifted
+        # toward the couch). The firmware reflex still guards the drive itself.
+        clear = _wander_clearances()
+        need = (_num("MOTION_STOP_ZONE_M", 0.15) + abs(float(nxt["amount"]))
+                + _num("MOTION_IDLE_WANDER_MOVE_MARGIN_M", 0.30))
+        axis = "front" if float(nxt["amount"]) >= 0 else "rear"
+        if clear.get(axis) is None or clear[axis] < need:
+            _clear_idle_wander("chain leg lost its clearance")
+            return True
+        seq = motion_controller.move(float(nxt["amount"]), speed=float(nxt["pace"]))
+    else:
+        seq = motion_controller.turn(float(nxt["amount"]), rate=float(nxt["pace"]))
+    if seq is None:
+        _clear_idle_wander("next leg refused")
+        return False
+    pending.update(
+        idx=idx + 1, seq=int(seq), at=now,
+        dwell_until=now + random.uniform(
+            _num("MOTION_IDLE_WANDER_DWELL_MIN_SECS", 0.4),
+            _num("MOTION_IDLE_WANDER_DWELL_MAX_SECS", 1.4)),
+    )
     return True
 
 
@@ -1906,9 +1927,11 @@ def _maybe_idle_wander(profile, now: float) -> bool:
     margin = _num("MOTION_IDLE_WANDER_MOVE_MARGIN_M", 0.30)
     max_move = _num("MOTION_IDLE_WANDER_MOVE_MAX_M", 0.15)
     side_clear = _num("MOTION_IDLE_WANDER_TURN_SIDE_CLEAR_M", 0.35)
+    chain_move_max = _num("MOTION_IDLE_WANDER_CHAIN_MOVE_MAX_M", 0.30)
+    turn_ok = (clear.get("left") is not None and clear.get("right") is not None
+               and min(clear["left"], clear["right"]) >= side_clear)
     options = []
-    if (clear.get("left") is not None and clear.get("right") is not None
-            and min(clear["left"], clear["right"]) >= side_clear):
+    if turn_ok:
         options.append("turn")
     if (clear.get("front") is not None
             and clear["front"] >= stop_zone + max_move + margin):
@@ -1916,61 +1939,96 @@ def _maybe_idle_wander(profile, now: float) -> bool:
     if (clear.get("rear") is not None
             and clear["rear"] >= stop_zone + max_move + margin):
         options.append("shuffle_back")
+    if (turn_ok and clear.get("front") is not None
+            and clear["front"] >= stop_zone + chain_move_max + margin):
+        # A meander needs room to swing AND room ahead for its move legs.
+        options.append("meander")
     if not options:
         return False
     kind = random.choice(options)
     amp_scale = 0.5 + 0.5 * roominess      # tighter room = smaller shift
+    speed_lo = _num("MOTION_IDLE_WANDER_SPEED_MIN_MS", 0.04)
+    speed_hi = _num("MOTION_IDLE_WANDER_SPEED_MAX_MS", 0.09)
+    rate_lo = _num("MOTION_IDLE_WANDER_TURN_RATE_MIN_DEG_S", 10.0)
+    rate_hi = _num("MOTION_IDLE_WANDER_TURN_RATE_MAX_DEG_S", 22.0)
+
     if kind == "turn":
+        # Sway pair (out + inverse): heading is what every bearing in the other
+        # lanes relies on, and a small sway-and-return reads natural.
         deg = random.uniform(_num("MOTION_IDLE_WANDER_TURN_MIN_DEG", 4.0),
                              _num("MOTION_IDLE_WANDER_TURN_MAX_DEG", 10.0)) * amp_scale
         deg *= random.choice((-1.0, 1.0))
-        rate = random.uniform(_num("MOTION_IDLE_WANDER_TURN_RATE_MIN_DEG_S", 10.0),
-                              _num("MOTION_IDLE_WANDER_TURN_RATE_MAX_DEG_S", 22.0))
-        seq = motion_controller.turn(deg, rate=rate)
-        amount, pace = deg, rate
-    else:
-        dist = random.uniform(_num("MOTION_IDLE_WANDER_MOVE_MIN_M", 0.05),
-                              max_move) * amp_scale
-        if kind == "shuffle_back":
-            dist = -dist
-        pace = random.uniform(_num("MOTION_IDLE_WANDER_SPEED_MIN_MS", 0.04),
-                              _num("MOTION_IDLE_WANDER_SPEED_MAX_MS", 0.09))
-        seq = motion_controller.move(dist, speed=pace)
-        amount = dist
-    if seq is None:
-        return False
-    if kind == "turn":
-        # Turns stay PAIRED (out + inverse): heading is what every bearing in
-        # the other lanes relies on, and a small sway-and-return reads natural.
-        _state["wander_pending"] = {
-            "kind": "turn",
-            "seq": int(seq), "amount": float(amount), "rate": float(pace),
-            "phase": "out", "at": now,
-            "dwell_until": now + random.uniform(
-                _num("MOTION_IDLE_WANDER_DWELL_MIN_SECS", 0.4),
-                _num("MOTION_IDLE_WANDER_DWELL_MAX_SECS", 1.4)),
-        }
-        _state["wander_next_at"] = now + random.uniform(
-            _num("MOTION_IDLE_WANDER_COOLDOWN_MIN_SECS", 25.0),
-            _num("MOTION_IDLE_WANDER_COOLDOWN_MAX_SECS", 70.0))
-        _log.info(
-            "[motion_agency] idle wander: turn %+.1f deg @ %.0f deg/s "
-            "(roominess %.2f) — paired, ToF-gated", amount, pace, roominess,
-        )
+        rate = random.uniform(rate_lo, rate_hi)
+        steps = [{"op": "turn", "amount": deg, "pace": rate},
+                 {"op": "turn", "amount": -deg, "pace": rate}]
+        cooldown = (_num("MOTION_IDLE_WANDER_COOLDOWN_MIN_SECS", 25.0),
+                    _num("MOTION_IDLE_WANDER_COOLDOWN_MAX_SECS", 70.0))
+        label = "sway %+.1f deg @ %.0f deg/s" % (deg, rate)
+    elif kind == "meander":
+        # A sustained little walk (owner 2026-08-19: "it would be cool if the
+        # idle motion chained — turns left 5 degrees, moves forward 1 foot,
+        # turns right 7 degrees"). Turn signs ALTERNATE so net heading stays
+        # within one leg's swing; every move leg is re-gated on live clearance
+        # right before it fires (the chain was planned in a room that may have
+        # changed by leg three).
+        steps = []
+        sign = random.choice((-1.0, 1.0))
+        legs = random.randint(int(_num("MOTION_IDLE_WANDER_CHAIN_LEGS_MIN", 3)),
+                              int(_num("MOTION_IDLE_WANDER_CHAIN_LEGS_MAX", 6)))
+        for i in range(legs):
+            if i % 2 == 0:
+                deg = random.uniform(
+                    _num("MOTION_IDLE_WANDER_TURN_MIN_DEG", 4.0),
+                    _num("MOTION_IDLE_WANDER_CHAIN_TURN_MAX_DEG", 12.0)) * amp_scale * sign
+                sign = -sign
+                steps.append({"op": "turn", "amount": deg,
+                              "pace": random.uniform(rate_lo, rate_hi)})
+            else:
+                dist = random.uniform(
+                    _num("MOTION_IDLE_WANDER_CHAIN_MOVE_MIN_M", 0.10),
+                    chain_move_max) * amp_scale
+                steps.append({"op": "move", "amount": dist,
+                              "pace": random.uniform(speed_lo, speed_hi)})
+        cooldown = (_num("MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MIN_SECS", 45.0),
+                    _num("MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MAX_SECS", 120.0))
+        label = "meander, %d legs" % legs
     else:
         # Shuffles are ONE-WAY drifts (owner 2026-08-19: "rolling forward then
         # straight back looks like it was for no reason"). He settles in the new
         # spot, and the longer shuffle cooldown makes the stay read deliberate.
         # Net drift is a slow unbiased walk, re-gated on clearance every leg —
         # translation doesn't touch heading, so no stored bearing goes stale.
-        _state["wander_next_at"] = now + random.uniform(
-            _num("MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MIN_SECS", 45.0),
-            _num("MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MAX_SECS", 120.0))
-        _log.info(
-            "[motion_agency] idle wander: %s %+.2f m @ %.2f m/s "
-            "(roominess %.2f) — one-way drift, ToF-gated",
-            kind, amount, pace, roominess,
-        )
+        dist = random.uniform(_num("MOTION_IDLE_WANDER_MOVE_MIN_M", 0.05),
+                              max_move) * amp_scale
+        if kind == "shuffle_back":
+            dist = -dist
+        steps = [{"op": "move", "amount": dist,
+                  "pace": random.uniform(speed_lo, speed_hi)}]
+        cooldown = (_num("MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MIN_SECS", 45.0),
+                    _num("MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MAX_SECS", 120.0))
+        label = "%s %+.2f m @ %.2f m/s" % (kind, dist, steps[0]["pace"])
+
+    first = steps[0]
+    if first["op"] == "turn":
+        seq = motion_controller.turn(float(first["amount"]), rate=float(first["pace"]))
+    else:
+        seq = motion_controller.move(float(first["amount"]), speed=float(first["pace"]))
+    if seq is None:
+        return False
+    if len(steps) > 1:
+        # Multi-leg sequences ride the pending stepper; a lone drift needs no
+        # bookkeeping (nothing to chase, nothing to invert).
+        _state["wander_pending"] = {
+            "steps": steps, "idx": 0, "seq": int(seq), "at": now,
+            "dwell_until": now + random.uniform(
+                _num("MOTION_IDLE_WANDER_DWELL_MIN_SECS", 0.4),
+                _num("MOTION_IDLE_WANDER_DWELL_MAX_SECS", 1.4)),
+        }
+    _state["wander_next_at"] = now + random.uniform(*cooldown)
+    _log.info(
+        "[motion_agency] idle wander: %s (roominess %.2f) — ToF-gated",
+        label, roominess,
+    )
     return True
 
 

@@ -26252,6 +26252,23 @@ def _handle_speech_segment(
                     "answer_text": text,
                 }
 
+            # A pet-guess answer settles the animal's name for the session:
+            # "Yeah, it's Max" answering "Bret, is that Max?" must retire every
+            # later hedge ("Still calling it Max until Bret tells me otherwise"
+            # was spoken TO Bret two minutes AFTER he confirmed — field
+            # 2026-08-19 22:25).
+            if (
+                dialogue_decision.label == "answer_to_rex"
+                and dialogue_decision.frame is not None
+                and getattr(dialogue_decision.frame, "source", "")
+                == "world.animal_arrival"
+            ):
+                try:
+                    from intelligence import consciousness as _consc
+                    _consc.note_pet_guess_answer(text)
+                except Exception:
+                    pass
+
             # Explicit drive-base motion is a PHYSICAL command, not an answer to Rex — run
             # it even when the dialogue gate would skip the router, else commands spoken
             # right after Rex speaks get swallowed as conversation (live-logged 2026-06-23:

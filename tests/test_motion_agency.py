@@ -2816,3 +2816,71 @@ class ComfortRealignTest(unittest.TestCase):
         self._arm_realign()
         self._tick(2)
         self.turn.assert_called_once()
+
+
+class MeanderChainTest(IdleWanderTest.__bases__[0]):
+    """Meander (owner 2026-08-19: "it would be cool if the idle motion chained
+    — turns left 5 degrees, moves forward 1 foot, turns right 7 degrees")."""
+
+    setUp = IdleWanderTest.setUp
+    tearDown = IdleWanderTest.tearDown
+    _tick = IdleWanderTest._tick
+    ROOMY = IdleWanderTest.ROOMY
+
+    def _go_meander(self):
+        return [
+            mock.patch.object(MA.random, "choice",
+                              side_effect=lambda seq: ("meander" if "meander" in seq
+                                                       else seq[0])),
+            mock.patch.object(MA.random, "randint", side_effect=lambda a, b: 4),
+        ]
+
+    def _advance(self):
+        self._done["v"] = "completed"
+        MA._state["wander_pending"]["dwell_until"] = 0.0
+        self._tick()
+
+    def test_meander_alternates_turn_move_turn_move(self):
+        with self._go_meander()[0], self._go_meander()[1]:
+            self._tick()                       # leg 1: turn (sign -1 first)
+            self.turn.assert_called_once()
+            self.assertAlmostEqual(self.turn.call_args[0][0], -8.0)
+            self.assertIsNotNone(MA._state["wander_pending"])
+            self._advance()                    # leg 2: move forward
+            self.move.assert_called_once()
+            self.assertAlmostEqual(self.move.call_args[0][0], 0.20)
+            self._advance()                    # leg 3: turn back the other way
+            self.assertEqual(self.turn.call_count, 2)
+            self.assertAlmostEqual(self.turn.call_args[0][0], 8.0)
+            self._advance()                    # leg 4: move forward
+            self.assertEqual(self.move.call_count, 2)
+            self._advance()                    # chain complete
+        self.assertIsNone(MA._state["wander_pending"])
+
+    def test_move_leg_regates_on_live_clearance(self):
+        with self._go_meander()[0], self._go_meander()[1]:
+            self._tick()                       # leg 1: turn
+            self.turn.assert_called_once()
+            self._tof.update(fl=300, fr=300)   # someone stepped in front
+            self._advance()                    # move leg must NOT fire
+        self.move.assert_not_called()
+        self.assertIsNone(MA._state["wander_pending"])
+
+    def test_meander_needs_front_room_to_be_offered(self):
+        # Sides clear but front tight: meander must not be in the options.
+        self._tof.update(fl=600, fr=600)       # < stop+chain_move+margin
+        with self._go_meander()[0], self._go_meander()[1]:
+            self._tick()
+        # choice fell back to seq[0] ("turn") — a sway, not a meander.
+        self.turn.assert_called_once()
+        pending = MA._state["wander_pending"]
+        self.assertEqual(len(pending["steps"]), 2)   # sway pair, not a chain
+
+    def test_aborted_chain_turn_feeds_traction_and_stops_the_chain(self):
+        with self._go_meander()[0], self._go_meander()[1]:
+            self._tick()
+            self._done["v"] = "aborted"
+            self._tick()
+        self.assertIsNone(MA._state["wander_pending"])
+        self.assertEqual(MA._state["traction_fails"], 1)
+        self.move.assert_not_called()

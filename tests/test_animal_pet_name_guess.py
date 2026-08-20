@@ -75,7 +75,9 @@ class GuessLineTest(_GuessCase):
     def test_same_species_single_pet(self):
         with self._owners((1, "Bret Benziger")), self._pets({1: [{"name": "Max", "species": "dog", "confidence": 0.6}]}):
             self.assertEqual(C._pet_name_guess_line("dog"), "Bret, is that Max?")
-        self.assertEqual(C._animal_guessed_pet["dog"], ("Bret", "Max"))
+        # (owner_first, pet_name, alt_names) — alts feed the answer capture
+        # ("no, that's Toby" confirms the sibling).
+        self.assertEqual(C._animal_guessed_pet["dog"], ("Bret", "Max", ()))
 
     def test_two_pets_same_species(self):
         table = {1: [{"name": "Max", "species": "dog", "confidence": 0.6},

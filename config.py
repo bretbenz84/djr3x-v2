@@ -6121,11 +6121,37 @@ ANIMAL_PET_GUESS_MISMATCH_LINES = (
     "{first}, is that {name}? My classifier says {species}, but it's been wrong before.",
     "Small furry lifeform... {first}, that's {name}, right? Ignore the part of me that said {species}.",
 )
+# Unconfirmed guess: light hedge, SECOND person — the guess only fires when the
+# owner was just here, so {first} is the person being spoken TO (field 2026-08-19:
+# "Still calling it Max until Bret tells me otherwise", said to Bret's face).
 ANIMAL_PET_RETURN_LINES = (
-    "The furry lifeform is back. Still calling it {name} until {first} tells me otherwise.",
+    "The furry lifeform is back. Still calling it {name} until you tell me otherwise, {first}.",
     "{name} — or whoever that is — has returned. Patrol route confirmed.",
     "Re-entry detected. Hi again, {name}. Probably.",
 )
+# The owner CONFIRMED the name ("Yeah, it's Max") — every hedge is retired.
+ANIMAL_PET_CONFIRMED_RETURN_LINES = (
+    "{name} is back. The patrol continues.",
+    "Re-entry logged: {name}. Right on schedule.",
+    "{name} has returned. I choose to feel honored.",
+)
+# Rex looked away (his own base moved) and re-noticed an animal that never left —
+# a re-sight, not a return (owner 2026-08-19: "an animal coming back implies he
+# left. That's not what happened").
+ANIMAL_RESIGHT_LINES_NAMED = (
+    "Oh — there's {name} again.",
+    "Oh hey, {name}'s still here. Holding position like a pro.",
+    "And {name} remains on station. Excellent.",
+)
+ANIMAL_RESIGHT_LINES_GENERIC = (
+    "Oh — the furry one's still here. Carry on.",
+    "Still with us, furry lifeform. Good.",
+    "Ah. The creature persists. Respect.",
+)
+# Base displacement/rotation between an animal's last sighting and its
+# re-sighting that counts as "Rex moved, the animal didn't".
+ANIMAL_REACQUIRE_MOVE_M = 0.10
+ANIMAL_REACQUIRE_TURN_DEG = 8.0
 FURRY_COMPANION_ANIMAL_SPECIES = {
     "dog",
     "puppy",
@@ -8823,6 +8849,16 @@ MOTION_IDLE_WANDER_PENDING_TTL_SECS = 12.0 # drop a wedged pair, never chase it
 # cooldown, so the stay reads deliberate rather than accidental.
 MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MIN_SECS = 45.0
 MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MAX_SECS = 120.0
+# MEANDER: a sustained little walk (owner 2026-08-19: "it would be cool if the
+# idle motion chained — turns left 5 degrees, moves forward 1 foot, turns right
+# 7 degrees"). 3-6 alternating turn/move legs; turn signs alternate so net
+# heading stays within one leg's swing, and every move leg is re-gated on live
+# clearance right before it fires. Shares the long shuffle cooldown.
+MOTION_IDLE_WANDER_CHAIN_LEGS_MIN = 3
+MOTION_IDLE_WANDER_CHAIN_LEGS_MAX = 6
+MOTION_IDLE_WANDER_CHAIN_TURN_MAX_DEG = 12.0
+MOTION_IDLE_WANDER_CHAIN_MOVE_MIN_M = 0.10
+MOTION_IDLE_WANDER_CHAIN_MOVE_MAX_M = 0.30
 
 # ── Conversation edge-in (owner spec 2026-08-19) ────────────────────────────────
 # "If he's having a conversation, he should try to get closer." The public-zone

@@ -9,6 +9,7 @@ and continuous neck-servo face tracking.
 
 import json
 import logging
+import math
 import random
 import re
 import sys
@@ -2219,6 +2220,35 @@ def _furry_sibling_pending(species: str) -> bool:
     )
 
 
+def _base_pose() -> "Optional[tuple]":
+    """(x, y, theta) from the drive base's odometry, or None without a base.
+    The animal presence ledger stamps this at each sighting so a later gap can
+    tell 'the animal left' from 'Rex drove/turned away and looked back'."""
+    try:
+        from hardware import motion
+        tele = motion.telemetry()
+        odom = tele.get("odom") if isinstance(tele, dict) else None
+        if isinstance(odom, dict) and odom.get("x") is not None:
+            return (float(odom.get("x") or 0.0), float(odom.get("y") or 0.0),
+                    float(odom.get("theta") or 0.0))
+    except Exception:
+        pass
+    return None
+
+
+def _base_pose_moved(a: "Optional[tuple]", b: "Optional[tuple]") -> bool:
+    """True when the base translated or rotated meaningfully between two poses.
+    Unknown poses (no base, telemetry gap) fail False — normal return semantics."""
+    if not a or not b:
+        return False
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    dtheta = abs((b[2] - a[2] + math.pi) % (2.0 * math.pi) - math.pi)
+    return ((dx * dx + dy * dy) ** 0.5
+            > float(getattr(config, "ANIMAL_REACQUIRE_MOVE_M", 0.10))
+            or math.degrees(dtheta)
+            > float(getattr(config, "ANIMAL_REACQUIRE_TURN_DEG", 8.0)))
+
+
 def _stage_animal_remark(species: str, animal: dict, *, kind: str,
                          return_count: int, now: float) -> None:
     """Queue one pending animal remark for this species (arrival or return joke)."""
@@ -2292,6 +2322,7 @@ def _stage_animal_arrivals(snapshot: dict) -> None:
                 "present": True, "first_seen_at": now, "last_seen_at": now,
                 "departed_at": None, "return_count": 0,
                 "remarks_spoken": 0, "last_remark_at": 0.0,
+                "pose_at_seen": _base_pose(),
             }
             if _animal_is_furry_companion(species, animal) and (
                 _furry_sibling_spoke_recently(species, now)
@@ -2305,14 +2336,25 @@ def _stage_animal_arrivals(snapshot: dict) -> None:
             continue
         rec["last_seen_at"] = now
         if rec.get("present"):
+            rec["pose_at_seen"] = _base_pose()
             continue  # still here (or frame flicker) — nothing new to say
-        # A real departure followed by a sighting: the return bit.
+        # A sighting after an absence — but WHOSE absence? If the BASE moved
+        # between the last sighting and now, Rex looked away; the animal never
+        # left (field 2026-08-19 22:25: he wandered, oriented back to the couch,
+        # and greeted the cat that hadn't moved with "the furry lifeform is
+        # BACK"). A re-acquire is a re-notice, not a return: no round-trip
+        # counted, and the remark says "still here", not "welcome back".
+        reacquired = _base_pose_moved(rec.get("pose_at_seen"), _base_pose())
         rec["present"] = True
-        rec["return_count"] = int(rec.get("return_count") or 0) + 1
+        rec["pose_at_seen"] = _base_pose()
+        if not reacquired:
+            rec["return_count"] = int(rec.get("return_count") or 0) + 1
         if int(rec.get("remarks_spoken") or 0) >= cap:
             continue  # bit is spent for this run — welcome back silently
         if (now - float(rec.get("last_remark_at") or 0.0)) < min_gap:
             continue  # too soon after the last remark — let it breathe
+        if reacquired and not _animal_is_furry_companion(species, animal):
+            continue  # a re-noticed bird is not a remark
         if _animal_is_furry_companion(species, animal) and (
             _furry_sibling_spoke_recently(species, now)
             or _furry_sibling_pending(species)
@@ -2320,6 +2362,9 @@ def _stage_animal_arrivals(snapshot: dict) -> None:
             _log.info("consciousness: furry return muted species=%s "
                       "(sibling furry species owns the remark)", species)
             continue
+        if reacquired:
+            animal = dict(animal)
+            animal["reacquired"] = True
         _stage_animal_remark(species, animal, kind="return",
                              return_count=rec["return_count"], now=now)
 
@@ -2369,8 +2414,50 @@ _ANIMAL_RETURN_LINES_GENERIC = (
 
 
 # Species the arrival remark guessed a NAME for this run ({species: (owner_first,
-# pet_name)}), so a return can keep calling it that instead of "the furry lifeform".
-_animal_guessed_pet: dict[str, tuple[str, str]] = {}
+# pet_name, alt_names)}), so a return can keep calling it that instead of "the
+# furry lifeform".
+_animal_guessed_pet: dict[str, tuple] = {}
+# Names the HUMAN confirmed ("Yeah, it's Max" answering the guess) — once here,
+# remarks drop every hedge. Field 2026-08-19 22:25: two minutes after the owner
+# confirmed Max, a return still said "Still calling it Max until Bret tells me
+# otherwise" — hedged AND third-person, to Bret's face.
+_animal_confirmed_pet: dict[str, str] = {}
+
+_PET_ANSWER_NEGATIVE_RE = re.compile(r"\b(no|nope|nah|not|isn'?t|ain'?t|wrong)\b")
+_PET_ANSWER_AFFIRMATIVE_RE = re.compile(
+    r"\b(yes|yeah|yep|yup|correct|sure is|it is|that'?s (him|her|it|right|the one))\b")
+
+
+def note_pet_guess_answer(text: str) -> None:
+    """The human just answered the pet-guess question ("Bret, is that Max?").
+    Confirm the name they affirmed (or the sibling name they corrected to), or
+    drop the guess on a plain denial — so every later remark says "there's Max
+    again" instead of re-hedging a name the owner already confirmed."""
+    cleaned = " ".join(str(text or "").strip().lower().split())
+    if not cleaned or not _animal_guessed_pet:
+        return
+    negative = bool(_PET_ANSWER_NEGATIVE_RE.search(cleaned))
+    affirmative = bool(_PET_ANSWER_AFFIRMATIVE_RE.search(cleaned))
+    for species, guess in list(_animal_guessed_pet.items()):
+        name = str(guess[1])
+        alts = [str(a) for a in (guess[2] if len(guess) > 2 else ())]
+        named = next(
+            (cand for cand in [name] + alts
+             if cand and re.search(r"\b%s\b" % re.escape(cand.lower()), cleaned)),
+            None,
+        )
+        if named is not None and not (negative and named.lower() == name.lower()):
+            # They said a pet's name without denying it — "Yeah, it's Max" or
+            # the correction "no, that's Toby".
+            _animal_confirmed_pet[species] = named
+            _log.info("consciousness: pet name CONFIRMED species=%s name=%s", species, named)
+        elif affirmative and not negative:
+            _animal_confirmed_pet[species] = name
+            _log.info("consciousness: pet name CONFIRMED species=%s name=%s", species, name)
+        elif negative:
+            _animal_guessed_pet.pop(species, None)
+            _log.info("consciousness: pet guess DENIED species=%s (was %s) — "
+                      "back to generic lines", species, name)
 
 
 def _pet_owner_candidates(window_secs: float) -> list[tuple[int, str]]:
@@ -2454,7 +2541,7 @@ def _pet_name_guess_line(species: str) -> Optional[str]:
             line = random.choice(tuple(pool)).format(**fmt)
         except Exception:
             line = f"Wait — {first}, is that {names[0]}?"
-        _animal_guessed_pet[species_key] = (first, names[0])
+        _animal_guessed_pet[species_key] = (first, names[0], tuple(names[1:3]))
         _log.info("consciousness: animal remark guesses pet name species=%s owner=%s "
                   "pets=%s same_species=%s", species_key, owner, names, bool(same))
         try:
@@ -2491,7 +2578,33 @@ def _animal_reaction_frame_and_line(animal: dict):
             trigger=f"animal_return:{species}",
         )
         guessed = _animal_guessed_pet.get(species)
-        if guessed and _animal_is_furry_companion(species, animal):
+        confirmed = _animal_confirmed_pet.get(species)
+        furry = _animal_is_furry_companion(species, animal)
+        if animal.get("reacquired"):
+            # Rex looked away and back — the animal never left. "Is back" would
+            # narrate a departure that didn't happen (owner 2026-08-19: "an
+            # animal coming back implies he left. That's not what happened").
+            name = confirmed or (guessed[1] if guessed else None)
+            if name:
+                named = tuple(getattr(config, "ANIMAL_RESIGHT_LINES_NAMED", ()) or ())
+                if named:
+                    try:
+                        return frame, random.choice(named).format(name=name)
+                    except Exception:
+                        pass
+            generic = tuple(getattr(config, "ANIMAL_RESIGHT_LINES_GENERIC", ()) or ())
+            if generic:
+                return frame, random.choice(generic)
+            return frame, random.choice(pool)
+        if confirmed and furry:
+            # The owner already told him who it is — no hedging, ever again.
+            sure_pool = tuple(getattr(config, "ANIMAL_PET_CONFIRMED_RETURN_LINES", ()) or ())
+            if sure_pool:
+                try:
+                    return frame, random.choice(sure_pool).format(name=confirmed)
+                except Exception:
+                    pass
+        if guessed and furry:
             named_pool = tuple(getattr(config, "ANIMAL_PET_RETURN_LINES", ()) or ())
             if named_pool:
                 try:
@@ -13983,6 +14096,7 @@ def start() -> None:
     _directed_look_reported_at = 0.0
     _animal_presence.clear()
     _animal_guessed_pet.clear()
+    _animal_confirmed_pet.clear()
     _update_unknown_streak(False)   # reset unknown-face persistence streak
     _last_startle_sound_reaction_at = 0.0
     _last_notable_sound_reaction_at = 0.0
@@ -14136,6 +14250,7 @@ def stop() -> None:
     _directed_look_reported_at = 0.0
     _animal_presence.clear()
     _animal_guessed_pet.clear()
+    _animal_confirmed_pet.clear()
     _last_startle_sound_reaction_at = 0.0
     _last_notable_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()
