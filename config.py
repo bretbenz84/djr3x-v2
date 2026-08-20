@@ -8749,6 +8749,22 @@ MOTION_COME_RADAR_CLUSTER_DEG = 15.0     # returns within this bearing are one b
 MOTION_COME_RADAR_VISITED_DEG = 25.0     # a body this close to a rejected spot IS that spot
 MOTION_COME_RADAR_FACING_DEG = 12.0      # a body already this close to dead ahead needs no turn
 MOTION_COME_RADAR_WAIT_SECS = 3.0        # max wait for a full post-settle sample before sweeping
+
+# ── Radar orient (owner spec 2026-08-19) ────────────────────────────────────────
+# When the camera sees NOBODY but the ring shows a persistent body, face it —
+# neck-first (a glance the camera can act on; face tracking takes over the moment
+# a face appears), base turn only when the body is beyond the neck's reach. Runs
+# in the social lane, so it inherits the mid-sentence freeze, user hold/steering
+# stand-down, no-drive room rule, and idle-base requirement for free.
+MOTION_RADAR_ORIENT_ENABLED = True
+MOTION_RADAR_ORIENT_WINDOW_SECS = 2.5      # fresh-frame sample the decision reads
+MOTION_RADAR_ORIENT_CONFIRM_TICKS = 3      # consecutive no-face ticks with a body
+MOTION_RADAR_ORIENT_MIN_CONFIDENCE = 0.30  # body confidence floor
+MOTION_RADAR_ORIENT_MIN_BEARING_DEG = 20.0 # closer than this = already facing them
+MOTION_RADAR_ORIENT_NECK_MAX_DEG = 40.0    # within the neck's reach -> glance only
+MOTION_RADAR_ORIENT_NECK_HOLD_SECS = 6.0   # directed-gaze hold on the glance
+MOTION_RADAR_ORIENT_QUIET_SECS = 3.0       # no own-maneuver window before deciding
+MOTION_RADAR_ORIENT_COOLDOWN_SECS = 30.0   # between orients
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
 # the body, and realign was rotating it straight back toward their face (field

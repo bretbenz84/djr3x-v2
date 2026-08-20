@@ -104,9 +104,11 @@ _log = logging.getLogger(__name__)
 _state = {
     "neck_hits": 0,
     "far_hits": 0,
+    "orient_hits": 0,        # consecutive nobody-on-camera ticks with a radar body
     "last_turn_at": 0.0,
     "last_approach_at": 0.0,
     "last_flinch_at": 0.0,
+    "orient_last_at": 0.0,   # radar-orient cooldown stamp
     "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
     "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
     "traction_fails": 0,     # consecutive realigns that produced no actual rotation
@@ -540,20 +542,26 @@ def _radar_mark_pending_visited(now: float) -> None:
               "" if len(visited) == 1 else "s")
 
 
-def _radar_bodies(now: float) -> "tuple[list[dict], bool]":
+def _radar_bodies(now: float, since: "float | None" = None,
+                  window: "float | None" = None) -> "tuple[list[dict], bool]":
     """Cluster the ring's post-settle frames into bodies in the current base
     frame. Returns (bodies, ready): ``ready`` False means the ring is delivering
     but the sample window since radar_since isn't full yet (caller may wait);
     an unavailable ring returns ([], True) so the caller falls straight through.
     Each body: {bearing_deg, range_m, confidence, hits, frames}, best first —
-    most persistent, then most confident, then least turning."""
+    most persistent, then most confident, then least turning.
+
+    Defaults serve the come-here search (post-turn settle stamp). ``since`` /
+    ``window`` let other callers (radar orient) sample their own window."""
     try:
         from hardware import radar
         if not (radar.connected() and radar.radar_ok()):
             return [], True
-        since = float(_requested_come.get("radar_since") or 0.0)
+        if since is None:
+            since = float(_requested_come.get("radar_since") or 0.0)
         sample = _num("MOTION_COME_RADAR_SAMPLE_SECS", 1.0)
-        window = sample + _num("MOTION_COME_RADAR_WAIT_SECS", 3.0) + 2.0
+        if window is None:
+            window = sample + _num("MOTION_COME_RADAR_WAIT_SECS", 3.0) + 2.0
         frames = radar.recent_targets(window_secs=window, since=since)
     except Exception as exc:
         _log.debug("radar read failed: %s", exc)
@@ -1376,6 +1384,105 @@ def _tracked_person(snapshot: dict,
         return None
 
 
+def _any_visible_face(snapshot: dict) -> bool:
+    """True when ANY face — known or unknown — is on camera right now."""
+    for person in snapshot.get("people") or []:
+        if not isinstance(person, dict):
+            continue
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        return True
+    return False
+
+
+def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
+    """ORIENT — face a radar body when the camera has nobody (owner spec
+    2026-08-19: "use radar to orient towards people if there are no people in
+    camera"). Neck-first, wheels last, same as everything else: a body within
+    the neck's reach gets a glance the camera can act on (face tracking takes
+    over the moment a face appears); only a body beyond the neck turns the
+    base. Requires the body to persist across frames (the _radar_bodies
+    min-frames rule) AND the no-face condition to hold for consecutive ticks,
+    so one dropped detection frame never spins him away from a conversation.
+    Returns True when it consumed the tick with an action."""
+    if _any_visible_face(snapshot):
+        _reset("orient_hits")
+        return False
+    cooldown = _num("MOTION_RADAR_ORIENT_COOLDOWN_SECS", 30.0)
+    if (now - float(_state.get("orient_last_at") or 0.0)) < cooldown:
+        return False
+    # Radar bearings smear while the base rotates — only decide from a stretch
+    # with no recent maneuver of ours.
+    quiet = _num("MOTION_RADAR_ORIENT_QUIET_SECS", 3.0)
+    busy_at = max(float(_state.get("last_turn_at") or 0.0),
+                  float(_state.get("last_approach_at") or 0.0),
+                  float(_state.get("last_flinch_at") or 0.0))
+    if (now - busy_at) < quiet:
+        return False
+    window = _num("MOTION_RADAR_ORIENT_WINDOW_SECS", 2.5)
+    bodies, ready = _radar_bodies(now, since=now - window, window=window)
+    if not ready or not bodies:
+        _reset("orient_hits")
+        return False
+    best = bodies[0]
+    bearing = float(best["bearing_deg"])
+    if float(best["confidence"]) < _num("MOTION_RADAR_ORIENT_MIN_CONFIDENCE", 0.30):
+        _reset("orient_hits")
+        return False
+    if abs(bearing) < _num("MOTION_RADAR_ORIENT_MIN_BEARING_DEG", 20.0):
+        _reset("orient_hits")
+        return False       # already roughly facing them — the camera's problem now
+    _state["orient_hits"] = int(_state.get("orient_hits") or 0) + 1
+    if _state["orient_hits"] < int(_num("MOTION_RADAR_ORIENT_CONFIRM_TICKS", 3)):
+        return False
+    _reset("orient_hits")
+
+    neck_reach = _num("MOTION_RADAR_ORIENT_NECK_MAX_DEG", 40.0)
+    if abs(bearing) <= neck_reach:
+        # The neck can cover it — glance, and let face tracking take over the
+        # moment a face lands in frame. Never fight another head owner.
+        if _wander_owns_neck():
+            return False
+        try:
+            from hardware import servos
+            if servos.speech_motion_active() or servos.listening_motion_active():
+                return False
+        except Exception:
+            pass
+        side = "left" if bearing > 0 else "right"   # radar + = left/CCW (REP-103)
+        frac = min(1.0, abs(bearing) / _num("MOTION_COME_NECK_HALF_SPAN_DEG", 45.0))
+        try:
+            from sequences import animations
+            from intelligence import consciousness
+            animations.travel_glance_pose(side, "level", fraction=frac)
+            consciousness.hold_directed_gaze(
+                side, secs=_num("MOTION_RADAR_ORIENT_NECK_HOLD_SECS", 6.0))
+        except Exception:
+            return False
+        _state["orient_last_at"] = now
+        _log.info(
+            "[motion_agency] radar orient: body at %+.0f° (%.1fm), nobody on "
+            "camera — neck glance %s", bearing, best["range_m"], side,
+        )
+        return True
+
+    # Beyond the neck: turn the base (a drive — traction rules apply).
+    if _traction_lost(now):
+        return False
+    max_deg = _num("MOTION_FACE_TURN_MAX_DEG", 60.0)
+    deg = max(-max_deg, min(max_deg, bearing))      # turn + = left/CCW, same frame
+    seq = motion_controller.turn(deg, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
+    if seq is not None:
+        _state["orient_last_at"] = now
+        _state["last_turn_at"] = now
+        _log.info(
+            "[motion_agency] radar orient: body at %+.0f° (%.1fm), nobody on "
+            "camera and beyond the neck — base turn %+.0f°",
+            bearing, best["range_m"], deg,
+        )
+    return True
+
+
 def _bearing_degrees_for(frac: float) -> float:
     """The signed correction (deg, + = left/CCW per the wire protocol) for an
     offset fraction, WITHOUT the minimum-turn floor — suitable as a `come`
@@ -1703,7 +1810,11 @@ def _step_inner(snapshot: dict, profile) -> None:
     person = _tracked_person(snapshot)
     if person is None:
         _reset("neck_hits", "far_hits")
+        # Nobody on camera — but the radar ring may know where they are.
+        if _flag("MOTION_RADAR_ORIENT_ENABLED", True):
+            _maybe_radar_orient(snapshot, now)
         return
+    _reset("orient_hits")
 
     frac = neck_offset_fraction()
 

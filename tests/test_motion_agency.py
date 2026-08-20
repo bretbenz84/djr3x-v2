@@ -1998,3 +1998,106 @@ class RadarFirstComeTest(unittest.TestCase):
             self._tick()
         self.assertEqual(self._turns(), [135.0])
         self.assertFalse(MA.requested_come_active())
+
+
+class RadarOrientTest(unittest.TestCase):
+    """ORIENT (owner spec 2026-08-19): face a persistent radar body when the
+    camera has nobody — neck glance within reach, base turn beyond it."""
+
+    BODY_FAR = {"bearing_deg": 120.0, "range_m": 2.5, "confidence": 0.6,
+                "hits": 5, "frames": 8}
+    BODY_NECK = {"bearing_deg": 30.0, "range_m": 2.0, "confidence": 0.6,
+                 "hits": 5, "frames": 8}
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, orient_hits=0, last_turn_at=0.0,
+                         last_approach_at=0.0, last_flinch_at=0.0,
+                         orient_last_at=0.0, user_motion_at=0.0,
+                         realign_pending_seq=None, traction_fails=0,
+                         no_traction_until=0.0, hold_at=None)
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "turn", return_value=7),
+            mock.patch("intelligence.battery_awareness.battery_critical",
+                       return_value=False),
+            mock.patch("sequences.animations.travel_glance_pose"),
+            mock.patch("intelligence.consciousness.hold_directed_gaze"),
+            mock.patch("hardware.servos.speech_motion_active", return_value=False),
+            mock.patch("hardware.servos.listening_motion_active", return_value=False),
+            mock.patch.object(MA, "_wander_owns_neck", return_value=False),
+        ]
+        (self.available, self.state, self.turn, self.battery, self.glance,
+         self.hold, _, _, _) = [p.start() for p in self._patches]
+
+    def tearDown(self):
+        MA.cancel_requested_come("test cleanup")
+        for p in self._patches:
+            p.stop()
+
+    def _tick(self, n=1, bodies=None, snapshot=None):
+        with mock.patch.object(MA, "_radar_bodies",
+                               return_value=(list(bodies or []), True)):
+            for _ in range(n):
+                MA.step(snapshot if snapshot is not None else {"people": []},
+                        _profile())
+
+    def test_persistent_body_beyond_neck_turns_the_base(self):
+        self._tick(3, bodies=[self.BODY_FAR])
+        self.turn.assert_called_once()
+        self.assertAlmostEqual(self.turn.call_args[0][0],
+                               config.MOTION_FACE_TURN_MAX_DEG)  # clamped
+
+    def test_body_within_neck_reach_glances_instead(self):
+        self._tick(3, bodies=[self.BODY_NECK])
+        self.turn.assert_not_called()
+        self.glance.assert_called_once()
+        self.assertEqual(self.glance.call_args[0][0], "left")   # radar + = left
+        self.hold.assert_called_once()
+
+    def test_two_ticks_do_not_act(self):
+        self._tick(2, bodies=[self.BODY_FAR])
+        self.turn.assert_not_called()
+        self.glance.assert_not_called()
+
+    def test_visible_face_suppresses_orient(self):
+        snap = {"people": [{"id": "person_1", "face_visible": True}]}
+        self._tick(3, bodies=[self.BODY_FAR], snapshot=snap)
+        self.turn.assert_not_called()
+        self.glance.assert_not_called()
+
+    def test_cooldown_blocks_back_to_back_orients(self):
+        self._tick(3, bodies=[self.BODY_FAR])
+        self.turn.assert_called_once()
+        self._tick(3, bodies=[self.BODY_FAR])
+        self.turn.assert_called_once()   # still just the one
+
+    def test_already_facing_does_nothing(self):
+        self._tick(3, bodies=[dict(self.BODY_FAR, bearing_deg=10.0)])
+        self.turn.assert_not_called()
+        self.glance.assert_not_called()
+
+    def test_low_confidence_body_is_ignored(self):
+        self._tick(3, bodies=[dict(self.BODY_FAR, confidence=0.2)])
+        self.turn.assert_not_called()
+
+    def test_no_drive_room_blocks_orient(self):
+        with mock.patch.object(MA, "no_drive_room", return_value=("den", "carpet")):
+            self._tick(3, bodies=[self.BODY_FAR])
+        self.turn.assert_not_called()
+        self.glance.assert_not_called()
+
+    def test_kill_switch(self):
+        with mock.patch.object(config, "MOTION_RADAR_ORIENT_ENABLED", False,
+                               create=True):
+            self._tick(3, bodies=[self.BODY_FAR])
+        self.turn.assert_not_called()
+
+    def test_traction_standdown_blocks_the_base_turn_not_the_glance(self):
+        MA._state["no_traction_until"] = time.monotonic() + 60.0
+        self._tick(3, bodies=[self.BODY_FAR])
+        self.turn.assert_not_called()
+        MA._state.update(orient_hits=0, orient_last_at=0.0)
+        self._tick(3, bodies=[self.BODY_NECK])
+        self.glance.assert_called_once()   # the neck is not a drive
