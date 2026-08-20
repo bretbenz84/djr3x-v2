@@ -9502,6 +9502,11 @@ OPEN_THREAD_MIN_AGE_HOURS = _env_float("OPEN_THREAD_MIN_AGE_HOURS", 6.0, min_val
 # surveillance or gibberish, and stale threads are also where old ASR poison
 # lives longest.
 OPEN_THREAD_MAX_AGE_DAYS = _env_float("OPEN_THREAD_MAX_AGE_DAYS", 5.0, min_value=0.1, max_value=365.0)
+# An episode open thread whose plan a follow-up already RESOLVED must not re-ask
+# it (field 2026-08-19 20:01: "did that actually happen?" 48 s after "No, I
+# didn't go" settled the same plan in person_events). Content-token match against
+# resolved/canceled events updated within this window.
+OPEN_THREAD_RESOLVED_EVENT_GUARD_DAYS = 14.0
 
 # Spoken once when the charger is plugged in (firmware detects sustained charge
 # current, locks out the wheels, and reports charging:true in telemetry).

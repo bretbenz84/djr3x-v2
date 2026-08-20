@@ -97,10 +97,49 @@ def interest_match(name: str, rows: list[dict]) -> Optional[dict]:
     return None
 
 
+# Intent-verb / pronoun / connective filler that wraps the same PLAN differently
+# each time it's mentioned. Field 2026-08-19: the extractor stored "visit
+# presidential library" AND "go to his presidential library" three seconds apart
+# (names_match: False), so the owner was asked "did it happen?" once per row and
+# answered "no" once per session all evening.
+_EVENT_FILLER = frozenset({
+    "visit", "visiting", "visited", "go", "going", "goes", "went", "gone",
+    "take", "taking", "took", "see", "seeing", "saw", "attend", "attending",
+    "attended", "do", "doing", "did", "get", "getting", "got", "make",
+    "making", "made", "plan", "planning", "planned", "trip", "field",
+    "have", "having", "had", "his", "her", "their", "our", "out", "over",
+    "the", "a", "an", "to", "at", "with", "for",
+})
+
+
+def event_content_tokens(name: str) -> frozenset[str]:
+    """The tokens that actually identify a plan, with intent-verb filler removed."""
+    return frozenset(t for t in _token_set(name) if t not in _EVENT_FILLER)
+
+
+def event_names_match(a: str, b: str) -> bool:
+    """Fuzzy match tuned for PLAN names, where one outing arrives verb-wrapped
+    differently across mentions. After stripping filler: single-token cores must
+    be EQUAL ("trip to Paris" == "go to Paris", but never "Paris marathon");
+    multi-token cores match on containment ("jimmy carter house" ⊆ "jimmy carter
+    birth house") or a high-overlap tier for long names. Falls back to the
+    conservative names_match, so nothing that matched before stops matching."""
+    ca, cb = event_content_tokens(a), event_content_tokens(b)
+    if ca and cb:
+        if ca == cb:
+            return True
+        if min(len(ca), len(cb)) >= 2 and (ca <= cb or cb <= ca):
+            return True
+        inter = ca & cb
+        if len(inter) >= 3 and len(inter) / min(len(ca), len(cb)) >= 0.75:
+            return True
+    return names_match(a, b)
+
+
 def event_match(name: str, rows: list[dict]) -> Optional[dict]:
     """Return the existing event row a new `name` should fold into, or None."""
     for row in rows:
-        if names_match(name, row.get("event_name") or ""):
+        if event_names_match(name, row.get("event_name") or ""):
             return row
     return None
 

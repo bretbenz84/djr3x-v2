@@ -89,3 +89,70 @@ class SiblingCloseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameSiblingCloseTest(unittest.TestCase):
+    """The undated-duplicate field shape (2026-08-19): 'visit presidential
+    library' AND 'go to his presidential library' minted three seconds apart,
+    the owner answered "no, I didn't go" at 19:59 and the surviving row asked
+    again at 21:38. One plan = one follow-up, whatever it was called."""
+
+    def setUp(self):
+        from setup_assets import DB_SCHEMA
+        self._tmp = tempfile.TemporaryDirectory()
+        path = Path(self._tmp.name) / "people.db"
+        with sqlite3.connect(path) as conn:
+            conn.executescript(DB_SCHEMA)
+            conn.execute("INSERT INTO people (id, name) VALUES (1, 'Bret')")
+            rows = [
+                ("visit presidential library", None, "planned", 0),
+                ("go to his presidential library", None, "planned", 0),
+                # a genuinely different undated plan: must NOT be swept
+                ("fix the fence", None, "planned", 0),
+                # another person's identical plan: must NOT be swept
+            ]
+            for name, date, status, fup in rows:
+                conn.execute(
+                    "INSERT INTO person_events (person_id, event_name, event_date, "
+                    "status, followed_up, mentioned_at) VALUES (1, ?, ?, ?, ?, "
+                    "'2026-08-19T00:00:00')",
+                    (name, date, status, fup),
+                )
+            conn.execute("INSERT INTO people (id, name) VALUES (2, 'JT')")
+            conn.execute(
+                "INSERT INTO person_events (person_id, event_name, event_date, "
+                "status, followed_up, mentioned_at) VALUES (2, "
+                "'visit presidential library', NULL, 'planned', 0, "
+                "'2026-08-19T00:00:00')")
+        self._patch = mock.patch.object(db, "_DB_FILE", path)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def _rows(self, person=1):
+        return {r["event_name"]: dict(r) for r in db.fetchall(
+            "SELECT event_name, followed_up, status, outcome FROM person_events "
+            "WHERE person_id = ?", (person,)
+        )}
+
+    def test_resolving_one_phrasing_closes_the_other(self):
+        ev = db.fetchone("SELECT id FROM person_events WHERE person_id = 1 AND "
+                         "event_name = 'visit presidential library'")
+        events.mark_followed_up(int(ev["id"]), "No, I didn't go.")
+        rows = self._rows()
+        self.assertEqual(rows["visit presidential library"]["outcome"], "No, I didn't go.")
+        sib = rows["go to his presidential library"]
+        self.assertEqual(sib["followed_up"], 1)
+        self.assertIn("same plan", sib["outcome"] or "")
+        # a different plan and another person's plan stay open
+        self.assertEqual(rows["fix the fence"]["followed_up"], 0)
+        self.assertEqual(self._rows(person=2)["visit presidential library"]["followed_up"], 0)
+
+    def test_add_event_now_folds_the_paraphrase(self):
+        # The write-time guard: the second phrasing refreshes the first row
+        # instead of minting a duplicate at all.
+        first = events.add_event(1, "visit the obama museum", None, "")
+        second = events.add_event(1, "go to the obama museum", None, "might be fun")
+        self.assertEqual(int(first), int(second))

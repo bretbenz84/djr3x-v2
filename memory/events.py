@@ -359,6 +359,39 @@ def mark_followed_up(event_id: int, outcome: str) -> None:
                 "[events] same-date sibling closed with #%s: #%s %r",
                 event_id, sib["id"], sib["event_name"],
             )
+    # NAME SIBLINGS: the same-date sweep can't reach UNDATED duplicates, and the
+    # extractor mints those too — field 2026-08-19: 'visit presidential library'
+    # and 'go to his presidential library' stored three seconds apart, the owner
+    # answered "no, I didn't go" at 19:59 and was asked again at 21:38 by the
+    # surviving row. One plan = one follow-up, whatever it was called.
+    if row and (row["event_name"] or "").strip():
+        try:
+            from memory import dedup
+            name = (row["event_name"] or "that").strip()
+            open_rows = db.fetchall(
+                """SELECT id, event_name FROM person_events
+                   WHERE person_id = ? AND id != ?
+                     AND followed_up = FALSE
+                     AND COALESCE(status, 'planned') IN ('planned', 'promised')""",
+                (row["person_id"], event_id),
+            )
+            for sib in open_rows:
+                if not dedup.event_names_match(name, sib["event_name"] or ""):
+                    continue
+                db.execute(
+                    """UPDATE person_events
+                       SET followed_up = TRUE, follow_up_at = ?, status = 'completed',
+                           outcome = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (_now(), f"(same plan as '{name}' — resolved together)", _now(),
+                     int(sib["id"])),
+                )
+                _log.info(
+                    "[events] name-sibling closed with #%s: #%s %r",
+                    event_id, sib["id"], sib["event_name"],
+                )
+        except Exception as exc:
+            _log.debug("[events] name-sibling sweep failed: %s", exc)
 
 
 def cancel_event(event_id: int, reason: str = "") -> None:

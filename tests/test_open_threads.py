@@ -179,3 +179,58 @@ class DatedFollowupExpiryTest(unittest.TestCase):
             "SELECT followed_up FROM person_events WHERE event_name='dentist appointment'"
         ).fetchone()
         self.assertTrue(row["followed_up"])
+
+
+class ResolvedPlanGuardTest(unittest.TestCase):
+    """An episode thread about a plan a follow-up already RESOLVED must not
+    re-ask it (field 2026-08-19 20:01: 'did that actually happen?' 48 s after
+    'No, I didn't go' settled the library plan in person_events)."""
+
+    # Reuse the rex.db fixture by delegation — subclassing would re-run all of
+    # OpenThreadsTest's own tests under this class too.
+    _episode = OpenThreadsTest._episode
+
+    def setUp(self):
+        OpenThreadsTest.setUp(self)
+        import sqlite3
+        import tempfile
+        from unittest import mock
+        from memory import database as people_db
+        from setup_assets import DB_SCHEMA
+        self._ptmp = tempfile.TemporaryDirectory()
+        path = Path(self._ptmp.name) / "people.db"
+        with sqlite3.connect(path) as conn:
+            conn.executescript(DB_SCHEMA)
+            conn.execute("INSERT INTO people (id, name) VALUES (1, 'Bret')")
+            conn.execute(
+                "INSERT INTO person_events (person_id, event_name, event_date, "
+                "status, followed_up, outcome, mentioned_at, updated_at) VALUES "
+                "(1, 'visit presidential library', NULL, 'completed', 1, "
+                "'No, I didn''t go.', ?, ?)",
+                (datetime.now().astimezone().isoformat(),
+                 datetime.now().astimezone().isoformat()),
+            )
+        self._ppatch = mock.patch.object(people_db, "_DB_FILE", path)
+        self._ppatch.start()
+
+    def tearDown(self):
+        self._ppatch.stop()
+        self._ptmp.cleanup()
+        OpenThreadsTest.tearDown(self)
+
+    def test_thread_covering_a_resolved_plan_is_dropped(self):
+        self._episode(threads=[
+            "whether Bret's presidential library visit ended up happening",
+            "how the garden project is going",
+        ])
+        pending = [p["thread"] for p in self.ot.pending_for_person(1)]
+        self.assertNotIn(
+            "whether Bret's presidential library visit ended up happening", pending)
+        self.assertIn("how the garden project is going", pending)
+
+    def test_single_shared_token_never_nukes_a_thread(self):
+        # 'library' alone must not kill an unrelated thread; the guard needs the
+        # plan's full content-token set inside the thread.
+        self._episode(threads=["the little free library Bret is building"])
+        pending = [p["thread"] for p in self.ot.pending_for_person(1)]
+        self.assertIn("the little free library Bret is building", pending)
