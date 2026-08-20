@@ -331,6 +331,36 @@ being a reflex, may fire mid-sentence (`MOTION_FLINCH_ALLOW_MID_SENTENCE`).
 
 ---
 
+### 10.1 Autonomous liveliness batch (2026-08-19)
+
+`intelligence/motion_agency.py` gained four sibling behaviors alongside
+flinch/realign/approach — all decision-layer only, all through the ToF-gated
+closed-loop verbs, each behind its own kill switch (config clusters named):
+
+- **IDLE WANDER** (`MOTION_IDLE_WANDER_*`) — occasional paired weight-shift
+  maneuvers (slight turn+inverse, or short fore/aft shuffle+inverse; zero net
+  pose drift). Clearance-gated per axis (fails closed on unknown sensors),
+  roominess-scaled, silenced by no-drive rooms, user holds, mid-sentence, and
+  the traction stand-down; an aborted wander turn feeds the traction detector.
+- **RADAR ORIENT** (`MOTION_RADAR_ORIENT_*`) — nobody on camera but the LD2450
+  ring shows a persistent body → neck glance within ~40°, base turn beyond it.
+  (Ring targets are seam-deduped host-side: `hardware/radar.py::_seam_merge`,
+  `RADAR_SEAM_MERGE_*`.)
+- **EDGE-IN** (`MOTION_EDGE_IN_*`) — mid-conversation at social distance, one
+  short slow step closer (front-ToF-checked, keeps 1 m clearance, minutes-long
+  cooldown).
+- **OBJECT STEP** (`MOTION_OBJECT_STEP_*`) — an object he just asked about and
+  that sits roughly ahead pulls the body one small step toward it; armed at ask
+  time, executed after the human's answer moment.
+
+The come-here errand also gained a **drive gaze** (`MOTION_COME_GAZE_COMP_*`):
+while the approach drives, the neck counter-pans the IMU yaw deviation so his
+gaze holds the travel heading while the firmware assist arcs around obstacles,
+and the camera dips slightly (`MOTION_COME_DRIVE_PITCH`) to see floor clutter.
+Speed variability: `cmd:come` accepts an optional `speed` (protocol §5.5),
+spontaneous approaches saunter (`MOTION_APPROACH_SPEED_JITTER*`), and
+exploration legs jitter per leg (`EXPLORE_LEG_SPEED_JITTER_*`).
+
 ## 11. Manual control & Bluetooth gamepad override
 
 A Bluetooth gamepad **paired directly to the ESP32** (not the Mac) lets you grab the
