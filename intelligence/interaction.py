@@ -297,6 +297,22 @@ _idle_plans_asked: set[str] = set()
 # keep proactive lines from stacking back-to-back (see _proactive_line_recently_fired).
 _last_proactive_line_at: float = 0.0
 _last_lean_impulse_at: float = 0.0   # cooldown anchor for the lean agentic impulse (armed even on a pass)
+# Generated impulse lines culled AFTER generation (bit repeats, duplicate
+# questions, banned topics) — fed back into the next generation as dead
+# premises, because a cue-less freeform line has no cue to bench and the model
+# happily rebuilds the same doomed bit (field 2026-08-19 22:51: the blue-light
+# bit generated and culled twice in twenty seconds).
+_lean_rejected_lines: "deque[str]" = deque(maxlen=6)
+
+
+def _note_lean_rejected(line: str) -> None:
+    """File a post-generation cull and pay the FULL pacing window — a drop means
+    the material pool is thin right now; re-rolling it in 20 s is pure spend."""
+    global _last_lean_impulse_at
+    text = str(line or "").strip()
+    if text:
+        _lean_rejected_lines.append(text)
+    _last_lean_impulse_at = time.monotonic()
 # Consecutive lean-impulse lines Rex has spoken into the CURRENT silence with no user reply. Widens
 # the required gap each time and caps the run (LEAN_IMPULSE_MAX_UNANSWERED) so he doesn't monologue
 # into the void. Reset the instant the user speaks (_begin_user_turn) — a fresh lull gets a fresh run.
@@ -6645,6 +6661,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             news_story=news_story,
             low_energy=low_energy,
             no_questions=no_questions,
+            rejected_lines=list(_lean_rejected_lines),
         )
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)
@@ -6687,6 +6704,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.info("[lean] holiday cue dropped — generated line was not a question: %r", line)
         _impulse_outcome("dropped_holiday_shape")
         _strike_lean_cue(_winning_kind)
+        _note_lean_rejected(line)
         return False
     # Content-based anti-repeat (NOT the first-word opener guard — that killed every 'What…?'
     # question, so Rex generated lines and spoke none, and the conversation died). This only
@@ -6695,6 +6713,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.info("[lean] impulse dropped — re-asks a recent question: %r", line)
         _impulse_outcome("dropped_duplicate_question")
         _strike_lean_cue(_winning_kind)
+        _note_lean_rejected(line)
         return False
 
     # Cross-DAY bit cooldown: session anti-repeat can't see yesterday (the
@@ -6704,6 +6723,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.info("[lean] impulse dropped — repeats a recent bit: %r", line)
         _impulse_outcome("dropped_bit_repeat")
         _strike_lean_cue(_winning_kind)
+        _note_lean_rejected(line)
         return False
 
     # Banned/bounded-topic backstop: whatever cue won, a generated line that lands
@@ -6715,6 +6735,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.info("[lean] impulse dropped — banned/bounded topic: %r", line)
         _impulse_outcome("dropped_banned_topic")
         _strike_lean_cue(_winning_kind)
+        _note_lean_rejected(line)
         return False
 
     # Enforcement backstop: a low-energy or budget-exhausted impulse that still
@@ -6723,6 +6744,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.info("[lean] impulse dropped — question while %s: %r",
                   "low-energy" if low_energy else "budget-exhausted", line)
         _strike_lean_cue(_winning_kind)
+        _note_lean_rejected(line)
         return False
 
     completed = _speak_proactive(

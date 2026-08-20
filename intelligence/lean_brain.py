@@ -1626,6 +1626,7 @@ def consider_initiating(
     news_story: Optional[dict] = None,
     low_energy: bool = False,
     no_questions: bool = False,
+    rejected_lines: Optional[list] = None,
 ) -> str:
     """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
     Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
@@ -1765,6 +1766,21 @@ def consider_initiating(
                 situation=situation,
                 angles=angles,
             )
+        # Lines the caller already GENERATED this session and then culled (bit
+        # repeats, duplicate questions, banned topics) are dead premises — field
+        # 2026-08-19 22:51: the same blue-light bit was generated and dropped
+        # twice in twenty seconds, paid for both times, spoken never. Telling
+        # the model exactly what got culled is the only thing that stops the
+        # regenerate-and-cull loop for cue-less freeform lines.
+        if rejected_lines:
+            shown = [str(l).strip() for l in list(rejected_lines)[-4:] if str(l).strip()]
+            if shown:
+                instruction += (
+                    "\nDEAD DRAWS: you already composed these this session and they "
+                    "were REJECTED before speaking (stale bits / repeats). Their "
+                    "premises are used up — do not rebuild any of them from any "
+                    "angle: " + " | ".join("'%s'" % l for l in shown)
+                )
         # Impulse discipline (owner field report 2026-07-18: six engagement-demanding
         # lines in three minutes at a TIRED user): a low-energy read or an exhausted
         # question budget converts the impulse to statement-or-pass — never another ask.

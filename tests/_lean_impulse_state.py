@@ -43,6 +43,10 @@ _SCALARS = {
 
 # Mutable containers must be restored IN PLACE — other modules hold references.
 _CONTAINERS = ("_lean_impulse_spoken_times",)
+# Deques restore via clear()+extend() — slice assignment doesn't exist on deque.
+# `_lean_rejected_lines` joined with the dead-draws feedback (2026-08-19): a test
+# that drops a generated line would otherwise poison every later prompt with it.
+_DEQUES = ("_lean_rejected_lines",)
 # Dict-shaped state, also restored in place. `_lean_cue_cooldowns` joined the
 # globals with the cue-drop-cooldown feature (2026-08-02): a test that drops a
 # generated line benches its cue for 600s of MOCKED time, which silently
@@ -71,6 +75,19 @@ def reset_impulse_state(testcase) -> None:
             lambda c=container, v=saved_items: c.__setitem__(slice(None), v)
         )
         container[:] = []
+
+    for name in _DEQUES:
+        dq = getattr(I, name, None)
+        if dq is None:
+            continue
+        saved_items = list(dq)
+
+        def _restore_deque(d=dq, v=saved_items):
+            d.clear()
+            d.extend(v)
+
+        testcase.addCleanup(_restore_deque)
+        dq.clear()
 
     def _restore_dict(d, items):
         d.clear()

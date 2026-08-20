@@ -144,3 +144,85 @@ class DropBenchLadderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RejectedLineFeedbackTests(unittest.TestCase):
+    """Dead-draw feedback (field 2026-08-19 22:51: the same blue-light bit was
+    generated and culled twice in twenty seconds — paid for both times, spoken
+    never, and with no winning cue there was nothing to bench). A post-generation
+    cull now (a) pays the FULL pacing window and (b) feeds the culled line back
+    into the next generation as a dead premise."""
+
+    def setUp(self) -> None:
+        reset_impulse_state(self)
+
+    def _drive(self, *, line, bit_repeat, now=1000.0):
+        I = interaction
+        with contextlib.ExitStack() as es:
+            p = es.enter_context
+            p(mock.patch.object(I.config, "LEAN_BRAIN_ENABLED", True))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_ENABLED", True))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_QUIET_SECS", 4.0))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_COOLDOWN_SECS", 12.0))
+            p(mock.patch.object(I.config, "PROACTIVE_LINE_MIN_GAP_SECS", 6.0))
+            p(mock.patch.object(I.time, "monotonic", lambda: now))
+            p(mock.patch.object(I, "_game_suppresses_conversation", return_value=False))
+            p(mock.patch.object(I, "_directed_context_fresh", return_value=False))
+            p(mock.patch.object(I.end_thread, "is_grace_active", return_value=False))
+            p(mock.patch.object(I, "_lean_impulse_person_present", lambda pid: True))
+            p(mock.patch.object(I, "_primary_session_person_id", return_value=7))
+            p(mock.patch.object(I.speech_queue, "seconds_since_last_speech",
+                                return_value=5.0))
+            p(mock.patch.object(I.speech_queue, "is_speaking", return_value=False))
+            p(mock.patch.object(I.consciousness, "is_waiting_for_response",
+                                return_value=False))
+            p(mock.patch.object(I.output_gate, "is_busy", return_value=False))
+            p(mock.patch.object(I.echo_cancel, "is_suppressed", return_value=False))
+            p(mock.patch.object(I, "_suppress_proactive_after_heavy",
+                                return_value=False))
+            p(mock.patch.object(I.body_mood, "current_mood",
+                                return_value=("neutral", 0.0)))
+            p(mock.patch.object(I, "_lean_recent_transcript", return_value=[]))
+            p(mock.patch.object(I, "_lean_world", return_value={}))
+            p(mock.patch.object(I, "_line_duplicates_recent_question",
+                                return_value=False))
+            p(mock.patch.object(I.conv_memory, "add_to_transcript"))
+            p(mock.patch.object(I.conv_log, "log_rex"))
+            p(mock.patch.object(I, "_register_rex_utterance"))
+            p(mock.patch.object(I.consciousness, "_next_holiday_plan_for_person",
+                                return_value=None))
+            for name in _ALL_BUILDERS:
+                p(mock.patch.object(I, name, return_value=None))
+            p(mock.patch.object(I, "_bit_ledger_blocks", return_value=bit_repeat))
+            ci = p(mock.patch.object(lean_brain, "consider_initiating",
+                                     return_value=line))
+            p(mock.patch.object(I, "_speak_proactive", return_value=True))
+            I._maybe_lean_impulse(idle_for=5.0, effective_idle_timeout=60.0)
+        return ci
+
+    def test_bit_repeat_drop_files_a_dead_draw_and_pays_the_full_window(self):
+        self._drive(line="The blue light is auditing your choices.", bit_repeat=True)
+        self.assertIn("The blue light is auditing your choices.",
+                      list(interaction._lean_rejected_lines))
+        # Full pacing window from the drop — NOT a 20-second re-roll.
+        self.assertEqual(interaction._last_lean_impulse_at, 1000.0)
+
+    def test_next_generation_receives_the_dead_draws(self):
+        self._drive(line="The blue light is auditing your choices.", bit_repeat=True)
+        interaction._last_lean_impulse_at = 0.0     # cooldown elapsed
+        ci = self._drive(line="Something fresh.", bit_repeat=False, now=2000.0)
+        rejected = ci.call_args.kwargs.get("rejected_lines")
+        self.assertIn("The blue light is auditing your choices.", rejected)
+
+    def test_a_spoken_line_is_not_filed_as_a_dead_draw(self):
+        self._drive(line="Something fresh.", bit_repeat=False)
+        self.assertEqual(list(interaction._lean_rejected_lines), [])
+
+    def test_dead_draws_are_accepted_and_pass_safe(self):
+        # The public seam tolerates the new kwarg end-to-end (the LLM call inside
+        # fails closed to "" in the test env — a PASS, never an exception).
+        out = lean_brain.consider_initiating(
+            7, transcript=[], world={}, quiet_secs=5.0,
+            rejected_lines=["The blue light is auditing your choices."],
+        )
+        self.assertIsInstance(out, str)
