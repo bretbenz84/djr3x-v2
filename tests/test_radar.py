@@ -169,6 +169,93 @@ class TransportTest(_RadarTestBase):
         self.assertTrue(radar.radar_ok())
 
 
+class SeamMergeTest(unittest.TestCase):
+    """Host-side stage-2 dedup: one person straddling a module seam reaches the
+    Mac as two edge-confidence targets from adjacent sensors (field 2026-08-19,
+    front seam doubles in the GUI). Pure-function tests on _seam_merge."""
+
+    @staticmethod
+    def _t(b, r, c, m, s=0.0):
+        return {"bearing_deg": b, "range_m": r, "confidence": c,
+                "speed_mps": s, "sensors": m}
+
+    def test_front_seam_duplicate_merges_to_one(self):
+        # S1 (front-right, bit 1) and S2 (front-left, bit 2) both see one person
+        # near 0° at their FOV edges — low confidence, disjoint sensors.
+        merged = radar._seam_merge([
+            self._t(8.0, 2.0, 0.30, 2), self._t(-9.0, 2.2, 0.25, 4),
+        ])
+        self.assertEqual(len(merged), 1)
+        t = merged[0]
+        self.assertEqual(t["sensors"], 6)
+        self.assertTrue(-9.0 < t["bearing_deg"] < 8.0)
+        self.assertAlmostEqual(t["range_m"], 2.09, delta=0.02)   # weighted
+        self.assertGreater(t["confidence"], 0.30)                # agreement raises
+
+    def test_rear_seam_duplicate_merges_too(self):
+        # S0 (rear, bit 0) and S2 near the +120° seam.
+        merged = radar._seam_merge([
+            self._t(114.0, 1.5, 0.30, 1), self._t(127.0, 1.6, 0.30, 4),
+        ])
+        self.assertEqual(len(merged), 1)
+        self.assertTrue(114.0 < merged[0]["bearing_deg"] < 127.0)
+
+    def test_circular_mean_across_the_wrap(self):
+        merged = radar._seam_merge([
+            self._t(178.0, 1.5, 0.30, 1), self._t(-178.0, 1.5, 0.30, 2),
+        ])
+        self.assertEqual(len(merged), 1)
+        self.assertGreater(abs(merged[0]["bearing_deg"]), 170.0)  # ±180, never ~0
+
+    def test_two_confident_people_are_not_merged(self):
+        # Two REAL people near the seam each read mid-FOV confidence in their
+        # own module — that confidence is the discriminator that protects them.
+        kept = radar._seam_merge([
+            self._t(10.0, 2.0, 0.90, 2), self._t(-10.0, 2.1, 0.85, 4),
+        ])
+        self.assertEqual(len(kept), 2)
+
+    def test_same_module_twins_are_not_merged(self):
+        kept = radar._seam_merge([
+            self._t(5.0, 2.0, 0.30, 2), self._t(-5.0, 2.1, 0.30, 2),
+        ])
+        self.assertEqual(len(kept), 2)
+
+    def test_unknown_sensor_mask_is_never_merged(self):
+        kept = radar._seam_merge([
+            self._t(5.0, 2.0, 0.30, 0), self._t(-5.0, 2.1, 0.30, 4),
+        ])
+        self.assertEqual(len(kept), 2)
+
+    def test_wide_bearing_or_range_gap_stays_separate(self):
+        kept = radar._seam_merge([
+            self._t(20.0, 2.0, 0.30, 2), self._t(-20.0, 2.1, 0.30, 4),
+        ])
+        self.assertEqual(len(kept), 2)   # 40° apart > gate
+        kept = radar._seam_merge([
+            self._t(5.0, 1.0, 0.30, 2), self._t(-5.0, 2.5, 0.30, 4),
+        ])
+        self.assertEqual(len(kept), 2)   # 1.5 m apart > gate
+
+    def test_disabled_flag_passes_through(self):
+        with mock.patch.object(config, "RADAR_SEAM_MERGE_ENABLED", False):
+            kept = radar._seam_merge([
+                self._t(8.0, 2.0, 0.30, 2), self._t(-9.0, 2.2, 0.25, 4),
+            ])
+        self.assertEqual(len(kept), 2)
+
+
+class SeamMergeWireTest(_RadarTestBase):
+    def test_seam_double_reaches_consumers_as_one_body(self):
+        self._connect(targets=[
+            {"b": 8.0, "r": 2.0, "c": 0.30, "s": 0.0, "m": 2},
+            {"b": -9.0, "r": 2.2, "c": 0.25, "s": 0.0, "m": 4},
+        ])
+        targets = radar.targets()
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["sensors"], 6)
+
+
 class LatchTest(_RadarTestBase):
     def test_dropout_latches_then_expires(self):
         # The LD2450 drops a person who freezes — targets() must keep the last

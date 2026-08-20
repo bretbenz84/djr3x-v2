@@ -8582,6 +8582,17 @@ RADAR_TARGET_LATCH_SECS = 3.0         # keep returning the last non-empty target
                                       # falls off the list — a dropout is not an
                                       # empty room (spec "Mac-side reader")
 RADAR_LOG_INTERVAL_SECS = 2.0         # throttle for the [radar] targets INFO line
+# Host-side stage-2 seam dedup (stage one is the firmware's radar_fuse, 15°/0.8m).
+# A person near a module seam (0° front, ±120° rear) is reported by BOTH adjacent
+# LD2450s at their FOV edges, where bearing smears past the firmware gate — the
+# same body reached the GUI/come-here as two targets (field 2026-08-19, front
+# seam). Merged only when the pair comes from disjoint sensors AND both reads
+# carry edge confidence — two real mid-FOV people each read high confidence in
+# their own module and are never merged.
+RADAR_SEAM_MERGE_ENABLED = True
+RADAR_SEAM_MERGE_BEARING_DEG = 25.0   # wider than firmware: edge bearings smear
+RADAR_SEAM_MERGE_RANGE_M = 0.8        # radial range stays honest at the FOV edge
+RADAR_SEAM_MERGE_MAX_CONF = 0.6       # both reads must be at/below edge confidence
 
 # ── Motion base (ESP32 drive controller) ────────────────────────────────────────
 # High-level config for the differential-drive base. The serial device path is

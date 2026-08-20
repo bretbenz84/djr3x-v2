@@ -53,6 +53,7 @@ All operations are no-ops (with a debug log) when the radar is disabled
 
 import json
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -350,6 +351,79 @@ def _normalize_target(t: dict) -> "dict | None":
         return None
 
 
+def _wrap180(deg: float) -> float:
+    d = math.fmod(deg + 180.0, 360.0)
+    if d < 0.0:
+        d += 360.0
+    return d - 180.0
+
+
+def _seam_merge(targets: "list[dict]") -> "list[dict]":
+    """Second-stage cross-seam dedup, host-side (stage one is the firmware's
+    radar_fuse). A person standing near a module seam (0 deg front, +/-120 rear)
+    is seen by BOTH adjacent LD2450s at their FOV edges, where the module's
+    bearing estimate smears past the firmware's 15-deg merge gate — so the same
+    body reaches the Mac twice (owner, 2026-08-19: doubles at the front seam in
+    the GUI ring). The discriminator that keeps two REAL people from being
+    merged is edge confidence: a seam duplicate carries the low FOV-edge
+    confidence from both modules, while two genuine mid-FOV people each read
+    high confidence in their own module. Merge only pairs that (a) come from
+    disjoint sensor sets, (b) BOTH read at edge confidence, and (c) sit within
+    a wider bearing/range gate than the firmware's. Front and rear seams share
+    the rule — the sensor-disjoint test already limits it to seam geometry."""
+    if not _get_int("RADAR_SEAM_MERGE_ENABLED", 1) or len(targets) < 2:
+        return targets
+    bearing_gate = _get_float("RADAR_SEAM_MERGE_BEARING_DEG", 25.0)
+    range_gate = _get_float("RADAR_SEAM_MERGE_RANGE_M", 0.8)
+    max_conf = _get_float("RADAR_SEAM_MERGE_MAX_CONF", 0.6)
+
+    def mergeable(a: dict, b: dict) -> bool:
+        sa, sb = int(a.get("sensors", 0)), int(b.get("sensors", 0))
+        if sa == 0 or sb == 0 or (sa & sb):
+            return False        # unknown provenance, or shared-module = real twins
+        if a["confidence"] > max_conf or b["confidence"] > max_conf:
+            return False        # a mid-FOV read is trusted as its own body
+        if abs(_wrap180(a["bearing_deg"] - b["bearing_deg"])) > bearing_gate:
+            return False
+        return abs(a["range_m"] - b["range_m"]) <= range_gate
+
+    remaining = sorted(targets, key=lambda t: t["confidence"], reverse=True)
+    out: "list[dict]" = []
+    while remaining:
+        seed = remaining.pop(0)
+        cluster = [seed]
+        rest = []
+        for t in remaining:
+            (cluster if mergeable(seed, t) else rest).append(t)
+        remaining = rest
+        if len(cluster) == 1:
+            out.append(seed)
+            continue
+        # Confidence-weighted circular mean for bearing; agreement between
+        # modules RAISES confidence (same 1 - prod(1-c) rule as the firmware).
+        wsum = cx = cy = rng = spd = 0.0
+        miss = 1.0
+        sensors = 0
+        for t in cluster:
+            w = max(float(t["confidence"]), 0.01)
+            wsum += w
+            cx += w * math.cos(math.radians(t["bearing_deg"]))
+            cy += w * math.sin(math.radians(t["bearing_deg"]))
+            rng += w * float(t["range_m"])
+            spd += w * float(t.get("speed_mps", 0.0))
+            miss *= (1.0 - min(float(t["confidence"]), 1.0))
+            sensors |= int(t.get("sensors", 0))
+        out.append({
+            "bearing_deg": _wrap180(math.degrees(math.atan2(cy, cx))),
+            "range_m": rng / wsum,
+            "confidence": 1.0 - miss,
+            "speed_mps": spd / wsum,
+            "sensors": sensors,
+        })
+    out.sort(key=lambda t: t["confidence"], reverse=True)   # best-first contract
+    return out
+
+
 def _log_targets(targets: "list[dict]") -> None:
     """The deliverable of this pass: bearings visible in the logs. Throttled
     while targets persist; appearance/disappearance edges always log."""
@@ -381,10 +455,10 @@ def _dispatch(msg: dict) -> None:
     if mtype == "telemetry":
         msg["rx_monotonic"] = time.monotonic()
         radar = msg.get("radar") or {}
-        targets = [
+        targets = _seam_merge([
             t for t in (_normalize_target(x) for x in radar.get("targets") or [])
             if t is not None
-        ]
+        ])
         with _state_lock:
             _latest_telemetry = msg
             _recent_frames.append((msg["rx_monotonic"], targets))
