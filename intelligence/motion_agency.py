@@ -2369,8 +2369,15 @@ def _step_inner(snapshot: dict, profile) -> None:
             and (now - _state["last_approach_at"]) >= cooldown):
         # Spontaneous approaches keep a respectful distance: stop farther out than
         # the explicit come-here default (nobody asked him to come this time).
+        # And nobody asked, so he doesn't have to hurry — the pace is randomized
+        # (owner 2026-08-19: "sometimes it's the current speed and other times he
+        # moves slower"). An explicit come-here still comes at full pace.
         stop_at = _num("MOTION_APPROACH_STOP_AT_M", 1.0)
-        seq = motion_controller.come(0.0, stop_at=stop_at)
+        speed = None
+        if _flag("MOTION_APPROACH_SPEED_JITTER", True):
+            speed = _num("MOTION_MAX_LINEAR_MS", 0.40) * random.uniform(
+                _num("MOTION_APPROACH_SPEED_JITTER_LOW", 0.55), 1.0)
+        seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed)
         if seq is not None:
             _log.info(
                 "[motion_agency] approach: person %s at public distance -> come "

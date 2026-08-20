@@ -189,6 +189,7 @@ correction; reverse travel is not auto-centered. **Finite** → `done`.
 | --- | --- | --- | --- | --- |
 | `heading` | float | degrees, +left, robot-relative | no | `0` (straight ahead) |
 | `stop_at` | float | m from nearest fwd obstacle | no | `MOTION_COME_STOP_AT_M` |
+| `speed` | float | m/s advance pace, clamped to `max_lin` | no | `max_lin` (added 2026-08-19; absent/`0` keeps the historical pace, older firmware ignores it) |
 
 Turn toward `heading` (one-shot), then advance until the nearest forward ToF reads
 `stop_at`, then stop. **Finite** → `done` (`completed` on reaching `stop_at`, `blocked`

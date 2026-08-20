@@ -1120,7 +1120,7 @@ def _opening_leg(sess: "_Session") -> None:
             _log.info("[explore] no forward ToF clearance — opening turn only")
             return
         dist = min(dist, cap)
-        speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.32))
+        speed = _leg_speed()
         seq = motion_controller.move(dist, speed=speed)
         if seq is None:
             return
@@ -1135,6 +1135,18 @@ def _opening_leg(sess: "_Session") -> None:
         _note_tether(sess)
     finally:
         _stop_travel_gaze(gaze)
+
+
+def _leg_speed() -> float:
+    """Per-leg drive speed: the configured pace scaled by a random factor so the
+    walk reads exploratory rather than metronomic (owner 2026-08-19: autonomous
+    motion should be speed-variable). move() clamps to the autonomous cap."""
+    base = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.32))
+    lo = float(getattr(config, "EXPLORE_LEG_SPEED_JITTER_LOW", 0.6))
+    hi = float(getattr(config, "EXPLORE_LEG_SPEED_JITTER_HIGH", 1.0))
+    if not 0.0 < lo <= hi:
+        return base
+    return base * random.uniform(lo, hi)
 
 
 def _ride_out_current_motion(sess: "_Session") -> None:
@@ -1215,7 +1227,7 @@ def _travel_one_leg(sess: "_Session") -> None:
         if dist is None:
             _log.info("[explore] no safe forward ToF clearance — holding position")
             return
-        speed = float(getattr(config, "EXPLORE_LEG_SPEED_MS", 0.32))
+        speed = _leg_speed()
         max_segments = int(getattr(config, "EXPLORE_LEG_SEGMENTS_MAX", 3))
         continue_min = float(getattr(config, "EXPLORE_LEG_CONTINUE_MIN_M", 0.40))
         segments = 0

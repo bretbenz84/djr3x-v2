@@ -502,7 +502,7 @@ void ctl_move(float dist, float speed, uint32_t seq) {
   if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
 }
 
-void ctl_come(float heading_deg, float stop_at, uint32_t seq) {
+void ctl_come(float heading_deg, float stop_at, float speed, uint32_t seq) {
   bool sup = false; uint32_t sseq = 0; Odom sodom;
   LOCK_STATE();
   sup = begin_finite_locked(sseq, sodom);
@@ -510,7 +510,8 @@ void ctl_come(float heading_deg, float stop_at, uint32_t seq) {
   f.kind = CMD_COME; f.seq = seq;
   f.target_dtheta = DEG2RAD(heading_deg);
   f.rate = DEG2RAD(g_ctx.params.default_turn_rate);
-  f.speed = g_ctx.params.max_lin;
+  // Host-tunable approach pace (saunter); <=0 or absent keeps the historical cap.
+  f.speed = (speed > 0.01f) ? fabsf(speed) : g_ctx.params.max_lin;
   f.come_stop_at = stop_at;
   f.come_sim_wall = stop_at + 0.6f;       // stub: advance ~0.6 m then stop
   f.come_turning = (fabsf(heading_deg) > 1.0f);

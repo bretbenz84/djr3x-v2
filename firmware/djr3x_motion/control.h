@@ -14,7 +14,7 @@ void control_tick(float dt);   // dt seconds
 void ctl_drive(float lin, float ang, uint32_t seq);          // m/s, rad/s
 void ctl_turn (float deg, float rate, uint32_t seq);         // deg signed, deg/s mag
 void ctl_move (float dist, float speed, uint32_t seq);       // m signed, m/s mag
-void ctl_come (float heading_deg, float stop_at, uint32_t seq);
+void ctl_come (float heading_deg, float stop_at, float speed, uint32_t seq);   // speed<=0 -> max_lin
 void ctl_wheel_test(int side, float frac, uint32_t ms, uint32_t seq);  // single-wheel bring-up jog (raw duty, time-bounded)
 void ctl_stop (uint32_t seq);                                // controlled stop
 void ctl_estop(uint32_t seq);                                // hard latch

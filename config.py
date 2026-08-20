@@ -8837,6 +8837,12 @@ MOTION_OBJECT_STEP_SPEED_MIN_MS = 0.08
 MOTION_OBJECT_STEP_SPEED_MAX_MS = 0.14
 MOTION_OBJECT_STEP_COOLDOWN_SECS = 90.0
 MOTION_OBJECT_STEP_TTL_SECS = 15.0         # a stale arm is dropped, never chased
+
+# Spontaneous-approach pace jitter (owner 2026-08-19: speed-variable). Nobody
+# asked him to come, so he doesn't have to hurry — each unprompted approach picks
+# a pace between JITTER_LOW x max_lin and max_lin. Explicit come-here is unjittered.
+MOTION_APPROACH_SPEED_JITTER = True
+MOTION_APPROACH_SPEED_JITTER_LOW = 0.55
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
 # the body, and realign was rotating it straight back toward their face (field
@@ -9116,6 +9122,14 @@ EXPLORE_CLEARANCE_FRACTION = _env_float(
 EXPLORE_LEG_SPEED_MS = _env_float(
     "EXPLORE_LEG_SPEED_MS", 0.32, min_value=0.03, max_value=0.40,
     # Sustained authority for the 54 lb base; still below the autonomous cap.
+)
+# Per-leg speed jitter (owner 2026-08-19: speed-variable autonomous motion) —
+# each leg drives at LEG_SPEED_MS x uniform(LOW, HIGH), so some legs saunter.
+EXPLORE_LEG_SPEED_JITTER_LOW = _env_float(
+    "EXPLORE_LEG_SPEED_JITTER_LOW", 0.6, min_value=0.1, max_value=1.0,
+)
+EXPLORE_LEG_SPEED_JITTER_HIGH = _env_float(
+    "EXPLORE_LEG_SPEED_JITTER_HIGH", 1.0, min_value=0.1, max_value=1.0,
 )
 EXPLORE_TURN_MIN_DEG = _env_float(
     "EXPLORE_TURN_MIN_DEG", 35.0, min_value=5.0, max_value=120.0,

@@ -831,9 +831,11 @@ def turn_to_compass(target_deg: float) -> "int | None":
     return turn(rel)
 
 
-def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
+def come(heading: float = 0.0, stop_at: "float | None" = None,
+         speed: "float | None" = None) -> "int | None":
     """Turn toward `heading` (deg, + = left), then advance to `stop_at` m from the
-    nearest forward obstacle."""
+    nearest forward obstacle. ``speed`` (m/s) sets the advance pace — None keeps
+    the firmware default (max_lin); older firmware ignores the field entirely."""
     reason = _autonomous_allowed()
     if reason:
         _suppressed("come", reason)
@@ -844,11 +846,15 @@ def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
     stop_at = _get_float("MOTION_COME_STOP_AT_M", 0.60) if stop_at is None else stop_at
     _invalidate_turn_verification()
     _cancel_arc()
-    seq = motion.send({
+    payload = {
         "cmd": "come",
         "heading": _clampf(heading, -180.0, 180.0),
         "stop_at": _clampf(stop_at, 0.05, 5.0),
-    })
+    }
+    if speed is not None:
+        payload["speed"] = _clampf(abs(speed), 0.0,
+                                   _get_float("MOTION_MAX_LINEAR_MS", 0.40))
+    seq = motion.send(payload)
     if seq is not None:
         global _last_come_seq, _last_come_result
         _last_come_seq = seq

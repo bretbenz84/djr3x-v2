@@ -379,7 +379,20 @@ class MotionAgencyTest(unittest.TestCase):
     def test_spontaneous_approach_stops_a_respectful_meter_out(self):
         # An uninvited drive must not use the explicit come-here's closer stop.
         self._tick(4, zone="public")
-        self.come.assert_called_once_with(0.0, stop_at=config.MOTION_APPROACH_STOP_AT_M)
+        self.come.assert_called_once()
+        args, kwargs = self.come.call_args
+        self.assertEqual(args[0], 0.0)
+        self.assertEqual(kwargs["stop_at"], config.MOTION_APPROACH_STOP_AT_M)
+
+    def test_spontaneous_approach_pace_is_jittered_never_over_cap(self):
+        # Nobody asked him to come, so the pace is randomized (owner 2026-08-19)
+        # — always at or below the autonomous cap, never zero.
+        self._tick(4, zone="public")
+        speed = self.come.call_args[1]["speed"]
+        self.assertIsNotNone(speed)
+        self.assertLessEqual(speed, config.MOTION_MAX_LINEAR_MS)
+        self.assertGreaterEqual(
+            speed, config.MOTION_MAX_LINEAR_MS * config.MOTION_APPROACH_SPEED_JITTER_LOW)
 
     def test_close_front_tof_vetoes_a_public_zone_approach(self):
         # THE FIELD FAILURE (2026-07-31): on the wide-angle lens a face 3-4 ft away

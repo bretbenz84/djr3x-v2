@@ -408,7 +408,11 @@ static void dispatch(const char* cmd, JsonDocument& doc, uint32_t seq) {
     heading = clamp_flag(heading, -180.0f, 180.0f, cl);
     float stop_at = IS_NUM(doc["stop_at"]) ? doc["stop_at"].as<float>() : P.come_stop_at_m;
     stop_at = clamp_flag(stop_at, 0.05f, 5.0f, cl);
-    ctl_come(heading, stop_at, seq);
+    // Optional approach speed (2026-08-19, saunter support) — absent/0 keeps the
+    // historical behavior (max_lin), so older hosts are unaffected.
+    float speed = IS_NUM(doc["speed"]) ? doc["speed"].as<float>() : P.max_lin;
+    speed = clamp_flag(speed, 0.0f, P.max_lin, cl);
+    ctl_come(heading, stop_at, speed, seq);
     emit_ack(seq, true, cl ? R_CLAMPED : ACK_OK);
     return;
   }
