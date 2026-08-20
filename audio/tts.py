@@ -1198,12 +1198,17 @@ def _speak_local(
                             break
                         last_led = _drive_mouth_chunk(piece, last_led, min_delta)
                         stream.write(piece)
-                    if not ttfa_logged:
-                        logger.info(
-                            "[tts] local first audio in %.2fs",
-                            time.monotonic() - requested_at,
-                        )
-                        ttfa_logged = True
+                        if not ttfa_logged:
+                            # Logged after the FIRST written piece. It used to sit
+                            # after the whole first buffered unit, so a one-unit
+                            # 8 s clone take read as "first audio in 8.24s" while
+                            # audio had actually been playing the entire time
+                            # (2026-08-19 log forensics went down that hole).
+                            logger.info(
+                                "[tts] local first audio in %.2fs",
+                                time.monotonic() - requested_at,
+                            )
+                            ttfa_logged = True
                 if not canceled:
                     for samples in gen:
                         if canceled:

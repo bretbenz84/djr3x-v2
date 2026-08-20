@@ -116,6 +116,9 @@ _state = {
     "edge_last_at": 0.0,     # edge-in cooldown stamp
     "object_step": None,     # armed step toward an asked-about object
     "object_step_at": 0.0,   # object-step cooldown stamp
+    "first_step_at": 0.0,    # first LIVE autonomy tick (startup-approach window)
+    "startup_approach_done": False,  # once per session
+    "startup_hits": 0,       # startup-approach confirm counter
     "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
     "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
     "traction_fails": 0,     # consecutive realigns that produced no actual rotation
@@ -1698,6 +1701,63 @@ def _step_object_step(profile, now: float) -> bool:
     return False
 
 
+# ── Startup approach ────────────────────────────────────────────────────────────
+def _maybe_startup_approach(person: dict, facing_them: bool,
+                            front: "Optional[float]", now: float) -> bool:
+    """The welcome roll-up (owner 2026-08-19: "when he started up I expected he
+    would move towards me but he sat there motionless... I want it to happen
+    right after he starts up if the ToF allow for it").
+
+    Once per session, within a bounded window after the first live autonomy
+    tick: the first person he's facing with genuinely open floor ahead gets
+    approached to a respectful stop distance. Unlike the regular approach it
+    does NOT wait for the "public" zone vote, the 120 s cooldown, or the
+    proactive-speech gates — a startup greeting is usually in flight, and the
+    greeting and the roll-up are one welcome gesture. The front ToF is the
+    authority: no reading, or under the floor, means no drive (fails closed —
+    "if the ToF allow" is the owner's own condition)."""
+    if not _flag("MOTION_STARTUP_APPROACH_ENABLED", True):
+        return False
+    if _state.get("startup_approach_done"):
+        return False
+    first = float(_state.get("first_step_at") or 0.0)
+    if first <= 0.0:
+        return False
+    if (now - first) > _num("MOTION_STARTUP_APPROACH_WINDOW_SECS", 180.0):
+        _state["startup_approach_done"] = True    # window closed — stop checking
+        return False
+    if str(person.get("distance_zone") or "") not in ("social", "public"):
+        _state["startup_hits"] = 0
+        return False                              # already at conversation range
+    if not facing_them:
+        _state["startup_hits"] = 0
+        return False
+    if front is None or front < _num("MOTION_STARTUP_APPROACH_MIN_FRONT_M", 1.8):
+        _state["startup_hits"] = 0
+        return False                              # the ToF does NOT allow it
+    if _traction_lost(now):
+        return False
+    _state["startup_hits"] = int(_state.get("startup_hits") or 0) + 1
+    if _state["startup_hits"] < int(_num("MOTION_STARTUP_APPROACH_CONFIRM_TICKS", 2)):
+        return False
+    stop_at = _num("MOTION_STARTUP_APPROACH_STOP_AT_M", 1.2)
+    speed = None
+    if _flag("MOTION_APPROACH_SPEED_JITTER", True):
+        speed = _num("MOTION_MAX_LINEAR_MS", 0.40) * random.uniform(
+            _num("MOTION_APPROACH_SPEED_JITTER_LOW", 0.55), 1.0)
+    seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed)
+    if seq is not None:
+        _state["startup_approach_done"] = True
+        _state["last_approach_at"] = now
+        _log.info(
+            "[motion_agency] startup approach: first sight of person %s with %.2fm "
+            "open ahead -> rolling up (stop_at=%.2fm, ToF-guarded)",
+            person.get("person_db_id") or person.get("id"), front, stop_at,
+        )
+        return True
+    return False
+
+
 # ── Idle base wander ("weight shift") ──────────────────────────────────────────
 # The drive-base sibling of the idle arm/head wander (owner spec 2026-08-19:
 # "much like the idle hands... more random movement back and forth with slight
@@ -2131,6 +2191,12 @@ def _step_inner(snapshot: dict, profile) -> None:
         cancel_requested_come("drive base unavailable")
         return
 
+    # The startup-approach window opens on the first tick WITH a live base, not
+    # at import — a session that boots before the ESP32 enumerates must not burn
+    # its welcome window against a base that isn't there yet.
+    if not float(_state.get("first_step_at") or 0.0):
+        _state["first_step_at"] = time.monotonic()
+
     st = motion.state()
 
     # SIGHTING SAMPLER for an active come request — runs on EVERY tick, including
@@ -2318,7 +2384,11 @@ def _step_inner(snapshot: dict, profile) -> None:
         if (_state["neck_hits"] >= confirm
                 and (now - _state["last_turn_at"]) >= cooldown):
             deg = _turn_degrees_for(frac)
-            seq = motion_controller.turn(deg)
+            # A realign is housekeeping, not a commanded maneuver — glide it.
+            # The default 75°/s made a 60° correction read as a jarring snap
+            # mid-conversation (owner 2026-08-19).
+            seq = motion_controller.turn(
+                deg, rate=_num("MOTION_FACE_TURN_RATE_DEG_S", 40.0))
             if seq is not None:
                 _log.info(
                     "[motion_agency] realign: neck %.0f%% off-center -> base turn %+.0f deg "
@@ -2330,23 +2400,6 @@ def _step_inner(snapshot: dict, profile) -> None:
             _reset("neck_hits")
             return  # one maneuver per tick
 
-    # ── APPROACH: close distance to a far person ──────────────────────────────
-    if not _flag("MOTION_APPROACH_ENABLED", True):
-        return
-    # Critical battery: stop VOLUNTEERING drives (voice-commanded motion still
-    # obeys — the pack's BMS is the hard protection; this is Rex pacing himself).
-    try:
-        from intelligence import battery_awareness
-        if battery_awareness.battery_critical():
-            _reset("far_hits")
-            return
-    except Exception:
-        pass
-    # A whole-base approach is a big proactive act — respect the same social gates
-    # as unsolicited speech, plus require an active turn NOT being processed.
-    if getattr(profile, "suppress_proactive", False) or getattr(profile, "interaction_busy", False):
-        _reset("far_hits")
-        return
     centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
     facing_them = frac is None or abs(frac) < centered
     # Face width lies on a wide-angle lens: a face 3-4 ft away can read under the
@@ -2356,37 +2409,61 @@ def _step_inner(snapshot: dict, profile) -> None:
     # "they're far" vote doesn't count. Fails open only when there is no usable
     # front reading (the firmware's obstacle stop still guards the drive itself).
     front = _radial_front_m()
-    far_enough = not (
-        front is not None and front < _num("MOTION_APPROACH_MIN_START_M", 1.8)
-    )
-    if person.get("distance_zone") == "public" and facing_them and far_enough:
-        _state["far_hits"] += 1
-    else:
-        _state["far_hits"] = 0
-    confirm = int(_num("MOTION_APPROACH_CONFIRM_TICKS", 4))
-    cooldown = _num("MOTION_APPROACH_COOLDOWN_SECS", 120.0)
-    if (_state["far_hits"] >= confirm
-            and (now - _state["last_approach_at"]) >= cooldown):
-        # Spontaneous approaches keep a respectful distance: stop farther out than
-        # the explicit come-here default (nobody asked him to come this time).
-        # And nobody asked, so he doesn't have to hurry — the pace is randomized
-        # (owner 2026-08-19: "sometimes it's the current speed and other times he
-        # moves slower"). An explicit come-here still comes at full pace.
-        stop_at = _num("MOTION_APPROACH_STOP_AT_M", 1.0)
-        speed = None
-        if _flag("MOTION_APPROACH_SPEED_JITTER", True):
-            speed = _num("MOTION_MAX_LINEAR_MS", 0.40) * random.uniform(
-                _num("MOTION_APPROACH_SPEED_JITTER_LOW", 0.55), 1.0)
-        seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed)
-        if seq is not None:
-            _log.info(
-                "[motion_agency] approach: person %s at public distance -> come "
-                "(stop_at=%.2fm, ToF-guarded)",
-                person.get("person_db_id") or person.get("id"), stop_at,
-            )
-            _state["last_approach_at"] = now
-        _reset("far_hits")
+
+    # ── STARTUP APPROACH: the welcome roll-up ──────────────────────────────────
+    if _maybe_startup_approach(person, facing_them, front, now):
         return  # one maneuver per tick
+
+    # Shared gates for the volunteered drives below. Critical battery: stop
+    # VOLUNTEERING (voice-commanded motion still obeys — the BMS is the hard
+    # protection; this is Rex pacing himself). suppress_proactive/interaction_busy:
+    # a whole-base drive is a big proactive act — same social gates as unsolicited
+    # speech. These used to END the tick, which starved the idle wander below for
+    # entire conversations (field 2026-08-19: minutes of statue while chatting) —
+    # now they only skip the lanes they gate.
+    battery_ok = True
+    try:
+        from intelligence import battery_awareness
+        battery_ok = not battery_awareness.battery_critical()
+    except Exception:
+        pass
+    proactive_ok = not (getattr(profile, "suppress_proactive", False)
+                        or getattr(profile, "interaction_busy", False))
+
+    # ── APPROACH: close distance to a far person ──────────────────────────────
+    if not (_flag("MOTION_APPROACH_ENABLED", True) and battery_ok and proactive_ok):
+        _reset("far_hits")
+    else:
+        far_enough = not (
+            front is not None and front < _num("MOTION_APPROACH_MIN_START_M", 1.8)
+        )
+        if person.get("distance_zone") == "public" and facing_them and far_enough:
+            _state["far_hits"] += 1
+        else:
+            _state["far_hits"] = 0
+        confirm = int(_num("MOTION_APPROACH_CONFIRM_TICKS", 4))
+        cooldown = _num("MOTION_APPROACH_COOLDOWN_SECS", 120.0)
+        if (_state["far_hits"] >= confirm
+                and (now - _state["last_approach_at"]) >= cooldown):
+            # Spontaneous approaches keep a respectful distance: stop farther out
+            # than the explicit come-here default (nobody asked him to come this
+            # time). And nobody asked, so he doesn't have to hurry — the pace is
+            # randomized (owner 2026-08-19). Explicit come-here keeps full pace.
+            stop_at = _num("MOTION_APPROACH_STOP_AT_M", 1.0)
+            speed = None
+            if _flag("MOTION_APPROACH_SPEED_JITTER", True):
+                speed = _num("MOTION_MAX_LINEAR_MS", 0.40) * random.uniform(
+                    _num("MOTION_APPROACH_SPEED_JITTER_LOW", 0.55), 1.0)
+            seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed)
+            if seq is not None:
+                _log.info(
+                    "[motion_agency] approach: person %s at public distance -> come "
+                    "(stop_at=%.2fm, ToF-guarded)",
+                    person.get("person_db_id") or person.get("id"), stop_at,
+                )
+                _state["last_approach_at"] = now
+            _reset("far_hits")
+            return  # one maneuver per tick
 
     # ── EDGE-IN: drift a step closer mid-conversation (owner 2026-08-19: "If
     # he's having a conversation, he should try to get closer") ────────────────
@@ -2396,6 +2473,7 @@ def _step_inner(snapshot: dict, profile) -> None:
     # room for it. The step keeps MOTION_EDGE_IN_KEEP_CLEAR_M of front clearance,
     # so he settles at the near edge of social distance, never in their lap.
     if (_flag("MOTION_EDGE_IN_ENABLED", True)
+            and battery_ok and proactive_ok
             and getattr(profile, "conversation_active", False)
             and person.get("distance_zone") == "social"
             and facing_them):

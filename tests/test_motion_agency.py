@@ -23,17 +23,22 @@ def _profile(**over):
 
 # The idle base wander post-dates most fixtures here and rolls REAL dice — left
 # on, a lucky tick fires a weight-shift move into assertions that expect quiet.
-# Off for the whole module; IdleWanderTest re-enables it explicitly.
+# Off for the whole module; IdleWanderTest re-enables it explicitly. Same for the
+# one-shot startup approach: it fires before the lanes these fixtures assert on.
 _WANDER_OFF = mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", False,
                                 create=True)
+_STARTUP_OFF = mock.patch.object(config, "MOTION_STARTUP_APPROACH_ENABLED", False,
+                                 create=True)
 
 
 def setUpModule():
     _WANDER_OFF.start()
+    _STARTUP_OFF.start()
 
 
 def tearDownModule():
     _WANDER_OFF.stop()
+    _STARTUP_OFF.stop()
 
 
 def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=None,
@@ -2565,3 +2570,150 @@ class ObjectStepTest(unittest.TestCase):
         with mock.patch.object(config, "MOTION_OBJECT_STEP_ENABLED", False,
                                create=True):
             self.assertFalse(MA.request_object_step(0.0, label="bowl"))
+
+
+class StartupApproachTest(unittest.TestCase):
+    """The welcome roll-up (owner 2026-08-19): once per session, right after
+    startup, approach the first person he's facing — if the ToF allow it."""
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
+                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         object_step=None, object_step_at=0.0,
+                         first_step_at=0.0, startup_approach_done=False,
+                         startup_hits=0,
+                         last_turn_at=0.0, last_approach_at=0.0, last_flinch_at=0.0,
+                         user_motion_at=0.0, realign_pending_seq=None,
+                         traction_fails=0, no_traction_until=0.0, hold_at=None)
+        self._tof = {"fl": 2500, "fr": 2500}
+        self._patches = [
+            mock.patch.object(config, "MOTION_STARTUP_APPROACH_ENABLED", True,
+                              create=True),   # module default is off (setUpModule)
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "turn", return_value=7),
+            mock.patch.object(MA.motion_controller, "come", return_value=8),
+            mock.patch.object(MA.motion_controller, "move", return_value=9),
+            mock.patch.object(MA.motion, "telemetry",
+                              side_effect=lambda: {"tof_mm": dict(self._tof)}),
+            mock.patch.object(MA.motion, "done_result", return_value="completed",
+                              create=True),
+            mock.patch("intelligence.battery_awareness.battery_critical",
+                       return_value=False),
+            mock.patch("sequences.animations.travel_glance_pose"),
+        ]
+        for p in self._patches:
+            p.start()
+        self.come = MA.motion_controller.come
+        self._ws = mock.patch(
+            "world_state.world_state.get",
+            side_effect=lambda key: (
+                {"face_tracking": {"locked": True, "visible": True,
+                                   "lock_key": "slot:person_1"},
+                 "servo_positions": {"neck": 5472}}
+                if key == "self_state" else {}),
+        )
+        self._ws.start()
+
+    def tearDown(self):
+        MA.cancel_requested_come("test cleanup")
+        self._ws.stop()
+        for p in self._patches:
+            p.stop()
+        MA._state.update(first_step_at=0.0, startup_approach_done=False,
+                         startup_hits=0)
+
+    def _tick(self, n=1, zone="social", profile=None):
+        for _ in range(n):
+            MA.step(_snapshot(distance_zone=zone), profile or _profile())
+
+    def test_rolls_up_shortly_after_startup(self):
+        self._tick(2)
+        self.come.assert_called_once()
+        args, kwargs = self.come.call_args
+        self.assertEqual(args[0], 0.0)
+        self.assertEqual(kwargs["stop_at"], config.MOTION_STARTUP_APPROACH_STOP_AT_M)
+        self.assertTrue(MA._state["startup_approach_done"])
+
+    def test_fires_despite_the_proactive_gates(self):
+        # The startup greeting is usually in flight — the roll-up must not wait
+        # for suppress_proactive/interaction_busy the way the regular approach does.
+        prof = _profile(suppress_proactive=True, interaction_busy=True)
+        self._tick(2, profile=prof)
+        self.come.assert_called_once()
+
+    def test_only_once_per_session(self):
+        self._tick(2)
+        self.come.assert_called_once()
+        self._tick(4)
+        self.come.assert_called_once()
+
+    def test_tight_front_tof_holds_him(self):
+        self._tof = {"fl": 1200, "fr": 1200}   # 1.2 m < MIN_FRONT — ToF says no
+        self._tick(4)
+        self.come.assert_not_called()
+        self.assertFalse(MA._state["startup_approach_done"])   # window keeps trying
+
+    def test_no_front_reading_fails_closed(self):
+        self._tof = {"fl": -1, "fr": -1}
+        self._tick(4)
+        self.come.assert_not_called()
+
+    def test_window_expiry_closes_the_offer(self):
+        MA._state["first_step_at"] = time.monotonic() - (
+            float(config.MOTION_STARTUP_APPROACH_WINDOW_SECS) + 5.0)
+        self._tick(4)
+        self.come.assert_not_called()
+        self.assertTrue(MA._state["startup_approach_done"])
+
+    def test_person_already_close_is_left_alone(self):
+        self._tick(4, zone="personal")
+        self.come.assert_not_called()
+
+    def test_single_tick_is_not_enough(self):
+        self._tick(1)
+        self.come.assert_not_called()
+
+    def test_no_drive_room_blocks_it(self):
+        with mock.patch.object(MA, "no_drive_room", return_value=("den", "carpet")):
+            self._tick(4)
+        self.come.assert_not_called()
+
+
+class WanderDuringConversationTest(unittest.TestCase):
+    """The approach lane's proactive gates used to END the tick, starving the
+    idle wander for whole conversations (field 2026-08-19: minutes of statue
+    while chatting). Now they only skip the lanes they gate."""
+
+    def test_wander_reachable_with_person_tracked_and_proactive_suppressed(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
+                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         object_step=None, object_step_at=0.0,
+                         first_step_at=0.0, startup_approach_done=True,
+                         startup_hits=0, last_turn_at=0.0, last_approach_at=0.0,
+                         last_flinch_at=0.0, user_motion_at=0.0,
+                         realign_pending_seq=None, traction_fails=0,
+                         no_traction_until=0.0, hold_at=None)
+        wander = mock.MagicMock(return_value=False)
+        ws = mock.patch(
+            "world_state.world_state.get",
+            side_effect=lambda key: (
+                {"face_tracking": {"locked": True, "visible": True,
+                                   "lock_key": "slot:person_1"},
+                 "servo_positions": {"neck": 5472}}
+                if key == "self_state" else {}),
+        )
+        with mock.patch.object(MA.motion_controller, "available", return_value=True), \
+                mock.patch.object(MA.motion, "state", return_value="idle"), \
+                mock.patch.object(MA.motion, "telemetry", return_value=None), \
+                mock.patch("intelligence.battery_awareness.battery_critical",
+                           return_value=False), \
+                mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", True,
+                                  create=True), \
+                mock.patch.object(MA, "_maybe_idle_wander", wander), ws:
+            MA.step(_snapshot(distance_zone="social"),
+                    _profile(suppress_proactive=True))
+        wander.assert_called_once()
+        MA.cancel_requested_come("test cleanup")

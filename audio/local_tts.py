@@ -436,6 +436,43 @@ def _synthesize_unit(text: str, voice_ref: VoiceRef) -> Optional[np.ndarray]:
     return np.concatenate(chunks)
 
 
+def trim_unit_silence(audio: "Optional[np.ndarray]") -> "Optional[np.ndarray]":
+    """Cut the synthesized silence off BOTH ends of a rendered unit.
+
+    Qwen takes pad their edges — a clone bit shipped with seconds of tail
+    silence, during which the speaker was quiet but the mouth stayed in its
+    speak animation and the speech state held the floor: "the impersonation
+    stalls the TTS but not the mouth animation" (owner, 2026-08-19 log — ~3 s
+    of dead air after the Trump line before the outro). The cache path already
+    trims (tts._trim_trailing_silence); this is the same idea for the LIVE take
+    path, both ends, with padding kept so consonant onsets/decays never clip."""
+    if audio is None or getattr(audio, "size", 0) == 0:
+        return audio
+    if not bool(getattr(config, "LOCAL_TTS_TRIM_UNIT_SILENCE_ENABLED", True)):
+        return audio
+    sr = sample_rate()
+    threshold = float(getattr(config, "LOCAL_TTS_TRIM_SILENCE_THRESHOLD", 0.004))
+    if threshold <= 0.0 or sr <= 0:
+        return audio
+    window = max(1, int(sr * float(getattr(config, "LOCAL_TTS_TRIM_WINDOW_MS", 20.0)) / 1000.0))
+    pad = int(sr * float(getattr(config, "LOCAL_TTS_TRIM_PADDING_MS", 120.0)) / 1000.0)
+    abs_audio = np.abs(audio)
+    first = None
+    last = None
+    for i in range(0, audio.size, window):
+        if float(abs_audio[i:i + window].max()) >= threshold:
+            if first is None:
+                first = i
+            last = i + window
+    if first is None:
+        return audio          # all-silence unit: leave it; the caller drops empties
+    start = max(0, first - pad)
+    end = min(audio.size, last + pad)
+    if end - start >= audio.size:
+        return audio
+    return audio[start:end]
+
+
 class Take:
     """A sentence-pipelined clone take, rendering on a background thread.
 
@@ -480,7 +517,7 @@ class Take:
                 if self._stop.is_set():
                     break
                 try:
-                    audio = _synthesize_unit(unit, self.voice_ref)
+                    audio = trim_unit_silence(_synthesize_unit(unit, self.voice_ref))
                 except Exception as exc:
                     logger.warning("[local_tts] take unit failed: %s", exc)
                     audio = None

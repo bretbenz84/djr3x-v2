@@ -377,3 +377,65 @@ class SpeakLocalPlaybackTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrimUnitSilenceTest(unittest.TestCase):
+    """Qwen pads unit edges with synthesized silence; the live take path must
+    trim BOTH ends (the cache path already did) so a clone bit never holds the
+    floor — mouth flapping, no sound — through seconds of dead air."""
+
+    def _unit(self, sr, lead_s, voice_s, tail_s):
+        lead = np.zeros(int(sr * lead_s), np.float32)
+        voice = 0.2 * np.sin(np.linspace(0, 2000, int(sr * voice_s))).astype(np.float32)
+        tail = np.zeros(int(sr * tail_s), np.float32)
+        return np.concatenate([lead, voice, tail])
+
+    def test_trailing_dead_air_is_cut(self):
+        sr = local_tts.sample_rate()
+        audio = self._unit(sr, 0.1, 2.0, 3.0)   # the field shape: ~3 s tail
+        trimmed = local_tts.trim_unit_silence(audio)
+        pad = float(config.LOCAL_TTS_TRIM_PADDING_MS) / 1000.0
+        self.assertLess(trimmed.size, audio.size - int(sr * 2.0))  # tail mostly gone
+        self.assertGreaterEqual(trimmed.size, int(sr * 2.0))       # voice intact
+        self.assertLessEqual(trimmed.size, int(sr * (2.0 + 2 * pad + 0.15)))
+
+    def test_leading_silence_is_cut_too(self):
+        sr = local_tts.sample_rate()
+        audio = self._unit(sr, 1.5, 1.0, 0.1)
+        trimmed = local_tts.trim_unit_silence(audio)
+        self.assertLess(trimmed.size, audio.size - int(sr * 1.0))
+
+    def test_padding_preserves_the_edges(self):
+        sr = local_tts.sample_rate()
+        audio = self._unit(sr, 1.0, 1.0, 1.0)
+        trimmed = local_tts.trim_unit_silence(audio)
+        # The kept span must contain ALL the voiced samples.
+        self.assertGreaterEqual(trimmed.size, int(sr * 1.0))
+        self.assertAlmostEqual(float(np.abs(trimmed).max()),
+                               float(np.abs(audio).max()), places=5)
+
+    def test_all_silence_unit_is_left_alone(self):
+        sr = local_tts.sample_rate()
+        audio = np.zeros(int(sr * 1.0), np.float32)
+        trimmed = local_tts.trim_unit_silence(audio)
+        self.assertEqual(trimmed.size, audio.size)
+
+    def test_kill_switch_passes_through(self):
+        sr = local_tts.sample_rate()
+        audio = self._unit(sr, 0.5, 1.0, 2.0)
+        with mock.patch.object(config, "LOCAL_TTS_TRIM_UNIT_SILENCE_ENABLED", False,
+                               create=True):
+            self.assertEqual(local_tts.trim_unit_silence(audio).size, audio.size)
+
+    def test_take_producer_applies_the_trim(self):
+        sr = local_tts.sample_rate()
+        padded = self._unit(sr, 0.2, 1.0, 2.5)
+        with mock.patch.object(local_tts, "_synthesize_unit", return_value=padded):
+            take = local_tts.Take(
+                "one short line.",
+                local_tts.VoiceRef(wav_path="", ref_text="", label="famous:test"),
+            )
+            take.first_ready.wait(timeout=5.0)
+            units = [u for u in take.stream()]
+        total = sum(u.size for u in units if u is not None)
+        self.assertLess(total, padded.size - int(sr * 2.0))

@@ -1865,6 +1865,14 @@ LOCAL_TTS_TAKE_ABANDON_SECS = 120.0           # stop rendering a take nothing is
                                               # (the line never reached playback)
 LOCAL_TTS_CLONE_FULL_BUFFER = True            # kill-switch path only: with the pipeline off,
                                               # render the clone whole and play it buffered
+# Qwen pads a rendered unit's EDGES with synthesized silence — a clone bit shipped
+# with ~3 s of dead air on its tail, mouth still in speak animation the whole time
+# (owner 2026-08-19: "stalls the TTS but not the mouth"). Trim both ends of every
+# take unit at render time, keeping PADDING_MS so onsets/decays never clip.
+LOCAL_TTS_TRIM_UNIT_SILENCE_ENABLED = True
+LOCAL_TTS_TRIM_SILENCE_THRESHOLD = 0.004      # RMS-window floor that counts as sound
+LOCAL_TTS_TRIM_WINDOW_MS = 20.0
+LOCAL_TTS_TRIM_PADDING_MS = 120.0             # breath kept on each trimmed edge
 # Lines Rex asks the person to repeat (fixed, so the reference transcript is known
 # exactly). Each is ~2 short sentences — enough audio to condition the clone.
 IMPERSONATION_CAPTURE_LINES = [
@@ -8843,6 +8851,23 @@ MOTION_OBJECT_STEP_TTL_SECS = 15.0         # a stale arm is dropped, never chase
 # a pace between JITTER_LOW x max_lin and max_lin. Explicit come-here is unjittered.
 MOTION_APPROACH_SPEED_JITTER = True
 MOTION_APPROACH_SPEED_JITTER_LOW = 0.55
+
+# Realign glide rate: a housekeeping correction, not a commanded maneuver — the
+# default 75°/s made a 60° realign read as a jarring snap (owner 2026-08-19).
+MOTION_FACE_TURN_RATE_DEG_S = 40.0
+
+# ── Startup approach (owner spec 2026-08-19) ────────────────────────────────────
+# "I want it to happen right after he starts up if the ToF allow for it." Once per
+# session, within the window after the first live autonomy tick: the first person
+# he's facing with open floor ahead gets a welcome roll-up to a respectful stop.
+# Unlike the regular approach it skips the public-zone vote and the proactive
+# gates (the startup greeting and the roll-up are one gesture); the front ToF is
+# the authority and it FAILS CLOSED — no reading, no drive.
+MOTION_STARTUP_APPROACH_ENABLED = True
+MOTION_STARTUP_APPROACH_WINDOW_SECS = 180.0
+MOTION_STARTUP_APPROACH_MIN_FRONT_M = 1.8   # open floor the ToF must show
+MOTION_STARTUP_APPROACH_STOP_AT_M = 1.2     # respectful welcome distance
+MOTION_STARTUP_APPROACH_CONFIRM_TICKS = 2   # never on a single frame
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
 # the body, and realign was rotating it straight back toward their face (field
