@@ -400,3 +400,40 @@ class ReacquireAndConfirmTest(_PresenceCase):
         C.note_pet_guess_answer("No, that's not him.")
         self.assertNotIn("dog", C._animal_confirmed_pet)
         self.assertNotIn("dog", C._animal_guessed_pet)
+
+
+class SpeciesTruthTest(_PresenceCase):
+    """RF-DETR reads the dog as 'cat' (field 2026-08-19 22:46 run): the facts DB
+    knew Max is a dog, yet episodes recorded 'I saw a cat' and a memory musing
+    recycled it right after the owner said 'Max is a dog'. Confirmation now
+    carries the pet's TRUE species from the guess's facts lookup."""
+
+    def setUp(self):
+        super().setUp()
+        C._animal_guessed_pet.clear()
+        C._animal_confirmed_pet.clear()
+        C._animal_confirmed_species.clear()
+        self.addCleanup(C._animal_guessed_pet.clear)
+        self.addCleanup(C._animal_confirmed_pet.clear)
+        self.addCleanup(C._animal_confirmed_species.clear)
+
+    def test_confirmation_carries_the_true_species(self):
+        # Detector said cat; the guess knew from facts that Max is a DOG.
+        C._animal_guessed_pet["cat"] = ("Bret", "Max", (), {"Max": "dog"})
+        C.note_pet_guess_answer("Yeah, it's Max.")
+        self.assertEqual(C._animal_confirmed_pet.get("cat"), "Max")
+        self.assertEqual(C._animal_confirmed_species.get("cat"), "dog")
+
+    def test_matching_species_records_no_alias(self):
+        C._animal_guessed_pet["dog"] = ("Bret", "Max", (), {"Max": "dog"})
+        C.note_pet_guess_answer("Yep, that's Max.")
+        self.assertEqual(C._animal_confirmed_pet.get("dog"), "Max")
+        self.assertNotIn("dog", C._animal_confirmed_species)
+
+    def test_display_species_uses_the_confirmed_identity(self):
+        C._animal_confirmed_pet["cat"] = "Max"
+        C._animal_confirmed_species["cat"] = "dog"
+        self.assertEqual(C._animal_display_species("cat"), "dog named Max")
+
+    def test_display_species_falls_back_to_the_detector(self):
+        self.assertEqual(C._animal_display_species("cat"), "cat")

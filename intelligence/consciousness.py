@@ -2422,6 +2422,22 @@ _animal_guessed_pet: dict[str, tuple] = {}
 # confirmed Max, a return still said "Still calling it Max until Bret tells me
 # otherwise" — hedged AND third-person, to Bret's face.
 _animal_confirmed_pet: dict[str, str] = {}
+# The confirmed pet's TRUE species from the owner's stored facts, keyed by the
+# DETECTED species. RF-DETR kept reading Bret's dog as "cat" (field 2026-08-19
+# 22:46 run): the facts DB knew Max is a dog, the guess line even admitted the
+# mismatch — and then every episode still recorded "I saw a cat", which a later
+# memory musing recycled to Bret's face two turns after he said "Max is a dog".
+_animal_confirmed_species: dict[str, str] = {}
+
+
+def _animal_display_species(species) -> str:
+    """What a record should CALL the animal: the owner-confirmed identity when
+    we have one ("dog named Max"), else the detector's label."""
+    key = (str(species or "creature")).strip().lower()
+    name = _animal_confirmed_pet.get(key)
+    if not name:
+        return key
+    return f"{_animal_confirmed_species.get(key) or key} named {name}"
 
 _PET_ANSWER_NEGATIVE_RE = re.compile(r"\b(no|nope|nah|not|isn'?t|ain'?t|wrong)\b")
 _PET_ANSWER_AFFIRMATIVE_RE = re.compile(
@@ -2441,23 +2457,35 @@ def note_pet_guess_answer(text: str) -> None:
     for species, guess in list(_animal_guessed_pet.items()):
         name = str(guess[1])
         alts = [str(a) for a in (guess[2] if len(guess) > 2 else ())]
+        species_by_name = dict(guess[3]) if len(guess) > 3 else {}
         named = next(
             (cand for cand in [name] + alts
              if cand and re.search(r"\b%s\b" % re.escape(cand.lower()), cleaned)),
             None,
         )
+        confirmed = None
         if named is not None and not (negative and named.lower() == name.lower()):
             # They said a pet's name without denying it — "Yeah, it's Max" or
             # the correction "no, that's Toby".
-            _animal_confirmed_pet[species] = named
-            _log.info("consciousness: pet name CONFIRMED species=%s name=%s", species, named)
+            confirmed = named
         elif affirmative and not negative:
-            _animal_confirmed_pet[species] = name
-            _log.info("consciousness: pet name CONFIRMED species=%s name=%s", species, name)
+            confirmed = name
         elif negative:
             _animal_guessed_pet.pop(species, None)
             _log.info("consciousness: pet guess DENIED species=%s (was %s) — "
                       "back to generic lines", species, name)
+        if confirmed is not None:
+            _animal_confirmed_pet[species] = confirmed
+            true_species = str(species_by_name.get(confirmed) or "").strip().lower()
+            if true_species and true_species != species:
+                # The facts DB knows what the pet actually IS — from here on,
+                # records and remarks say "dog named Max", not the detector's
+                # misread ("my classifier says cat" already admitted as much).
+                _animal_confirmed_species[species] = true_species
+            _log.info("consciousness: pet name CONFIRMED species=%s name=%s%s",
+                      species, confirmed,
+                      (" (true species: %s)" % true_species)
+                      if true_species and true_species != species else "")
 
 
 def _pet_owner_candidates(window_secs: float) -> list[tuple[int, str]]:
@@ -2541,7 +2569,10 @@ def _pet_name_guess_line(species: str) -> Optional[str]:
             line = random.choice(tuple(pool)).format(**fmt)
         except Exception:
             line = f"Wait — {first}, is that {names[0]}?"
-        _animal_guessed_pet[species_key] = (first, names[0], tuple(names[1:3]))
+        _animal_guessed_pet[species_key] = (
+            first, names[0], tuple(names[1:3]),
+            {str(p.get("name")): str(p.get("species") or "") for p in pick},
+        )
         _log.info("consciousness: animal remark guesses pet name species=%s owner=%s "
                   "pets=%s same_species=%s", species_key, owner, names, bool(same))
         try:
@@ -2692,7 +2723,10 @@ def _fire_pending_animal_arrival_reaction() -> bool:
                 rec["last_remark_at"] = now
             _pending_animal_arrivals.pop(pending_key, None)
             if kind == "arrival":
-                episodic_hooks.animal(species, position)  # "I saw a dog" → rex.db
+                # Record the owner-confirmed identity when we have one — the
+                # detector misreads species (dog->cat), and episodes that say
+                # "I saw a cat" get recycled by memory musings later.
+                episodic_hooks.animal(_animal_display_species(species), position)
             _log.info(
                 "consciousness: animal %s reaction fired species=%s text=%r",
                 kind,
@@ -14097,6 +14131,7 @@ def start() -> None:
     _animal_presence.clear()
     _animal_guessed_pet.clear()
     _animal_confirmed_pet.clear()
+    _animal_confirmed_species.clear()
     _update_unknown_streak(False)   # reset unknown-face persistence streak
     _last_startle_sound_reaction_at = 0.0
     _last_notable_sound_reaction_at = 0.0
@@ -14251,6 +14286,7 @@ def stop() -> None:
     _animal_presence.clear()
     _animal_guessed_pet.clear()
     _animal_confirmed_pet.clear()
+    _animal_confirmed_species.clear()
     _last_startle_sound_reaction_at = 0.0
     _last_notable_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()

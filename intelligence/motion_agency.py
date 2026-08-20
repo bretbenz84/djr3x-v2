@@ -110,6 +110,7 @@ _state = {
     "last_approach_at": 0.0,
     "last_flinch_at": 0.0,
     "orient_last_at": 0.0,   # radar-orient cooldown stamp
+    "orient_visited": [],    # (world_bearing_deg, at) — bodies already looked at
     "wander_pending": None,  # in-flight weight-shift pair (out leg + inverse)
     "wander_next_at": 0.0,   # randomized idle-wander cooldown stamp
     "edge_hits": 0,          # consecutive edge-in-eligible conversation ticks
@@ -1560,7 +1561,30 @@ def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
     if not ready or not bodies:
         _reset("orient_hits")
         return False
-    best = bodies[0]
+    # A body he already turned toward and found NOBODY at is spent for a while —
+    # field 2026-08-19 22:49-50: three +60° chases of a rear return (+172, +109,
+    # +175) in three minutes, each spinning him away from where the owner sat,
+    # never finding a face. One look per bearing per TTL; ghosts don't get laps.
+    yaw = _base_yaw_deg()
+    visited_ttl = _num("MOTION_RADAR_ORIENT_VISITED_TTL_SECS", 150.0)
+    visited_deg = _num("MOTION_RADAR_ORIENT_VISITED_DEG", 30.0)
+    visited = [
+        (w, t) for (w, t) in (_state.get("orient_visited") or [])
+        if (now - t) < visited_ttl
+    ]
+    _state["orient_visited"] = visited
+    best = None
+    for body in bodies:
+        if yaw is not None and any(
+            abs(_wrap180((yaw + float(body["bearing_deg"])) - w)) <= visited_deg
+            for w, _t in visited
+        ):
+            continue
+        best = body
+        break
+    if best is None:
+        _reset("orient_hits")
+        return False       # every persistent body has had its look already
     bearing = float(best["bearing_deg"])
     if float(best["confidence"]) < _num("MOTION_RADAR_ORIENT_MIN_CONFIDENCE", 0.30):
         _reset("orient_hits")
@@ -1572,6 +1596,11 @@ def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
     if _state["orient_hits"] < int(_num("MOTION_RADAR_ORIENT_CONFIRM_TICKS", 3)):
         return False
     _reset("orient_hits")
+    if yaw is not None:
+        # Mark the WORLD bearing as looked-at the moment we commit to it; if a
+        # face shows up there, tracking owns the head and this note is moot.
+        visited.append((_wrap180(yaw + bearing), now))
+        _state["orient_visited"] = visited
 
     neck_reach = _num("MOTION_RADAR_ORIENT_NECK_MAX_DEG", 40.0)
     if abs(bearing) <= neck_reach:
@@ -2037,9 +2066,16 @@ def _bearing_degrees_for(frac: float) -> float:
     offset fraction, WITHOUT the minimum-turn floor — suitable as a `come`
     heading, where a 3-degree residual must stay 3 degrees. Neck toward Rex's
     right (+frac) needs a RIGHT (CW, negative) correction;
-    MOTION_FACE_TURN_INVERT flips if field testing disagrees."""
+    MOTION_FACE_TURN_INVERT flips if field testing disagrees.
+
+    The fraction converts to REAL degrees through the neck's physical half-span
+    (~45°), not the 60° turn CLAMP — the old math scaled by the clamp, so every
+    realign over-rotated by a third and the comfort realigns ping-ponged
+    +52/−59/+60 around the owner (field 2026-08-19 22:47-48). Same scale bug
+    class the come-here bearing fusion fixed on 2026-08-11."""
+    span_deg = _num("MOTION_COME_NECK_HALF_SPAN_DEG", 45.0)
     max_deg = _num("MOTION_FACE_TURN_MAX_DEG", 60.0)
-    deg = -frac * max_deg
+    deg = -frac * span_deg
     if _flag("MOTION_FACE_TURN_INVERT", False):
         deg = -deg
     return max(-max_deg, min(max_deg, deg))

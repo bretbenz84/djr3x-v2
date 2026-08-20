@@ -1297,10 +1297,14 @@ class UserMotionStanddownTest(unittest.TestCase):
 
 class TurnMathTest(unittest.TestCase):
     def test_proportional_and_clamped(self):
-        self.assertAlmostEqual(MA._turn_degrees_for(0.5), -30.0)
-        self.assertAlmostEqual(MA._turn_degrees_for(-0.5), 30.0)
+        # The fraction converts through the neck's PHYSICAL half-span (45°), not
+        # the 60° turn clamp — scaling by the clamp over-rotated every realign by
+        # a third and ping-ponged the comfort realigns (field 2026-08-19 22:47).
+        self.assertAlmostEqual(MA._turn_degrees_for(0.5), -22.5)
+        self.assertAlmostEqual(MA._turn_degrees_for(-0.5), 22.5)
         self.assertAlmostEqual(MA._turn_degrees_for(1.5), -60.0)   # clamped to max
         self.assertAlmostEqual(MA._turn_degrees_for(0.05), -10.0)  # floored to min
+        self.assertAlmostEqual(MA._turn_degrees_for(1.0), -45.0)   # full neck = 45°
 
 
 class MinValidTest(unittest.TestCase):
@@ -2053,7 +2057,7 @@ class RadarOrientTest(unittest.TestCase):
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, orient_hits=0, last_turn_at=0.0,
                          last_approach_at=0.0, last_flinch_at=0.0,
-                         orient_last_at=0.0, user_motion_at=0.0,
+                         orient_last_at=0.0, orient_visited=[], user_motion_at=0.0,
                          realign_pending_seq=None, traction_fails=0,
                          no_traction_until=0.0, hold_at=None)
         self._patches = [
@@ -2273,7 +2277,8 @@ class IdleWanderTest(unittest.TestCase):
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, orient_hits=0, last_turn_at=0.0,
                          last_approach_at=0.0, last_flinch_at=0.0,
-                         orient_last_at=0.0, wander_pending=None, wander_next_at=0.0,
+                         orient_last_at=0.0, orient_visited=[],
+                         wander_pending=None, wander_next_at=0.0,
                          user_motion_at=0.0, realign_pending_seq=None,
                          traction_fails=0, no_traction_until=0.0, hold_at=None)
         self._done = {"v": None}
@@ -2884,3 +2889,54 @@ class MeanderChainTest(IdleWanderTest.__bases__[0]):
         self.assertIsNone(MA._state["wander_pending"])
         self.assertEqual(MA._state["traction_fails"], 1)
         self.move.assert_not_called()
+
+
+class RadarOrientVisitedTest(unittest.TestCase):
+    """Field 2026-08-19 22:49-50: three +60° chases of the same rear radar
+    return in three minutes, each spinning him away from where the owner sat.
+    A bearing he turned toward and found nobody at is spent for the TTL."""
+
+    setUp = RadarOrientTest.setUp
+    tearDown = RadarOrientTest.tearDown
+    _tick = RadarOrientTest._tick
+    BODY_FAR = RadarOrientTest.BODY_FAR
+
+    def test_one_look_per_bearing(self):
+        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.0):
+            self._tick(3, bodies=[self.BODY_FAR])
+            self.turn.assert_called_once()
+            # Clear the cooldown + quiet window: the ONLY thing left standing
+            # between him and a re-chase is the visited memory.
+            MA._state.update(orient_last_at=0.0, last_turn_at=0.0, orient_hits=0)
+            self._tick(3, bodies=[self.BODY_FAR])
+        self.turn.assert_called_once()   # ghost does not get a second lap
+
+    def test_visited_expires_after_the_ttl(self):
+        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.0):
+            self._tick(3, bodies=[self.BODY_FAR])
+            self.turn.assert_called_once()
+            MA._state.update(orient_last_at=0.0, last_turn_at=0.0, orient_hits=0)
+            MA._state["orient_visited"] = [
+                (w, t - (config.MOTION_RADAR_ORIENT_VISITED_TTL_SECS + 5.0))
+                for (w, t) in MA._state["orient_visited"]
+            ]
+            self._tick(3, bodies=[self.BODY_FAR])
+        self.assertEqual(self.turn.call_count, 2)
+
+    def test_a_body_on_a_fresh_bearing_still_gets_its_look(self):
+        other = dict(self.BODY_FAR, bearing_deg=-120.0)
+        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.0):
+            self._tick(3, bodies=[self.BODY_FAR])
+            MA._state.update(orient_last_at=0.0, last_turn_at=0.0, orient_hits=0)
+            self._tick(3, bodies=[dict(self.BODY_FAR), other])
+        self.assertEqual(self.turn.call_count, 2)
+        self.assertLess(self.turn.call_args[0][0], 0.0)   # turned toward the NEW one
+
+    def test_no_imu_keeps_the_old_behavior(self):
+        # Without a yaw reference there is no world frame to remember — orient
+        # falls back to cooldown-only pacing rather than mis-filing bearings.
+        with mock.patch.object(MA, "_base_yaw_deg", return_value=None):
+            self._tick(3, bodies=[self.BODY_FAR])
+            MA._state.update(orient_last_at=0.0, last_turn_at=0.0, orient_hits=0)
+            self._tick(3, bodies=[self.BODY_FAR])
+        self.assertEqual(self.turn.call_count, 2)

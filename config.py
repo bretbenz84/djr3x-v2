@@ -8811,6 +8811,11 @@ MOTION_RADAR_ORIENT_NECK_MAX_DEG = 40.0    # within the neck's reach -> glance o
 MOTION_RADAR_ORIENT_NECK_HOLD_SECS = 6.0   # directed-gaze hold on the glance
 MOTION_RADAR_ORIENT_QUIET_SECS = 3.0       # no own-maneuver window before deciding
 MOTION_RADAR_ORIENT_COOLDOWN_SECS = 30.0   # between orients
+# One look per body: a bearing he turned toward and found nobody at is spent for
+# the TTL (field 2026-08-19 22:49: three +60° chases of the same rear return in
+# three minutes, each spinning him away from the owner). World-frame via IMU yaw.
+MOTION_RADAR_ORIENT_VISITED_TTL_SECS = 150.0
+MOTION_RADAR_ORIENT_VISITED_DEG = 30.0
 
 # ── Idle base wander ("weight shift", owner spec 2026-08-19) ────────────────────
 # The drive-base sibling of the idle arm/head wander: occasional small maneuvers
