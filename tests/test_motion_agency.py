@@ -2353,6 +2353,29 @@ class IdleWanderTest(unittest.TestCase):
         self.move.assert_called_once()
         self.assertGreater(self.move.call_args[0][0], 0.0)
 
+    def test_shuffle_is_a_one_way_drift_with_a_long_sit(self):
+        # Owner field pass 2026-08-19: roll-out-roll-back "looks like it was for
+        # no reason". A shuffle takes NO inverse leg and cools down longer than
+        # any turn pair, so the new spot reads deliberate.
+        self._tof = {"fl": 2000, "fr": 2000, "rl": -1, "rr": -1,
+                     "lf": -1, "lb": -1, "rf": -1, "rb": -1}
+        before = time.monotonic()
+        self._tick()
+        self.move.assert_called_once()
+        self.assertIsNone(MA._state["wander_pending"])     # no inverse scheduled
+        sit = MA._state["wander_next_at"] - before
+        self.assertGreater(sit, config.MOTION_IDLE_WANDER_COOLDOWN_MAX_SECS)
+        self._tick(3)
+        self.move.assert_called_once()                     # he sits in the new spot
+
+    def test_idle_pace_is_drowsy(self):
+        self._tof = {"fl": 2000, "fr": 2000, "rl": -1, "rr": -1,
+                     "lf": -1, "lb": -1, "rf": -1, "rb": -1}
+        self._tick()
+        speed = self.move.call_args[1]["speed"]
+        self.assertLessEqual(speed, config.MOTION_IDLE_WANDER_SPEED_MAX_MS)
+        self.assertLessEqual(config.MOTION_IDLE_WANDER_SPEED_MAX_MS, 0.09)
+
     def test_interaction_busy_skips(self):
         self._tick(3, profile=_profile(interaction_busy=True))
         self.turn.assert_not_called()

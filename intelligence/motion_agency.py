@@ -1763,10 +1763,13 @@ def _maybe_startup_approach(person: dict, facing_them: bool,
 # ── Idle base wander ("weight shift") ──────────────────────────────────────────
 # The drive-base sibling of the idle arm/head wander (owner spec 2026-08-19:
 # "much like the idle hands... more random movement back and forth with slight
-# left or right movements"). Small PAIRED maneuvers — a slight turn then its
-# inverse, or a short fore/aft shuffle then its inverse — so the net pose never
-# drifts and every bearing the other lanes rely on stays valid. Randomized
-# timing, amplitude, and speed inside a deterministic safety envelope: the
+# left or right movements"). TURNS are paired — a slight sway then its inverse —
+# so heading, which every stored bearing relies on, never drifts. Fore/aft
+# SHUFFLES are one-way drifts with a long settle in the new spot (owner field
+# pass, same day: the roll-out-roll-back pair "looks like it was for no
+# reason"); translation touches no bearing, and every leg is re-gated on
+# clearance, so the slow unbiased walk stays bounded. Randomized timing,
+# amplitude, and drowsy speed inside a deterministic safety envelope: the
 # clearance gates pick what is possible, the dice pick when and how big. All
 # motion goes through the ToF-gated closed-loop verbs, so the firmware reflex
 # stop stays authoritative; a tight room scales the behavior down and a genuinely
@@ -1921,8 +1924,8 @@ def _maybe_idle_wander(profile, now: float) -> bool:
         deg = random.uniform(_num("MOTION_IDLE_WANDER_TURN_MIN_DEG", 4.0),
                              _num("MOTION_IDLE_WANDER_TURN_MAX_DEG", 10.0)) * amp_scale
         deg *= random.choice((-1.0, 1.0))
-        rate = random.uniform(_num("MOTION_IDLE_WANDER_TURN_RATE_MIN_DEG_S", 15.0),
-                              _num("MOTION_IDLE_WANDER_TURN_RATE_MAX_DEG_S", 35.0))
+        rate = random.uniform(_num("MOTION_IDLE_WANDER_TURN_RATE_MIN_DEG_S", 10.0),
+                              _num("MOTION_IDLE_WANDER_TURN_RATE_MAX_DEG_S", 22.0))
         seq = motion_controller.turn(deg, rate=rate)
         amount, pace = deg, rate
     else:
@@ -1930,30 +1933,44 @@ def _maybe_idle_wander(profile, now: float) -> bool:
                               max_move) * amp_scale
         if kind == "shuffle_back":
             dist = -dist
-        pace = random.uniform(_num("MOTION_IDLE_WANDER_SPEED_MIN_MS", 0.06),
-                              _num("MOTION_IDLE_WANDER_SPEED_MAX_MS", 0.14))
+        pace = random.uniform(_num("MOTION_IDLE_WANDER_SPEED_MIN_MS", 0.04),
+                              _num("MOTION_IDLE_WANDER_SPEED_MAX_MS", 0.09))
         seq = motion_controller.move(dist, speed=pace)
         amount = dist
     if seq is None:
         return False
-    _state["wander_pending"] = {
-        "kind": "turn" if kind == "turn" else "move",
-        "seq": int(seq), "amount": float(amount), "rate": float(pace),
-        "phase": "out", "at": now,
-        "dwell_until": now + random.uniform(
-            _num("MOTION_IDLE_WANDER_DWELL_MIN_SECS", 0.4),
-            _num("MOTION_IDLE_WANDER_DWELL_MAX_SECS", 1.4)),
-    }
-    _state["wander_next_at"] = now + random.uniform(
-        _num("MOTION_IDLE_WANDER_COOLDOWN_MIN_SECS", 25.0),
-        _num("MOTION_IDLE_WANDER_COOLDOWN_MAX_SECS", 70.0))
-    _log.info(
-        "[motion_agency] idle wander: %s %s (roominess %.2f) — paired, ToF-gated",
-        kind,
-        ("%+.1f deg @ %.0f deg/s" % (amount, pace)) if kind == "turn"
-        else ("%+.2f m @ %.2f m/s" % (amount, pace)),
-        roominess,
-    )
+    if kind == "turn":
+        # Turns stay PAIRED (out + inverse): heading is what every bearing in
+        # the other lanes relies on, and a small sway-and-return reads natural.
+        _state["wander_pending"] = {
+            "kind": "turn",
+            "seq": int(seq), "amount": float(amount), "rate": float(pace),
+            "phase": "out", "at": now,
+            "dwell_until": now + random.uniform(
+                _num("MOTION_IDLE_WANDER_DWELL_MIN_SECS", 0.4),
+                _num("MOTION_IDLE_WANDER_DWELL_MAX_SECS", 1.4)),
+        }
+        _state["wander_next_at"] = now + random.uniform(
+            _num("MOTION_IDLE_WANDER_COOLDOWN_MIN_SECS", 25.0),
+            _num("MOTION_IDLE_WANDER_COOLDOWN_MAX_SECS", 70.0))
+        _log.info(
+            "[motion_agency] idle wander: turn %+.1f deg @ %.0f deg/s "
+            "(roominess %.2f) — paired, ToF-gated", amount, pace, roominess,
+        )
+    else:
+        # Shuffles are ONE-WAY drifts (owner 2026-08-19: "rolling forward then
+        # straight back looks like it was for no reason"). He settles in the new
+        # spot, and the longer shuffle cooldown makes the stay read deliberate.
+        # Net drift is a slow unbiased walk, re-gated on clearance every leg —
+        # translation doesn't touch heading, so no stored bearing goes stale.
+        _state["wander_next_at"] = now + random.uniform(
+            _num("MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MIN_SECS", 45.0),
+            _num("MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MAX_SECS", 120.0))
+        _log.info(
+            "[motion_agency] idle wander: %s %+.2f m @ %.2f m/s "
+            "(roominess %.2f) — one-way drift, ToF-gated",
+            kind, amount, pace, roominess,
+        )
     return True
 
 

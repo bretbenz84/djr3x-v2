@@ -8787,9 +8787,10 @@ MOTION_RADAR_ORIENT_QUIET_SECS = 3.0       # no own-maneuver window before decid
 MOTION_RADAR_ORIENT_COOLDOWN_SECS = 30.0   # between orients
 
 # ── Idle base wander ("weight shift", owner spec 2026-08-19) ────────────────────
-# The drive-base sibling of the idle arm/head wander: occasional small PAIRED
-# maneuvers (slight turn + inverse, or short fore/aft shuffle + inverse) so he
-# reads alive instead of statuesque, with zero net pose drift. Randomized timing,
+# The drive-base sibling of the idle arm/head wander: occasional small maneuvers
+# so he reads alive instead of statuesque. Turns are PAIRED (sway + inverse, so
+# heading never drifts); fore/aft shuffles are ONE-WAY drifts with a long settle
+# (the roll-out-roll-back pair read as motion for no reason). Randomized timing,
 # amplitude, and speed inside a deterministic safety envelope: clearance gates
 # decide what is possible (fail CLOSED on unknown sensors), roominess scales how
 # often and how big, the no-drive room rule and user holds shut it off outright,
@@ -8803,17 +8804,25 @@ MOTION_IDLE_WANDER_COMFORT_M = 1.2         # clearance that reads as a roomy spo
 MOTION_IDLE_WANDER_MIN_ROOMINESS = 0.35    # tighter than this: hold still
 MOTION_IDLE_WANDER_TURN_MIN_DEG = 4.0      # slight left/right weight shifts
 MOTION_IDLE_WANDER_TURN_MAX_DEG = 10.0
-MOTION_IDLE_WANDER_TURN_RATE_MIN_DEG_S = 15.0   # sometimes lazy, sometimes not
-MOTION_IDLE_WANDER_TURN_RATE_MAX_DEG_S = 35.0
+# Idle pace (owner 2026-08-19 field pass: the first defaults were "too fast for
+# just idle movement" — these are drowsy on purpose).
+MOTION_IDLE_WANDER_TURN_RATE_MIN_DEG_S = 10.0
+MOTION_IDLE_WANDER_TURN_RATE_MAX_DEG_S = 22.0
 MOTION_IDLE_WANDER_TURN_SIDE_CLEAR_M = 0.35  # footprint swings — need lateral room
-MOTION_IDLE_WANDER_MOVE_MIN_M = 0.05       # back-and-forth shuffle legs
+MOTION_IDLE_WANDER_MOVE_MIN_M = 0.05       # shuffle drift legs
 MOTION_IDLE_WANDER_MOVE_MAX_M = 0.15
 MOTION_IDLE_WANDER_MOVE_MARGIN_M = 0.30    # clearance beyond stop zone + travel
-MOTION_IDLE_WANDER_SPEED_MIN_MS = 0.06     # speed-variable, always gentle
-MOTION_IDLE_WANDER_SPEED_MAX_MS = 0.14
-MOTION_IDLE_WANDER_DWELL_MIN_SECS = 0.4    # settle at the shifted pose a beat
+MOTION_IDLE_WANDER_SPEED_MIN_MS = 0.04     # speed-variable, always drowsy
+MOTION_IDLE_WANDER_SPEED_MAX_MS = 0.09
+MOTION_IDLE_WANDER_DWELL_MIN_SECS = 0.4    # settle at the swayed pose a beat (turns)
 MOTION_IDLE_WANDER_DWELL_MAX_SECS = 1.4
 MOTION_IDLE_WANDER_PENDING_TTL_SECS = 12.0 # drop a wedged pair, never chase it
+# Fore/aft shuffles are ONE-WAY drifts (owner 2026-08-19: "rolling forward then
+# straight back looks like it was for no reason") — only turns keep the paired
+# return. After a drift he SITS in the new spot noticeably longer than the turn
+# cooldown, so the stay reads deliberate rather than accidental.
+MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MIN_SECS = 45.0
+MOTION_IDLE_WANDER_SHUFFLE_COOLDOWN_MAX_SECS = 120.0
 
 # ── Conversation edge-in (owner spec 2026-08-19) ────────────────────────────────
 # "If he's having a conversation, he should try to get closer." The public-zone
