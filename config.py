@@ -9624,9 +9624,10 @@ SOUND_EFFECTS_DRIVE_LOOP_MAX_SECS = 30.0
 MOTION_COMMANDED_FX_WINDOW_SECS = 20.0
 # Autonomous motion is frequent now (idle wander, radar orient, edge-in, object
 # step, spontaneous approach), so ITS motor accents duck to this fraction of a
-# commanded move's volume (owner 2026-08-19: about half) — present as texture,
-# never as loud as a command confirmation. 1.0 = no ducking.
-MOTION_AUTONOMOUS_FX_GAIN = 0.5
+# commanded move's volume — present as texture, never as loud as a command
+# confirmation. 1.0 = no ducking. (Owner 2026-08-19: first asked for about half,
+# then "even more" after hearing it in the field — now a quarter.)
+MOTION_AUTONOMOUS_FX_GAIN = 0.25
 SOUND_EFFECTS_SPEECH_ENABLED = True   # emotion chirp as a reaction's TTS spins up
 SOUND_EFFECTS_MOTION_ENABLED = True   # whir/turn clips on drive-base commands
 SOUND_EFFECTS_SERVO_ENABLED  = True   # servo-whir accents on body gestures
