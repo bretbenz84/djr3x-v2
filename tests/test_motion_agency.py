@@ -491,6 +491,13 @@ class MotionAgencyTest(unittest.TestCase):
         # reporting the drive completed. See ComeResumesAfterBlockTest.
         self.assertTrue(MA.requested_come_active())
 
+    def test_requested_come_approach_starts_the_drive_gaze_worker(self):
+        # The counter-pan/camera-dip worker spans exactly the approach drive.
+        with mock.patch.object(MA, "_start_come_drive_gaze") as start_gaze:
+            self.assertTrue(MA.request_come_here())
+            self._tick()
+        start_gaze.assert_called_once_with(8, 0.0)   # come mock returns seq 8
+
     def test_requested_come_matches_recognized_db_lock(self):
         self._tracking = {"locked": True, "visible": True, "lock_key": "db:1"}
         self.assertTrue(MA.request_come_here())
@@ -2101,3 +2108,122 @@ class RadarOrientTest(unittest.TestCase):
         MA._state.update(orient_hits=0, orient_last_at=0.0)
         self._tick(3, bodies=[self.BODY_NECK])
         self.glance.assert_called_once()   # the neck is not a drive
+
+
+class ComeDriveGazeTest(unittest.TestCase):
+    """Approach drive gaze (owner spec 2026-08-19): the neck counter-pans the
+    base's yaw deviation so the gaze holds the travel heading while the firmware
+    arcs around obstacles; the camera dips slightly during the drive."""
+
+    def test_neck_qus_sign_mapping(self):
+        neutral = int(config.SERVO_CHANNELS["neck"]["neutral"])
+        self.assertGreater(MA._neck_qus_for_yaw(10.0), neutral)   # + = Rex's right
+        self.assertLess(MA._neck_qus_for_yaw(-10.0), neutral)
+        self.assertEqual(MA._neck_qus_for_yaw(0.0), neutral)
+        # Clamped at the half-span, never past the rail.
+        self.assertLessEqual(MA._neck_qus_for_yaw(400.0),
+                             int(config.SERVO_CHANNELS["neck"]["max"]))
+
+    def test_loop_counter_pans_against_base_yaw_and_exits_on_done(self):
+        import threading
+        yaw = {"v": 0.0}
+        done = {"v": None}
+        writes = []
+        poses = []
+        stop = threading.Event()
+        with mock.patch.object(MA, "_base_yaw_deg", side_effect=lambda: yaw["v"]), \
+                mock.patch.object(MA.motion, "done_result",
+                                  side_effect=lambda s: done["v"], create=True), \
+                mock.patch("hardware.servos.set_motion_profile"), \
+                mock.patch("hardware.servos.set_servos",
+                           side_effect=lambda d: writes.append(dict(d))), \
+                mock.patch("hardware.servos.set_face_tracking_baseline"), \
+                mock.patch("sequences.animations.travel_glance_pose",
+                           side_effect=lambda side, pitch, **k: poses.append((side, pitch))):
+            worker = threading.Thread(target=MA._come_drive_gaze_loop,
+                                      args=(stop, 42, 0.0))
+            worker.start()
+            time.sleep(0.3)
+            yaw["v"] = 20.0          # base swung 20° left around an obstacle
+            time.sleep(0.5)
+            done["v"] = "completed"  # the drive ended
+            worker.join(timeout=2.0)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(poses[0], ("center", "down-slight"))   # drive pose
+        self.assertEqual(poses[-1], ("center", "level"))        # canonical exit pose
+        neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
+        neutral = int(config.SERVO_CHANNELS["neck"]["neutral"])
+        self.assertTrue(writes)
+        self.assertGreater(writes[-1][neck_ch], neutral)  # panned RIGHT vs left swing
+
+    def test_alignment_turn_is_folded_into_the_travel_heading(self):
+        import threading
+        # come(heading=+20): the worker anchors BEFORE the firmware's own
+        # alignment turn, so the head first LEADS toward the person (pans left
+        # with the pending +20 turn), then settles neutral once the base
+        # reaches the travel heading.
+        yaw = {"v": 0.0}
+        done = {"v": None}
+        writes = []
+        stop = threading.Event()
+        with mock.patch.object(MA, "_base_yaw_deg", side_effect=lambda: yaw["v"]), \
+                mock.patch.object(MA.motion, "done_result",
+                                  side_effect=lambda s: done["v"], create=True), \
+                mock.patch("hardware.servos.set_motion_profile"), \
+                mock.patch("hardware.servos.set_servos",
+                           side_effect=lambda d: writes.append(dict(d))), \
+                mock.patch("hardware.servos.set_face_tracking_baseline"), \
+                mock.patch("sequences.animations.travel_glance_pose"):
+            worker = threading.Thread(target=MA._come_drive_gaze_loop,
+                                      args=(stop, 42, 20.0))
+            worker.start()
+            time.sleep(0.3)
+            yaw["v"] = 20.0          # the firmware finished its alignment turn
+            time.sleep(0.5)
+            done["v"] = "completed"
+            worker.join(timeout=2.0)
+        neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
+        neutral = int(config.SERVO_CHANNELS["neck"]["neutral"])
+        self.assertTrue(writes)
+        self.assertLess(writes[0][neck_ch], neutral)      # gaze leads left first
+        self.assertEqual(writes[-1][neck_ch], neutral)    # settled on the heading
+
+    def test_explicit_stop_leaves_the_head_alone(self):
+        import threading
+        poses = []
+        stop = threading.Event()
+        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.0), \
+                mock.patch.object(MA.motion, "done_result", return_value=None,
+                                  create=True), \
+                mock.patch("hardware.servos.set_motion_profile"), \
+                mock.patch("hardware.servos.set_servos"), \
+                mock.patch("hardware.servos.set_face_tracking_baseline"), \
+                mock.patch("sequences.animations.travel_glance_pose",
+                           side_effect=lambda side, pitch, **k: poses.append((side, pitch))):
+            worker = threading.Thread(target=MA._come_drive_gaze_loop,
+                                      args=(stop, 42, 0.0))
+            worker.start()
+            time.sleep(0.3)
+            stop.set()
+            worker.join(timeout=2.0)
+        self.assertEqual(poses, [("center", "down-slight")])   # no exit recentre
+
+    def test_kill_switch_blocks_the_worker(self):
+        with mock.patch.object(config, "MOTION_COME_GAZE_COMP_ENABLED", False,
+                               create=True):
+            MA._start_come_drive_gaze(42, 0.0)
+        self.assertIsNone(MA._come_drive_gaze.get("thread"))
+
+
+class TravelGlanceSlightDownTest(unittest.TestCase):
+    def test_down_slight_dips_the_camera_only(self):
+        from sequences import animations
+        with mock.patch.object(animations.servos, "move_to") as move_to, \
+                mock.patch.object(animations.servos, "set_face_tracking_baseline"):
+            animations.travel_glance_pose("center", "down-slight")
+        targets = move_to.call_args[0][0]
+        lift_cfg = config.SERVO_CHANNELS["headlift"]
+        tilt_cfg = config.SERVO_CHANNELS["headtilt"]
+        self.assertEqual(targets[int(lift_cfg["ch"])], int(lift_cfg["neutral"]))
+        self.assertEqual(targets[int(tilt_cfg["ch"])], animations.HEADTILT_SLIGHT_DOWN)
+        self.assertGreater(animations.HEADTILT_SLIGHT_DOWN, int(tilt_cfg["neutral"]))

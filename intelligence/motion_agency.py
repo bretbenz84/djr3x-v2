@@ -453,6 +453,7 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
         except Exception:
             pass
     _stop_come_dwell_gaze()
+    _stop_come_drive_gaze()
     _requested_come.update(active=False, started_at=0.0, requester_id=None,
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
@@ -831,6 +832,127 @@ def _stop_come_dwell_gaze(recenter: bool = False) -> None:
             pass
 
 
+# ── Come-approach drive gaze ──────────────────────────────────────────────────
+# While the firmware drives a `come` approach, its steering assist may ARC the
+# chassis around lateral obstacles — but the head used to ride the body, so his
+# gaze swung off the person he was walking toward with every dodge. This worker
+# counter-pans the neck by the base's yaw deviation from the travel heading
+# (IMU gyro, + = left/CCW), so the gaze stays pinned on where he is GOING while
+# the wheels find their way around the clutter (owner spec 2026-08-19). It also
+# dips the camera slightly (down-slight) so floor obstacles directly ahead are
+# in frame during the drive. The errand already owns the head (face-tracking
+# steering suspended), so there is exactly one neck writer while this runs; it
+# self-terminates when the drive's `done` lands and glides back to the
+# canonical centre-level pose the alignment measurement expects.
+
+_come_drive_gaze: dict = {"stop": None, "thread": None}
+
+
+def _neck_qus_for_yaw(bearing_deg: float) -> "int | None":
+    """Neck servo target for a head yaw of ``bearing_deg`` off the body's nose
+    (+ = Rex's RIGHT — the neck_offset_fraction convention: qus above neutral)."""
+    try:
+        cfg = config.SERVO_CHANNELS["neck"]
+        neutral = float(cfg["neutral"])
+        half_span = max(1.0, min(float(cfg["max"]) - neutral,
+                                 neutral - float(cfg["min"])))
+    except Exception:
+        return None
+    span_deg = _num("MOTION_COME_NECK_HALF_SPAN_DEG", 45.0)
+    if span_deg <= 0:
+        return None
+    frac = max(-1.0, min(1.0, float(bearing_deg) / span_deg))
+    return int(round(neutral + frac * half_span))
+
+
+def _start_come_drive_gaze(seq: "int | None", heading_deg: float = 0.0) -> None:
+    if seq is None or not _flag("MOTION_COME_GAZE_COMP_ENABLED", True):
+        return
+    _stop_come_drive_gaze()
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=_come_drive_gaze_loop, args=(stop_event, int(seq), float(heading_deg)),
+        name="come-drive-gaze", daemon=True,
+    )
+    _come_drive_gaze.update(stop=stop_event, thread=worker)
+    worker.start()
+
+
+def _stop_come_drive_gaze() -> None:
+    stop_event = _come_drive_gaze.get("stop")
+    worker = _come_drive_gaze.get("thread")
+    if stop_event is not None:
+        stop_event.set()
+    if worker is not None and worker.is_alive():
+        worker.join(timeout=1.5)
+    _come_drive_gaze.update(stop=None, thread=None)
+
+
+def _come_drive_gaze_loop(stop_event: threading.Event, seq: int,
+                          heading_deg: float) -> None:
+    try:
+        from hardware import servos
+        from sequences import animations
+    except Exception:
+        return
+    # Drive pose: camera dips a touch so floor clutter ahead is visible.
+    pitch = str(getattr(config, "MOTION_COME_DRIVE_PITCH", "down-slight"))
+    try:
+        animations.travel_glance_pose("center", pitch)
+    except Exception:
+        pass
+    anchor = _base_yaw_deg()
+    max_comp = _num("MOTION_COME_GAZE_COMP_MAX_DEG", 35.0)
+    deadband = _num("MOTION_COME_GAZE_COMP_DEADBAND_QUS", 40.0)
+    deadline = time.monotonic() + _num("MOTION_COME_GAZE_COMP_MAX_SECS", 30.0)
+    try:
+        neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
+    except Exception:
+        return
+    last_qus = None
+    profile_set = False
+    while not stop_event.is_set() and time.monotonic() < deadline:
+        try:
+            if motion.done_result(int(seq)) is not None:
+                break                    # drive ended — the errand decides what's next
+        except Exception:
+            break
+        yaw = _base_yaw_deg()
+        if anchor is None:
+            anchor = yaw                 # IMU came up late — anchor on first reading
+        if yaw is not None and anchor is not None:
+            # Travel heading = anchor + the come command's own alignment turn.
+            # + deviation = base swung LEFT of the travel line, so the head pans
+            # RIGHT by the same amount and the gaze holds.
+            dev = _wrap180(yaw - anchor - heading_deg)
+            dev = max(-max_comp, min(max_comp, dev))
+            qus = _neck_qus_for_yaw(dev)
+            if qus is not None and (last_qus is None
+                                    or abs(qus - last_qus) >= deadband):
+                try:
+                    if not profile_set:
+                        servos.set_motion_profile(
+                            [neck_ch],
+                            speed=int(_num("MOTION_COME_GAZE_COMP_SERVO_SPEED", 60)),
+                            acceleration=int(_num("MOTION_COME_GAZE_COMP_SERVO_ACCEL", 10)),
+                        )
+                        profile_set = True
+                    servos.set_servos({neck_ch: int(qus)})
+                    servos.set_face_tracking_baseline(neck=int(qus))
+                    last_qus = int(qus)
+                except Exception:
+                    break
+        stop_event.wait(0.15)
+    # Self-exit (drive done / deadline): glide back to the canonical pose the
+    # alignment measurement expects. An explicit stop leaves the head alone —
+    # the errand teardown / face tracking owns what happens next.
+    if not stop_event.is_set():
+        try:
+            animations.travel_glance_pose("center", "level")
+        except Exception:
+            pass
+
+
 def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> bool:
     """Run one settled-state step. True means this mode consumed the autonomy tick.
 
@@ -1131,6 +1253,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
     seq = motion_controller.come(approach_heading, stop_at=stop_at)
     if seq is not None:
+        _start_come_drive_gaze(seq, approach_heading)
         _requested_come["approach_at"] = now
         _requested_come["approaches"] = int(_requested_come["approaches"]) + 1
         _requested_come["align_turns"] = 0

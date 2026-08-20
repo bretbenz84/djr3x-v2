@@ -8725,6 +8725,18 @@ MOTION_COME_ALIGN_GOOD_ENOUGH_DEG = 24.0
 # MOTION_COME_SEARCH_TIMEOUT_SECS, stops him butting at a permanent obstruction.
 MOTION_COME_RETRY_GAP_SECS = 2.0
 MOTION_COME_MAX_APPROACHES = 4
+# Drive gaze (owner spec 2026-08-19): while the `come` approach drives, the
+# firmware's steering assist may arc the chassis around lateral obstacles — the
+# neck counter-pans by the IMU yaw deviation from the travel heading so his gaze
+# stays pinned on where he is GOING, and the camera dips a touch (down-slight)
+# so floor clutter directly ahead is in frame. Errand-owned head, one writer.
+MOTION_COME_GAZE_COMP_ENABLED = True
+MOTION_COME_GAZE_COMP_MAX_DEG = 35.0      # counter-pan clamp (under the 45° span)
+MOTION_COME_GAZE_COMP_DEADBAND_QUS = 40.0 # skip sub-deadband servo writes
+MOTION_COME_GAZE_COMP_MAX_SECS = 30.0     # worker failsafe deadline
+MOTION_COME_GAZE_COMP_SERVO_SPEED = 60    # gentle glide, not tracking-speed snaps
+MOTION_COME_GAZE_COMP_SERVO_ACCEL = 10
+MOTION_COME_DRIVE_PITCH = "down-slight"   # camera pitch during the drive ("level" = off)
 # ── RADAR-FIRST come-here search (owner spec 2026-08-15) ──────────────────────
 # The LD2450 ring (hardware/radar.py) says where BODIES are, in the base frame,
 # so the search no longer turns blind: with no face on camera it turns straight

@@ -1592,6 +1592,12 @@ def travel_glance_pose(side: str = "center", pitch: str = "level",
     elif pitch == "down":
         targets[lift_ch] = (lift_neutral + int(lift_cfg["min"])) // 2
         targets[tilt_ch] = (tilt_neutral + int(tilt_cfg["max"])) // 2
+    elif pitch in ("down-slight", "slight-down"):
+        # Approach gaze: the head stays at height, only the camera dips a touch
+        # so floor clutter directly ahead is in frame while a standing person's
+        # face still is (owner 2026-08-19: come-here should look slightly down).
+        targets[lift_ch] = lift_neutral
+        targets[tilt_ch] = HEADTILT_SLIGHT_DOWN
     else:
         targets[lift_ch] = lift_neutral
         targets[tilt_ch] = tilt_neutral
