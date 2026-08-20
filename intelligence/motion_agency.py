@@ -119,6 +119,8 @@ _state = {
     "first_step_at": 0.0,    # first LIVE autonomy tick (startup-approach window)
     "startup_approach_done": False,  # once per session
     "startup_hits": 0,       # startup-approach confirm counter
+    "neck_strain_since": 0.0,  # comfort-realign timer: neck past the comfort
+                               # fraction since this stamp (0 = relaxed)
     "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
     "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
     "traction_fails": 0,     # consecutive realigns that produced no actual rotation
@@ -2299,6 +2301,7 @@ def _step_inner(snapshot: dict, profile) -> None:
     person = _tracked_person(snapshot)
     if person is None:
         _reset("neck_hits", "far_hits")
+        _state["neck_strain_since"] = 0.0   # no tracked face = no tracking strain
         # Nobody on camera — but the radar ring may know where they are.
         if (_flag("MOTION_RADAR_ORIENT_ENABLED", True)
                 and _maybe_radar_orient(snapshot, now)):
@@ -2366,6 +2369,7 @@ def _step_inner(snapshot: dict, profile) -> None:
         # actuator owner.)
         if _wander_owns_neck():
             _reset("neck_hits", "far_hits")
+            _state["neck_strain_since"] = 0.0   # a wander-parked neck is not strain
             return
         threshold = _num("MOTION_FACE_NECK_FRACTION", 0.85)
         edge = _num("MOTION_FACE_EDGE_FRACTION", 0.30)
@@ -2399,6 +2403,49 @@ def _step_inner(snapshot: dict, profile) -> None:
                 _state["realign_pending_seq"] = seq    # did it actually rotate?
             _reset("neck_hits")
             return  # one maneuver per tick
+
+        # ── COMFORT REALIGN (owner 2026-08-19: "He's turning his head to face
+        # me, but he looks strained. He should eventually turn his body to face
+        # and straighten out his neck servo while he does it.") ────────────────
+        # The hard trigger above only fires when tracking is LOSING the person —
+        # exhausted neck AND face escaping the frame. Field 2026-08-19 22:07:
+        # the neck sat at 70-100% of its throw for most of a session (mean 69%)
+        # with the face held perfectly centered, so the wheels never came
+        # around and he chatted cranked sideways. This trigger is the ease-in:
+        # a neck held past the comfort fraction for a sustained stretch turns
+        # the base by the neck angle, and face tracking straightens the neck as
+        # the body comes around — same mechanism, gentler cause. The timer
+        # freezes out anything that parks the neck deliberately (directed-gaze
+        # holds; wanders are already excluded above).
+        comfort = _num("MOTION_FACE_COMFORT_FRACTION", 0.60)
+        gaze_held = False
+        try:
+            from intelligence import consciousness
+            gaze_held = bool(consciousness.directed_gaze_hold_active())
+        except Exception:
+            pass
+        if abs(frac) < comfort or gaze_held:
+            _state["neck_strain_since"] = 0.0
+        elif not float(_state.get("neck_strain_since") or 0.0):
+            _state["neck_strain_since"] = now
+        elif ((now - float(_state["neck_strain_since"]))
+                >= _num("MOTION_FACE_COMFORT_SECS", 12.0)
+                and (now - _state["last_turn_at"]) >= cooldown):
+            deg = _turn_degrees_for(frac)
+            seq = motion_controller.turn(
+                deg, rate=_num("MOTION_FACE_TURN_RATE_DEG_S", 40.0))
+            if seq is not None:
+                _log.info(
+                    "[motion_agency] comfort realign: neck held %.0f%% off-center "
+                    "for %.0fs -> base turn %+.0f deg, neck straightens as it "
+                    "comes around (person=%s)",
+                    frac * 100.0, now - float(_state["neck_strain_since"]), deg,
+                    person.get("person_db_id") or person.get("id"),
+                )
+                _state["last_turn_at"] = now
+                _state["realign_pending_seq"] = seq    # traction detector watches it
+                _state["neck_strain_since"] = 0.0
+                return  # one maneuver per tick
 
     centered = _num("MOTION_APPROACH_CENTERED_FRACTION", 0.18)
     facing_them = frac is None or abs(frac) < centered

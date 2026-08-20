@@ -2717,3 +2717,79 @@ class WanderDuringConversationTest(unittest.TestCase):
                     _profile(suppress_proactive=True))
         wander.assert_called_once()
         MA.cancel_requested_come("test cleanup")
+
+
+class ComfortRealignTest(unittest.TestCase):
+    """Comfort realign (owner 2026-08-19): a neck parked past the comfort
+    fraction for a sustained stretch turns the body under the head, even with
+    the face held perfectly centered — the strain case the hard trigger
+    (exhausted neck + escaping face) never covers."""
+
+    # 70% of the right half-span: past comfort (0.60), under exhausted (0.85).
+    _STRAINED_NECK = 5472 + int(0.70 * (8960 - 5472))
+
+    # The MotionAgencyTest fixture, reused by delegation instead of inheritance
+    # (subclassing would re-run all of its inherited test_* methods).
+    setUp = MotionAgencyTest.setUp
+    tearDown = MotionAgencyTest.tearDown
+    _tick = MotionAgencyTest._tick
+    _arm_realign = MotionAgencyTest._arm_realign
+    _verdicts = MotionAgencyTest._verdicts
+
+    def _strain(self):
+        self._neck = self._STRAINED_NECK
+        self._face_box = _CENTERED_FACE      # tracking is holding them fine
+
+    def test_sustained_strain_turns_the_body(self):
+        self._strain()
+        self._tick()                          # arms the strain timer
+        self.turn.assert_not_called()
+        MA._state["neck_strain_since"] = time.monotonic() - (
+            float(config.MOTION_FACE_COMFORT_SECS) + 1.0)
+        self._tick()
+        self.turn.assert_called_once()
+        self.assertLess(self.turn.call_args[0][0], 0.0)   # neck right -> turn right
+        self.assertAlmostEqual(self.turn.call_args[1]["rate"],
+                               config.MOTION_FACE_TURN_RATE_DEG_S)
+        self.assertEqual(MA._state["neck_strain_since"], 0.0)
+
+    def test_brief_strain_does_not_fire(self):
+        self._strain()
+        self._tick(3)                         # timer armed but not aged
+        self.turn.assert_not_called()
+
+    def test_relaxed_neck_resets_the_timer(self):
+        self._strain()
+        self._tick()
+        self._neck = 5472                     # tracking re-centered on its own
+        self._tick()
+        self.assertEqual(MA._state["neck_strain_since"], 0.0)
+
+    def test_comfortable_offset_never_arms(self):
+        self._neck = 5472 + int(0.40 * (8960 - 5472))   # 40% — under comfort
+        self._face_box = _CENTERED_FACE
+        self._tick(3)
+        self.assertEqual(MA._state["neck_strain_since"], 0.0)
+        self.turn.assert_not_called()
+
+    def test_directed_gaze_hold_is_not_strain(self):
+        self._strain()
+        with mock.patch("intelligence.consciousness.directed_gaze_hold_active",
+                        return_value=True):
+            self._tick(2)
+        self.assertEqual(MA._state["neck_strain_since"], 0.0)
+        self.turn.assert_not_called()
+
+    def test_turn_cooldown_holds_it(self):
+        self._strain()
+        self._tick()
+        MA._state["neck_strain_since"] = time.monotonic() - 30.0
+        MA._state["last_turn_at"] = time.monotonic()   # something just turned
+        self._tick()
+        self.turn.assert_not_called()
+
+    def test_hard_trigger_still_wins_when_the_face_escapes(self):
+        # Exhausted neck + edge face: the original last-resort path, unchanged.
+        self._arm_realign()
+        self._tick(2)
+        self.turn.assert_called_once()

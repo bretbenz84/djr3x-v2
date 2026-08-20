@@ -8855,6 +8855,14 @@ MOTION_APPROACH_SPEED_JITTER_LOW = 0.55
 # Realign glide rate: a housekeeping correction, not a commanded maneuver — the
 # default 75°/s made a 60° realign read as a jarring snap (owner 2026-08-19).
 MOTION_FACE_TURN_RATE_DEG_S = 40.0
+# Comfort realign (owner 2026-08-19: "he's turning his head to face me, but he
+# looks strained — he should eventually turn his body to face and straighten out
+# his neck"). The hard realign only fires when tracking is LOSING the person; a
+# neck parked past the comfort fraction for this long turns the body under the
+# head even with the face held perfectly centered (field 22:07 session: neck at
+# 70-100% throw for most of a conversation, zero realigns).
+MOTION_FACE_COMFORT_FRACTION = 0.60
+MOTION_FACE_COMFORT_SECS = 12.0
 
 # ── Startup approach (owner spec 2026-08-19) ────────────────────────────────────
 # "I want it to happen right after he starts up if the ToF allow for it." Once per
