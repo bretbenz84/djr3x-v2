@@ -12841,6 +12841,14 @@ def request_object_glance(label: str, *, source: str = "") -> bool:
         "[object_glance] armed toward %r (yaw=%.1f° pitch=%.1f° box_age=%.1fs source=%s)",
         key, yaw, pitch, age, source or "?",
     )
+    # An object he asks about can also pull the BODY a step closer (owner
+    # 2026-08-19). Armed here while the sighting is fresh; motion_agency's
+    # social lane executes it at the first clear moment (waits out the answer).
+    try:
+        from intelligence import motion_agency
+        motion_agency.request_object_step(yaw, label=key, source=source)
+    except Exception:
+        pass
     return True
 
 

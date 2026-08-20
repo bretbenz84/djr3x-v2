@@ -2463,3 +2463,92 @@ class EdgeInTest(unittest.TestCase):
                                create=True):
             self._tick(8)
         self.move.assert_not_called()
+
+
+class ObjectStepTest(unittest.TestCase):
+    """Object step (owner spec 2026-08-19): asked-about object roughly ahead ->
+    one small ToF-gated step toward it, executed after the answer moment."""
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
+                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         object_step=None, object_step_at=0.0,
+                         last_turn_at=0.0, last_approach_at=0.0, last_flinch_at=0.0,
+                         user_motion_at=0.0, realign_pending_seq=None,
+                         traction_fails=0, no_traction_until=0.0, hold_at=None)
+        self._tof = {"fl": 2000, "fr": 2000}
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "move", return_value=11),
+            mock.patch.object(MA.motion, "telemetry",
+                              side_effect=lambda: {"tof_mm": dict(self._tof)}),
+            mock.patch("intelligence.battery_awareness.battery_critical",
+                       return_value=False),
+            mock.patch("world_state.world_state.get", return_value={}),
+        ]
+        for p in self._patches:
+            p.start()
+        self.move = MA.motion_controller.move
+
+    def tearDown(self):
+        MA.cancel_requested_come("test cleanup")
+        for p in self._patches:
+            p.stop()
+        MA._state["object_step"] = None
+
+    def _tick(self, profile=None):
+        MA.step({"people": []}, profile or _profile())
+
+    def test_ahead_object_arms_and_steps_on_a_clear_tick(self):
+        self.assertTrue(MA.request_object_step(5.0, label="bowl"))
+        self._tick()
+        self.move.assert_called_once()
+        step = self.move.call_args[0][0]
+        self.assertAlmostEqual(step, config.MOTION_OBJECT_STEP_M)
+        self.assertIsNone(MA._state["object_step"])
+
+    def test_off_nose_object_never_arms(self):
+        self.assertFalse(MA.request_object_step(40.0, label="poster"))
+        self._tick()
+        self.move.assert_not_called()
+
+    def test_mid_sentence_holds_the_arm_then_executes(self):
+        self.assertTrue(MA.request_object_step(0.0, label="bowl"))
+        self._tick(profile=_profile(user_mid_sentence=True))
+        self.move.assert_not_called()               # their answer comes first
+        self.assertIsNotNone(MA._state["object_step"])
+        self._tick()
+        self.move.assert_called_once()
+
+    def test_interaction_busy_holds_the_arm(self):
+        self.assertTrue(MA.request_object_step(0.0, label="bowl"))
+        self._tick(profile=_profile(interaction_busy=True))
+        self.move.assert_not_called()
+        self.assertIsNotNone(MA._state["object_step"])
+
+    def test_tight_front_drops_the_arm(self):
+        self._tof = {"fl": 800, "fr": 800}          # 0.8 m < MIN_FRONT
+        self.assertTrue(MA.request_object_step(0.0, label="bowl"))
+        self._tick()
+        self.move.assert_not_called()
+        self.assertIsNone(MA._state["object_step"])
+
+    def test_a_base_move_since_the_ask_invalidates_the_bearing(self):
+        self.assertTrue(MA.request_object_step(0.0, label="bowl"))
+        MA._state["last_turn_at"] = time.monotonic()   # something turned the base
+        self._tick()
+        self.move.assert_not_called()
+        self.assertIsNone(MA._state["object_step"])
+
+    def test_cooldown_blocks_the_next_arm(self):
+        self.assertTrue(MA.request_object_step(0.0, label="bowl"))
+        self._tick()
+        self.move.assert_called_once()
+        self.assertFalse(MA.request_object_step(0.0, label="lamp"))
+
+    def test_kill_switch(self):
+        with mock.patch.object(config, "MOTION_OBJECT_STEP_ENABLED", False,
+                               create=True):
+            self.assertFalse(MA.request_object_step(0.0, label="bowl"))

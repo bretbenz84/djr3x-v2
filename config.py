@@ -8821,6 +8821,22 @@ MOTION_EDGE_IN_KEEP_CLEAR_M = 1.0          # clearance preserved after the step
 MOTION_EDGE_IN_STEP_M = 0.25               # a drift, not a lunge
 MOTION_EDGE_IN_SPEED_MIN_MS = 0.08         # always slower than a commanded drive
 MOTION_EDGE_IN_SPEED_MAX_MS = 0.14
+
+# ── Object step (owner spec 2026-08-19) ─────────────────────────────────────────
+# "If he sees something that grabs his attention that he asks about, he could
+# move towards the object." Armed by the object-question glance hook while the
+# sighting is fresh; executed by the social-lane tick at the first clear moment
+# so motor noise never rides over the human's ANSWER to the question. One short
+# slow ToF-gated step, only when the thing is roughly ahead of the body.
+MOTION_OBJECT_STEP_ENABLED = True
+MOTION_OBJECT_STEP_MAX_BEARING_DEG = 15.0  # farther off-nose: glance only
+MOTION_OBJECT_STEP_M = 0.25                # a lean-in, not a charge
+MOTION_OBJECT_STEP_KEEP_CLEAR_M = 0.7      # clearance preserved after the step
+MOTION_OBJECT_STEP_MIN_FRONT_M = 1.0       # front ToF must show at least this
+MOTION_OBJECT_STEP_SPEED_MIN_MS = 0.08
+MOTION_OBJECT_STEP_SPEED_MAX_MS = 0.14
+MOTION_OBJECT_STEP_COOLDOWN_SECS = 90.0
+MOTION_OBJECT_STEP_TTL_SECS = 15.0         # a stale arm is dropped, never chased
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
 # the body, and realign was rotating it straight back toward their face (field

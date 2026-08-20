@@ -114,6 +114,8 @@ _state = {
     "wander_next_at": 0.0,   # randomized idle-wander cooldown stamp
     "edge_hits": 0,          # consecutive edge-in-eligible conversation ticks
     "edge_last_at": 0.0,     # edge-in cooldown stamp
+    "object_step": None,     # armed step toward an asked-about object
+    "object_step_at": 0.0,   # object-step cooldown stamp
     "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
     "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
     "traction_fails": 0,     # consecutive realigns that produced no actual rotation
@@ -1612,6 +1614,90 @@ def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
     return True
 
 
+# ── Object step ─────────────────────────────────────────────────────────────────
+# Rex just asked about an object he can see (object_qa.note_asked → the glance
+# hook). If the thing is roughly AHEAD of the body, arm one small ToF-gated step
+# toward it (owner 2026-08-19: "If he sees something that grabs his attention
+# that he asks about, he could move towards the object"). The step is ARMED at
+# ask time but EXECUTED by the social-lane tick, which waits out the human's
+# answer (mid-sentence gate) instead of driving motor noise into the very reply
+# the answer latch is trying to capture.
+
+
+def request_object_step(camera_yaw_deg: float, label: str = "",
+                        source: str = "") -> bool:
+    """Arm a step toward an asked-about object. ``camera_yaw_deg`` is the
+    object's yaw within the camera frame (+ = right of frame); the body bearing
+    folds in the current neck offset. Returns True when armed."""
+    if not _flag("MOTION_OBJECT_STEP_ENABLED", True):
+        return False
+    now = time.monotonic()
+    if (now - float(_state.get("object_step_at") or 0.0)) < _num(
+        "MOTION_OBJECT_STEP_COOLDOWN_SECS", 90.0
+    ):
+        return False
+    neck_deg = _come_neck_bearing_deg() or 0.0        # + = Rex's right
+    bearing = neck_deg + float(camera_yaw_deg)        # camera + = right of frame
+    if abs(bearing) > _num("MOTION_OBJECT_STEP_MAX_BEARING_DEG", 15.0):
+        return False                                   # not ahead — glance only
+    _state["object_step"] = {"label": str(label or ""), "bearing": float(bearing),
+                             "at": now, "source": str(source or "")}
+    return True
+
+
+def _step_object_step(profile, now: float) -> bool:
+    """Execute an armed object step at the first clear moment. True = acted."""
+    pending = _state.get("object_step")
+    if pending is None:
+        return False
+    if (now - float(pending.get("at") or 0.0)) > _num(
+        "MOTION_OBJECT_STEP_TTL_SECS", 15.0
+    ):
+        _state["object_step"] = None
+        return False
+    # The body moved since the ask — the stored bearing no longer points at it.
+    moved_at = max(float(_state.get("last_turn_at") or 0.0),
+                   float(_state.get("last_approach_at") or 0.0),
+                   float(_state.get("last_flinch_at") or 0.0))
+    if moved_at > float(pending["at"]):
+        _state["object_step"] = None
+        return False
+    if getattr(profile, "interaction_busy", False):
+        return False           # their answer is in flight — hold the arm, wait
+    if _traction_lost(now):
+        _state["object_step"] = None
+        return False
+    try:
+        from intelligence import battery_awareness
+        if battery_awareness.battery_critical():
+            _state["object_step"] = None
+            return False
+    except Exception:
+        pass
+    front = _radial_front_m()
+    if front is None or front < _num("MOTION_OBJECT_STEP_MIN_FRONT_M", 1.0):
+        _state["object_step"] = None
+        return False
+    step_m = min(_num("MOTION_OBJECT_STEP_M", 0.25),
+                 front - _num("MOTION_OBJECT_STEP_KEEP_CLEAR_M", 0.7))
+    _state["object_step"] = None
+    if step_m < 0.08:
+        return False
+    speed = random.uniform(_num("MOTION_OBJECT_STEP_SPEED_MIN_MS", 0.08),
+                           _num("MOTION_OBJECT_STEP_SPEED_MAX_MS", 0.14))
+    seq = motion_controller.move(step_m, speed=speed)
+    if seq is not None:
+        _state["object_step_at"] = now
+        _state["last_approach_at"] = now   # quiet windows respect it
+        _log.info(
+            "[motion_agency] object step: leaning in %.2fm toward %r "
+            "(front %.2fm, %.2f m/s, ToF-gated)",
+            step_m, pending.get("label") or "?", front, speed,
+        )
+        return True
+    return False
+
+
 # ── Idle base wander ("weight shift") ──────────────────────────────────────────
 # The drive-base sibling of the idle arm/head wander (owner spec 2026-08-19:
 # "much like the idle hands... more random movement back and forth with slight
@@ -2137,6 +2223,11 @@ def _step_inner(snapshot: dict, profile) -> None:
     # An in-flight weight-shift pair finishes (or dies) before any other lane may
     # move the base — its inverse landing after a realign turn would corrupt both.
     if _step_idle_wander_pending(now):
+        return
+
+    # A step toward an asked-about object executes at the first clear moment
+    # (it was armed at ask time; this tick has already waited out mid-sentence).
+    if _step_object_step(profile, now):
         return
 
     person = _tracked_person(snapshot)
