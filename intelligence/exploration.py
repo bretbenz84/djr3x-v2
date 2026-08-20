@@ -153,6 +153,19 @@ def enabled() -> bool:
     return bool(getattr(config, "EXPLORE_ENABLED", True))
 
 
+def no_drive_room() -> "Optional[tuple]":
+    """The (name, reason) of the current room if the owner flagged it no-drive.
+
+    Same source of truth as the other motion behaviors (motion_agency owns the
+    place lookup). None when drivable, unknown, or the check is unavailable.
+    """
+    try:
+        from intelligence import motion_agency
+        return motion_agency.no_drive_room()
+    except Exception:
+        return None
+
+
 def can_start() -> Optional[str]:
     """Return None if a session may start, else a short reason string (for logs).
 
@@ -163,6 +176,13 @@ def can_start() -> Optional[str]:
         return "disabled"
     if active():
         return "already_active"
+    # A room the owner told him not to drive in (carpet, house rules). The
+    # traction detector would eventually grind to the same conclusion, but the
+    # owner's rule is authoritative BEFORE the wheels scrub — a walk must not
+    # start here while a drive base is attached. (A head-only fallback session
+    # drives nothing, so the rule doesn't apply without a base.)
+    if base_available() and no_drive_room() is not None:
+        return "room_no_drive"
     try:
         from intelligence import battery_awareness
         if battery_awareness.battery_critical():
@@ -529,6 +549,16 @@ def _check_can_continue(sess: "_Session") -> bool:
             return False
     except Exception:
         pass
+    # The room belief can change MID-SESSION (place recognition publishes live):
+    # a walk that carries him into — or re-recognizes — a no-drive room must stop
+    # driving at the next step boundary, before the traction detector has to
+    # grind through aborted turns to learn the same rule. Head-only sessions
+    # drive nothing, so the rule doesn't end them.
+    if sess.had_base and no_drive_room() is not None:
+        _log.info("[explore] room is flagged no-drive — ending the walk")
+        sess.abort_reason = sess.abort_reason or "room_no_drive"
+        sess.abort.set()
+        return False
     try:
         from intelligence import battery_awareness
         if battery_awareness.battery_critical():

@@ -882,6 +882,77 @@ class WorkerAbortHonoringTests(unittest.TestCase):
         self.assertEqual(sess.abort_reason, "game_started")
 
 
+# ── 10b. No-drive room rule ────────────────────────────────────────────────────
+
+
+class NoDriveRoomTests(unittest.TestCase):
+    """The owner's per-room drive rule gates exploration like every other drive."""
+
+    def setUp(self):
+        self._patches = [
+            mock.patch.object(ex, "_hold_head", lambda s: None),
+            mock.patch.object(ex, "_release_head", lambda: None),
+            mock.patch.object(ex, "_glance", lambda v: None),
+            mock.patch.object(ex, "_generate", return_value="line"),
+            mock.patch.object(ex, "_speak", lambda s, t, **k: None),
+            mock.patch.object(ex, "_seed_topic", lambda s, c: None),
+            mock.patch.object(ex, "_record_episode", lambda s, c: None),
+            mock.patch.object(ex, "_bank_callback", lambda s, c: None),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        ex._session = None
+
+    def test_can_start_refuses_in_no_drive_room(self):
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch.object(ex, "no_drive_room", return_value=("den", "carpet")):
+            self.assertEqual(ex.can_start(), "room_no_drive")
+
+    def test_can_start_ignores_room_rule_without_a_base(self):
+        # A head-only fallback session drives nothing — the room rule is moot.
+        with mock.patch.object(ex, "base_available", return_value=False), \
+                mock.patch.object(ex, "no_drive_room", return_value=("den", "carpet")):
+            self.assertIsNone(ex.can_start())
+
+    def test_mid_session_room_flag_ends_the_walk(self):
+        # Place recognition publishes live: a walk that re-recognizes a no-drive
+        # room must stop at the next step boundary, not grind at the carpet.
+        sess = _new_session(state="announce")
+        sess.had_base = True
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch("hardware.motion.owner", return_value="auto"), \
+                mock.patch("hardware.motion.state", return_value="idle"), \
+                mock.patch.object(ex, "no_drive_room", return_value=("den", "carpet")):
+            ex._run_session(sess)
+        self.assertTrue(sess.aborting())
+        self.assertEqual(sess.abort_reason, "room_no_drive")
+        self.assertFalse(sess.fixated)
+
+    def test_headonly_session_survives_room_flag(self):
+        sess = _new_session(state="announce")
+        sess.had_base = False
+        with mock.patch.object(ex, "no_drive_room", return_value=("den", "carpet")):
+            self.assertTrue(ex._check_can_continue(sess))
+
+    def test_invite_speaks_room_decline(self):
+        from intelligence import interaction
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch.object(ex, "no_drive_room", return_value=("den", "carpet")), \
+                mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak, \
+                mock.patch.object(ex, "start") as start:
+            resp = interaction._handle_explore_invite(
+                "explore the room", person_id=7, person_name="Bret",
+            )
+        start.assert_not_called()
+        speak.assert_called_once()
+        self.assertIn("carpet eats my wheels", resp)
+        self.assertIn("den", resp)
+
+
 # ── 11. Vision safety caps ("never wander blind") ─────────────────────────────
 
 

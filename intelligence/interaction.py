@@ -20604,6 +20604,23 @@ def _handle_explore_invite(
             router_audit, "motion.explore_denied_no_base", reason="no drive base"
         )
         return denial
+    if exploration.base_available():
+        # The owner told him not to drive in this room ("this room has carpet") —
+        # an exploration invite is a drive request like any other, so it gets the
+        # same decline as spoken motion commands, with the voice-liftable way out.
+        _no_drive = exploration.no_drive_room()
+        if _no_drive is not None:
+            _room, _why = _no_drive
+            _because = " — carpet eats my wheels" if _why == "carpet" else ""
+            denial = (f"I'd love a wander, but you told me not to drive in the "
+                      f"{_room}{_because}. Say \"you can drive in here\" if that's changed.")
+            _log.info("[explore] invite refused: room %r is flagged no-drive (%s)",
+                      _room, _why or "owner's rule")
+            _speak_blocking(denial, emotion="neutral", log_text=False)
+            _router_audit_note_fast_local_action(
+                router_audit, "motion.explore_denied_no_drive_room", reason="no-drive room"
+            )
+            return denial
     started = exploration.start(person_id, person_name, source=source)
     if not started:
         return None
