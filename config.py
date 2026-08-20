@@ -3861,6 +3861,18 @@ AUDIO_PLAYBACK_BOOT_LATENCY_SECS = _env_float(
 AUDIO_PLAYBACK_BOOT_BLOCKSIZE = _env_int(
     "AUDIO_PLAYBACK_BOOT_BLOCKSIZE", 8192, min_value=256, max_value=65536
 )
+
+# Deep buffer while the local clone engine is busy mid-session (loading, warming,
+# or rendering an impression take behind an ElevenLabs reply). Same mechanism as
+# the boot window, smaller latency so a conversational reply doesn't feel late:
+# field 2026-08-19, the streamed reply stuttered through a 16.7s Carter render.
+AUDIO_PLAYBACK_CLONE_DEEP_BUFFER_ENABLED = True
+AUDIO_PLAYBACK_CLONE_LATENCY_SECS = _env_float(
+    "AUDIO_PLAYBACK_CLONE_LATENCY_SECS", 1.2, min_value=0.1, max_value=6.0
+)
+AUDIO_PLAYBACK_CLONE_BLOCKSIZE = _env_int(
+    "AUDIO_PLAYBACK_CLONE_BLOCKSIZE", 8192, min_value=256, max_value=65536
+)
 # During the boot preloads, additionally: (a) shrink the GIL switch interval so pure-
 # Python import storms yield to the audio callback sooner, and (b) take a short breath
 # between preload steps so the audio buffer refills after each load's GIL burst. The

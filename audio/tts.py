@@ -165,7 +165,39 @@ def playback_stream_kwargs() -> dict:
         blocksize = max(
             blocksize, int(getattr(config, "AUDIO_PLAYBACK_BOOT_BLOCKSIZE", 8192))
         )
+    elif _clone_deep_buffer_needed():
+        # Same failure as the boot window, mid-session: the local clone engine
+        # loading/warming/rendering (an unprompted impression behind an ordinary
+        # reply) is exactly the Metal+GIL burst that blows through the symbolic
+        # 'high' host buffer — field 2026-08-19: the ElevenLabs reply stuttered
+        # for the full 16.7s Jimmy Carter render. Costs ~a second of extra
+        # time-to-first-sound only on streams opened during that window.
+        latency = float(getattr(config, "AUDIO_PLAYBACK_CLONE_LATENCY_SECS", 1.2))
+        blocksize = max(
+            blocksize, int(getattr(config, "AUDIO_PLAYBACK_CLONE_BLOCKSIZE", 8192))
+        )
     return {"blocksize": blocksize, "latency": latency}
+
+
+def _clone_deep_buffer_needed() -> bool:
+    """True when local clone work is running or imminent, so a playback stream
+    opened NOW should carry an explicit deep host buffer. Two signals: the engine
+    is actually busy (load/warmup/generation), or an unprompted impression is
+    pending (its script call is about to hand the engine a take — the reply that
+    covers the render usually opens its stream inside that gap)."""
+    if not bool(getattr(config, "AUDIO_PLAYBACK_CLONE_DEEP_BUFFER_ENABLED", True)):
+        return False
+    try:
+        from audio import local_tts
+        if local_tts.engine_busy():
+            return True
+    except Exception:
+        pass
+    try:
+        from features import organic_impersonation
+        return organic_impersonation.has_pending()
+    except Exception:
+        return False
 
 
 def _resolve_voice_settings(

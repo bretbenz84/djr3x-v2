@@ -60,6 +60,35 @@ class VoiceRef(NamedTuple):
 _model = None
 _load_lock = threading.Lock()
 _generate_lock = threading.Lock()
+
+# Engine-busy counter (load / warmup / any generation in flight). audio/tts.py
+# reads engine_busy() to deep-buffer CONCURRENT playback streams: Qwen generation
+# is heavy Metal+GIL work, and the field run 2026-08-19 had the ElevenLabs reply
+# stuttering audibly the whole time a Jimmy Carter take rendered behind it.
+_busy_count = 0
+_busy_lock = threading.Lock()
+
+
+class _engine_busy:
+    def __enter__(self):
+        global _busy_count
+        with _busy_lock:
+            _busy_count += 1
+        return self
+
+    def __exit__(self, *exc):
+        global _busy_count
+        with _busy_lock:
+            _busy_count = max(0, _busy_count - 1)
+        return False
+
+
+def engine_busy() -> bool:
+    """True while the model is loading, warming, or generating audio."""
+    with _busy_lock:
+        return _busy_count > 0
+
+
 _load_failed = False
 
 
@@ -177,7 +206,7 @@ def preload(blocking: bool = True) -> bool:
         ).start()
         return True
 
-    with _load_lock:
+    with _load_lock, _engine_busy():
         if _model is not None:
             return True
         if _load_failed:
@@ -335,7 +364,7 @@ def generate_stream(text: str, voice_ref: VoiceRef) -> Iterator[np.ndarray]:
         return
     model = _ensure_model()
     interval = float(getattr(config, "LOCAL_TTS_STREAMING_INTERVAL", 0.32))
-    with _generate_lock:
+    with _generate_lock, _engine_busy():
         for seg in _split_line(text):
             yield from _segment_chunks(model, seg, voice_ref, interval)
 
@@ -400,7 +429,7 @@ def _synthesize_unit(text: str, voice_ref: VoiceRef) -> Optional[np.ndarray]:
     lock another speaker out for its full duration."""
     model = _ensure_model()
     interval = float(getattr(config, "LOCAL_TTS_STREAMING_INTERVAL", 0.32))
-    with _generate_lock:
+    with _generate_lock, _engine_busy():
         chunks = list(_segment_chunks(model, text, voice_ref, interval))
     if not chunks:
         return None

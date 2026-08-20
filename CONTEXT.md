@@ -2390,9 +2390,29 @@ CLAIM an impression the way it claims banked callback humor:
 - Every fire records a `rex_episodes` row with `detail.trigger`
   (`mention:famous:jimmy-carter` / `self_mock:judged`) and the utterance — the
   first programmatically-true "why did you do that" record, ahead of the general
-  decision ledger discussed the same day. Tests: `tests/test_organic_impersonation.py`
-  (28). Live verification owed (house rule): a real mention → bit timing on the
-  robot, and a self-mock on Bret's captured ref.
+  decision ledger discussed the same day. Tests: `tests/test_organic_impersonation.py`.
+- **Field-tuned 2026-08-19** (first live run, log `djr3x-2026-08-19-19-59-18`,
+  Carter fired on the Plains trip — worked, two fixes):
+  1. **The script is now a conversation CAMEO, not the requested-flow act.** The
+     bit had come back generic ("peanut butter sandwich... shared by a droid!")
+     because the standard famous block (droid-borrowed-my-voice framing + random
+     angle) dominated. With `context` set, `impersonation._script_prompt` swaps
+     that block for a cameo one — the figure BUTTS INTO the live conversation,
+     reacting to its specific details, no droid/impression references, no angle —
+     and `organic._convo_excerpt` feeds it the last ~6 transcript lines plus the
+     triggering utterance instead of the bare utterance.
+  2. **Deep playback buffer while the clone engine works.** The ElevenLabs reply
+     stuttered audibly through the 16.7 s render (model load + warmup + take are
+     Metal+GIL bursts). `local_tts` now keeps an engine-busy counter (load,
+     warmup, any generation) and `tts.playback_stream_kwargs()` — the shared
+     kwargs for every playback stream — applies an explicit host buffer
+     (`AUDIO_PLAYBACK_CLONE_LATENCY_SECS`=1.2, `_CLONE_BLOCKSIZE`=8192, kill
+     switch `_CLONE_DEEP_BUFFER_ENABLED`) whenever the engine is busy OR an
+     organic impression is pending — the same mechanism as the boot deep buffer,
+     which still takes precedence in its window. Tests:
+     `tests/test_clone_deep_buffer.py`.
+  Still owed live: a self-mock on Bret's captured ref, and confirming the
+  stutter is gone on the next organic fire.
 
 ### "Is that Max?" — pet-name guess on furry arrivals (2026-08-18)
 

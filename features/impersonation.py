@@ -485,14 +485,30 @@ def _script_prompt(
         "no quotation marks, no emoji, no bracketed tags, no preamble — just the spoken parody.",
     ]
     if context:
-        # Unprompted bit: the person just brought the subject up in conversation,
-        # so the impression should visibly grow out of what they said.
+        # Unprompted bit (features/organic_impersonation.py): the subject came up
+        # in conversation, so the bit must be a CAMEO IN that conversation — the
+        # figure butting in on what was just being discussed — not the standalone
+        # "a droid borrowed my voice" act the requested flow does. Field
+        # 2026-08-19: with the standard famous block, Bret's trip to Plains got a
+        # generic peanut line + "shared by a droid!" that felt tacked on.
         parts.append(
-            f"Nobody asked for this impression — it is a surprise. Someone in the room "
-            f"just said: \"{context}\". Tie the bit to THAT (the place, the plan, the "
-            f"thing they mentioned) so it lands as a response to them, and keep it "
-            f"SHORT — 2 sentences at most."
+            "Nobody asked for this impression — it is a surprise cameo. Here is the "
+            "live conversation it is interrupting (last lines, oldest first):\n"
+            f"{context}\n"
+            f"Write {name} BUTTING INTO that conversation: he has been listening and "
+            "has an opinion about the SPECIFIC thing under discussion — the place, "
+            "the plan, the claim, the person mentioned. React to their details by "
+            "name; give advice, take credit, correct the record, or invite himself "
+            "along, in his own famous voice and fixations. The listener should feel "
+            "he heard them. Do NOT mention droids, robots, voice-borrowing, or being "
+            "an impression, and do NOT retell his greatest-hits bio — one signature "
+            "tic or fixation woven into the reply is enough to be unmistakably him. "
+            "Keep it SHORT: 2 sentences at most."
         )
+    if context and famous:
+        # The cameo block above replaces the standard famous framing entirely —
+        # its droid-collision and angle instructions are the requested-flow act.
+        famous = False
     if stranger:
         parts.append(
             "You met this person SECONDS ago — you know absolutely nothing about them except "
@@ -572,7 +588,7 @@ def build_parody_script(
         subject_name, material, do_not, is_self=is_self,
         famous=famous, stranger=stranger,
         avoid=_recent_scripts(subject_name, person_id, voice_key=voice_key),
-        angle=(random.choice(_FAMOUS_ANGLES) if famous else None),
+        angle=(random.choice(_FAMOUS_ANGLES) if (famous and not context) else None),
         **({"context": context} if context else {}),
     )
     try:

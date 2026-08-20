@@ -340,6 +340,66 @@ class PlayerTest(_Base):
         self.assertIn("person:7", organic._voice_last_fire)
 
 
+class ConvoExcerptTest(_Base):
+    def test_excerpt_formats_lines_and_appends_current(self):
+        rows = [{"speaker": "Bret", "text": "We're going to Georgia."},
+                {"speaker": "Rex", "text": "Bold. Whose idea?"}]
+        with mock.patch("memory.conversations.get_session_transcript", return_value=rows):
+            out = organic._convo_excerpt("We're driving to Jimmy Carter's hometown.")
+        self.assertEqual(out.split("\n"), [
+            "Bret: We're going to Georgia.",
+            "Rex: Bold. Whose idea?",
+            "Them (just now): We're driving to Jimmy Carter's hometown.",
+        ])
+
+    def test_excerpt_survives_transcript_failure(self):
+        with mock.patch("memory.conversations.get_session_transcript", side_effect=RuntimeError):
+            out = organic._convo_excerpt("hello there everyone today")
+        self.assertIn("Them (just now): hello there everyone today", out)
+
+    def test_excerpt_caps_length_from_the_front(self):
+        rows = [{"speaker": "A", "text": "x" * 200} for _ in range(8)]
+        with mock.patch("memory.conversations.get_session_transcript", return_value=rows):
+            out = organic._convo_excerpt("short line here now")
+        self.assertLessEqual(len(out), 700)
+        self.assertTrue(out.endswith("Them (just now): short line here now"))
+
+
+class CameoPromptTest(_Base):
+    def test_context_replaces_famous_block_and_skips_angle(self):
+        prompt = impersonation._script_prompt(
+            "Jimmy Carter", [], [], is_self=False, famous=True,
+            context="Bret: We're driving to Jimmy Carter's hometown.",
+            angle=None,
+        )
+        self.assertIn("surprise cameo", prompt)
+        self.assertIn("BUTTING INTO", prompt)
+        self.assertIn("Jimmy Carter's hometown", prompt)
+        self.assertIn("Do NOT mention droids", prompt)
+        # the requested-flow famous framing must be absent
+        self.assertNotIn("borrowed his voice", prompt)
+        self.assertNotIn("HALF him", prompt)
+
+    def test_no_context_keeps_the_requested_flow_block(self):
+        prompt = impersonation._script_prompt(
+            "Jimmy Carter", [], [], is_self=False, famous=True,
+        )
+        self.assertIn("borrowed his voice", prompt)
+        self.assertNotIn("surprise cameo", prompt)
+
+    def test_build_parody_skips_angle_with_context(self):
+        captured = {}
+        def fake_prompt(*a, **k):
+            captured.update(k)
+            return "p"
+        resp = mock.Mock(); resp.choices = [mock.Mock(message=mock.Mock(content="Line."))]
+        client = mock.Mock(); client.chat.completions.create.return_value = resp
+        with mock.patch.object(impersonation, "_script_prompt", side_effect=fake_prompt),              mock.patch("intelligence.llm._client", client),              mock.patch("intelligence.llm.clean_response_text", side_effect=lambda t: t):
+            impersonation.build_parody_script("Jimmy Carter", None, context="Bret: hi")
+        self.assertIsNone(captured.get("angle"))
+        self.assertEqual(captured.get("context"), "Bret: hi")
+
+
 class PrepTest(_Base):
     def test_prepare_famous_starts_take_with_context(self):
         prep = organic._Prep(kind="famous", ref=impersonation.find_famous_ref("jimmy carter"),
@@ -353,7 +413,8 @@ class PrepTest(_Base):
             organic._prepare(prep)
         self.assertTrue(prep.prepared.is_set())
         self.assertIs(prep.take, fake)
-        self.assertEqual(bps.call_args[1]["context"], "I'm going to Plains, Georgia.")
+        self.assertEqual(bps.call_args[1]["context"],
+                         "Them (just now): I'm going to Plains, Georgia.")
         self.assertEqual(bps.call_args[1]["max_words"],
                          int(getattr(config, "IMPERSONATION_ORGANIC_SCRIPT_MAX_WORDS", 30)))
         st.assert_called_once()

@@ -62,6 +62,7 @@ class _Prep:
     person_id: Optional[int]
     utterance: str
     trigger: str
+    convo: str = ""                             # recent-transcript excerpt for the script
     claimed_at: float = field(default_factory=time.monotonic)
     max_wait_secs: float = 60.0
     script: Optional[str] = None
@@ -240,6 +241,7 @@ def maybe_claim(text: str, person_id: Optional[int], *, frame=None) -> Optional[
         prep = _Prep(
             kind="famous", ref=ref, subject_name=name, person_id=None,
             utterance=cleaned, trigger=f"mention:{key}",
+            convo=_convo_excerpt(cleaned),
             max_wait_secs=float(getattr(config, "IMPERSONATION_ORGANIC_MAX_WAIT_SECS", 60.0)),
             voice_key=key,
         )
@@ -272,6 +274,34 @@ def maybe_claim(text: str, person_id: Optional[int], *, frame=None) -> Optional[
         # would give the game away.
         return None
     return None
+
+
+def _convo_excerpt(current_utterance: str, *, max_lines: int = 6, max_chars: int = 700) -> str:
+    """The last few transcript turns plus the triggering line, formatted
+    'Speaker: text' oldest-first — what the script model needs for the bit to be
+    a cameo IN this conversation rather than a standalone act (field 2026-08-19:
+    with only the bare utterance, Carter's line was generic and felt tacked on)."""
+    lines: list[str] = []
+    try:
+        from memory import conversations as conv_memory
+        rows = conv_memory.get_session_transcript() or []
+    except Exception:
+        rows = []
+    for r in rows[-(max_lines * 2):]:
+        speaker = str(r.get("speaker") or "?").strip()
+        text = " ".join(str(r.get("text") or "").split())
+        if not text:
+            continue
+        lines.append(f"{speaker}: {text}")
+    lines = lines[-max_lines:]
+    current = " ".join((current_utterance or "").split())
+    if current and (not lines or current not in lines[-1]):
+        lines.append(f"Them (just now): {current}")
+    out = "\n".join(lines)
+    while len(out) > max_chars and len(lines) > 1:
+        lines = lines[1:]
+        out = "\n".join(lines)
+    return out
 
 
 def _self_mock_eligible(text: str, person_id: Optional[int], roast: str) -> bool:
@@ -359,7 +389,8 @@ def _famous_script(prep: _Prep) -> Optional[str]:
     return impersonation.build_parody_script(
         prep.subject_name, None,
         voice_key=(getattr(prep.ref, "label", "") or prep.voice_key),
-        context=prep.utterance, max_words=max_words,
+        context=(prep.convo or f'Them (just now): {prep.utterance}'),
+        max_words=max_words,
     )
 
 
