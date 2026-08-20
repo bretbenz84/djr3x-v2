@@ -390,7 +390,11 @@ class FaceTrackingTests(unittest.TestCase):
         ):
             c._step_face_tracking(self.frame)
 
-        self.assertLess(c._adaptive_head_rest["lift"], lift_neutral)
+        # The low face teaches a rest BELOW the starting pose (the fixture parks
+        # the head at 6000). With the 2026-08-19 neutral retune (3600), the
+        # learned rest clamps at neutral + REST_MAX_LIFT_OFFSET and may sit
+        # above neutral — comparing against neutral was fixture rot.
+        self.assertLess(c._adaptive_head_rest["lift"], 6000)
         self.assertGreater(c._adaptive_head_rest["tilt"], tilt_neutral)
 
     def test_adaptive_rest_learns_upward_pose_from_high_face(self):
@@ -511,9 +515,12 @@ class FaceTrackingTests(unittest.TestCase):
         c = self.consciousness
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
         tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
+        # A rest INSIDE the ±REST_MAX_LIFT_OFFSET clamp about neutral (3600 since
+        # the 2026-08-19 retune) passes through untouched; the old fixture value
+        # 5480 now clamps and asserted the clamp, not the pass-through.
         c._adaptive_head_rest.clear()
         c._adaptive_head_rest.update({
-            "lift": 5480,
+            "lift": 4400,
             "tilt": 5010,
             "samples": 4,
             "updated_at": 100.0,
@@ -525,7 +532,7 @@ class FaceTrackingTests(unittest.TestCase):
         ):
             targets = c._speaker_gaze_search_targets(0.0, 0.0)
 
-        self.assertEqual(targets[lift_ch], 5480)
+        self.assertEqual(targets[lift_ch], 4400)
         self.assertEqual(targets[tilt_ch], 5010)
 
     def test_face_loss_eases_vertical_pose_toward_adaptive_rest(self):

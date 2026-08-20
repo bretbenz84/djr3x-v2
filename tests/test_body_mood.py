@@ -259,9 +259,13 @@ class ConsciousnessMoodRestBiasTest(unittest.TestCase):
         self.assertTrue(moved)
         servo.set_servos.assert_called_once()
         updates = servo.set_servos.call_args.args[0]
-        # Proud → head raised above the (capped) rest base.
+        # Proud → head raised above the (capped) rest base. The base is the
+        # neutral capped at the match ceiling; since the 2026-08-19 retune the
+        # neutral (3600) sits BELOW the ceiling, so the base IS the neutral —
+        # asserting "> ceiling" was only true while neutral >= ceiling.
+        rest_base = min(int(config.SERVO_CHANNELS["headlift"]["neutral"]), ceiling)
         self.assertIn(lift_ch, updates)
-        self.assertGreater(updates[lift_ch], ceiling)
+        self.assertGreater(updates[lift_ch], rest_base)
 
     def test_rest_return_noop_when_no_mood_and_no_learned_rest(self):
         from intelligence import consciousness as c

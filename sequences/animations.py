@@ -65,12 +65,17 @@ NECK_FAR_LEFT = 2500
 NECK_FAR_RIGHT = 9500
 
 # Ch 1 — Headlift: 1984–7744, neutral 6000, higher = up (larger value = head physically higher)
+# Retuned with the 2026-08-19 lift-gear rebuild (tube rides higher at the same
+# qus): neutral dropped 6000 -> 3600 (900 us), and the expressive poses keep
+# their old qus OFFSETS from neutral so the physical amplitudes carry over
+# (same servo, same direction of travel). DROOP's old -3000 offset now lands
+# under the servo floor, so sleep settles just above the hard minimum.
 HEADLIFT_FLOOR   = 1984  # servo minimum — head fully lowered, shutdown/startup rest pose
-HEADLIFT_DROOP   = 3000  # head drooped low (sleep)
-HEADLIFT_DOWN    = 4800  # head below neutral (sad, lowered)
-HEADLIFT_NEUTRAL = 6000
-HEADLIFT_UP      = 7000  # head above neutral (excited, happy, nod)
-HEADLIFT_HIGH    = 7500  # head raised high (surprised)
+HEADLIFT_DROOP   = 2000  # head drooped low (sleep) — effectively the floor now
+HEADLIFT_DOWN    = 2400  # head below neutral (sad, lowered)     [neutral - 1200]
+HEADLIFT_NEUTRAL = 3600  # normal talking height (owner-tuned, 900 us)
+HEADLIFT_UP      = 4600  # head above neutral (excited, happy, nod) [neutral + 1000]
+HEADLIFT_HIGH    = 5100  # head raised high (surprised)          [neutral + 1500]
 
 # Ch 2 — Headtilt: 3904–5504, neutral 4320, INVERTED (low value = head tilted up)
 HEADTILT_NEUTRAL     = 4320

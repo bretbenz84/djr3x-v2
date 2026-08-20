@@ -206,7 +206,8 @@ class GazeConfig:
     tilt_neutral: int = 4320
     lift_min: int = 1984
     lift_max: int = 7744
-    lift_neutral: int = 6000
+    lift_neutral: int = 3600   # 900 us — normal talking height (2026-08-19 gear rebuild);
+                               # the live value loads from SERVO_CHANNELS at init
 
     @classmethod
     def from_config(cls) -> "GazeConfig":

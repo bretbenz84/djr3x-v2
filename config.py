@@ -2627,7 +2627,11 @@ SERVO_LISTENING_MAX_SECS = 20.0       # safety: auto-stop if a stop is ever miss
 # headtilt is inverted: low values = head high, high values = head low
 SERVO_CHANNELS = {
     "neck":     {"ch": 0, "min": 1984, "max": 8960, "neutral": 5472},
-    "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 6000},
+    # Neutral retuned 6000 -> 3600 qus (900 us) on 2026-08-19: the lift gear
+    # system was rebuilt and the tube now rides much higher at the same servo
+    # value, so the normal TALKING height moved down. Excitement/emphasis still
+    # lift above this; looking-down poses still drop below it.
+    "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 3600},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
     "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — 6000 hid part of the camera
     "elbow":    {"ch": 4, "min": 6300, "max": 7560, "neutral": 6720},
