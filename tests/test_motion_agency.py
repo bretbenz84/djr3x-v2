@@ -2377,3 +2377,89 @@ class IdleWanderTest(unittest.TestCase):
             self._tick(3)
         self.turn.assert_not_called()
         self.move.assert_not_called()
+
+
+class EdgeInTest(unittest.TestCase):
+    """Conversation edge-in (owner spec 2026-08-19): one short slow step closer
+    at social distance mid-conversation, front-ToF-checked, heavily cooled."""
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
+                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         last_turn_at=0.0, last_approach_at=0.0, last_flinch_at=0.0,
+                         user_motion_at=0.0, realign_pending_seq=None,
+                         traction_fails=0, no_traction_until=0.0, hold_at=None)
+        self._tof = {"fl": 2500, "fr": 2500}
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "turn", return_value=7),
+            mock.patch.object(MA.motion_controller, "come", return_value=8),
+            mock.patch.object(MA.motion_controller, "move", return_value=9),
+            mock.patch.object(MA.motion, "telemetry",
+                              side_effect=lambda: {"tof_mm": dict(self._tof)}),
+            mock.patch.object(MA.motion, "done_result", return_value="completed",
+                              create=True),
+            mock.patch("intelligence.battery_awareness.battery_critical",
+                       return_value=False),
+            mock.patch("sequences.animations.travel_glance_pose"),
+        ]
+        for p in self._patches:
+            p.start()
+        self.move = MA.motion_controller.move
+        self.come = MA.motion_controller.come
+        self._ws = mock.patch(
+            "world_state.world_state.get",
+            side_effect=lambda key: (
+                {"face_tracking": {"locked": True, "visible": True,
+                                   "lock_key": "slot:person_1"},
+                 "servo_positions": {"neck": 5472}}
+                if key == "self_state" else {}),
+        )
+        self._ws.start()
+
+    def tearDown(self):
+        MA.cancel_requested_come("test cleanup")
+        self._ws.stop()
+        for p in self._patches:
+            p.stop()
+
+    def _tick(self, n=1, zone="social", conversation=True):
+        prof = _profile(conversation_active=conversation)
+        for _ in range(n):
+            MA.step(_snapshot(distance_zone=zone), prof)
+
+    def test_edges_in_once_after_sustained_conversation(self):
+        self._tick(6)
+        self.move.assert_called_once()
+        self.assertAlmostEqual(self.move.call_args[0][0],
+                               config.MOTION_EDGE_IN_STEP_M)
+        speed = self.move.call_args[1]["speed"]
+        self.assertGreaterEqual(speed, config.MOTION_EDGE_IN_SPEED_MIN_MS)
+        self.assertLessEqual(speed, config.MOTION_EDGE_IN_SPEED_MAX_MS)
+        self._tick(8)
+        self.move.assert_called_once()   # cooldown holds
+
+    def test_requires_an_active_conversation(self):
+        self._tick(8, conversation=False)
+        self.move.assert_not_called()
+
+    def test_public_zone_belongs_to_the_approach_lane(self):
+        self._tick(8, zone="public")
+        self.move.assert_not_called()    # come may fire; edge-in must not
+
+    def test_close_front_tof_blocks_the_step(self):
+        self._tof = {"fl": 1200, "fr": 1200}   # 1.2 m < MIN_FRONT
+        self._tick(8)
+        self.move.assert_not_called()
+
+    def test_personal_zone_never_steps(self):
+        self._tick(8, zone="personal")
+        self.move.assert_not_called()
+
+    def test_kill_switch(self):
+        with mock.patch.object(config, "MOTION_EDGE_IN_ENABLED", False,
+                               create=True):
+            self._tick(8)
+        self.move.assert_not_called()

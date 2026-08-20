@@ -8806,6 +8806,21 @@ MOTION_IDLE_WANDER_SPEED_MAX_MS = 0.14
 MOTION_IDLE_WANDER_DWELL_MIN_SECS = 0.4    # settle at the shifted pose a beat
 MOTION_IDLE_WANDER_DWELL_MAX_SECS = 1.4
 MOTION_IDLE_WANDER_PENDING_TTL_SECS = 12.0 # drop a wedged pair, never chase it
+
+# ── Conversation edge-in (owner spec 2026-08-19) ────────────────────────────────
+# "If he's having a conversation, he should try to get closer." The public-zone
+# approach closes big gaps; this closes SOCIAL distance by one short slow step,
+# rarely, only while facing them, and only when the front ToF confirms the room —
+# the step keeps KEEP_CLEAR_M of clearance so he lands at the near edge of social
+# distance, never in their lap.
+MOTION_EDGE_IN_ENABLED = True
+MOTION_EDGE_IN_CONFIRM_TICKS = 6           # ~6 s of steady conversation first
+MOTION_EDGE_IN_COOLDOWN_SECS = 240.0       # at most one step per few minutes
+MOTION_EDGE_IN_MIN_FRONT_M = 1.4           # front ToF must show at least this
+MOTION_EDGE_IN_KEEP_CLEAR_M = 1.0          # clearance preserved after the step
+MOTION_EDGE_IN_STEP_M = 0.25               # a drift, not a lunge
+MOTION_EDGE_IN_SPEED_MIN_MS = 0.08         # always slower than a commanded drive
+MOTION_EDGE_IN_SPEED_MAX_MS = 0.14
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
 # the body, and realign was rotating it straight back toward their face (field

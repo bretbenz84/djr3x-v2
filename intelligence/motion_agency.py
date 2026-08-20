@@ -112,6 +112,8 @@ _state = {
     "orient_last_at": 0.0,   # radar-orient cooldown stamp
     "wander_pending": None,  # in-flight weight-shift pair (out leg + inverse)
     "wander_next_at": 0.0,   # randomized idle-wander cooldown stamp
+    "edge_hits": 0,          # consecutive edge-in-eligible conversation ticks
+    "edge_last_at": 0.0,     # edge-in cooldown stamp
     "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
     "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
     "traction_fails": 0,     # consecutive realigns that produced no actual rotation
@@ -2287,6 +2289,44 @@ def _step_inner(snapshot: dict, profile) -> None:
             _state["last_approach_at"] = now
         _reset("far_hits")
         return  # one maneuver per tick
+
+    # ── EDGE-IN: drift a step closer mid-conversation (owner 2026-08-19: "If
+    # he's having a conversation, he should try to get closer") ────────────────
+    # The public-zone approach above closes big gaps; this closes SOCIAL distance
+    # by one short, slow step — at most once per cooldown, only while genuinely
+    # facing them, and only when the front ToF (the lens-truth check) shows the
+    # room for it. The step keeps MOTION_EDGE_IN_KEEP_CLEAR_M of front clearance,
+    # so he settles at the near edge of social distance, never in their lap.
+    if (_flag("MOTION_EDGE_IN_ENABLED", True)
+            and getattr(profile, "conversation_active", False)
+            and person.get("distance_zone") == "social"
+            and facing_them):
+        min_front = _num("MOTION_EDGE_IN_MIN_FRONT_M", 1.4)
+        if front is not None and front >= min_front:
+            _state["edge_hits"] += 1
+        else:
+            _state["edge_hits"] = 0
+        if (_state["edge_hits"] >= int(_num("MOTION_EDGE_IN_CONFIRM_TICKS", 6))
+                and (now - float(_state.get("edge_last_at") or 0.0))
+                >= _num("MOTION_EDGE_IN_COOLDOWN_SECS", 240.0)):
+            step_m = min(_num("MOTION_EDGE_IN_STEP_M", 0.25),
+                         front - _num("MOTION_EDGE_IN_KEEP_CLEAR_M", 1.0))
+            _reset("edge_hits")
+            if step_m >= 0.08:
+                speed = random.uniform(_num("MOTION_EDGE_IN_SPEED_MIN_MS", 0.08),
+                                       _num("MOTION_EDGE_IN_SPEED_MAX_MS", 0.14))
+                seq = motion_controller.move(step_m, speed=speed)
+                if seq is not None:
+                    _log.info(
+                        "[motion_agency] edge-in: conversation at social distance, "
+                        "front clear %.2fm -> one step %.2fm closer (%.2f m/s)",
+                        front, step_m, speed,
+                    )
+                    _state["edge_last_at"] = now
+                    _state["last_approach_at"] = now   # quiet windows respect it
+                    return  # one maneuver per tick
+    else:
+        _state["edge_hits"] = 0
 
     # ── IDLE WANDER: nothing social needed the base this tick ─────────────────
     # Weight-shift micro-motion also runs while a person is tracked (he fidgets
