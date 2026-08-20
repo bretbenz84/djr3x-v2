@@ -21,6 +21,21 @@ def _profile(**over):
     return SimpleNamespace(**base)
 
 
+# The idle base wander post-dates most fixtures here and rolls REAL dice — left
+# on, a lucky tick fires a weight-shift move into assertions that expect quiet.
+# Off for the whole module; IdleWanderTest re-enables it explicitly.
+_WANDER_OFF = mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", False,
+                                create=True)
+
+
+def setUpModule():
+    _WANDER_OFF.start()
+
+
+def tearDownModule():
+    _WANDER_OFF.stop()
+
+
 def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=None,
               db_id=1):
     """`visible=False` means NOBODY is on camera. The come-here search keys off
@@ -2227,3 +2242,138 @@ class TravelGlanceSlightDownTest(unittest.TestCase):
         self.assertEqual(targets[int(lift_cfg["ch"])], int(lift_cfg["neutral"]))
         self.assertEqual(targets[int(tilt_cfg["ch"])], animations.HEADTILT_SLIGHT_DOWN)
         self.assertGreater(animations.HEADTILT_SLIGHT_DOWN, int(tilt_cfg["neutral"]))
+
+
+class IdleWanderTest(unittest.TestCase):
+    """Idle base wander (owner spec 2026-08-19): paired weight-shift maneuvers,
+    clearance-gated, roominess-scaled, zero net pose drift."""
+
+    ROOMY = {"fl": 2000, "fr": 2100, "rl": 2000, "rr": 1900,
+             "lf": 1500, "lb": 1600, "rf": 1500, "rb": 1400}
+
+    def setUp(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, orient_hits=0, last_turn_at=0.0,
+                         last_approach_at=0.0, last_flinch_at=0.0,
+                         orient_last_at=0.0, wander_pending=None, wander_next_at=0.0,
+                         user_motion_at=0.0, realign_pending_seq=None,
+                         traction_fails=0, no_traction_until=0.0, hold_at=None)
+        self._done = {"v": None}
+        self._tof = dict(self.ROOMY)
+        self._patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "turn", return_value=21),
+            mock.patch.object(MA.motion_controller, "move", return_value=22),
+            mock.patch.object(MA.motion, "telemetry",
+                              side_effect=lambda: {"tof_mm": dict(self._tof)}),
+            mock.patch.object(MA.motion, "done_result",
+                              side_effect=lambda s: self._done["v"], create=True),
+            mock.patch("intelligence.battery_awareness.battery_critical",
+                       return_value=False),
+            mock.patch("hardware.servos.speech_motion_active", return_value=False),
+            mock.patch("hardware.servos.listening_motion_active", return_value=False),
+            mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", True,
+                              create=True),   # module default is off (see setUpModule)
+            # Deterministic dice: always fire, midpoint amplitudes, first option.
+            mock.patch.object(MA.random, "random", return_value=0.0),
+            mock.patch.object(MA.random, "uniform",
+                              side_effect=lambda a, b: (a + b) / 2.0),
+            mock.patch.object(MA.random, "choice", side_effect=lambda seq: seq[0]),
+        ]
+        for p in self._patches:
+            p.start()
+        self.turn = MA.motion_controller.turn
+        self.move = MA.motion_controller.move
+
+    def tearDown(self):
+        MA.cancel_requested_come("test cleanup")
+        for p in self._patches:
+            p.stop()
+        MA._state["wander_pending"] = None
+
+    def _tick(self, n=1, profile=None):
+        for _ in range(n):
+            MA.step({"people": []}, profile or _profile())
+
+    def test_roomy_idle_tick_shifts_weight(self):
+        self._tick()
+        self.turn.assert_called_once()
+        deg = self.turn.call_args[0][0]
+        self.assertAlmostEqual(abs(deg), 7.0)       # midpoint of 4..10, full room
+        self.assertIsNotNone(MA._state["wander_pending"])
+        self.assertGreater(MA._state["wander_next_at"], 0.0)
+
+    def test_pair_inverse_restores_pose(self):
+        self._tick()
+        out_deg = self.turn.call_args[0][0]
+        self._done["v"] = "completed"               # out leg landed
+        MA._state["wander_pending"]["dwell_until"] = 0.0
+        self._tick()
+        self.assertEqual(self.turn.call_count, 2)
+        self.assertAlmostEqual(self.turn.call_args[0][0], -out_deg)
+        self._tick()                                # back leg landed -> pair closed
+        self.assertIsNone(MA._state["wander_pending"])
+
+    def test_tight_room_holds_still(self):
+        self._tof.update(lf=300, lb=300, rf=300, rb=300)
+        self._tick(3)
+        self.turn.assert_not_called()
+        self.move.assert_not_called()
+
+    def test_blind_base_never_wanders(self):
+        self._tof = {k: -1 for k in self._tof}
+        self._tick(3)
+        self.turn.assert_not_called()
+        self.move.assert_not_called()
+
+    def test_front_only_clearance_shuffles_forward(self):
+        self._tof = {"fl": 2000, "fr": 2000, "rl": -1, "rr": -1,
+                     "lf": -1, "lb": -1, "rf": -1, "rb": -1}
+        self._tick()
+        self.turn.assert_not_called()
+        self.move.assert_called_once()
+        self.assertGreater(self.move.call_args[0][0], 0.0)
+
+    def test_interaction_busy_skips(self):
+        self._tick(3, profile=_profile(interaction_busy=True))
+        self.turn.assert_not_called()
+
+    def test_cooldown_blocks_the_next_pair(self):
+        self._tick()
+        self._done["v"] = "completed"
+        MA._state["wander_pending"]["dwell_until"] = 0.0
+        self._tick(2)                               # inverse + close
+        self.assertIsNone(MA._state["wander_pending"])
+        self._tick(3)                               # cooldown holds
+        self.assertEqual(self.turn.call_count, 2)
+
+    def test_no_drive_room_blocks_and_drops_the_pair(self):
+        self._tick()
+        self.assertIsNotNone(MA._state["wander_pending"])
+        with mock.patch.object(MA, "no_drive_room", return_value=("den", "carpet")):
+            self._tick(2)
+        self.assertIsNone(MA._state["wander_pending"])
+        self.turn.assert_called_once()              # no inverse fired in there
+
+    def test_aborted_out_turn_counts_toward_traction_and_skips_inverse(self):
+        self._tick()
+        self._done["v"] = "aborted"
+        self._tick()
+        self.assertIsNone(MA._state["wander_pending"])
+        self.assertEqual(MA._state["traction_fails"], 1)
+        self.turn.assert_called_once()              # no inverse chase
+
+    def test_user_hold_drops_the_pending_pair(self):
+        self._tick()
+        self.assertIsNotNone(MA._state["wander_pending"])
+        MA.note_user_hold("test")
+        self.assertIsNone(MA._state["wander_pending"])
+        MA.release_user_hold("test")
+
+    def test_kill_switch(self):
+        with mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", False,
+                               create=True):
+            self._tick(3)
+        self.turn.assert_not_called()
+        self.move.assert_not_called()

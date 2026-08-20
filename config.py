@@ -8777,6 +8777,35 @@ MOTION_RADAR_ORIENT_NECK_MAX_DEG = 40.0    # within the neck's reach -> glance o
 MOTION_RADAR_ORIENT_NECK_HOLD_SECS = 6.0   # directed-gaze hold on the glance
 MOTION_RADAR_ORIENT_QUIET_SECS = 3.0       # no own-maneuver window before deciding
 MOTION_RADAR_ORIENT_COOLDOWN_SECS = 30.0   # between orients
+
+# ── Idle base wander ("weight shift", owner spec 2026-08-19) ────────────────────
+# The drive-base sibling of the idle arm/head wander: occasional small PAIRED
+# maneuvers (slight turn + inverse, or short fore/aft shuffle + inverse) so he
+# reads alive instead of statuesque, with zero net pose drift. Randomized timing,
+# amplitude, and speed inside a deterministic safety envelope: clearance gates
+# decide what is possible (fail CLOSED on unknown sensors), roominess scales how
+# often and how big, the no-drive room rule and user holds shut it off outright,
+# and every leg is a ToF-gated closed-loop verb under the firmware reflex stop.
+MOTION_IDLE_WANDER_ENABLED = True
+MOTION_IDLE_WANDER_CHANCE = 0.25           # per eligible ~1 Hz tick, × roominess
+MOTION_IDLE_WANDER_COOLDOWN_MIN_SECS = 25.0
+MOTION_IDLE_WANDER_COOLDOWN_MAX_SECS = 70.0
+MOTION_IDLE_WANDER_QUIET_SECS = 6.0        # keep clear of other maneuvers
+MOTION_IDLE_WANDER_COMFORT_M = 1.2         # clearance that reads as a roomy spot
+MOTION_IDLE_WANDER_MIN_ROOMINESS = 0.35    # tighter than this: hold still
+MOTION_IDLE_WANDER_TURN_MIN_DEG = 4.0      # slight left/right weight shifts
+MOTION_IDLE_WANDER_TURN_MAX_DEG = 10.0
+MOTION_IDLE_WANDER_TURN_RATE_MIN_DEG_S = 15.0   # sometimes lazy, sometimes not
+MOTION_IDLE_WANDER_TURN_RATE_MAX_DEG_S = 35.0
+MOTION_IDLE_WANDER_TURN_SIDE_CLEAR_M = 0.35  # footprint swings — need lateral room
+MOTION_IDLE_WANDER_MOVE_MIN_M = 0.05       # back-and-forth shuffle legs
+MOTION_IDLE_WANDER_MOVE_MAX_M = 0.15
+MOTION_IDLE_WANDER_MOVE_MARGIN_M = 0.30    # clearance beyond stop zone + travel
+MOTION_IDLE_WANDER_SPEED_MIN_MS = 0.06     # speed-variable, always gentle
+MOTION_IDLE_WANDER_SPEED_MAX_MS = 0.14
+MOTION_IDLE_WANDER_DWELL_MIN_SECS = 0.4    # settle at the shifted pose a beat
+MOTION_IDLE_WANDER_DWELL_MAX_SECS = 1.4
+MOTION_IDLE_WANDER_PENDING_TTL_SECS = 12.0 # drop a wedged pair, never chase it
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed
 # the body, and realign was rotating it straight back toward their face (field

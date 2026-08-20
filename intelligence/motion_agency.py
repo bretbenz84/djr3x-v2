@@ -88,6 +88,7 @@ MOTION_FACE_PERSON_ENABLED / MOTION_APPROACH_ENABLED per behavior.
 
 import logging
 import math
+import random
 import threading
 import time
 from typing import Optional
@@ -109,6 +110,8 @@ _state = {
     "last_approach_at": 0.0,
     "last_flinch_at": 0.0,
     "orient_last_at": 0.0,   # radar-orient cooldown stamp
+    "wander_pending": None,  # in-flight weight-shift pair (out leg + inverse)
+    "wander_next_at": 0.0,   # randomized idle-wander cooldown stamp
     "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
     "realign_pending_seq": None,   # realign turn awaiting its firmware verdict
     "traction_fails": 0,     # consecutive realigns that produced no actual rotation
@@ -162,6 +165,7 @@ def note_user_hold(reason: str = "user said stop") -> None:
     zero mid-count in the same run, so the carpet detector never reached its
     threshold. Only a real drive command clears it."""
     _state["hold_at"] = time.monotonic()
+    _clear_idle_wander("user hold")   # never fire a pending inverse after "don't move"
     _log.info("[motion_agency] autonomous motion held (%s)", reason)
 
 
@@ -1606,6 +1610,203 @@ def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
     return True
 
 
+# ── Idle base wander ("weight shift") ──────────────────────────────────────────
+# The drive-base sibling of the idle arm/head wander (owner spec 2026-08-19:
+# "much like the idle hands... more random movement back and forth with slight
+# left or right movements"). Small PAIRED maneuvers — a slight turn then its
+# inverse, or a short fore/aft shuffle then its inverse — so the net pose never
+# drifts and every bearing the other lanes rely on stays valid. Randomized
+# timing, amplitude, and speed inside a deterministic safety envelope: the
+# clearance gates pick what is possible, the dice pick when and how big. All
+# motion goes through the ToF-gated closed-loop verbs, so the firmware reflex
+# stop stays authoritative; a tight room scales the behavior down and a genuinely
+# cramped one (or a no-drive room, positionally) shuts it off entirely.
+
+
+def _wander_clearances() -> dict:
+    """Nearest obstacle per axis in metres from the radial ring (front pair is
+    matrix-fused in firmware). Missing/None values mean 'unknown' — the caller
+    fails CLOSED on them; a cosmetic behavior never earns benefit of the doubt."""
+    tele = motion.telemetry()
+    tof = tele.get("tof_mm") if isinstance(tele, dict) else None
+    if not isinstance(tof, dict):
+        return {}
+    return {
+        "front": _min_valid_m(tof.get("fl"), tof.get("fr")),
+        "rear": _min_valid_m(tof.get("rl"), tof.get("rr")),
+        "left": _min_valid_m(tof.get("lf"), tof.get("lb")),
+        "right": _min_valid_m(tof.get("rf"), tof.get("rb")),
+    }
+
+
+def _wander_roominess(clear: dict) -> float:
+    """0..1 'how roomy is this spot' — the tightest KNOWN axis over the comfort
+    distance. 0.0 when nothing is known (fail closed)."""
+    known = [v for v in clear.values() if v is not None]
+    if not known:
+        return 0.0
+    comfort = max(0.1, _num("MOTION_IDLE_WANDER_COMFORT_M", 1.2))
+    return max(0.0, min(1.0, min(known) / comfort))
+
+
+def _clear_idle_wander(reason: str = "") -> None:
+    if _state.get("wander_pending") is not None:
+        _state["wander_pending"] = None
+        if reason:
+            _log.debug("[motion_agency] idle wander pair dropped: %s", reason)
+
+
+def _step_idle_wander_pending(now: float) -> bool:
+    """Advance an in-flight wander pair. True = this lane owns the tick."""
+    pending = _state.get("wander_pending")
+    if pending is None:
+        return False
+    if (now - float(pending.get("at") or 0.0)) > _num(
+        "MOTION_IDLE_WANDER_PENDING_TTL_SECS", 12.0
+    ):
+        _clear_idle_wander("pair timed out")
+        return False
+    try:
+        verdict = motion.done_result(int(pending["seq"]))
+    except Exception:
+        _clear_idle_wander("no verdict available")
+        return False
+    if verdict is None:
+        return True                        # maneuver still executing
+    if verdict != "completed":
+        # The out-leg died (blocked/aborted). Never chase it with the inverse —
+        # the residual offset is at most one wander amplitude. An aborted TURN is
+        # the same scrubbed-tyres signal the realign traction detector reads.
+        if pending.get("kind") == "turn" and verdict == "aborted":
+            _state["traction_fails"] = int(_state.get("traction_fails") or 0) + 1
+            if _state["traction_fails"] >= int(_num("MOTION_TRACTION_FAIL_STREAK", 2)):
+                secs = _num("MOTION_TRACTION_STANDDOWN_SECS", 300.0)
+                _state["no_traction_until"] = now + secs
+                _log.warning(
+                    "[motion_agency] no traction — %d turns aborted without physical "
+                    "yaw progress. Autonomous driving stood down %.0fs; voice "
+                    "commands still work.", _state["traction_fails"], secs,
+                )
+                _emit_traction_notice()
+        _clear_idle_wander("out-leg ended %s" % verdict)
+        return True
+    if pending.get("phase") == "out":
+        if now < float(pending.get("dwell_until") or 0.0):
+            return True                    # settle at the shifted pose a beat
+        if pending.get("kind") == "turn":
+            seq = motion_controller.turn(-float(pending["amount"]),
+                                         rate=float(pending["rate"]))
+        else:
+            seq = motion_controller.move(-float(pending["amount"]),
+                                         speed=float(pending["rate"]))
+        if seq is None:
+            _clear_idle_wander("inverse refused")
+            return False
+        pending.update(seq=int(seq), phase="back", at=now)
+        return True
+    # Back-leg completed — the pair is closed, pose restored.
+    if pending.get("kind") == "turn":
+        _state["traction_fails"] = 0       # the wheels bit both ways
+    _clear_idle_wander()
+    return True
+
+
+def _maybe_idle_wander(profile, now: float) -> bool:
+    """Maybe START a wander pair. Caller has already passed the sleep, master
+    flag, exploration, availability, idle-state, mid-sentence, user-hold, and
+    no-drive-room gates by position."""
+    if _state.get("wander_pending") is not None:
+        return False
+    if now < float(_state.get("wander_next_at") or 0.0):
+        return False
+    quiet = _num("MOTION_IDLE_WANDER_QUIET_SECS", 6.0)
+    busy_at = max(float(_state.get("last_turn_at") or 0.0),
+                  float(_state.get("last_approach_at") or 0.0),
+                  float(_state.get("last_flinch_at") or 0.0))
+    if (now - busy_at) < quiet:
+        return False
+    if getattr(profile, "interaction_busy", False):
+        return False
+    if _traction_lost(now):
+        return False
+    try:
+        from intelligence import battery_awareness
+        if battery_awareness.battery_critical():
+            return False
+    except Exception:
+        pass
+    try:
+        from hardware import servos
+        if servos.speech_motion_active() or servos.listening_motion_active():
+            return False                   # motor noise into his own mic moments
+    except Exception:
+        pass
+    clear = _wander_clearances()
+    roominess = _wander_roominess(clear)
+    if roominess < _num("MOTION_IDLE_WANDER_MIN_ROOMINESS", 0.35):
+        return False                       # tight spot (or blind) — hold still
+    if random.random() >= _num("MOTION_IDLE_WANDER_CHANCE", 0.25) * roominess:
+        return False
+
+    # What is physically on the table right now?
+    stop_zone = _num("MOTION_STOP_ZONE_M", 0.15)
+    margin = _num("MOTION_IDLE_WANDER_MOVE_MARGIN_M", 0.30)
+    max_move = _num("MOTION_IDLE_WANDER_MOVE_MAX_M", 0.15)
+    side_clear = _num("MOTION_IDLE_WANDER_TURN_SIDE_CLEAR_M", 0.35)
+    options = []
+    if (clear.get("left") is not None and clear.get("right") is not None
+            and min(clear["left"], clear["right"]) >= side_clear):
+        options.append("turn")
+    if (clear.get("front") is not None
+            and clear["front"] >= stop_zone + max_move + margin):
+        options.append("shuffle_fwd")
+    if (clear.get("rear") is not None
+            and clear["rear"] >= stop_zone + max_move + margin):
+        options.append("shuffle_back")
+    if not options:
+        return False
+    kind = random.choice(options)
+    amp_scale = 0.5 + 0.5 * roominess      # tighter room = smaller shift
+    if kind == "turn":
+        deg = random.uniform(_num("MOTION_IDLE_WANDER_TURN_MIN_DEG", 4.0),
+                             _num("MOTION_IDLE_WANDER_TURN_MAX_DEG", 10.0)) * amp_scale
+        deg *= random.choice((-1.0, 1.0))
+        rate = random.uniform(_num("MOTION_IDLE_WANDER_TURN_RATE_MIN_DEG_S", 15.0),
+                              _num("MOTION_IDLE_WANDER_TURN_RATE_MAX_DEG_S", 35.0))
+        seq = motion_controller.turn(deg, rate=rate)
+        amount, pace = deg, rate
+    else:
+        dist = random.uniform(_num("MOTION_IDLE_WANDER_MOVE_MIN_M", 0.05),
+                              max_move) * amp_scale
+        if kind == "shuffle_back":
+            dist = -dist
+        pace = random.uniform(_num("MOTION_IDLE_WANDER_SPEED_MIN_MS", 0.06),
+                              _num("MOTION_IDLE_WANDER_SPEED_MAX_MS", 0.14))
+        seq = motion_controller.move(dist, speed=pace)
+        amount = dist
+    if seq is None:
+        return False
+    _state["wander_pending"] = {
+        "kind": "turn" if kind == "turn" else "move",
+        "seq": int(seq), "amount": float(amount), "rate": float(pace),
+        "phase": "out", "at": now,
+        "dwell_until": now + random.uniform(
+            _num("MOTION_IDLE_WANDER_DWELL_MIN_SECS", 0.4),
+            _num("MOTION_IDLE_WANDER_DWELL_MAX_SECS", 1.4)),
+    }
+    _state["wander_next_at"] = now + random.uniform(
+        _num("MOTION_IDLE_WANDER_COOLDOWN_MIN_SECS", 25.0),
+        _num("MOTION_IDLE_WANDER_COOLDOWN_MAX_SECS", 70.0))
+    _log.info(
+        "[motion_agency] idle wander: %s %s (roominess %.2f) — paired, ToF-gated",
+        kind,
+        ("%+.1f deg @ %.0f deg/s" % (amount, pace)) if kind == "turn"
+        else ("%+.2f m @ %.2f m/s" % (amount, pace)),
+        roominess,
+    )
+    return True
+
+
 def _bearing_degrees_for(frac: float) -> float:
     """The signed correction (deg, + = left/CCW per the wire protocol) for an
     offset fraction, WITHOUT the minimum-turn floor — suitable as a `come`
@@ -1928,14 +2129,24 @@ def _step_inner(snapshot: dict, profile) -> None:
             _log.info("[motion_agency] holding still — %s is flagged no-drive (%s)",
                       room[0], room[1] or "owner's rule")
         _reset("neck_hits", "far_hits")
+        _clear_idle_wander("no-drive room")
+        return
+
+    # An in-flight weight-shift pair finishes (or dies) before any other lane may
+    # move the base — its inverse landing after a realign turn would corrupt both.
+    if _step_idle_wander_pending(now):
         return
 
     person = _tracked_person(snapshot)
     if person is None:
         _reset("neck_hits", "far_hits")
         # Nobody on camera — but the radar ring may know where they are.
-        if _flag("MOTION_RADAR_ORIENT_ENABLED", True):
-            _maybe_radar_orient(snapshot, now)
+        if (_flag("MOTION_RADAR_ORIENT_ENABLED", True)
+                and _maybe_radar_orient(snapshot, now)):
+            return
+        # Nothing social to do — maybe shift his weight (one maneuver per tick).
+        if _flag("MOTION_IDLE_WANDER_ENABLED", True):
+            _maybe_idle_wander(profile, now)
         return
     _reset("orient_hits")
 
@@ -2075,3 +2286,11 @@ def _step_inner(snapshot: dict, profile) -> None:
             )
             _state["last_approach_at"] = now
         _reset("far_hits")
+        return  # one maneuver per tick
+
+    # ── IDLE WANDER: nothing social needed the base this tick ─────────────────
+    # Weight-shift micro-motion also runs while a person is tracked (he fidgets
+    # in company, like the idle hands do) — the quiet window inside keeps it
+    # clear of any maneuver the lanes above just issued.
+    if _flag("MOTION_IDLE_WANDER_ENABLED", True):
+        _maybe_idle_wander(profile, now)
