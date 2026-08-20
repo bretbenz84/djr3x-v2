@@ -305,6 +305,57 @@ class SoundEffectsTest(unittest.TestCase):
                 sfx._play_path(path, "motion_move", mode="overlay")
         self.assertEqual(self.sd.stream_starts, 1)
 
+    def test_gain_scales_playback_amplitude(self):
+        # Autonomous motion accents duck to a per-call gain under the global
+        # volume (owner 2026-08-19: half volume for unprompted moves).
+        path = sfx._resolve_stem("motion_whir")
+        loud = np.ones(4800, np.float32)
+        captured = {}
+
+        def _grab(sd, ec, og, audio, sr, p, key, **kw):
+            captured[key] = audio
+            return True
+
+        with mock.patch.object(sfx, "_decode", return_value=(loud, 48000)), \
+                mock.patch.object(config, "SOUND_EFFECTS_VOLUME", 1.0, create=True), \
+                mock.patch.object(sfx, "_play_gated", side_effect=_grab):
+            sfx._play_path(path, "motion_move", mode="gated", gain=0.5)
+        self.assertAlmostEqual(float(captured["motion_move"].max()), 0.5, places=5)
+
+    def test_default_gain_is_transparent(self):
+        path = sfx._resolve_stem("motion_whir")
+        loud = np.ones(4800, np.float32)
+        captured = {}
+
+        def _grab(sd, ec, og, audio, sr, p, key, **kw):
+            captured[key] = audio
+            return True
+
+        with mock.patch.object(sfx, "_decode", return_value=(loud, 48000)), \
+                mock.patch.object(config, "SOUND_EFFECTS_VOLUME", 1.0, create=True), \
+                mock.patch.object(sfx, "_play_gated", side_effect=_grab):
+            sfx._play_path(path, "motion_move", mode="gated")
+        self.assertAlmostEqual(float(captured["motion_move"].max()), 1.0, places=5)
+
+    def test_loop_passes_carry_the_gain(self):
+        loud = np.ones(2400, np.float32)
+        peaks = []
+
+        def _grab(sd, ec, og, audio, sr, p, key, abort=None, player=None):
+            peaks.append(float(audio.max()))
+            return True
+
+        with mock.patch.object(sfx, "_decode", return_value=(loud, 48000)), \
+                mock.patch.object(config, "SOUND_EFFECTS_VOLUME", 1.0, create=True), \
+                mock.patch.object(sfx, "_play_gated", side_effect=_grab):
+            handle = sfx.start_loop("motion_move", mode="gated",
+                                    gap_secs=0.01, max_secs=1.0, gain=0.5)
+            self.assertIsNotNone(handle)
+            time.sleep(0.15)
+            sfx.stop_loop(handle)
+        self.assertTrue(peaks)
+        self.assertTrue(all(abs(pk - 0.5) < 1e-5 for pk in peaks))
+
     # ── looping effects ──
     def test_loop_repeats_until_stopped(self):
         # A clip shorter than the activity must keep going: the startup "thinking"

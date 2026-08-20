@@ -950,6 +950,35 @@ class CommandedMotionFxTest(unittest.TestCase):
         with mock.patch("audio.sound_effects.play", side_effect=RuntimeError("no audio")):
             mc._fx("motion_turn")   # must not propagate
 
+    # ── autonomous ducking (owner 2026-08-19: half volume for unprompted moves) ──
+
+    def test_autonomous_motion_ducks_to_half_volume(self):
+        with mock.patch("audio.sound_effects.play") as play:
+            mc._fx("motion_turn")
+        self.assertAlmostEqual(play.call_args.kwargs.get("gain"),
+                               config.MOTION_AUTONOMOUS_FX_GAIN)
+
+    def test_commanded_motion_keeps_full_volume(self):
+        mc.note_user_commanded_motion()
+        with mock.patch("audio.sound_effects.play") as play:
+            mc._fx("motion_turn")
+        self.assertAlmostEqual(play.call_args.kwargs.get("gain"), 1.0)
+
+    def test_drive_loop_carries_the_same_gain(self):
+        with mock.patch("audio.sound_effects.start_loop") as loop:
+            mc._fx_drive_loop_start("motion_move", 42)
+        loop.assert_called_once()
+        self.assertAlmostEqual(loop.call_args.kwargs.get("gain"),
+                               config.MOTION_AUTONOMOUS_FX_GAIN)
+        mc._fx_drive_loop_stop(42)
+
+    def test_commanded_drive_loop_keeps_full_volume(self):
+        mc.note_user_commanded_motion()
+        with mock.patch("audio.sound_effects.start_loop") as loop:
+            mc._fx_drive_loop_start("motion_move", 43)
+        self.assertAlmostEqual(loop.call_args.kwargs.get("gain"), 1.0)
+        mc._fx_drive_loop_stop(43)
+
 
 class BlockedAnnounceTest(unittest.TestCase):
     """A VOICE-commanded move the firmware cuts on an obstacle must SAY so —

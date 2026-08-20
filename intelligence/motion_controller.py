@@ -139,12 +139,27 @@ def _user_commanded_fx() -> bool:
     return (time.monotonic() - _user_commanded_motion_at) <= window
 
 
+def _fx_gain() -> float:
+    """Volume scale for drive accents. Autonomous motion is FREQUENT now (idle
+    wander, radar orient, edge-in, object step...), so its motor sounds duck to
+    a fraction of a commanded move's level (owner 2026-08-19: about half) —
+    present, but ambient. A voice-commanded move keeps full volume: there the
+    sound is confirmation, not texture."""
+    if _user_commanded_fx():
+        return 1.0
+    try:
+        return max(0.0, min(1.0, float(getattr(
+            config, "MOTION_AUTONOMOUS_FX_GAIN", 0.5))))
+    except (TypeError, ValueError):
+        return 0.5
+
+
 def _fx(key: str) -> None:
     """Fire a drive sound effect (audio/sound_effects). Best-effort, never raises,
     never blocks — the effect layer owns cooldowns/enable flags/preemption."""
     try:
         from audio import sound_effects
-        sound_effects.play(key, overlay=_user_commanded_fx())
+        sound_effects.play(key, overlay=_user_commanded_fx(), gain=_fx_gain())
     except Exception:
         pass
 
@@ -171,6 +186,7 @@ def _fx_drive_loop_start(key: str, seq: "int | None") -> None:
             gap_secs=float(getattr(config, "SOUND_EFFECTS_DRIVE_LOOP_GAP_SECS", 0.1)),
             # Safety cap: a dropped `done` frame must never leave the whir droning.
             max_secs=float(getattr(config, "SOUND_EFFECTS_DRIVE_LOOP_MAX_SECS", 30.0)),
+            gain=_fx_gain(),        # autonomous moves whir at half volume
         )
     except Exception:
         return

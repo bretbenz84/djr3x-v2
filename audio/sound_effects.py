@@ -418,7 +418,7 @@ def _in_reply_window(family: str) -> bool:
 
 
 def play(key: str, *, force: bool = False, concurrent: bool = False,
-         overlay: bool = False) -> bool:
+         overlay: bool = False, gain: float = 1.0) -> bool:
     """Fire effect ``key`` asynchronously. Returns True when a playback thread was
     started (cooldowns/enables/no-audio may drop it silently). Never raises, never
     blocks the caller, and never delays other audio (see module docstring).
@@ -463,7 +463,7 @@ def play(key: str, *, force: bool = False, concurrent: bool = False,
             return False
         mode = "overlay" if overlay else ("concurrent" if concurrent else "gated")
         threading.Thread(
-            target=_play_path, args=(path, key, mode), daemon=True,
+            target=_play_path, args=(path, key, mode, gain), daemon=True,
             name="sound-effects",
         ).start()
         return True
@@ -494,7 +494,8 @@ def play_for_speech(emotion: str, tag: Optional[str] = None) -> bool:
     return play(emotion, concurrent=True)
 
 
-def _play_path(path: Path, key: str, mode: str = "gated") -> None:
+def _play_path(path: Path, key: str, mode: str = "gated",
+               gain: float = 1.0) -> None:
     try:
         import sounddevice as sd
     except ImportError:
@@ -508,7 +509,9 @@ def _play_path(path: Path, key: str, mode: str = "gated") -> None:
         vol = float(getattr(config, "SOUND_EFFECTS_VOLUME", 0.8))
     except (TypeError, ValueError):
         vol = 0.8
-    audio = audio * max(0.0, min(1.0, vol))
+    # ``gain`` is a per-call scale under the global volume — e.g. autonomous
+    # motion accents duck to half a commanded move's level (owner 2026-08-19).
+    audio = audio * (max(0.0, min(1.0, vol)) * max(0.0, min(1.0, float(gain))))
 
     if mode == "overlay":
         _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key)
@@ -788,7 +791,7 @@ class LoopHandle:
 
 
 def start_loop(key: str, *, mode: str = "gated", gap_secs: float = 0.15,
-               max_secs: float = 120.0) -> Optional[LoopHandle]:
+               max_secs: float = 120.0, gain: float = 1.0) -> Optional[LoopHandle]:
     """Repeat effect ``key`` until stop_loop() (or ``max_secs``). Returns a handle.
 
     ``max_secs`` is a safety cap so a lost completion event can never leave the
@@ -818,7 +821,8 @@ def start_loop(key: str, *, mode: str = "gated", gap_secs: float = 0.15,
             _log.debug("[sfx] loop stream unavailable (%s) — falling back per-pass", exc)
         try:
             while not handle._stop.is_set() and time.monotonic() < deadline:
-                played = _play_once(key, mode=mode, abort=handle._stop, player=player)
+                played = _play_once(key, mode=mode, abort=handle._stop,
+                                    player=player, gain=gain)
                 if handle._stop.is_set():
                     break
                 # A dropped pass means the speaker is busy (TTS holds the gate) — back
@@ -845,7 +849,8 @@ def stop_loop(handle: Optional[LoopHandle], *, join_timeout: float = 1.0) -> Non
         thread.join(timeout=max(0.0, join_timeout))
 
 
-def _play_once(key: str, *, mode: str = "gated", abort=None, player=None) -> bool:
+def _play_once(key: str, *, mode: str = "gated", abort=None, player=None,
+               gain: float = 1.0) -> bool:
     """Synchronously play one pass of ``key``. Returns True if it actually started."""
     stems = _stems_for(key)
     if not stems:
@@ -867,7 +872,7 @@ def _play_once(key: str, *, mode: str = "gated", abort=None, player=None) -> boo
         vol = float(getattr(config, "SOUND_EFFECTS_VOLUME", 0.8))
     except (TypeError, ValueError):
         vol = 0.8
-    audio = audio * max(0.0, min(1.0, vol))
+    audio = audio * (max(0.0, min(1.0, vol)) * max(0.0, min(1.0, float(gain))))
     with _lock:                       # keep the family stamp fresh so a one-shot
         _last_play_at[_family(key)] = time.monotonic()   # can't cut in mid-loop
         _last_key_at[key] = time.monotonic()
