@@ -1722,7 +1722,15 @@ def _try_fire_jeff_history_hunters_greeting(
         label=label,
         suggested_text=text,
         emotion="starstruck",
-        priority=2,
+        # NO priority= here. speech_queue.enqueue's `priority` is a small ordinal
+        # (2 = "high, clear everything below"); CandidateMove.priority is the
+        # governor's SCORE on 0-100 with a floor of ACTION_GOVERNOR_MIN_SCORE=20.
+        # Passing the queue ordinal scored a first-sight celebrity greeting at 2
+        # and logged it rejected `below_min_score_20` in the same second it
+        # actually spoke (field 2026-08-20 20:11:43). Harmless only because these
+        # sites enqueue directly instead of using a deferred speak_fn — the moment
+        # anyone migrates them, all three greetings die at the floor. Let
+        # _PURPOSE_PRIORITIES["presence_reaction"] supply the score.
         target_person_id=key,
         requires_llm=False,
     )
@@ -1903,7 +1911,15 @@ def _try_fire_jt_volleyball_greeting(
         label=label,
         suggested_text=text,
         emotion="starstruck",
-        priority=2,
+        # NO priority= here. speech_queue.enqueue's `priority` is a small ordinal
+        # (2 = "high, clear everything below"); CandidateMove.priority is the
+        # governor's SCORE on 0-100 with a floor of ACTION_GOVERNOR_MIN_SCORE=20.
+        # Passing the queue ordinal scored a first-sight celebrity greeting at 2
+        # and logged it rejected `below_min_score_20` in the same second it
+        # actually spoke (field 2026-08-20 20:11:43). Harmless only because these
+        # sites enqueue directly instead of using a deferred speak_fn — the moment
+        # anyone migrates them, all three greetings die at the floor. Let
+        # _PURPOSE_PRIORITIES["presence_reaction"] supply the score.
         target_person_id=key,
         requires_llm=False,
     )
@@ -2070,7 +2086,15 @@ def _try_fire_hair_stylist_greeting(
         label=label,
         suggested_text=text,
         emotion="starstruck",
-        priority=2,
+        # NO priority= here. speech_queue.enqueue's `priority` is a small ordinal
+        # (2 = "high, clear everything below"); CandidateMove.priority is the
+        # governor's SCORE on 0-100 with a floor of ACTION_GOVERNOR_MIN_SCORE=20.
+        # Passing the queue ordinal scored a first-sight celebrity greeting at 2
+        # and logged it rejected `below_min_score_20` in the same second it
+        # actually spoke (field 2026-08-20 20:11:43). Harmless only because these
+        # sites enqueue directly instead of using a deferred speak_fn — the moment
+        # anyone migrates them, all three greetings die at the floor. Let
+        # _PURPOSE_PRIORITIES["presence_reaction"] supply the score.
         target_person_id=key,
         requires_llm=False,
     )
@@ -2701,8 +2725,41 @@ def _animal_reaction_frame_and_line(animal: dict):
 # ───────────────────────────────────────────────────────────────────────────────────
 
 
+def _session_is_signing_off() -> bool:
+    """True while a farewell / session outro owns the floor.
+
+    There is no published "signing off" state during this window: _maybe_idle_outro
+    speaks, then _end_session runs its blocking consolidation for ~14 s before the
+    ACTIVE->IDLE transition lands, so situation.py still reports an ordinary active
+    conversation the whole time. end_thread's grace flag is the closest honest
+    signal and is what every inline proactive path already backs off on.
+    """
+    try:
+        from intelligence import end_thread
+        return bool(end_thread.is_grace_active())
+    except Exception:
+        return False
+
+
 def _fire_pending_animal_arrival_reaction() -> bool:
     if not _pending_animal_arrivals:
+        return False
+    # Field 2026-08-20 20:24:28: Rex delivered his goodbye ("I'll be here, judging
+    # the ambience"), the session-end bookkeeping ran, and six seconds later — mid
+    # ACTIVE->IDLE — he blurted "Ah. The creature persists. Respect." about a cat
+    # that had been on the couch for minutes. DROP rather than defer: a staged
+    # remark that has outlived its conversation is not worth saying to a room that
+    # has already been said goodbye to. The lean impulse has this fence
+    # (end_thread.is_grace_active); the animal path had no counterpart.
+    if _session_is_signing_off():
+        dropped = sorted(_pending_animal_arrivals)
+        _pending_animal_arrivals.clear()
+        if dropped:
+            _log.info(
+                "consciousness: pending animal remark(s) dropped at sign-off "
+                "(species=%s) — the conversation is already closed",
+                ", ".join(dropped),
+            )
         return False
     now = time.monotonic()
     stale_after = float(getattr(config, "ANIMAL_PENDING_REACTION_TTL_SECS", 90.0))

@@ -536,12 +536,26 @@ def finish_governor_cycle() -> None:
         if decision is None or not governor.enforcing:
             return
         if decision.action == "speak" and decision.selected is not None:
-            speak_fn = getattr(decision.selected.candidate, "speak_fn", None)
+            candidate = decision.selected.candidate
+            speak_fn = getattr(candidate, "speak_fn", None)
             if callable(speak_fn):
                 try:
-                    speak_fn()
+                    spoke = speak_fn()
                 except Exception as exc:
                     _log.debug("governor winner speak_fn failed: %s", exc)
+                    spoke = False
+                # Arm the cross-cycle repeat cooldown ONLY when the line actually
+                # spoke. _do_speak has four documented ways to abort after winning,
+                # and arming on the win instead let a yielded line block its own
+                # topic for 45 s while eligible cycles were rejected (field
+                # 2026-08-20 20:16:39). Marked here rather than via mark_outcome:
+                # finish_cycle has already cleared the thread-local cycle by now,
+                # and the ENFORCE speak_fn carries no candidate_id.
+                if spoke:
+                    governor_mod = __import__(
+                        "intelligence.action_governor", fromlist=["note_topic_spoken"],
+                    )
+                    governor_mod.note_topic_spoken(candidate)
     except Exception as exc:
         _log.debug("action governor cycle finish failed: %s", exc)
 

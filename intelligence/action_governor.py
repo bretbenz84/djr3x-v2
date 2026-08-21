@@ -62,6 +62,19 @@ def _topic_recently_selected(topic_key: str, purpose: str) -> bool:
         return ts is not None and (now - ts) < cooldown
 
 
+def note_topic_spoken(candidate: "CandidateMove") -> None:
+    """Arm the cross-cycle repeat cooldown for a line that ACTUALLY spoke.
+
+    Called from the speak path, not the arbitration path. Never raises — failing to
+    arm a de-dup cooldown must not take down a line that is already committed."""
+    try:
+        if candidate is None:
+            return
+        _note_topic_selected(ActionGovernor._candidate_topic_key(candidate))
+    except Exception:
+        _log.debug("[action_governor] topic-spoken stamp failed", exc_info=True)
+
+
 def _note_topic_selected(topic_key: str) -> None:
     now = time.monotonic()
     with _recent_selected_lock:
@@ -300,6 +313,13 @@ class ActionGovernor:
             if candidate.candidate_id == candidate_id:
                 candidate.outcome = outcome
                 candidate.outcome_reason = reason
+                # "accepted" is the one outcome that means the line reached the
+                # speech queue — every speak path stamps it, in both ENFORCE and
+                # shadow. Arming the repeat cooldown HERE rather than at
+                # arbitration is what stops a line that won and then yielded from
+                # blocking its own topic for 45 s (see finish_cycle).
+                if outcome == "accepted":
+                    note_topic_spoken(candidate)
                 return
 
     def finish_cycle(self) -> Optional[Decision]:
@@ -314,13 +334,18 @@ class ActionGovernor:
                 return None
             scored = [self._score(c, profile=cycle.get("profile")) for c in candidates]
             decision = self._decide(scored)
-            # Record the winner so the same proactive cue can't be re-selected on a
-            # later flickering tick (cross-cycle de-dup). Only the real cycle path
-            # records; standalone observe() logging does not.
-            if decision.action == "speak" and decision.selected is not None:
-                _note_topic_selected(
-                    self._candidate_topic_key(decision.selected.candidate)
-                )
+            # The winner is NOT stamped here. Winning the arbitration is not
+            # speaking: _do_speak has four documented ways to abort after winning
+            # (barge-guard yield, can't-speak, empty text, user speaking). Field
+            # 2026-08-20 20:16:39 — the animal remark won, yielded to the user
+            # mid-sentence, said nothing, and still blocked its own topic for the
+            # full 45 s while three otherwise-ELIGIBLE cycles were rejected
+            # `topic_repeat_cooldown`. The cooldown exists to stop a FLICKERING CUE
+            # re-selecting a line that DID speak, which is the opposite case.
+            # mark_outcome(..., "accepted") stamps it instead — the one outcome
+            # that means the line actually reached the speech queue. Same contract
+            # speech_engine already documents: "a losing candidate never speaks and
+            # so never marks itself done".
             if self.log_candidates:
                 for item in scored:
                     self._log_candidate(item, cycle_id=cycle["id"])

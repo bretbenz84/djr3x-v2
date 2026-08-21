@@ -27,17 +27,35 @@ class GovernorCrossCycleDedupTest(unittest.TestCase):
             label="crowd size changed", suggested_text="now it's just us",
         )
 
-    def _run_tick(self, candidate):
-        from intelligence.action_governor import governor
-        governor.start_cycle()
-        governor.observe(candidate)
-        return governor.finish_cycle()
+    def _run_tick(self, candidate, *, spoke=True):
+        """One governor tick. `spoke` models what happens AFTER arbitration: the
+        winner's deferred speak_fn can still abort (barge-guard yield, can't-speak,
+        empty text, user speaking), and the repeat cooldown arms only on real
+        speech — see note_topic_spoken."""
+        from intelligence import action_governor as ag
+        ag.governor.start_cycle()
+        ag.governor.observe(candidate)
+        decision = ag.governor.finish_cycle()
+        if spoke and decision is not None and decision.action == "speak":
+            ag.note_topic_spoken(decision.selected.candidate)
+        return decision
 
     def test_identical_world_cue_is_blocked_on_next_tick(self):
         d1 = self._run_tick(self._crowd_candidate())
         self.assertEqual(d1.action, "speak")
         d2 = self._run_tick(self._crowd_candidate())
         self.assertEqual(d2.action, "wait")  # cross-cycle cooldown rejected the repeat
+
+    def test_a_winner_that_never_spoke_does_not_block_its_own_topic(self):
+        """Field 2026-08-20 20:16:39: the animal remark won, yielded to the user
+        mid-sentence, said nothing — and still blocked world.animal_arrival for the
+        full 45 s while three otherwise-ELIGIBLE cycles were rejected
+        `topic_repeat_cooldown`. The cooldown is for lines that DID speak."""
+        d1 = self._run_tick(self._crowd_candidate(), spoke=False)
+        self.assertEqual(d1.action, "speak")
+        d2 = self._run_tick(self._crowd_candidate(), spoke=False)
+        self.assertEqual(d2.action, "speak",
+                         "a line that yielded must not silence its own topic")
 
     def test_idle_monologue_is_excluded_from_the_cooldown(self):
         from intelligence.action_governor import CandidateMove

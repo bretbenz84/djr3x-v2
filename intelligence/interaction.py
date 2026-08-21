@@ -6069,6 +6069,50 @@ def _person_visible_now(person_id: Optional[int]) -> bool:
     return False
 
 
+def _lean_impulse_addressee() -> tuple[Optional[int], str]:
+    """Who the lull impulse should address, and why. (person_id, reason).
+
+    _primary_session_person_id answers a DIFFERENT question — "is there exactly ONE
+    person here" — and returns None as soon as a second person speaks. The lean
+    brain now owns proactivity outright (the governor hard-rejects the whole legacy
+    silence-fill taxonomy as lean_brain_silence_fill_suppressed), so that None means
+    a room with two known humans in it gets no lull filler from either system.
+
+    Field 2026-08-20: JT's first turn at 20:12:05 killed it for the rest of the
+    session — ~11 minutes of unbroken `no_known_person`, and 2300 of 3271 consults
+    (70%) died on this one gate. Rex's proactive speech for the remaining ~21
+    minutes was animal remarks and one identity prompt.
+
+    Addressing does not require exclusivity: in a group, the person who spoke last
+    is the right person to talk to. Order of preference:
+      1. the strict single-person answer, when there is one;
+      2. the currently/recently engaged partner (consciousness tracks this);
+      3. the session person with the most turns, if any are visible or heard;
+    Returns None only when nobody known has spoken or been seen — an empty room.
+    """
+    primary = _primary_session_person_id()
+    if primary is not None:
+        return primary, "primary"
+    try:
+        engaged = consciousness.get_recent_engagement()
+        if engaged and engaged.get("person_id") is not None:
+            return int(engaged["person_id"]), "engaged"
+    except Exception:
+        _log.debug("[lean] engaged-addressee lookup failed", exc_info=True)
+    # Most talkative known person this session, provided they are still around.
+    try:
+        ranked = sorted(
+            ((pid, n) for pid, n in _session_person_turn_counts.items() if pid is not None),
+            key=lambda kv: kv[1], reverse=True,
+        )
+        for pid, _turns in ranked:
+            if _lean_impulse_person_present(int(pid)):
+                return int(pid), "most_turns"
+    except Exception:
+        _log.debug("[lean] turn-count addressee lookup failed", exc_info=True)
+    return None, ("ambiguous_addressee" if _session_person_ids else "empty_room")
+
+
 def _lean_impulse_person_present(person_id: int) -> bool:
     """Is the impulse's target plausibly HERE — on camera now, or heard recently?
 
@@ -6288,9 +6332,14 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             return _impulse_blocked("come_errand_active")
     except Exception:
         pass
-    person_id = _primary_session_person_id()
+    # Not _primary_session_person_id: that answers "is there exactly ONE person
+    # here" and goes None the moment a second person speaks, which silenced the
+    # lull impulse for 70% of the 2026-08-20 run. See _lean_impulse_addressee.
+    person_id, why = _lean_impulse_addressee()
     if person_id is None:                       # nobody known present → never nudge an empty room
-        return _impulse_blocked("no_known_person")
+        # Split reason: "empty room" and "known people here but I can't pick one"
+        # were both logged as no_known_person, which is why this hid for so long.
+        return _impulse_blocked(why)
     if not _lean_impulse_person_present(person_id):
         # Target left (or went silent + off-camera): forget any probe/snooze so
         # the normal idle/boredom/sleep path owns the room from here.
