@@ -28,11 +28,19 @@ suppression cannot be left permanently active.
 
 Mouth LEDs + servo speech motion
 ────────────────────────────────
-A daemon thread iterates through the audio array in TTS_LED_UPDATE_INTERVAL_SECS
-chunks, computes the RMS of each chunk, and calls leds_head.speak_level(brightness)
-at ~30 fps during playback. The same brightness value is offered to the servo
-layer for throttled speech-reactive head/arm motion. Hardware calls are no-ops
-when the corresponding device is disabled.
+The audio is walked in TTS_LED_UPDATE_INTERVAL_SECS chunks, each chunk's RMS
+becomes a brightness, and leds_head.speak_level(brightness) drives the mouth at
+~30 fps. The same brightness value is offered to the servo layer for throttled
+speech-reactive head/arm motion. Hardware calls are no-ops when the corresponding
+device is disabled.
+
+Those levels are clocked off the AUDIBLE timeline, not the write one: the device
+holds a full output buffer of not-yet-heard audio (0.95 s normally on this Mac,
+3.18 s while the clone deep buffer is armed — i.e. every impersonation), and
+driving the mouth at write time put the whole animation that far ahead of the
+voice. _MouthPacer holds each level, and the mouth-on trigger itself, until its
+audio actually reaches the room; the buffered _play() path gets the same offset
+via _drive_leds(start_delay=...). Kill switch: TTS_MOUTH_SYNC_ENABLED.
 """
 
 import hashlib
@@ -41,6 +49,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, Iterator, Optional, Tuple
 
@@ -604,10 +613,184 @@ def _stream_pcm_samplerate() -> int:
 # share these; the buffered _play() path keeps its own (it drives LEDs from a
 # separate thread and guards sd.wait() early-return, which streaming doesn't).
 
-def _begin_speech(emotion: str, ttl_secs: float):
+def _stream_output_latency(stream) -> float:
+    """PortAudio's REPORTED output latency for this stream, in seconds.
+
+    Not the value we asked for — the CoreAudio host rounds the request up hard
+    (measured on the robot Mac 2026-08-20: 'high'/4096 → 0.95 s, the clone deep
+    buffer 1.2/8192 → 3.18 s, the boot buffer 2.5/8192 → 6.16 s). This is real
+    audio sitting between write() and the speaker, not bookkeeping: stream.stop()
+    drains for exactly this long no matter how little was written, while
+    stream.abort() — which throws the buffer away — returns in 0.16 s.
+    """
+    try:
+        return max(0.0, float(stream.latency))
+    except Exception:
+        return 0.0
+
+
+def _playing_stream_latency(sd) -> float:
+    """Reported output latency of the stream sd.play() just opened. Separate from
+    _stream_output_latency because sd.get_stream() itself raises when no stream is
+    live (a disabled/absent output device), and a missing latency must degrade to
+    "no delay", never to a crash on the playback path."""
+    try:
+        return _stream_output_latency(sd.get_stream())
+    except Exception:
+        return 0.0
+
+
+def _mouth_on(led_emotion: str) -> None:
+    """The visible mouth-on trigger (head SPEAK: + chest), split out of
+    _begin_speech so the playback paths can withhold it until the audio is
+    actually audible. See _MouthPacer."""
+    leds_head.speak(led_emotion)
+    leds_chest.speak(led_emotion)
+
+
+class _MouthPacer:
+    """Applies mouth levels on the AUDIBLE timeline instead of the write one.
+
+    Every playback path set a chunk's brightness immediately before writing that
+    chunk to the device, but the device holds _stream_output_latency() seconds of
+    audio downstream — so the mouth ran that far AHEAD of the voice: it started
+    animating ~1 s before any sound on an ordinary line and ~3.2 s early during an
+    impersonation (the clone deep buffer is armed for exactly that window), then
+    froze at the last level for the final ~3.2 s. Owner report 2026-08-20: "the
+    mouth LEDs start animating as if they're speaking before he actually speaks."
+
+    Levels are queued against a deadline on the audio timeline —
+    t0 + latency + (audio scheduled so far) — rather than "now + latency", so a
+    line SHORTER than the buffer (whose writes all return at once) still animates
+    spread across its real duration instead of firing in one burst. The mouth-on
+    trigger is withheld until the first level comes due, so the head starts
+    talking exactly when the room hears him.
+
+    Below TTS_MOUTH_SYNC_MIN_LATENCY_SECS — or with TTS_MOUTH_SYNC_ENABLED off —
+    this is a pass-through: no thread, no queue, the pre-2026-08-20 behavior.
+    """
+
+    __slots__ = ("_delay", "_sr", "_t0", "_cursor", "_q", "_cv", "_thread",
+                 "_stop", "_on_start", "_started", "_min_delta", "_last_led")
+
+    def __init__(self, latency_secs: float, samplerate: int, on_start: Optional[Callable[[], None]]):
+        self._sr = float(samplerate or 1) or 1.0
+        self._on_start = on_start
+        self._started = False
+        self._min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
+        self._last_led = -1
+        self._cursor = 0.0
+        self._q: "deque[tuple[float, int]]" = deque()
+        self._cv = threading.Condition()
+        self._stop = False
+        self._thread: Optional[threading.Thread] = None
+
+        self._t0 = time.monotonic()
+        enabled = bool(getattr(config, "TTS_MOUTH_SYNC_ENABLED", True))
+        floor = float(getattr(config, "TTS_MOUTH_SYNC_MIN_LATENCY_SECS", 0.08))
+        self._delay = max(0.0, float(latency_secs or 0.0)) if enabled else 0.0
+        if self._delay < floor:
+            self._delay = 0.0
+            self._fire_start()          # pass-through: light the mouth right now
+            return
+        logger.debug("[tts] mouth synced to a %.2fs output buffer", self._delay)
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="tts-mouth-pacer",
+        )
+        self._thread.start()
+
+    # ── internals ────────────────────────────────────────────────────────────
+    def _fire_start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        if self._on_start is not None:
+            try:
+                self._on_start()
+            except Exception as exc:
+                logger.debug("[tts] deferred mouth-on failed: %s", exc)
+
+    def _apply(self, brightness: int) -> None:
+        """Throttled by HEAD_LED_SPEAK_LEVEL_MIN_DELTA, same as the inline path —
+        the per-frame flood overlaps the Arduino's interrupt-off show() windows."""
+        if self._last_led < 0 or abs(brightness - self._last_led) >= self._min_delta or (
+            brightness == 0 and self._last_led != 0
+        ):
+            try:
+                leds_head.speak_level(brightness)
+                servos.speech_reactive_move(brightness / 255.0)
+            except Exception:
+                pass
+            self._last_led = brightness
+
+    def _run(self) -> None:
+        while True:
+            with self._cv:
+                while not self._stop and not self._q:
+                    self._cv.wait(0.2)
+                if self._stop:
+                    return
+                due, level = self._q[0]
+                now = time.monotonic()
+                if due > now:
+                    self._cv.wait(due - now)
+                    continue            # re-check: a close() may have arrived
+                self._q.popleft()
+            self._fire_start()
+            self._apply(level)
+
+    # ── public ───────────────────────────────────────────────────────────────
+    def push(self, samples: "np.ndarray") -> None:
+        """Schedule one chunk's mouth level, and advance the audio cursor by its
+        length. Callers pass exactly what they hand to stream.write()."""
+        n = int(getattr(samples, "size", 0) or 0)
+        rms = float(np.sqrt(np.mean(samples ** 2))) if n else 0.0
+        brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
+        if self._thread is None:
+            self._apply(brightness)
+            return
+        with self._cv:
+            self._q.append((self._t0 + self._delay + self._cursor, brightness))
+            self._cursor += n / self._sr
+            self._cv.notify()
+
+    @property
+    def delay(self) -> float:
+        """Seconds a level is held before it reaches the mouth — i.e. how far the
+        device is behind the writes. 0.0 in pass-through mode."""
+        return self._delay
+
+    def close(self, *, canceled: bool = False) -> None:
+        """Stop the pacer BEFORE the caller's LED restore. On barge-in the device
+        buffer is thrown away by stream.abort(), so anything still queued is for
+        audio nobody will hear — dropping it also keeps a stale SPEAK_LEVEL from
+        landing after SPEAK_STOP, which the next SPEAK: would inherit (the head
+        firmware does not reset the level on a new utterance)."""
+        with self._cv:
+            self._stop = True
+            self._q.clear()
+            self._cv.notify_all()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=0.5)
+        if canceled:
+            return
+        # A line shorter than the buffer latency can end before its first level
+        # came due. The mouth never lit, so leave it dark rather than flashing it
+        # on at teardown — _end_speech's speak_stop is a no-op on a dark mouth.
+
+
+def _begin_speech(emotion: str, ttl_secs: float, *, defer_mouth: bool = False):
     """Playback prologue: publish the emotion frame, start servo/animation speech
     motion, light eyes/mouth/chest, and arm AEC suppression. Returns
-    (emotion_frame, led_emotion)."""
+    (emotion_frame, led_emotion).
+
+    defer_mouth leaves the mouth-on trigger (_mouth_on) to a _MouthPacer, so it
+    fires when the audio is audible rather than up to ~3.2 s earlier. Everything
+    else stays here on purpose: the speech-activity flag and begin_speech_motion
+    are the "Rex owns the head now" claim (delaying them lets idle wander grab the
+    neck mid-line), and AEC suppression must be armed before any sound reaches the
+    room, not after."""
     emotion_frame = emotion_orchestrator.frame_for_speech(emotion)
     led_emotion = emotion_frame.led_style
     emotion_orchestrator.publish_frame(emotion_frame, ttl_secs=ttl_secs)
@@ -616,9 +799,11 @@ def _begin_speech(emotion: str, ttl_secs: float):
         servos.begin_speech_motion(emotion_frame)
     except Exception as exc:
         logger.debug("[tts] speech servo start failed: %s", exc)
-    leds_head.speak(led_emotion)
+    if not defer_mouth:
+        leds_head.speak(led_emotion)
     leds_head.ensure_eyes_on(led_emotion)
-    leds_chest.speak(led_emotion)
+    if not defer_mouth:
+        leds_chest.speak(led_emotion)
     echo_cancel.set_playing(True)
     return emotion_frame, led_emotion
 
@@ -644,31 +829,24 @@ def _led_chunks(samples: np.ndarray, sr: int) -> Iterator[np.ndarray]:
             yield piece
 
 
-def _drive_mouth_chunk(samples: np.ndarray, last_led: int, min_delta: int) -> int:
-    """Drive mouth LED brightness + speech-reactive servo from one chunk's RMS,
-    throttled by min_delta. Returns the new last_led."""
-    rms = float(np.sqrt(np.mean(samples ** 2))) if len(samples) else 0.0
-    brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
-    if last_led < 0 or abs(brightness - last_led) >= min_delta or (
-        brightness == 0 and last_led != 0
-    ):
-        try:
-            leds_head.speak_level(brightness)
-            servos.speech_reactive_move(brightness / 255.0)
-        except Exception:
-            pass
-        return brightness
-    return last_led
-
-
 def _end_speech(
     stream,
     post_playback_tail_secs: Optional[float],
     flush_on_playback_stop: Optional[bool],
+    *,
+    pacer: Optional["_MouthPacer"] = None,
+    canceled: bool = False,
 ) -> None:
     """Playback epilogue for the streamed paths: close the stream, restore
-    LEDs/servo/animation, release AEC suppression, clear the speaking flag."""
+    LEDs/servo/animation, release AEC suppression, clear the speaking flag.
+
+    The pacer is stopped FIRST: its thread is still holding queued mouth levels,
+    and one landing after speak_stop() would leave a stale SPEAK_LEVEL that the
+    next SPEAK: inherits (the head firmware does not clear the level on a new
+    utterance, so the mouth would open at the previous line's amplitude)."""
     global _speaking
+    if pacer is not None:
+        pacer.close(canceled=canceled)
     if stream is not None:
         try:
             stream.close()
@@ -784,7 +962,6 @@ def _speak_streaming(
         except Exception as exc:
             logger.debug("[tts] conversation log write failed: %s", exc)
 
-    min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
     with output_gate.hold("tts", timeout=_gate_timeout()) as acquired:
         if not acquired:
             _log_gate_timeout("streamed playback")
@@ -792,30 +969,26 @@ def _speak_streaming(
 
         with _speaking_lock:
             _speaking = True
-        emotion_frame = emotion_orchestrator.frame_for_speech(emotion)
-        led_emotion = emotion_frame.led_style
-        emotion_orchestrator.publish_frame(emotion_frame, ttl_secs=8.0)
         pcm_carry = b""
         all_samples: list[np.ndarray] = []
         canceled = False
-        last_led = -1
         play_started_at = time.monotonic()
         stream = None
+        pacer = None
         try:
-            try:
-                animations.speech_activity_start()
-                servos.begin_speech_motion(emotion_frame)
-            except Exception as exc:
-                logger.debug("[tts] speech servo start failed: %s", exc)
-            leds_head.speak(led_emotion)
-            leds_head.ensure_eyes_on(led_emotion)
-            leds_chest.speak(led_emotion)
-            echo_cancel.set_playing(True)
+            _, led_emotion = _begin_speech(emotion, ttl_secs=8.0, defer_mouth=True)
             stream = sd.OutputStream(
                 samplerate=samplerate, channels=1, dtype="float32",
                 **playback_stream_kwargs(),
             )
             stream.start()
+            # Mouth-on and every level from here run on the audible timeline, one
+            # output-latency behind the writes (see _MouthPacer). Opened AFTER
+            # stream.start() because only a started stream reports its real latency.
+            pacer = _MouthPacer(
+                _stream_output_latency(stream), samplerate,
+                lambda: _mouth_on(led_emotion),
+            )
             if on_playback_start is not None:
                 try:
                     on_playback_start()
@@ -836,8 +1009,11 @@ def _speak_streaming(
                         / 32768.0
                     )
                     all_samples.append(samples)
-                    # Inline mouth drive from this chunk's RMS (parity with _drive_leds).
-                    last_led = _drive_mouth_chunk(samples, last_led, min_delta)
+                    # Mouth drive, re-sliced to LED-frame size so a fat network
+                    # chunk still animates at ~30 fps; the pacer holds each level
+                    # until its audio is actually audible.
+                    for piece in _led_chunks(samples, samplerate):
+                        pacer.push(piece)
                     stream.write(samples)   # blocks on buffer space — natural pacing
                 chunk = next(chunk_iter, None)
 
@@ -852,8 +1028,13 @@ def _speak_streaming(
                 pad_ms = float(getattr(config, "TTS_STREAM_END_PAD_MS", 200.0) or 0.0)
                 if pad_ms > 0:
                     try:
-                        stream.write(np.zeros(int(samplerate * pad_ms / 1000.0),
-                                              dtype=np.float32))
+                        pad = np.zeros(int(samplerate * pad_ms / 1000.0),
+                                       dtype=np.float32)
+                        # Through the pacer too, so the mouth closes on the last
+                        # audible word instead of holding the final level through
+                        # the buffer drain.
+                        pacer.push(pad)
+                        stream.write(pad)
                     except Exception:
                         pass
                 stream.stop()
@@ -861,7 +1042,8 @@ def _speak_streaming(
             logger.error("[tts] streamed playback error: %s", exc)
             # Audio may have partially played; do NOT fall back (would double-speak).
         finally:
-            _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop)
+            _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop,
+                        pacer=pacer, canceled=canceled)
 
         logger.info(
             "[tts] streamed playback %s in %.2fs",
@@ -1117,7 +1299,6 @@ def _speak_local(
         dtype=np.float32,
     )
     preroll_samples = int(sr * float(getattr(config, "LOCAL_TTS_PREROLL_SEC", 0.25)))
-    min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
     requested_at = time.monotonic()
 
     # The generator holds local_tts._generate_lock for its whole lifetime, so it
@@ -1165,26 +1346,40 @@ def _speak_local(
             # length is known and the emotion frame is given enough TTL to cover
             # it. The flat 8 s expired partway through a ~13 s impersonation,
             # dropping the speech pose and lights before the bit had finished.
+            # ...plus the output buffer, which the mouth now waits out too (the
+            # pacer holds each level one full latency, so the pose and lights must
+            # outlive that as well).
             buffered_secs = sum(int(c.size) for c in buffered) / float(sr or 1)
-            _begin_speech(emotion, ttl_secs=max(8.0, buffered_secs + 3.0))
+            _, led_emotion = _begin_speech(
+                emotion, ttl_secs=max(8.0, buffered_secs + 6.0), defer_mouth=True,
+            )
 
             all_samples: list[np.ndarray] = list(buffered)
-            last_led = -1
             ttfa_logged = False
             play_started_at = time.monotonic()
             stream = None
+            pacer = None
             try:
                 stream = sd.OutputStream(
                     samplerate=sr, channels=1, dtype="float32",
                     **playback_stream_kwargs(),
                 )
                 stream.start()
+                # Only a started stream reports its real output latency. The clone
+                # deep buffer makes this ~2.9 s at 24 kHz, which is exactly how far
+                # ahead of the voice the mouth used to run on an impersonation.
+                pacer = _MouthPacer(
+                    _stream_output_latency(stream), sr, lambda: _mouth_on(led_emotion),
+                )
                 if on_playback_start is not None:
                     try:
                         on_playback_start()
                     except Exception:
                         pass
                 if not canceled:
+                    # Through the pacer as well: the front pad is 150 ms of real
+                    # device time and the mouth must not open across it.
+                    pacer.push(front_pad)
                     stream.write(front_pad)
                 for samples in buffered:
                     if canceled:
@@ -1196,7 +1391,7 @@ def _speak_local(
                         if echo_cancel.was_canceled():
                             canceled = True
                             break
-                        last_led = _drive_mouth_chunk(piece, last_led, min_delta)
+                        pacer.push(piece)
                         stream.write(piece)
                         if not ttfa_logged:
                             # Logged after the FIRST written piece. It used to sit
@@ -1205,8 +1400,10 @@ def _speak_local(
                             # audio had actually been playing the entire time
                             # (2026-08-19 log forensics went down that hole).
                             logger.info(
-                                "[tts] local first audio in %.2fs",
+                                "[tts] local first audio in %.2fs (+%.2fs output "
+                                "buffer before it is audible)",
                                 time.monotonic() - requested_at,
+                                pacer.delay,
                             )
                             ttfa_logged = True
                 if not canceled:
@@ -1218,7 +1415,7 @@ def _speak_local(
                             if echo_cancel.was_canceled():
                                 canceled = True
                                 break
-                            last_led = _drive_mouth_chunk(piece, last_led, min_delta)
+                            pacer.push(piece)
                             stream.write(piece)
 
                 if canceled:
@@ -1227,14 +1424,17 @@ def _speak_local(
                     pad_ms = float(getattr(config, "TTS_STREAM_END_PAD_MS", 200.0) or 0.0)
                     if pad_ms > 0:
                         try:
-                            stream.write(np.zeros(int(sr * pad_ms / 1000.0), dtype=np.float32))
+                            pad = np.zeros(int(sr * pad_ms / 1000.0), dtype=np.float32)
+                            pacer.push(pad)   # closes the mouth on the last word
+                            stream.write(pad)
                         except Exception:
                             pass
                     stream.stop()
             except Exception as exc:
                 logger.error("[tts] local playback error: %s", exc)
             finally:
-                _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop)
+                _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop,
+                            pacer=pacer, canceled=canceled)
 
             logger.info(
                 "[tts] local playback %s in %.2fs (backend=local, voice=%s)",
@@ -1288,12 +1488,7 @@ def _play(
             _speaking = True
 
         stop_event = threading.Event()
-        led_thread = threading.Thread(
-            target=_drive_leds,
-            args=(audio, samplerate, stop_event),
-            daemon=True,
-            name="tts-leds",
-        )
+        led_thread: Optional[threading.Thread] = None
 
         # Hold AEC suppression for at least the audio's actual duration. A
         # CoreAudio glitch can cause sd.wait() to return early while audio is
@@ -1315,22 +1510,31 @@ def _play(
                 servos.begin_speech_motion(emotion_frame)
             except Exception as exc:
                 logger.debug("[tts] speech servo start failed: %s", exc)
-            leds_head.speak(led_emotion)
             # Re-assert the eyes ON at the emotion colour every turn. The mouth
             # SPEAK command never touches the eyes, and the serial link is lossy
             # during speech, so without this the eyes ride entirely on a single
             # easily-dropped post-speech re-arm. The heartbeat keeps them lit
             # between turns; this guarantees they are lit for the turn itself.
             leds_head.ensure_eyes_on(led_emotion)
-            leds_chest.speak(led_emotion)
             echo_cancel.set_playing(True)
-            led_thread.start()
             if on_playback_start is not None:
                 try:
                     on_playback_start()
                 except Exception:
                     pass
             sd.play(audio, samplerate, **playback_stream_kwargs())
+            # The mouth (head SPEAK: + chest) and the RMS walk both start one
+            # output latency from now, when the room actually hears this. sd.play
+            # returns immediately, so the stream is live and reporting by here.
+            led_thread = threading.Thread(
+                target=_drive_leds,
+                args=(audio, samplerate, stop_event,
+                      _playing_stream_latency(sd),
+                      lambda: _mouth_on(led_emotion)),
+                daemon=True,
+                name="tts-leds",
+            )
+            led_thread.start()
             sd.wait()
         except Exception as exc:
             logger.error("[tts] playback error: %s", exc)
@@ -1345,7 +1549,7 @@ def _play(
                 )
                 time.sleep(remaining)
             stop_event.set()
-            if led_thread.is_alive():
+            if led_thread is not None and led_thread.is_alive():
                 led_thread.join(timeout=1.0)
             shutdown_now = _is_shutdown_state()
             try:
@@ -1380,13 +1584,32 @@ def _play(
 
 
 def _drive_leds(
-    audio: np.ndarray, samplerate: int, stop_event: threading.Event
+    audio: np.ndarray, samplerate: int, stop_event: threading.Event,
+    start_delay: float = 0.0,
+    on_start: Optional[Callable[[], None]] = None,
 ) -> None:
-    """Iterate audio in fixed chunks, driving mouth LED brightness from RMS."""
+    """Iterate audio in fixed chunks, driving mouth LED brightness from RMS.
+
+    start_delay is the playback stream's reported output latency. This thread
+    walks the array on a wall clock that starts when it starts, but sd.play()
+    hands the audio to a device holding that much buffer — so without the wait
+    the mouth ran the whole line ~1 s early (~3.2 s during an impersonation,
+    where the clone deep buffer is armed) and never resynced. Waiting it out
+    first, and holding the mouth-on trigger until then, lines the two up. See
+    _MouthPacer for the same fix on the streamed paths.
+    """
     interval = config.TTS_LED_UPDATE_INTERVAL_SECS
     chunk_len = max(1, int(samplerate * interval))
     min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
     last_sent = -1
+
+    if start_delay > 0.0 and stop_event.wait(timeout=start_delay):
+        return   # canceled/finished before the first sound — never light the mouth
+    if on_start is not None:
+        try:
+            on_start()
+        except Exception as exc:
+            logger.debug("[tts] deferred mouth-on failed: %s", exc)
 
     for i in range(0, len(audio), chunk_len):
         if stop_event.is_set():

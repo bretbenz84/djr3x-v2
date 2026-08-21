@@ -2053,6 +2053,29 @@ TTS_LED_UPDATE_INTERVAL_SECS = 0.033  # ~30 fps
 # Typical speech RMS is 0.1–0.3; at 800 that maps to 80–240.
 TTS_LED_BRIGHTNESS_SCALE = 800
 
+# Hold the mouth back to the AUDIBLE timeline (audio/tts._MouthPacer). Every
+# playback path computed a chunk's brightness immediately before handing that
+# chunk to the device, but the device holds its reported output latency worth of
+# audio downstream — so the mouth ran that far AHEAD of the voice. Measured on the
+# robot Mac 2026-08-20 (PortAudio's own reported figure, and stream.stop() drains
+# for exactly it while stream.abort() returns in 0.16 s):
+#   AUDIO_PLAYBACK_LATENCY='high' / blocksize 4096  → 0.95 s
+#   AUDIO_PLAYBACK_CLONE_LATENCY_SECS=1.2 / bs 8192 → 3.18 s   ← every impersonation
+#   AUDIO_PLAYBACK_BOOT_LATENCY_SECS=2.5  / bs 8192 → 6.16 s
+# The clone deep buffer is armed for exactly the impersonation window, which is why
+# the lead was reported there first (owner 2026-08-20: "the mouth LEDs start
+# animating as if they're speaking before he actually speaks"). Confirmed in the
+# same run's log: streamed playback wall time minus the cached take's duration is a
+# 1.08 s median across 36 lines and 3.2-4.0 s on exactly the five impersonation
+# lines — i.e. the reported latency plus TTS_STREAM_END_PAD_MS.
+# Set False to restore the pre-2026-08-20 write-paced mouth.
+TTS_MOUTH_SYNC_ENABLED = _env_bool("TTS_MOUTH_SYNC_ENABLED", True)
+# Don't spin a pacer thread for a buffer too shallow to see. One LED frame is
+# 33 ms; below ~80 ms the lead is under three frames and not worth the machinery.
+TTS_MOUTH_SYNC_MIN_LATENCY_SECS = _env_float(
+    "TTS_MOUTH_SYNC_MIN_LATENCY_SECS", 0.08, min_value=0.0, max_value=2.0
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # WAKE WORD — OpenWakeWord ONNX Models
 # ─────────────────────────────────────────────────────────────────────────────

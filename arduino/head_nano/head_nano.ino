@@ -434,6 +434,13 @@ void handleCommand(char *cmd) {
         memcpy_P(&ec, &EMOTION_COLORS[emo], sizeof(EmotionColor));
         mouthColor = ec;
         animMode   = ANIM_SPEAK;
+        // Start every utterance from silence. speakLevel persists across a stop,
+        // and the host's SPEAK_LEVEL:0 is the one unflushed byte in speak_stop()
+        // (SPEAK_STOP itself is sent three times BECAUSE this link drops bytes
+        // during show()). If that zero is lost, the mouth reopened at the PREVIOUS
+        // line's amplitude the instant SPEAK: arrived — animating at full tilt
+        // before a single sample had played. The bars decay from here as usual.
+        speakLevel = 0;
         cancelGlowRamp();       // speech lights the mouth fully; glow resumes at full level
         lastSpeakActivityMs = millis();   // reset watchdog at utterance start
         // Eyes not touched — blink continues at current eyeColor/eyesActive state.

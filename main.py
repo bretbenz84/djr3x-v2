@@ -197,11 +197,29 @@ def _drive_speech_clip_outputs(
     audio: np.ndarray,
     samplerate: int,
     stop_event: threading.Event,
+    start_delay: float = 0.0,
+    on_start=None,
 ) -> None:
     interval = float(getattr(config, "TTS_LED_UPDATE_INTERVAL_SECS", 0.04) or 0.04)
     chunk_len = max(1, int(int(samplerate) * interval))
     min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
     last_sent = -1
+
+    # Wait out the device buffer before the first frame, and hold the mouth-on
+    # trigger until then. This thread walks the array on a wall clock, but
+    # sd.play() hands the audio to a device holding tts.playback_stream_kwargs()'
+    # latency — which for a startup clip is the BOOT deep buffer
+    # (AUDIO_PLAYBACK_BOOT_LATENCY_SECS=2.5 → ~6.2 s reported on this Mac), so the
+    # mouth flapped for seconds before the clip was audible. Same fix as
+    # audio/tts._MouthPacer; see its docstring for the measurements.
+    if start_delay > 0.0 and stop_event.wait(timeout=start_delay):
+        return
+    if on_start is not None:
+        try:
+            on_start()
+        except Exception as exc:
+            logger.debug("direct clip deferred mouth-on failed: %s", exc)
+
     for i in range(0, len(audio), chunk_len):
         if stop_event.is_set():
             break
@@ -300,22 +318,27 @@ def _play_audio_file(
                     _sit.set_rex_speaking(True)
                 except Exception:
                     pass
-                leds_head.speak(led_emotion)
                 # Re-assert the eyes ON every clip — the mouth SPEAK command never
                 # touches the eyes, and the heartbeat keeps them lit between turns.
+                # The MOUTH itself (head SPEAK: + chest) is deferred to the audible
+                # start below, together with the level walk.
                 leds_head.ensure_eyes_on(led_emotion)
-                leds_chest.speak(led_emotion)
+            echo_cancel.set_playing(True)
+            echo_cancel.add_reference(audio)
+            sd.play(audio, samplerate, **tts.playback_stream_kwargs())
+            if animate_speech:
+                # sd.play returns immediately, so the stream is live and reporting
+                # its real output latency by here.
                 led_thread = threading.Thread(
                     target=_drive_speech_clip_outputs,
-                    args=(audio, int(samplerate), stop_event),
+                    args=(audio, int(samplerate), stop_event,
+                          tts._playing_stream_latency(sd),
+                          lambda: (leds_head.speak(led_emotion),
+                                   leds_chest.speak(led_emotion))),
                     daemon=True,
                     name="direct-clip-leds",
                 )
-            echo_cancel.set_playing(True)
-            echo_cancel.add_reference(audio)
-            if led_thread is not None:
                 led_thread.start()
-            sd.play(audio, samplerate, **tts.playback_stream_kwargs())
             _log_conversation_line_for_audio_file(path)
             sd.wait()
         finally:
