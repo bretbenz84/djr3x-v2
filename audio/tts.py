@@ -474,6 +474,21 @@ def speak(
                 logger.warning("[tts] streaming path error (%s) — buffered fallback", exc)
             if handled:
                 return
+            # The streaming attempt may have just opened the breaker on a
+            # network-level failure. Do NOT re-dial the same dead endpoint on the
+            # buffered path — that is what turned one 25 s stall into 51.7 s of
+            # dead air (field 2026-08-20 20:31). Straight to the local voice.
+            # If local isn't installed, fall through and try anyway; the request is
+            # bounded by TTS_API_TIMEOUT_SECS now, so the cost is capped.
+            if _api_circuit_open() and _speak_local_fallback(
+                clean_text, emotion,
+                on_playback_start=on_playback_start,
+                post_playback_tail_secs=post_playback_tail_secs,
+                flush_on_playback_stop=flush_on_playback_stop,
+                log_text=log_text,
+                reason="ElevenLabs unreachable",
+            ):
+                return
         logger.info(
             "[tts] cache miss — calling ElevenLabs API%s",
             f" (voice_settings={_summarize_settings(voice_settings)})"
@@ -485,21 +500,14 @@ def speak(
             # above already failed too. Rather than drop the line, keep Rex
             # talking in his on-device voice (and the breaker, opened by
             # _fetch_from_api, routes the rest of the reply straight to local).
-            if _use_local_backend():
-                fallback_ref = _rex_local_ref()
-                if fallback_ref is not None:
-                    logger.info("[tts] ElevenLabs unavailable — speaking locally")
-                    try:
-                        if _speak_local(
-                            clean_text, fallback_ref, emotion,
-                            on_playback_start=on_playback_start,
-                            post_playback_tail_secs=post_playback_tail_secs,
-                            flush_on_playback_stop=flush_on_playback_stop,
-                            log_text=log_text,
-                        ):
-                            return
-                    except Exception as exc:
-                        logger.warning("[tts] local fallback error (%s)", exc)
+            _speak_local_fallback(
+                clean_text, emotion,
+                on_playback_start=on_playback_start,
+                post_playback_tail_secs=post_playback_tail_secs,
+                flush_on_playback_stop=flush_on_playback_stop,
+                log_text=log_text,
+                reason="ElevenLabs unavailable",
+            )
             return
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_bytes(audio_bytes)
@@ -946,6 +954,13 @@ def _speak_streaming(
         chunk_iter = iter(client.text_to_speech.stream(**kwargs))
         first_chunk = next(chunk_iter, None)
     except Exception as exc:
+        # Discriminate the same way warmup_api() does: an ApiError is a completed
+        # round-trip (quota, 4xx) and the buffered path may still be worth a try,
+        # but a NETWORK-level failure means the endpoint is unreachable. Recording
+        # it here is what stops speak() paying a second full timeout on the very
+        # same dead endpoint (field 2026-08-20: 25 s + 26 s for one two-word line).
+        if type(exc).__name__ != "ApiError":
+            _note_api_failure()
         logger.warning("[tts] streaming request failed (%s) — buffered fallback", exc)
         return False
     if not first_chunk:
@@ -1168,6 +1183,40 @@ def _rex_local_ref():
         return ref
     except Exception:
         return None
+
+
+def _speak_local_fallback(
+    clean_text: str,
+    emotion: str,
+    *,
+    on_playback_start=None,
+    post_playback_tail_secs=None,
+    flush_on_playback_stop=None,
+    log_text: bool = True,
+    reason: str = "ElevenLabs unavailable",
+) -> bool:
+    """Speak this line in Rex's ON-DEVICE voice because ElevenLabs is not usable.
+
+    Returns True when the line was actually spoken. False means the local engine
+    is not installed or failed, and the caller should decide whether to keep
+    trying ElevenLabs or drop the line."""
+    if not _use_local_backend():
+        return False
+    fallback_ref = _rex_local_ref()
+    if fallback_ref is None:
+        return False
+    logger.info("[tts] %s — speaking locally", reason)
+    try:
+        return bool(_speak_local(
+            clean_text, fallback_ref, emotion,
+            on_playback_start=on_playback_start,
+            post_playback_tail_secs=post_playback_tail_secs,
+            flush_on_playback_stop=flush_on_playback_stop,
+            log_text=log_text,
+        ))
+    except Exception as exc:
+        logger.warning("[tts] local fallback error (%s)", exc)
+        return False
 
 
 def _use_local_backend() -> bool:
@@ -1840,7 +1889,12 @@ def _get_el_client():
         if _el_client is None:
             import apikeys
             from elevenlabs import ElevenLabs
-            _el_client = ElevenLabs(api_key=apikeys.ELEVENLABS_API_KEY)
+            # The SDK default is 240 s — not a budget for a conversational line.
+            # See config.TTS_API_TIMEOUT_SECS for the field incident.
+            _el_client = ElevenLabs(
+                api_key=apikeys.ELEVENLABS_API_KEY,
+                timeout=float(getattr(config, "TTS_API_TIMEOUT_SECS", 8.0)),
+            )
     return _el_client
 
 

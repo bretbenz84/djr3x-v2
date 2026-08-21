@@ -1807,6 +1807,16 @@ LOCAL_TTS_FALLBACK_ENABLED = _env_bool("LOCAL_TTS_FALLBACK_ENABLED", True)
 # for this long instead of paying a multi-second API timeout on every sentence.
 # Any successful ElevenLabs round-trip clears it early.
 LOCAL_TTS_FALLBACK_HOLD_SECS = 120.0
+# Hard budget on any single ElevenLabs HTTP operation (connect / read / write).
+# The SDK's default is 240 s, which is not a budget at all for a conversational
+# line. Field 2026-08-20 20:31: the network stalled, the streaming request hung on
+# the KERNEL's TCP timer for ~25 s, the buffered path then re-dialled the same dead
+# endpoint for another ~26 s, and Rex stood mute for 51.7 s before saying "Backing
+# up" in his local voice — with the AEC sequence hold making him deaf the whole
+# time. A half-open socket would have hit the 240 s default instead. Healthy
+# first-bytes on this machine is 0.55-1.03 s, so 8 s is ~8x headroom; warmup_api()
+# pays the cold TLS handshake at boot so this never has to cover it.
+TTS_API_TIMEOUT_SECS = _env_float("TTS_API_TIMEOUT_SECS", 8.0, min_value=1.0, max_value=120.0)
 # Preload the local model at boot even in normal (ElevenLabs) mode, so the FIRST
 # fallback line is instant instead of paying the one-time model load. Off by
 # default (only load the ~2.9 GB model when local TTS is actually in use).
@@ -3948,6 +3958,20 @@ AEC_SUPPRESSION_FACTOR = 0.05
 # cover the speaker's brief acoustic decay; 0.12 is the value the reply path already
 # proves safe on this no-AEC dev Mac. (Robot hardware AEC uses the 0.05 _AEC tail.)
 POST_PLAYBACK_SUPPRESSION_SECS = 0.12
+
+# Deadman on the AEC sequence hold (audio/echo_cancel.start_sequence). The hold
+# pins suppression across a multi-segment reply so the mic never opens in the gaps
+# between sentences — but it is released by the speech queue draining, so anything
+# that wedges INSIDE tts holds it open indefinitely. Field 2026-08-20 20:31: an
+# ElevenLabs network hang held it 57 s, during which mic audio was attenuated to
+# AEC_SUPPRESSION_FACTOR and the wake-word detector reported suppressed — Rex was
+# deaf to everything, including "shut down". If the sequence is open but NO segment
+# is actually playing for this long, stop suppressing; a real segment resets it.
+# Sized above the longest legitimate silent gap inside a sequence (a whole-clip
+# impersonation take renders in 9-16 s behind the thinking loop).
+AEC_SEQUENCE_IDLE_RELEASE_SECS = _env_float(
+    "AEC_SEQUENCE_IDLE_RELEASE_SECS", 25.0, min_value=2.0, max_value=300.0
+)
 
 # Seconds the audio guard (audio/sd_guard.py) holds after a sounddevice stop()
 # before any replay's play() may run, so CoreAudio releases the global output
