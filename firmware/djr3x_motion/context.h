@@ -169,6 +169,15 @@ struct Setpoint {
 struct TofMm {
   int16_t fl = 4000, fr = 4000, rl = 4000, rr = 4000;  // long-range (VL53L1X) front/rear pairs
   int16_t lf = 1500, lb = 1500, rf = 1500, rb = 1500;  // short-range (VL53L0X) left/right pairs
+  // The RADIAL front pair before the matrix overlay min-combines into fl/fr.
+  // fl/fr are what the stop/slow reflex must use (most conservative wins), but the
+  // host needs a genuinely independent front reading to cross-check a matrix
+  // phantom against — reading fl/fr for that checks the phantom against itself
+  // (field 2026-08-20: 773 front zone_blocks, 87% with the base parked, and
+  // motion_agency._radial_front_m believed it was the second opinion).
+  // -1 = no radial array in this build (matrix-only), so the host can tell
+  // "independent source unavailable" from "independent source says clear".
+  int16_t fl_radial = -1, fr_radial = -1;
 };
 
 // ===== Live gamepad mirror (telemetry only) ===============================

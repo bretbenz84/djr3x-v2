@@ -1091,7 +1091,9 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
 
     def test_completed_with_front_clutter_accepts_arrival(self):
         # The requester's face still reads "public" (the wide-angle lens lies)
-        # but the radial front ToF sees something 1.2 m ahead: believing the
+        # but the radial front ToF — fl_radial/fr_radial, published BEFORE the
+        # matrix is min-combined into fl/fr, so this is a genuinely independent
+        # sensor — sees something 1.2 m ahead: believing the
         # face-size zone and resuming is the retry burst that bulldozed him into
         # floor clutter at the owner's feet (field 2026-08-11 19:05, three comes
         # in 7 s). Front-not-clear + completed = we're there; stop.
@@ -1102,7 +1104,9 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
             self._result = "completed"
             with mock.patch.object(
                 MA.motion, "telemetry",
-                return_value={"tof_mm": {"fl": 1200, "fr": 2600}}, create=True,
+                return_value={"tof_mm": {"fl": 1200, "fr": 2600,
+                                         "fl_radial": 1200, "fr_radial": 2600}},
+                create=True,
             ):
                 # A single near frame only ARMS the confirmation — one speckled
                 # reading ended a whole errand as "arrived (front reads 0.62m)"
@@ -1115,6 +1119,25 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
                          "front clutter CONFIRMED twice must end the errand")
         self.assertEqual(self.come.call_count, 1, "no bulldozing retry")
 
+    def test_completed_without_an_independent_reading_keeps_coming(self):
+        """Firmware predating fl_radial/fr_radial has no second opinion. Reading
+        fl/fr instead would cross-check the matrix phantom against itself — the
+        exact bug (field 2026-08-20). No corroboration = no veto: keep the errand
+        alive and let the firmware's own obstacle stop guard the drive."""
+        with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True):
+            self.assertTrue(MA.request_come_here())
+            MA.step(_snapshot(distance_zone="public"), _profile())
+            self._result = "completed"
+            with mock.patch.object(
+                MA.motion, "telemetry",
+                return_value={"tof_mm": {"fl": 80, "fr": 80}},   # phantom, uncheckable
+                create=True,
+            ):
+                MA.step(_snapshot(distance_zone="public"), _profile())
+                MA.step(_snapshot(distance_zone="public"), _profile())
+        self.assertTrue(MA.requested_come_active(),
+                        "an uncorroborated phantom ended the errand across the room")
+
     def test_completed_with_open_front_floor_resumes(self):
         # Face reads far AND the front radial genuinely shows open floor — this
         # is the phantom-matrix stop; he should keep coming.
@@ -1125,7 +1148,9 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
             self._result = "completed"
             with mock.patch.object(
                 MA.motion, "telemetry",
-                return_value={"tof_mm": {"fl": 3400, "fr": 3600}}, create=True,
+                return_value={"tof_mm": {"fl": 3400, "fr": 3600,
+                                         "fl_radial": 3400, "fr_radial": 3600}},
+                create=True,
             ):
                 MA.step(_snapshot(distance_zone="public"), _profile())
         self.assertTrue(MA.requested_come_active())

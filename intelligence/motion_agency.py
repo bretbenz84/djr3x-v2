@@ -292,6 +292,7 @@ _flinch_state = {
     "clear_run": {"fl": 0, "fr": 0},       # consecutive CLEAR ticks per side (gates baseline rises)
     "hits": 0,                              # consecutive intruding ticks
     "last_corner_log_at": 0.0,             # throttle for the "cornered/blind, holding" log
+    "last_veto_log_at": 0.0,               # throttle for the "held, uncorroborated" log
 }
 
 
@@ -1299,10 +1300,51 @@ def _min_valid_m(*vals) -> Optional[float]:
     return best
 
 
+_radial_front_fallback_warned = False
+
+
 def _radial_front_m() -> Optional[float]:
-    """Nearest radial front-pair (fl/fr) reading in metres, or None when no
-    usable reading exists. The face-size distance zone lies on the wide-angle
-    lens; this is the truth check before believing 'they're far'."""
+    """Nearest RADIAL front reading in metres — the independent second opinion.
+
+    Reads fl_radial/fr_radial, which the firmware publishes before the 8x8 matrix
+    is min-combined into fl/fr. This distinction is the whole point of the
+    function: fl/fr are min(radial, matrix), so a caller cross-checking a matrix
+    phantom against fl/fr is checking the phantom against itself. Field
+    2026-08-20: 773 front zone_blocks, 87% of them with the base parked, and every
+    guard built on this function believed it had corroboration it did not have.
+
+    Returns None when there is no usable INDEPENDENT reading — including on
+    firmware that predates the split, where believing fl/fr would silently restore
+    the old false confidence. Callers already treat None as "no cross-check
+    available"; that is the honest answer, and it fails closed.
+    """
+    global _radial_front_fallback_warned
+    tele = motion.telemetry()
+    if not (isinstance(tele, dict) and isinstance(tele.get("tof_mm"), dict)):
+        return None
+    tof = tele["tof_mm"]
+    if "fl_radial" in tof or "fr_radial" in tof:
+        return _min_valid_m(tof.get("fl_radial"), tof.get("fr_radial"))
+    if not _radial_front_fallback_warned:
+        _radial_front_fallback_warned = True
+        _log.warning(
+            "[motion_agency] firmware does not publish fl_radial/fr_radial — no "
+            "independent front cross-check this session (flash the motion ESP32). "
+            "Guards that need one fail open; clearance checks are unaffected."
+        )
+    return None
+
+
+def _front_clearance_m() -> Optional[float]:
+    """Nearest front reading in metres for "is there room to drive forward?".
+
+    This one WANTS the conservative min-combined fl/fr — matrix included — because
+    the question is whether anything at all is in the way, and the nearest return
+    is the right answer even if it turns out to be a phantom. Distinct from
+    _radial_front_m, which answers "is that front return corroborated by a second
+    sensor?" and must never see the matrix. Conflating the two is what let a guard
+    cross-check a phantom against itself (field 2026-08-20).
+    """
     tele = motion.telemetry()
     if isinstance(tele, dict) and isinstance(tele.get("tof_mm"), dict):
         return _min_valid_m(tele["tof_mm"].get("fl"), tele["tof_mm"].get("fr"))
@@ -1708,7 +1750,7 @@ def _step_object_step(profile, now: float) -> bool:
             return False
     except Exception:
         pass
-    front = _radial_front_m()
+    front = _front_clearance_m()
     if front is None or front < _num("MOTION_OBJECT_STEP_MIN_FRONT_M", 1.0):
         _state["object_step"] = None
         return False
@@ -2156,6 +2198,49 @@ def _side_intrudes(side: str, d: Optional[float]) -> bool:
     return (b - d) >= _num("MOTION_FLINCH_APPROACH_DROP_M", 0.20)
 
 
+def _log_uncorroborated_flinch(front: Optional[float], now: float, kind: str) -> None:
+    """Say WHY the reflex held, throttled to the flinch cooldown.
+
+    Silence here would be its own bug: a suppressed flinch looks identical to a
+    flinch that never triggered, and the whole reason this veto exists is that the
+    last investigation could not tell a phantom from a person from the log."""
+    if (now - float(_flinch_state.get("last_veto_log_at") or 0.0)) < _num(
+        "MOTION_FLINCH_COOLDOWN_SECS", 8.0
+    ):
+        return
+    _flinch_state["last_veto_log_at"] = now
+    _log.info(
+        "[motion_agency] flinch (%s) held: front reads %s but the independent "
+        "radial front sees %s — matrix-only intrusions are not worth reversing for",
+        kind,
+        "n/a" if front is None else "%.2fm" % front,
+        "open floor" if _radial_front_m() is None else "%.2fm" % _radial_front_m(),
+    )
+
+
+def _flinch_corroborated() -> bool:
+    """True when it is safe to believe the front intrusion enough to REVERSE.
+
+    fl/fr are min(radial, matrix) in firmware, so a matrix phantom simply IS the
+    front reading — and a phantom that is temporally consistent rather than
+    single-frame defeats every anti-noise mechanism the reflex has (adaptive
+    baseline, clear-run confirm, consecutive-tick hits, cooldown). Field 2026-08-20:
+    five retreats, ~1.5 m of unrequested reverse, off a channel dipping to
+    0.07-0.11 m from >0.6 m. The radial pair watches the same personal space from a
+    different sensor, so a real shin or dog registers on both.
+
+    Fails OPEN when the firmware does not publish the independent pair: no second
+    opinion means no veto, which is exactly today's behavior rather than a new
+    blind spot. Also fails open when corroboration is disabled.
+    """
+    if not _flag("MOTION_FLINCH_REQUIRE_CORROBORATION", True):
+        return True
+    radial = _radial_front_m()
+    if radial is None:
+        return True                     # no independent reading — don't veto
+    return radial <= _num("MOTION_FLINCH_CORROBORATION_MAX_M", 0.60)
+
+
 def _flinch_gated(profile, now: float) -> bool:
     """Common fire gates once a trigger is present: the mid-sentence freeze (only when
     the operator opts flinch into it) and the maneuver cooldown."""
@@ -2248,6 +2333,9 @@ def _maybe_flinch(profile, now: float, state: str) -> bool:
             return False
         if _flinch_gated(profile, now):
             return False
+        if not _flinch_corroborated():
+            _log_uncorroborated_flinch(_nearest(fl, fr), now, "blocked-approach")
+            return False
         return _flinch_retreat(_nearest(fl, fr), rear, now, "blocked-approach")
 
     fl = _flinch_side_m(tof.get("fl"))
@@ -2262,6 +2350,9 @@ def _maybe_flinch(profile, now: float, state: str) -> bool:
     if _flinch_state["hits"] < max(1, int(_num("MOTION_FLINCH_CONFIRM_TICKS", 2))):
         return False
     if _flinch_gated(profile, now):
+        return False
+    if not _flinch_corroborated():
+        _log_uncorroborated_flinch(_nearest(fl, fr), now, "approach")
         return False
     return _flinch_retreat(_nearest(fl, fr), rear, now, "approach")
 
@@ -2566,7 +2657,9 @@ def _step_inner(snapshot: dict, profile) -> None:
     # The front ToF is the truth — unless it shows genuinely open floor ahead, the
     # "they're far" vote doesn't count. Fails open only when there is no usable
     # front reading (the firmware's obstacle stop still guards the drive itself).
-    front = _radial_front_m()
+    # Clearance, not corroboration: the conservative min-combined pair is exactly
+    # what "is the floor ahead open" wants (see _front_clearance_m).
+    front = _front_clearance_m()
 
     # ── STARTUP APPROACH: the welcome roll-up ──────────────────────────────────
     if _maybe_startup_approach(person, facing_them, front, now):

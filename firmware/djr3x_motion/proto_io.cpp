@@ -137,6 +137,10 @@ void emit_telemetry() {
   JsonObject t = doc["tof_mm"].to<JsonObject>();
   t["fl"] = tf.fl; t["fr"] = tf.fr; t["rl"] = tf.rl; t["rr"] = tf.rr;
   t["lf"] = tf.lf; t["lb"] = tf.lb; t["rf"] = tf.rf; t["rb"] = tf.rb;
+  // fl/fr are min(radial, matrix) — the conservative pair the reflex uses. These
+  // two are the radial array ALONE, so the host can cross-check a matrix phantom
+  // against something that is not the phantom. -1 = no radial array in this build.
+  t["fl_radial"] = tf.fl_radial; t["fr_radial"] = tf.fr_radial;
   doc["batt_mv"] = bm;                   // -1 = no INA226 wired (host treats as unknown)
   doc["batt_ma"] = bma;                  // 0 unless a motor-ranged shunt is fitted
   doc["batt_soc"] = bsoc;                // coulomb-counted %, -1 = unknown

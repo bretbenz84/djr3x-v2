@@ -243,6 +243,11 @@ void hal_read_tof(TofMm& out) {
   out.rl = s_dist[6];   // long,  mux 6 — rear-left
   out.rr = s_dist[7];   // long,  mux 7 — rear-right
 
+  // Preserve the radial front pair BEFORE the overlay below folds the matrix in.
+  // This is the host's only independent front opinion (see TofMm in context.h).
+  out.fl_radial = out.fl;
+  out.fr_radial = out.fr;
+
 #if MOTION_TOF_MATRIX_PRESENT
   // Front matrix overlay: min-combine with the radial front pair (nearest wins).
   int16_t mfl, mfr;
@@ -269,6 +274,9 @@ void hal_tof_init() {
 void hal_read_tof(TofMm& out) {
   out.fl = out.fr = out.rl = out.rr = 4000;   // long pairs: room reads clear
   out.lf = out.lb = out.rf = out.rb = 1500;   // short pairs: no walls in range
+  // No radial array in this build: say so honestly rather than echoing fl/fr,
+  // which would hand the host a "second opinion" that is the same sensor.
+  out.fl_radial = out.fr_radial = -1;
 #if MOTION_TOF_MATRIX_PRESENT
   // The matrix is the ONLY front sensor here: it owns fl/fr outright, so a dead
   // or still-initializing matrix shows as -1 in telemetry (visible in the GUI

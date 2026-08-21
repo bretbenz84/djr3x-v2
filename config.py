@@ -9164,6 +9164,26 @@ MOTION_FLINCH_CONFIRM_TICKS = 3        # ~3 s at CONSCIOUSNESS_LOOP_INTERVAL_SEC
 MOTION_FLINCH_MIN_VALID_M = 0.02       # 0/1 cm reads are sensor garbage; 1 inch is a REAL
                                        # foot. The old 0.05 blinded him exactly when
                                        # something was closest — the worst possible time.
+# Before reversing, require the INDEPENDENT radial front pair to agree that
+# something is actually there. fl/fr are min(radial, matrix) in firmware, so a
+# matrix phantom IS the front reading — every anti-noise mechanism in the reflex
+# (adaptive baseline, clear-run confirm, consecutive-tick hits, cooldown) is
+# defeated by a phantom that is temporally consistent rather than single-frame.
+# Field 2026-08-20: five retreats, ~1.5 m of unrequested reverse, each triggered by
+# a bimodal front channel dipping to 0.07-0.11 m from >0.6 m; four of the five had
+# no corroboration. The radial pair sees the same personal space from a different
+# sensor, so a real shin or dog registers on both.
+# A trajectory test was considered and rejected: the tick is 1.0 s and the corridor
+# between MOTION_FLINCH_TRIGGER_M and a plausible teleport floor is ~10 cm, so a
+# walking approach would routinely skip it and be suppressed as a phantom.
+# Fails OPEN when the firmware predates fl_radial/fr_radial — no independent
+# reading means no veto, i.e. exactly today's behavior, never a new blind spot.
+MOTION_FLINCH_REQUIRE_CORROBORATION = True
+MOTION_FLINCH_CORROBORATION_MAX_M = 0.60  # radial must also read at least this near.
+                                       # Deliberately loose: the two sensors sit at
+                                       # different heights, and this only has to
+                                       # separate "something is in front of the
+                                       # chassis" from "the room is open".
 MOTION_FLINCH_BASELINE_ADAPT_M = 0.12  # max per-tick drift of the open-distance baseline
 MOTION_FLINCH_CLEAR_CONFIRM_TICKS = 3  # consecutive clear ticks before the baseline may RISE (so a
                                        # multi-frame ToF dropout can't inflate it and fake an approach)
