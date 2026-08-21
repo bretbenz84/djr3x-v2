@@ -240,6 +240,12 @@ _interrupted = threading.Event()
 
 # Session tracking ────────────────────────────────────────────────────────────
 _session_person_ids: set[int] = set()
+# Which persons already have a conversations row for THIS session. The shutdown
+# path runs _end_session on a daemon thread with a join budget; when that budget
+# blows, _salvage_session_rows writes a plain-text row for whoever is missing. Both
+# writers claim through this set so a session can never end up with two rows.
+_session_rows_written: set[int] = set()
+_session_row_lock = threading.Lock()
 _session_person_turn_counts: dict[int, int] = {}
 # P2 — warmth from talking: per-person tally of engaged turns + shared laughter this
 # session, converted to a small CAPPED warmth bump once at session end (see
@@ -18395,6 +18401,11 @@ def _end_session(*, include_consolidation: bool = True) -> None:
                         emotion_tone=emotion_tone,
                         topics=topics,
                     )
+                    # Claim this person so the shutdown fallback (which runs when
+                    # this worker blows its join budget) does not write a second,
+                    # worse row for the same session.
+                    with _session_row_lock:
+                        _session_rows_written.add(int(person_id))
 
             forgotten_terms = _forgotten_terms_for_person(person_id)
             # Only LEARNABLE turns feed durable memory extraction. Turns marked
@@ -18684,6 +18695,12 @@ def persist_session_memories_at_shutdown() -> None:
         )
         return
     timeout = float(getattr(config, "SESSION_SUMMARY_SHUTDOWN_TIMEOUT_SECS", 10.0))
+    # Snapshot BEFORE the worker starts: _end_session clears _session_person_ids on
+    # its way out, so reading it after the join would see an empty set exactly when
+    # the worker got far enough to matter.
+    persons = [int(p) for p in _session_person_ids]
+    with _session_row_lock:
+        _session_rows_written.clear()
     worker = threading.Thread(
         target=lambda: _end_session(include_consolidation=False),
         daemon=True,
@@ -18691,11 +18708,81 @@ def persist_session_memories_at_shutdown() -> None:
     )
     worker.start()
     worker.join(timeout)
-    if worker.is_alive():
-        _log.warning(
-            "[interaction] shutdown session persistence still running after %.1fs — "
-            "continuing teardown", timeout,
-        )
+    if not worker.is_alive():
+        return
+
+    # The worker is a DAEMON and teardown continues without it, so the process
+    # exits and kills it mid-flight — silently. Field 2026-08-20 20:33: the summary
+    # LLM call was in flight during a network outage, the join expired, and an
+    # 8-minute 20-turn conversation left NO conversations row at all. That table is
+    # what "last time you talked", nostalgia callbacks and cross-session trends
+    # read from, so the loss is invisible until weeks later.
+    #
+    # Degrade instead of vanishing: write a deterministic, LLM-free recap for every
+    # person the worker did not already claim. A plain row beats no row, and the
+    # next real session overwrites nothing (rows are per-session inserts).
+    salvaged = _salvage_session_rows(persons, transcript)
+    _log.error(
+        "[interaction] shutdown session persistence still running after %.1fs — "
+        "continuing teardown. %s",
+        timeout,
+        (f"Salvaged plain-text summaries for person_id(s) {salvaged} "
+         f"({human_turns} human turns) — the LLM recap was lost."
+         if salvaged else
+         "All session rows were already written; nothing lost."),
+    )
+
+
+def _salvage_session_rows(person_ids: list[int], transcript: list[dict]) -> list[int]:
+    """Write an LLM-free session row for each person that has none yet.
+
+    Used only on the shutdown timeout path. The text is a plain recap of what was
+    actually said, which is worse than the model's but is real, attributable, and
+    keeps the conversations table honest about the session having happened.
+    Never raises — this runs during teardown."""
+    salvaged: list[int] = []
+    for person_id in person_ids:
+        try:
+            with _session_row_lock:
+                if person_id in _session_rows_written:
+                    continue
+                _session_rows_written.add(person_id)
+            person_transcript = _filter_forgotten_transcript(transcript, person_id)
+            summary = _plain_transcript_recap(person_transcript)
+            if not summary:
+                continue
+            conv_memory.save_conversation(
+                person_id, summary, emotion_tone="unknown", topics="",
+            )
+            salvaged.append(person_id)
+        except Exception as exc:
+            _log.debug("[interaction] session salvage failed for %s: %s", person_id, exc)
+    return salvaged
+
+
+def _plain_transcript_recap(transcript: list[dict]) -> str:
+    """A deterministic recap built from the transcript alone — no model call.
+
+    Marked so a later reader (and the trends layer) can tell it apart from a real
+    summary rather than treating a mechanical join as Rex's recollection."""
+    if not transcript:
+        return ""
+    rex_labels = {"rex", "dj-r3x", "djr3x", "dj r3x", "r3x", "dj-rex", "assistant"}
+    lines: list[str] = []
+    for turn in transcript:
+        text = str(turn.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = str(turn.get("speaker") or "").strip()
+        who = "Rex" if speaker.lower() in rex_labels else (speaker or "They")
+        lines.append(f"{who}: {text}")
+    if not lines:
+        return ""
+    cap = int(getattr(config, "SESSION_SUMMARY_SALVAGE_MAX_CHARS", 1500))
+    body = " | ".join(lines)
+    if len(body) > cap:
+        body = body[:cap].rsplit(" | ", 1)[0] + " | ..."
+    return f"[unsummarized — saved at shutdown] {body}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

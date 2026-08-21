@@ -1469,6 +1469,14 @@ EVENT_COMPLETION_RESOLUTION_ENABLED = True
 SESSION_SUMMARY_ON_SHUTDOWN_ENABLED = True
 SESSION_SUMMARY_MIN_HUMAN_TURNS = 2        # tiny command-only visits earn no summary row
 SESSION_SUMMARY_SHUTDOWN_TIMEOUT_SECS = 10.0
+# When that budget blows, the daemon worker is killed by process exit mid-flight
+# and the session vanishes silently (field 2026-08-20 20:33: an 8-minute, 20-turn
+# conversation left NO conversations row — the summary LLM call was in flight
+# during a network outage). Rather than lose it, a deterministic LLM-free recap of
+# the raw transcript is written instead, truncated to this many characters. It is
+# prefixed "[unsummarized — saved at shutdown]" so nothing downstream mistakes a
+# mechanical join for Rex's actual recollection.
+SESSION_SUMMARY_SALVAGE_MAX_CHARS = 1500
 
 # Ordinary (non-memory-question) replies: combined facts+interests background lines in
 # the lean prompt, topic-ranked against the current utterance via unified retrieval.
