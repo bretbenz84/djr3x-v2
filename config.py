@@ -6306,6 +6306,15 @@ PRESENCE_STILL_HERE_MAX_HOLD_SECS = 600.0
 # sibling gate _unknown_face_conf_ok, which emitted 14 lines for the same artifact.
 # Suppressed drops still go to DEBUG and are counted in the next INFO line.
 POSE_FACE_GUARD_LOG_INTERVAL_SECS = 10.0
+# Same treatment for repeated firmware motion events. The ESP32 re-announces a
+# PERSISTENT condition every frame rather than only its edges, so a standing
+# obstacle logged 773 identical `zone_block front` lines in the 2026-08-20 run —
+# peaking at 99/min and the single largest consumer of that log, 676 of them with
+# the base parked. Nothing was mis-logged; the cost is that a genuine FLAP is
+# invisible inside the noise, which is exactly the signal the phantom-front-block
+# work says to check first. Consecutive identical events collapse into one line
+# plus a count. 0 restores a line per event.
+MOTION_EVENT_REPEAT_LOG_INTERVAL_SECS = 10.0
 
 # Per-person cooldown on ANY presence reaction (departure OR return). Prevents
 # Rex from narrating every micro-absence of the same person.

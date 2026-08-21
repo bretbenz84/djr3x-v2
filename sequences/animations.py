@@ -1257,6 +1257,13 @@ def _speaking_loop() -> None:
 
 def speech_start(emotion: str = "neutral") -> None:
     """
+    UNUSED — superseded by animations.speech_activity_start + audio/tts._begin_speech,
+    which drive the mouth from real audio. Kept only because the pose/gesture logic
+    below is still a useful reference. DO NOT call it: leds_head.speak() starts the
+    firmware's free-running mouth animation with NO audio attached, which is the
+    shape of the "mouth moves before he speaks" bug (fixed efdae3f). If you need
+    the pose without the mouth, take the servo block and leave the LED calls.
+
     Call at the start of a TTS utterance.
     Sends the emotion pattern to both Arduinos, adjusts head pose to match,
     and starts a background thread for subtle expressive head movements.
@@ -1902,7 +1909,13 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
 # ---------------------------------------------------------------------------
 
 def excited_burst() -> None:
-    """Full excited reaction: arm up, head bob, visor open, chest AllRed."""
+    """Full excited reaction: arm up, head bob, visor open, chest AllRed.
+
+    NOTE: leds_head.speak() puts the head firmware into its FREE-RUNNING mouth
+    animation (ANIM_SPEAK) with no audio behind it. Nothing calls this today, but
+    it left the mouth running with only the firmware's 1500 ms watchdog to stop it
+    — so it now closes the mouth itself.
+    """
     leds_chest.speak("excited")
     leds_head.speak("excited")
     leds_head.set_eye_emotion("excited")
@@ -1913,6 +1926,8 @@ def excited_burst() -> None:
     servos.set_servo(1, HEADLIFT_UP)
     time.sleep(0.15)
     servos.set_servo(1, HEADLIFT_NEUTRAL)
+    leds_head.speak_stop()
+    leds_chest.active()
 
 
 def roast_pose() -> None:

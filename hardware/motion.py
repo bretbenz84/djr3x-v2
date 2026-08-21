@@ -213,6 +213,44 @@ def _start_reader() -> None:
     _reader_thread.start()
 
 
+# Repeat-event collapsing. The firmware re-announces a PERSISTENT condition rather
+# than only its edges, so a standing obstacle produces one line per frame: field
+# 2026-08-20 logged 773 identical `zone_block front` events — peaking at 99/min and
+# the single largest consumer of that run's log — of which 676 fired with the base
+# parked. Nothing was mis-logged, but at that rate a genuine FLAP is invisible
+# inside the noise, which is precisely the signal the phantom-front-block work says
+# to check first. Collapse consecutive identical events into one line plus a count,
+# so the flap rate is readable straight off the log.
+_last_event_key: str = ""
+_last_event_log_at: float = 0.0
+_event_repeat_count: int = 0
+
+
+def _log_motion_event(msg: dict) -> None:
+    global _last_event_key, _last_event_log_at, _event_repeat_count
+    payload = {k: v for k, v in msg.items() if k not in ("type", "v", "t")}
+    key = f"{msg.get('event')}|{sorted(payload.items(), key=lambda kv: str(kv[0]))}"
+    now = time.monotonic()
+    window = float(getattr(config, "MOTION_EVENT_REPEAT_LOG_INTERVAL_SECS", 10.0) or 0.0)
+    if window > 0.0 and key == _last_event_key and (now - _last_event_log_at) <= window:
+        _event_repeat_count += 1
+        return
+    suffix = ""
+    if _event_repeat_count and key == _last_event_key:
+        suffix = (f" (+{_event_repeat_count} identical in the last "
+                  f"{now - _last_event_log_at:.0f}s)")
+    elif _event_repeat_count:
+        # A DIFFERENT event interrupted the run — report the tail of the old run on
+        # its own line so an edge is never hidden behind the new event's count.
+        _log.info("[motion] event repeat run ended: +%d identical %s",
+                  _event_repeat_count, _last_event_key.split("|", 1)[0])
+        _event_repeat_count = 0
+    _last_event_key = key
+    _last_event_log_at = now
+    _event_repeat_count = 0
+    _log.info("[motion] event %s %s%s", msg.get("event"), payload, suffix)
+
+
 def _remember(store: dict, key: int, value: dict) -> None:
     store[key] = value
     if len(store) > _MAX_REMEMBERED:
@@ -267,8 +305,7 @@ def _dispatch(msg: dict) -> None:
             except Exception:
                 _log.debug("motion on_done callback failed", exc_info=True)
     elif mtype == "event":
-        _log.info("[motion] event %s %s", msg.get("event"),
-                  {k: v for k, v in msg.items() if k not in ("type", "v", "t")})
+        _log_motion_event(msg)
         with _state_lock:
             _events.append(msg)
             if len(_events) > _MAX_REMEMBERED:

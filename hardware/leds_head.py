@@ -83,10 +83,18 @@ def _is_speech_led_command(family: str) -> bool:
 
 
 def _is_critical_led_command(family: str) -> bool:
-    # SPEAK and EYE are flushed too: SPEAK is the mouth-on trigger (must not sit
-    # buffered behind the SPEAK_LEVEL flood, or the mouth fails to light) and EYE
-    # is the eye-on assertion (speech-start + heartbeat). SPEAK_LEVEL stays
-    # unflushed — it is the high-rate flood we deliberately let coalesce.
+    # What flush() actually buys: pyserial on POSIX has NO user-space transmit
+    # buffer, so writes reach the tty in strict FIFO order and a command can never
+    # jump ahead of earlier SPEAK_LEVEL bytes. flush() is a blocking tcdrain — it
+    # bounds how long a CRITICAL command may sit in the kernel's tty queue before
+    # the board sees it, at the cost of blocking this thread (under _lock) until
+    # the queue clocks out at 115200 baud. At the delta-throttled level rate that
+    # backlog is a few bytes, so the real cost is a few ms.
+    # (The older comment here described ordering protection against a "buffered
+    # behind the SPEAK_LEVEL flood" scenario that cannot occur — corrected
+    # 2026-08-20 so nobody tunes the mouth path from a buffering model that does
+    # not exist.) SPEAK_LEVEL stays unflushed: it is the high-rate flood we
+    # deliberately let coalesce.
     return family in {"SPEAK", "SPEAK_STOP", "OFF", "IDLE", "ACTIVE", "SLEEP", "EYE", "FADEOFF"}
 
 
