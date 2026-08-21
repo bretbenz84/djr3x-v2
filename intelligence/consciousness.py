@@ -2430,14 +2430,45 @@ _animal_confirmed_pet: dict[str, str] = {}
 _animal_confirmed_species: dict[str, str] = {}
 
 
+def _confirmed_pet_for(species) -> tuple[Optional[str], Optional[str]]:
+    """(name, true_species) for a confirmed pet, resolved across the FURRY bucket.
+
+    Both maps are keyed by the DETECTOR's label, and RF-DETR flips the one physical
+    dog to "cat" on a large minority of frames. Under the "cat" key there is no
+    confirmation, so the named line pool is skipped and the generic one fires:
+    field 2026-08-20 20:24:19, Rex called Max "the creature" — long after Bret had
+    confirmed the name — because that frame happened to say cat. The dedicated
+    cross-species mute (_furry_sibling_spoke_recently) normally hides this, and had
+    simply lapsed by then.
+
+    A household does not acquire a second animal when the classifier wobbles, so a
+    confirmation under ANY furry-companion label answers for all of them. Non-furry
+    species (a bird, a visiting raccoon) keep strict per-species keying — those
+    really are different animals.
+    """
+    key = (str(species or "creature")).strip().lower()
+    name = _animal_confirmed_pet.get(key)
+    if name:
+        return name, _animal_confirmed_species.get(key)
+    furry = getattr(config, "FURRY_COMPANION_ANIMAL_SPECIES", set()) or set()
+    if key not in furry:
+        return None, None
+    for other, other_name in _animal_confirmed_pet.items():
+        if other != key and other in furry:
+            # Prefer the TRUE species recorded for that confirmation over either
+            # detector label — the facts DB is the authority on what Max is.
+            return other_name, (_animal_confirmed_species.get(other) or other)
+    return None, None
+
+
 def _animal_display_species(species) -> str:
     """What a record should CALL the animal: the owner-confirmed identity when
     we have one ("dog named Max"), else the detector's label."""
     key = (str(species or "creature")).strip().lower()
-    name = _animal_confirmed_pet.get(key)
+    name, true_species = _confirmed_pet_for(key)
     if not name:
         return key
-    return f"{_animal_confirmed_species.get(key) or key} named {name}"
+    return f"{true_species or key} named {name}"
 
 _PET_ANSWER_NEGATIVE_RE = re.compile(r"\b(no|nope|nah|not|isn'?t|ain'?t|wrong)\b")
 _PET_ANSWER_AFFIRMATIVE_RE = re.compile(
@@ -2609,7 +2640,7 @@ def _animal_reaction_frame_and_line(animal: dict):
             trigger=f"animal_return:{species}",
         )
         guessed = _animal_guessed_pet.get(species)
-        confirmed = _animal_confirmed_pet.get(species)
+        confirmed, _ = _confirmed_pet_for(species)
         furry = _animal_is_furry_companion(species, animal)
         if animal.get("reacquired"):
             # Rex looked away and back — the animal never left. "Is back" would
@@ -4750,12 +4781,42 @@ def _reject_faces_off_body(detected: list, frame_w: int, frame_h: int) -> list:
         if near_any:
             kept.append(face)
         else:
-            _log.info(
-                "[pose_face_guard] dropped phantom face center=(%.0f,%.0f) — far from all "
-                "%d%s pose head(s)", fx, fy, len(anchors),
-                " cached" if cached else "",
-            )
+            _note_pose_guard_drop(fx, fy, len(anchors), cached)
     return kept
+
+
+_last_pose_guard_log_at = 0.0
+_pose_guard_suppressed = 0
+
+
+def _note_pose_guard_drop(fx: float, fy: float, anchors: int, cached: bool) -> None:
+    """Report a dropped phantom face at most once per window, with a count.
+
+    The rejection is correct and this is not a detection defect — but a stationary
+    artifact (a framed wall photo in the right third of the frame) produced 742 of
+    the 7515 lines in the 2026-08-20 run, ~10% of the log and 14% of its tail. That
+    directly hampers the post-run analysis these logs exist for. The sibling gate
+    _unknown_face_conf_ok already solved this the same way, which is why it emitted
+    14 lines for the same artifact.
+    """
+    global _last_pose_guard_log_at, _pose_guard_suppressed
+    now = time.monotonic()
+    window = float(getattr(config, "POSE_FACE_GUARD_LOG_INTERVAL_SECS", 10.0) or 0.0)
+    if window > 0.0 and (now - _last_pose_guard_log_at) <= window:
+        _pose_guard_suppressed += 1
+        _log.debug(
+            "[pose_face_guard] dropped phantom face center=(%.0f,%.0f) — far from "
+            "all %d%s pose head(s)", fx, fy, anchors, " cached" if cached else "",
+        )
+        return
+    suffix = (f" (+{_pose_guard_suppressed} more in the last "
+              f"{now - _last_pose_guard_log_at:.0f}s)") if _pose_guard_suppressed else ""
+    _last_pose_guard_log_at = now
+    _pose_guard_suppressed = 0
+    _log.info(
+        "[pose_face_guard] dropped phantom face center=(%.0f,%.0f) — far from all "
+        "%d%s pose head(s)%s", fx, fy, anchors, " cached" if cached else "", suffix,
+    )
 
 
 def _step_person_recognition(frame) -> None:
@@ -5090,6 +5151,25 @@ def _step_person_recognition(frame) -> None:
         _log.debug("person recognition step error: %s", exc)
 
 
+def _known_face_recently_locked() -> bool:
+    """True when face tracking is holding — or very recently held — a KNOWN person.
+
+    Used to veto the stranger prompt during a recognition dropout. Never raises:
+    a failure here must not turn into an accusation that a regular is a stranger.
+    """
+    try:
+        person_id = _face_tracking_lock.get("person_id")
+        if person_id is None:
+            return False
+        # _face_tracking_recently_held_person takes a SPECIFIC id (and returns
+        # False for None by design). Here the question is "any known person", so
+        # ask it about whoever the lock is actually holding.
+        return _face_tracking_recently_held_person(int(person_id), time.monotonic())
+    except Exception:
+        _log.debug("known-face lock check failed", exc_info=True)
+    return False
+
+
 def _maybe_prompt_unknown_identity(
     *,
     unknown_count: int,
@@ -5108,6 +5188,19 @@ def _maybe_prompt_unknown_identity(
 
     if unknown_count <= 0 or known_unique:
         _solo_unknown_since = 0.0  # not a solo-unknown scene — reset the grace timer
+        return
+    # A KNOWN face that momentarily fails its embedding match still detects, so it
+    # arrives here as "one unknown, no knowns" and the 2.5 s grace is no defence
+    # against a dropout spanning many ticks. Field 2026-08-20: JT — greeted by name
+    # at 20:11:43 — was queued for "I don't know you yet" at 20:13:32 after ~36 s of
+    # degraded recognition, while face tracking was locked on db:4 the whole time.
+    # It was never spoken only because the in-flight latch went stale first.
+    #
+    # _step_presence_tracking already bridges this exact gap for presence; the
+    # prompt path did not use it. The tracking lock is the cheapest correct
+    # authority: if it is holding a known person, this is not a stranger.
+    if _known_face_recently_locked():
+        _solo_unknown_since = 0.0
         return
     if _pending_identity_prompt.is_set():
         return
@@ -9298,6 +9391,49 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         except Exception:
             _log.debug("farewell-departure check failed", exc_info=True)
 
+        # Face gone but they are still HERE → just stepped off-camera (or Rex
+        # turned away). These two guards must run BEFORE the silent-departure
+        # resolution below, not after it: sitting underneath it, they could only
+        # defer the spoken quip while the visit was closed out regardless.
+        #
+        # Field 2026-08-20: Bret "departed" twice during one continuous 24-minute
+        # visit — at 20:10:50 and again at 20:29:24 — and both times the trigger
+        # was Rex's OWN motion (an explore drive Bret had just asked for, then a
+        # head turn). Each wrote a visit_departure episode ("I spent about 3
+        # minutes with Bret Benziger"), and the second was followed by a
+        # welcome-back line to someone who had never left. An engaged partner
+        # trips it fastest: _departure_confirm_secs_for shortens the confirm
+        # window to PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS for whoever Rex is
+        # talking to, so ~12 s off-camera plus the cooldown is enough.
+        still_here = False
+        try:
+            still_here = bool(profile.likely_still_present) or bool(
+                _face_tracking_recently_held_person(person_db_id, now)
+            )
+        except Exception:
+            _log.debug("presence still-here check failed", exc_info=True)
+        if still_here:
+            # Refresh the stage stamp: the quip/silent-resolution window must be
+            # measured from the last EVIDENCE OF PRESENCE, not from when the face
+            # first went missing. Without this the entry keeps ageing while they
+            # talk, and resolves as "departed" the instant they pause.
+            #
+            # The ceiling is the backstop the original ordering accidentally
+            # provided: a signal that never goes false must not leave the entry
+            # re-staging every tick forever (the 2026-07-11 empty-room bug).
+            held = now - float(departed_at or now)
+            max_hold = float(getattr(config, "PRESENCE_STILL_HERE_MAX_HOLD_SECS", 600.0))
+            if held < max_hold:
+                _pending_departure_keys[key] = (
+                    departed_at, person_name, person_db_id, now,
+                )
+                continue
+            _log.info(
+                "consciousness: %s has read 'still present' for %.0fs with no face "
+                "— resolving the departure anyway",
+                person_name or f"key={key}", held,
+            )
+
         # Quip window expired: resolve as a SILENT departure — clean up the missing
         # timer and log the visit, just without the spoken quip. The old bare delete
         # left _first_missing_at armed, so the entry re-staged and re-deleted every
@@ -9321,11 +9457,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 )
             continue
 
-        # Face gone but user still talking → likely just stepped off-camera; suppress
-        if profile.likely_still_present:
-            continue
-        if _face_tracking_recently_held_person(person_db_id, now):
-            continue
+        # (still_here was checked above, before the silent resolution.)
 
         # Fire only when face-gone + VAD has been silent ≥ departure_audio_silence.
         should_fire = profile.apparent_departure or (

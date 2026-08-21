@@ -6276,6 +6276,23 @@ PRESENCE_RELATIONSHIP_TONE_ENABLED = True
 
 # Cooldown between departure/return reactions for the same person (avoids jitter spam).
 PRESENCE_DEPARTURE_COOLDOWN_SECS = 30
+# Ceiling on how long "they're still here" may hold a pending departure open.
+# The still-present guards (likely_still_present / face-tracking recently held)
+# now run BEFORE the silent-departure resolution, so they suppress the whole
+# resolution rather than only the spoken quip — which is what stopped Bret being
+# logged as departing twice during one continuous 24-minute visit (field
+# 2026-08-20 20:10:50 and 20:29:24, both triggered by Rex's own motion). That
+# ordering removes the accidental backstop the old code had, so this replaces it:
+# a signal that never goes false must not leave the entry re-staging every tick
+# forever (the 2026-07-11 empty-room bug).
+PRESENCE_STILL_HERE_MAX_HOLD_SECS = 600.0
+# Throttle for the [pose_face_guard] phantom-face rejection line. The rejection is
+# correct; the LOGGING was not. A stationary artifact (framed wall photos in the
+# right third of frame) produced 742 of 7515 lines in the 2026-08-20 run — ~10% of
+# the log, 14% of its tail — which directly hampers post-run analysis. Matches the
+# sibling gate _unknown_face_conf_ok, which emitted 14 lines for the same artifact.
+# Suppressed drops still go to DEBUG and are counted in the next INFO line.
+POSE_FACE_GUARD_LOG_INTERVAL_SECS = 10.0
 
 # Per-person cooldown on ANY presence reaction (departure OR return). Prevents
 # Rex from narrating every micro-absence of the same person.
