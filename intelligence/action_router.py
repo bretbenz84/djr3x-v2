@@ -1740,8 +1740,15 @@ def _normalize_cardinal(raw: str) -> str:
 # An optional "small amount / manner" phrase between the move verb and the direction,
 # so "move a little forward" / "ease slightly back" classify. Kept a strict whitelist
 # (not ".*") so "move the box forward" still does NOT false-positive as a drive command.
+# "slight" (bare adverbial) alongside "slightly": "slight left" / "slight right" is
+# how turn-by-turn navigation phrases it and is an extremely common spoken form.
+# Field 2026-08-20 20:30:17: "Turn slight left, then go forward three feet." failed
+# _MOTION_TURN_RE on that one token, and because a single unclassifiable clause
+# correctly refuses the WHOLE sequence (partial execution of "turn left then sing"
+# is the thing that guard exists to prevent), an ordinary two-step route produced
+# zero motion and "I couldn't safely parse that whole route."
 _MOTION_AMOUNT = (
-    r"(?:a\s+(?:little|bit|tad|touch|smidge)|slightly|just|gently|slowly|"
+    r"(?:a\s+(?:little|bit|tad|touch|smidge)|slight(?:ly)?|just|gently|slowly|"
     r"kinda|kind\s+of|tiny\s+bit)"
 )
 # "ahead" is intentionally NOT a forward trigger — "go ahead and …" is almost always
