@@ -52,8 +52,7 @@ change (tracked as their own fix-up task):
   verified against clean HEAD 2026-08-04)
 
 Found by a full per-module sweep of all 241 modules on 2026-08-05 and each verified
-against clean HEAD the same day — same list, so a sweep should now come back with
-exactly these 11 modules failing and nothing else:
+against clean HEAD the same day:
 
 - `tests/test_lean_memory_musing.py` — `test_spoken_musing_sets_once_per_session_flag`
 - `tests/test_proactive_discipline.py` — `test_idle_monologue_is_excluded_from_the_cooldown`
@@ -63,6 +62,28 @@ exactly these 11 modules failing and nothing else:
 - `tests/test_vision_panel_skeleton.py` — 2 failures
   (`test_coarse_hand_points_render`,
   `test_skeleton_does_not_bleed_past_video_edges`)
+
+Two more appeared between then and 2026-08-20 (the tree is 284 modules now, not
+241). Both verified pre-existing that day by swapping the pre-batch
+`intelligence/action_router.py` back in and re-running — they fail identically:
+
+- `tests/test_reaction_awareness.py` — 3 failures in `NewsDigestContractTests`
+  (`test_bans_the_closing_fetch_menu`, `test_bans_the_press_release_tics`,
+  `test_caps_the_spoken_length`)
+- `tests/test_review_regressions.py` —
+  `test_router_keeps_known_named_person_topic_as_memory_query`
+
+**A full sweep should now come back with exactly these 12 modules and nothing
+else** (sweep of all 284 modules, 2026-08-20, 390s).
+
+Note the trap that cost time on 2026-08-20: `git stash -u` is a NO-OP when your
+work is already committed, so the usual "stash, test, pop" baseline check silently
+re-tests your own code and every failure looks pre-existing. When the tree is
+clean, compare against a specific commit instead — swap the single file back in
+with `git show <base>:path > path`, test, then restore. A `git worktree` checkout
+is NOT a good baseline here: it lacks the untracked `.env` / `apikeys.py` /
+`assets/`, so modules fail to import for reasons that have nothing to do with the
+change.
 
 A full sweep is easiest as a small Python runner that shells out per module with a
 timeout (macOS has no `timeout(1)`), skipping `test_local_tts`. Budget ~12 minutes.
