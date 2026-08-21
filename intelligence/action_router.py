@@ -932,6 +932,22 @@ _IMPERSONATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     # "impersonate X", "imitate X", "mimic X"
     re.compile(r"\b(?:impersonate|imitate|mimic)\s+(?P<target>.+)$", re.IGNORECASE),
+    # The same command as the ASR mis-inflects it. Field 2026-08-20 20:25:22:
+    # "Impersonate Barack Obama" decoded as "Impersonates Barack Obama", matched
+    # nothing here, and an unambiguous imperative was answered as small talk. (Same
+    # class of miss "impersivate" already has a WHISPER_CORRECTIONS entry for.)
+    #
+    # ANCHORED at the start, unlike the base forms above: an inflected verb is only
+    # a command when it IS the utterance. Mid-sentence it is ordinary description —
+    # "I was imitating a bird earlier" is not an order to do a bird — and this
+    # module deliberately keeps to unambiguous verb shapes, leaving softer
+    # phrasings to the LLM route.
+    re.compile(
+        r"^(?:so\s+|hey\s+)?(?:rex[,!]?\s+)?"
+        r"(?:impersonates|impersonating|imitates|imitating|mimics|mimicking)"
+        r"\s+(?P<target>.+)$",
+        re.IGNORECASE,
+    ),
     # "do/copy/clone my voice", "do Jimmy Carter's voice". The target used to be a
     # lazy .+? , which let "Do you like my voice?" through as an impersonation of
     # "you like my" (audit 2026-08-13). It now has to be a possessive determiner or

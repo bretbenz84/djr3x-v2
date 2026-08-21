@@ -628,8 +628,21 @@ TTS_STREAM_END_PAD_MS = 200.0
 # A streamed take whose FINAL 30ms still sits at speech-level RMS never decayed —
 # the generation was truncated mid-word (observed live 2026-07-06 at RMS 0.023).
 # Such takes play once (nothing to do) but are NOT cached, so the clipped ending
-# doesn't become permanent; the next utterance re-rolls. 0 disables the guard.
-TTS_HOT_END_RMS = 0.010
+# doesn't become permanent; the next utterance re-rolls.
+#
+# The test is RELATIVE to each take's own median voiced level. The previous
+# absolute 0.010 cutoff refused 28% of streamed takes in the 2026-08-20 run (14 of
+# 50), including ordinary complete sentences ("Backing up.", 1.56s) — because no
+# absolute threshold separates the populations: accepted takes ran a smooth
+# continuum from 0.00005 to 0.00935 against that 0.010 line, with no gap to sit in.
+# Real truncations end at FULL VOICED LEVEL (0.02-0.07, against a median voiced RMS
+# of 0.04-0.09 for the same takes), so the ratio separates them and short/loud
+# lines are not punished for being loud.
+# Cost of a false positive is not audible — it is cache churn: a refused line can
+# never be reused, so every repeat pays a fresh generation in money, ~0.6-1.0s of
+# time-to-first-sound, and has nothing to fall back on when the network dies.
+TTS_HOT_END_RMS_RATIO = 0.5   # tail >= this fraction of the take's median voiced RMS. 0 disables.
+TTS_HOT_END_RMS_MIN = 0.010   # absolute rail: a quiet tail is never a truncation
 
 # A finished sentence shorter than this many characters is merged with the next
 # one before speaking, so tiny fragments ("Yeah.", initials, abbreviations,

@@ -591,17 +591,55 @@ def _trim_trailing_silence(audio: np.ndarray, samplerate: int) -> np.ndarray:
     return trimmed
 
 
+def _tail_rms_ratio(audio: np.ndarray, samplerate: int) -> Optional[tuple[float, float]]:
+    """(tail RMS, tail / this take's own median voiced RMS), or None if unmeasurable.
+
+    RELATIVE, not absolute. The old absolute cutoff refused 28% of streamed takes
+    in the 2026-08-20 run (14 of 50), including ordinary complete sentences like
+    "Backing up." — because there is no absolute threshold that separates the two
+    populations: the accepted takes form a smooth continuum from 0.00005 right up
+    to 0.00935 against a 0.010 cutoff, with no gap to sit in. What DOES separate
+    them is loudness relative to the line itself: a real truncation ends at full
+    voiced level (measured 0.02-0.07, versus a median voiced RMS of 0.04-0.09 for
+    the same takes), while a complete line's last 30 ms is a decaying consonant
+    however loud the line was overall. Scaling by the take's own median stops
+    short, loud lines being punished for being loud.
+    """
+    if audio is None or audio.size == 0 or samplerate <= 0:
+        return None
+    window = max(1, int(samplerate * 0.030))
+    tail = float(np.sqrt(np.mean(audio[-window:].astype(np.float64) ** 2)))
+    # Median over the VOICED frames only — including silence would drag the median
+    # toward zero on a line with long pauses and make every tail look hot.
+    frame = max(1, int(samplerate * 0.020))
+    usable = (audio.size // frame) * frame
+    if usable < frame:
+        return None
+    frames = audio[:usable].astype(np.float64).reshape(-1, frame)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    voiced = rms[rms > (float(np.max(rms)) * 0.10)] if rms.size else rms
+    median = float(np.median(voiced)) if voiced.size else 0.0
+    if median <= 0.0:
+        return None
+    return tail, tail / median
+
+
 def _ends_hot(audio: np.ndarray, samplerate: int) -> bool:
     """True when the take ends at speech level instead of decaying to silence —
-    the signature of a generation truncated mid-word. A natural ElevenLabs take
-    tails off to RMS ~0.0002-0.003; truncated ones have been measured ending at
-    0.02+. Checks the FINAL window only (an intra-word dip can't false-positive)."""
-    threshold = float(getattr(config, "TTS_HOT_END_RMS", 0.010) or 0.0)
-    if threshold <= 0.0 or audio is None or audio.size == 0 or samplerate <= 0:
+    the signature of a generation truncated mid-word (observed live 2026-07-06:
+    cached take ended at RMS 0.023). Checks the FINAL window only, so an intra-word
+    dip cannot false-positive."""
+    ratio_floor = float(getattr(config, "TTS_HOT_END_RMS_RATIO", 0.5) or 0.0)
+    if ratio_floor <= 0.0:
         return False
-    window = max(1, int(samplerate * 0.030))
-    tail = audio[-window:]
-    return float(np.sqrt(np.mean(tail.astype(np.float64) ** 2))) >= threshold
+    measured = _tail_rms_ratio(audio, samplerate)
+    if measured is None:
+        return False
+    tail, ratio = measured
+    # Absolute floor as a sanity rail: a quiet tail is never a truncation, however
+    # quiet the line around it was.
+    floor = float(getattr(config, "TTS_HOT_END_RMS_MIN", 0.010) or 0.0)
+    return tail >= floor and ratio >= ratio_floor
 
 
 # ── Internal: playback ────────────────────────────────────────────────────────
@@ -1080,9 +1118,14 @@ def _speak_streaming(
                 # live 2026-07-06: cached take ended at RMS 0.023). Caching it
                 # would make the clipped ending PERMANENT for this line; skip so
                 # the next utterance re-rolls a full take.
+                measured = _tail_rms_ratio(full, samplerate) or (0.0, 0.0)
+                # Log the NUMBERS, not just the verdict: the old absolute cutoff
+                # was refusing 28% of takes and the log could not show why.
                 logger.warning(
-                    "[tts] streamed take ends hot (speech-level RMS at tail) — "
-                    "truncated generation? NOT caching %s", cache_file.stem[:16],
+                    "[tts] streamed take ends hot (tail RMS %.5f = %.2fx this "
+                    "take's median voiced level) — truncated generation? "
+                    "NOT caching %s",
+                    measured[0], measured[1], cache_file.stem[:16],
                 )
                 return True
             trimmed = _trim_trailing_silence(full, samplerate)

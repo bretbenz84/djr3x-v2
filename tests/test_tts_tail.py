@@ -5,7 +5,11 @@ Two distinct causes, two guards:
 - Truncated GENERATION: some streamed ElevenLabs takes end mid-word at speech-level
   RMS (measured 0.021-0.027 in the live cache; a natural tail decays to ~0.0002).
   _ends_hot detects this so the take is never cached — a bad roll plays once
-  instead of becoming the permanent cached rendition of that line.
+  instead of becoming the permanent cached rendition of that line. The test is
+  RELATIVE to each take's own median voiced level: the original absolute 0.010
+  cutoff refused 28% of streamed takes in the 2026-08-20 run (complete sentences
+  included), because the accepted population is a smooth continuum running right
+  up to that line with no gap to sit in.
 - Over-eager tail trim: 40ms padding after the last supra-threshold window shaved
   breathy word-final decays. Padding is now 120ms.
 """
@@ -44,7 +48,11 @@ class EndsHotTest(unittest.TestCase):
         self.assertFalse(tts._ends_hot(audio, self.SR))
 
     def test_zero_threshold_disables(self):
-        with mock.patch.object(config, "TTS_HOT_END_RMS", 0.0, create=True):
+        # The test is RELATIVE now (tail vs this take's own median voiced level),
+        # because no absolute cutoff separated the populations — the old 0.010
+        # refused 28% of streamed takes in the 2026-08-20 run, including complete
+        # sentences. TTS_HOT_END_RMS_RATIO is the kill switch.
+        with mock.patch.object(config, "TTS_HOT_END_RMS_RATIO", 0.0, create=True):
             self.assertFalse(tts._ends_hot(_tone(1.0), self.SR))
 
     def test_empty_audio_is_safe(self):

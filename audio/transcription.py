@@ -111,7 +111,35 @@ def _asr_context_prompt() -> "str | None":
     # 363ch of live context = +0.18s per decode) — the cap bounds worst-case
     # added latency, not just token count.
     max_chars = int(getattr(config, "QWEN_ASR_CONTEXT_MAX_CHARS", 400))
-    return prompt[:max_chars]
+    prompt = prompt[:max_chars]
+    # Remember the EXACT string we sent. On near-silence Qwen3-ASR emits its own
+    # system prompt back verbatim at logprob 0.0 (the documented 2026-08-02
+    # behavior), and the echo guard's candidate set was built for the two known
+    # shapes — a Rex line copied back, and the vocab list copied back — so the
+    # fixed preamble was never in it. Field 2026-08-20 20:16:38: the whole prompt
+    # came back as a 54-word "utterance" and only the speaking-rate backstop caught
+    # it. On a longer capture (a 10s VAD segment is ordinary) that backstop does
+    # not fire, and the decode lands trusted=True carrying every name in
+    # QWEN_ASR_CONTEXT_VOCAB — exactly the shape that poisons people.db and
+    # resurfaces later as a proactive question.
+    global _last_context_prompt
+    with _context_lock:
+        _last_context_prompt = prompt
+    return prompt
+
+
+# The exact biasing prompt most recently handed to the decoder (see
+# _asr_context_prompt). Read by _context_echo_hallucination.
+_last_context_prompt: "str | None" = None
+
+# Fragments of the fixed preamble that can never be real speech TO Rex. Cheap
+# belt-and-braces alongside the similarity/coverage checks, and independent of how
+# much of the prompt the model chose to recite.
+_CONTEXT_PROMPT_MARKERS = (
+    "one side of a live spoken conversation",
+    "names and places that may occur",
+    "the audio replies to a droid who just said",
+)
 
 
 def _norm_for_echo(text: str) -> str:
@@ -137,10 +165,20 @@ def _context_echo_hallucination(text: str) -> bool:
     norm = _norm_for_echo(text)
     if not norm:
         return False
+    # Structural tell first: no human says the preamble to a droid, at any length.
+    for marker in _CONTEXT_PROMPT_MARKERS:
+        if _norm_for_echo(marker) in norm:
+            logger.info(
+                "[transcription] context-PROMPT regurgitation rejected "
+                "(contains %r): %r", marker, text)
+            return True
     candidates = [", ".join(
         str(v) for v in getattr(config, "QWEN_ASR_CONTEXT_VOCAB", ()) if v)]
     with _context_lock:
         rex_lines = list(_recent_rex_lines)
+        prompt = _last_context_prompt
+    if prompt:
+        candidates.insert(0, prompt)
     candidates.extend(rex_lines)
     for cand in candidates:
         cand_norm = _norm_for_echo(cand)
@@ -156,7 +194,7 @@ def _context_echo_hallucination(text: str) -> bool:
     # left is a small fraction, the "utterance" is composed of his own lines.
     residue = norm
     matched_any = False
-    for cand in rex_lines:
+    for cand in ([prompt] if prompt else []) + rex_lines:
         cand_norm = _norm_for_echo(cand)
         if cand_norm and len(cand_norm) >= 12 and cand_norm in residue:
             residue = residue.replace(cand_norm, " ")

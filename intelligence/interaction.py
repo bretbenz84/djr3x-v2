@@ -19510,7 +19510,10 @@ def _handle_impersonation_target_prompt(text: str) -> Optional[tuple[str, bool]]
     # "impersonate Obama" as the ANSWER — drop the repeated verb, keep the name.
     target = re.sub(
         r"^(?:(?:do|give\s+(?:me|us)|perform)\s+(?:an?\s+|your\s+(?:best\s+)?)?"
-        r"(?:impersonation|impression)\s+of\s+|impersonate\s+|imitate\s+|mimic\s+)",
+        r"(?:impersonation|impression)\s+of\s+"
+        # ASR inflections of the same audio — see action_router's verb list.
+        r"|(?:impersonate|impersonates|impersonating"
+        r"|imitate|imitates|imitating|mimic|mimics|mimicking)\s+)",
         "", said, flags=re.IGNORECASE,
     ).strip()
     target = re.sub(r"[.!?,;:]+$", "", target).strip() or said
