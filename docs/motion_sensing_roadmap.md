@@ -59,7 +59,10 @@ Consequences:
    turning left a foot from a bookshelf. Every radial return is re-expressed about
    the axle, every body extent (ring sampled at 45° plus the arm tips from
    `MOTION_BODY_EXTENTS`) is swept through the requested angle, and the turn is
-   shrunk to the largest clear angle or refused under `MOTION_SWING_MIN_TURN_DEG`.
+   shrunk to the largest clear angle; when it would be refused, he first steps
+   `MOTION_SWING_ESCAPE_STEP_M` (~2 ft) forward if the front ring shows
+   `MOTION_SWING_ESCAPE_CLEARANCE_M` of floor, and re-checks on arrival (one step,
+   never chained). Only with no room ahead either does the turn refuse.
    `d` is `MOTION_AXLE_AFT_OF_CENTER_M` (0.23 m by eye — **still unmeasured**, as
    are the arm reaches). D-pad turns remain ungated (manual).
 3. Sensor mount transforms must be expressed relative to the **axle midpoint**

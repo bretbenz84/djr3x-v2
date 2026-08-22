@@ -20,14 +20,34 @@ OPEN = {"fl": 4000, "fr": 4000, "rl": 4000, "rr": 4000,
         "lf": 1500, "lb": 1500, "rf": 1500, "rb": 1500}
 
 
+# Shelf a foot behind-left AND not enough floor ahead for the escape step
+# (0.9 m < MOTION_SWING_ESCAPE_CLEARANCE_M): the turn refuses.
+CORNERED = dict(OPEN, rl=300, fl=900, fr=900)
+
+
 class _PosedRing(FakeESP32Serial):
-    """Fake base whose radial ring reports whatever the test poses."""
+    """Fake base whose radial ring reports whatever the test poses. A finite
+    `move` completes immediately and, if `after_move` is set, re-poses the ring
+    (he stepped away from the shelf)."""
     tof = dict(OPEN)
+    after_move = None
 
     def _telemetry(self):
         t = super()._telemetry()
         t["tof_mm"] = dict(self.tof)
         return t
+
+    def write(self, data):
+        n = super().write(data)
+        for m in list(self.received):
+            if m.get("cmd") == "move" and not m.get("_done"):
+                m["_done"] = True
+                if self.after_move:
+                    self.tof = dict(self.after_move)
+                self._state = "idle"
+                self._emit({"v": 1, "type": "done", "seq": m["seq"],
+                            "result": "completed", "odom": {}})
+        return n
 
 
 class ModelTest(unittest.TestCase):
@@ -91,19 +111,43 @@ class ModelTest(unittest.TestCase):
 
 
 class ControllerWiringTest(_MotionTestBase):
-    def _connect_posed(self, tof):
+    def _connect_posed(self, tof, after_move=None):
         self.fake = _PosedRing()
         self.fake.tof = dict(tof)
+        self.fake.after_move = after_move
+        mc._swing_escape = None
         from hardware import motion
         motion.serial.Serial = lambda *a, **k: self.fake
         ok = mc.connect(port="FAKE")
         time.sleep(0.1)
         return ok
 
-    def test_turn_left_refused_with_shelf_behind_left(self):
-        self._connect_posed(dict(OPEN, rl=300))
+    def test_blocked_turn_steps_forward_then_turns(self):
+        # The shelf is behind-left, the floor ahead is open: earn the room.
+        self._connect_posed(dict(OPEN, rl=300), after_move=OPEN)
+        self.assertIsNotNone(mc.turn_left())
+        mv = self._last("move")
+        self.assertIsNotNone(mv)
+        self.assertAlmostEqual(mv["dist"], config.MOTION_SWING_ESCAPE_STEP_M)
+        for _ in range(40):                     # the done -> turn hop is async
+            if self._last("turn"):
+                break
+            time.sleep(0.05)
+        self.assertEqual(self._last("turn")["deg"], config.MOTION_DEFAULT_TURN_DEG)
+        self.assertIsNone(mc._swing_escape)
+
+    def test_still_blocked_after_the_step_does_not_step_again(self):
+        self._connect_posed(dict(OPEN, rl=300), after_move=dict(OPEN, rl=300))
+        self.assertIsNotNone(mc.turn_left())
+        time.sleep(0.5)
+        self.assertEqual(len([m for m in self.fake.received if m.get("cmd") == "move"]), 1)
+        self.assertIsNone(self._last("turn"))
+
+    def test_turn_left_refused_when_cornered(self):
+        self._connect_posed(CORNERED)
         self.assertIsNone(mc.turn_left())
         self.assertIsNone(self._last("turn"))
+        self.assertIsNone(self._last("move"))
         # The other way is fine.
         self.assertIsNotNone(mc.turn_right())
         self.assertEqual(self._last("turn")["deg"], -config.MOTION_DEFAULT_TURN_DEG)
@@ -116,7 +160,7 @@ class ControllerWiringTest(_MotionTestBase):
         self.assertLess(sent, 180)
 
     def test_come_heading_refused_when_its_spin_is_blocked(self):
-        self._connect_posed(dict(OPEN, rl=300))
+        self._connect_posed(CORNERED)
         self.assertIsNone(mc.come(heading=90.0))
         self.assertIsNone(self._last("come"))
         # A straight-ahead come has no spin to check.
@@ -124,7 +168,7 @@ class ControllerWiringTest(_MotionTestBase):
         self.assertIsNotNone(self._last("come"))
 
     def test_arc_swing_is_shortened_not_the_curve(self):
-        self._connect_posed(dict(OPEN, rl=300))
+        self._connect_posed(CORNERED)
         # Curving left near a shelf behind-left: refused outright.
         self.assertIsNone(mc.arc_move(forward=True, left=True))
         # Curving right is allowed.
@@ -132,7 +176,7 @@ class ControllerWiringTest(_MotionTestBase):
         mc._cancel_arc()
 
     def test_refused_voice_turn_is_spoken(self):
-        self._connect_posed(dict(OPEN, rl=300))
+        self._connect_posed(CORNERED)
         mc.note_user_commanded_motion()
         with mock.patch("audio.speech_queue.enqueue") as enq:
             self.assertIsNone(mc.turn_left())

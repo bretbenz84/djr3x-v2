@@ -273,11 +273,75 @@ def _maybe_announce_blocked(msg: dict) -> None:
         _log.debug("blocked announce failed: %s", exc)
 
 
+# Swing escape: a turn whose sweep is blocked first steps forward (if the front
+# is open), then re-runs on that move's done. {"seq", "deg", "rate"} or None.
+_swing_escape: "dict | None" = None
+_swing_lock = threading.Lock()   # the move's done can land before send() returns
+
+
+def _front_room_m() -> "float | None":
+    tele = motion.telemetry()
+    tof = tele.get("tof_mm") if isinstance(tele, dict) else None
+    if not isinstance(tof, dict):
+        return None
+    best = None
+    for k in ("fl", "fr"):
+        try:
+            mm = float(tof.get(k))
+        except (TypeError, ValueError):
+            continue
+        if mm >= 0 and (best is None or mm < best):
+            best = mm
+    return None if best is None else best / 1000.0
+
+
+def _try_swing_escape(deg: float, rate: float) -> "int | None":
+    """The swing is blocked: earn the room by stepping forward, then turn on
+    arrival. Returns the move's seq, or None when there is no room ahead."""
+    global _swing_escape
+    if not bool(getattr(config, "MOTION_SWING_ESCAPE_ENABLED", True)):
+        return None
+    room = _front_room_m()
+    need = _get_float("MOTION_SWING_ESCAPE_CLEARANCE_M", 1.0)
+    if room is None or room < need:
+        _log.info("[swing] no escape forward (front %.2f m < %.2f m)",
+                  room if room is not None else -1.0, need)
+        return None
+    step = _get_float("MOTION_SWING_ESCAPE_STEP_M", 0.60)
+    with _swing_lock:
+        seq = move(step)
+        if seq is None:
+            return None
+        _swing_escape = {"seq": seq, "deg": deg, "rate": rate}
+    _log.info("[swing] %+.0f° turn blocked behind — stepping %.2f m forward first (seq %d)",
+              deg, step, seq)
+    return seq
+
+
+def _finish_swing_escape(msg: dict) -> None:
+    global _swing_escape
+    with _swing_lock:
+        pend = _swing_escape
+        if pend is None or msg.get("seq") != pend["seq"]:
+            return
+        _swing_escape = None
+    if str(msg.get("result") or "") not in ("completed", "blocked"):
+        _log.info("[swing] escape step %s — turn dropped", msg.get("result"))
+        return
+    # Re-check from the new spot; a second step is never chained. The done
+    # beats the next telemetry frame, so let the ring report the new spot first.
+    def _go():
+        time.sleep(_get_float("MOTION_SWING_ESCAPE_SETTLE_SECS", 0.3))
+        turn(pend["deg"], pend["rate"], _escaped=True)
+    threading.Thread(target=_go, daemon=True, name="swing-escape-turn").start()
+
+
 def _on_motion_done(msg: dict) -> None:
     """Reader-thread callback for command completions: the come-here arrival chirp
     and the "whoa, blocked" accent when the base stops a command on an obstacle."""
     try:
         result = str((msg or {}).get("result") or "")
+        _finish_swing_escape(msg or {})
         # The wheels have stopped — cut the looping whir first, so the arrival /
         # blocked accent lands in silence instead of on top of a drive sound.
         try:
@@ -556,6 +620,12 @@ def _heartbeat_tick() -> None:
     motion.ping()
 
 
+def _cancel_swing_escape() -> None:
+    global _swing_escape
+    with _swing_lock:
+        _swing_escape = None
+
+
 def _cancel_arc() -> None:
     """Drop any in-flight arc (a new command / stop supersedes it). Does NOT send a
     stop itself — the caller's own command (or stop) does that."""
@@ -788,8 +858,13 @@ def turn(
     rate: "float | None" = None,
     *,
     _verify_attempt: int = 0,
+    _escaped: bool = False,
 ) -> "int | None":
-    """Spin in place by `deg` (+ = left/CCW). Closed loop on the ESP32."""
+    """Spin in place by `deg` (+ = left/CCW). Closed loop on the ESP32.
+
+    If the swing would sweep the body/arms into something (usually behind him),
+    he first steps forward to earn the room and turns on arrival; `_escaped`
+    marks that second attempt so it can't step again."""
     reason = _autonomous_allowed()
     if reason:
         _suppressed("turn", reason)
@@ -798,9 +873,18 @@ def turn(
     rate = _get_float("MOTION_DEFAULT_TURN_RATE", 75.0) if rate is None else rate
     rate = _clampf(abs(rate), 1.0, max_rate)
     deg = _clampf(deg, -360.0, 360.0)
-    deg, reason = _swing_gate("turn", deg)
+    from intelligence import motion_swing
+    tele = motion.telemetry()
+    send_deg, reason = motion_swing.check_turn(
+        deg, tele.get("tof_mm") if isinstance(tele, dict) else None)
     if reason:
+        if not _escaped:
+            seq = _try_swing_escape(deg, rate)
+            if seq is not None:
+                return seq
+        _suppressed("turn", reason)
         return None
+    deg = send_deg
     start_yaw = _calibrated_compass_yaw()
     epoch = _invalidate_turn_verification()
     _cancel_arc()
@@ -983,6 +1067,7 @@ def drive_manual(lin: float, ang: float) -> "int | None":
 def stop() -> "int | None":
     """Controlled stop. Always honored while connected (bypasses the gate)."""
     _invalidate_turn_verification()
+    _cancel_swing_escape()
     _fx_drive_loop_stop_all()   # a stop means silence now, not at the clip's end
     if not motion.connected():
         return None

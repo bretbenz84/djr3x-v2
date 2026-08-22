@@ -9770,7 +9770,16 @@ MOTION_SWING_ANGULAR_PAD_DEG = 20.0        # ToF cone (±13.5°) + the part's ow
 # Below this much allowed rotation the turn is refused outright rather than
 # shrunk to a twitch (a 4° "turn left" reads as a glitch, not a decision).
 MOTION_SWING_MIN_TURN_DEG = 10.0
-# Spoken when a turn a human asked for out loud is refused for this reason.
+# Before refusing, try to EARN the room: if the front ToF shows at least
+# CLEARANCE_M of floor (the step plus stop zone plus margin), drive forward
+# STEP_M and re-check the swing on arrival — a blocked-behind turn usually just
+# means "step away from the shelf first". One step per turn request, never chained.
+MOTION_SWING_ESCAPE_ENABLED = True
+MOTION_SWING_ESCAPE_STEP_M = 0.60          # ~2 ft forward
+MOTION_SWING_ESCAPE_CLEARANCE_M = 1.0      # front room needed before stepping
+MOTION_SWING_ESCAPE_SETTLE_SECS = 0.3      # let telemetry catch up before the re-check
+# Spoken when a turn a human asked for out loud is refused for this reason
+# (no room to step forward either).
 MOTION_SWING_BLOCKED_LINE = (
     "Can't swing that way, honey — I'd clip something behind me. Give me some room."
 )
