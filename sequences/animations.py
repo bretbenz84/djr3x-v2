@@ -96,10 +96,18 @@ VISOR_HALF    = 6400   # default resting open — clear of camera lens
 VISOR_NEUTRAL = 6000
 VISOR_OPEN    = 6976   # max — required before any camera capture
 
-# Ch 4 — Elbow: 6300–7560, neutral 6720
+# Ch 4 — Elbow: 6300–7424, neutral 6720. Higher value = arm hanging lower.
+# DOWN is 7424, not the old 7560: the Maestro's own stored channel-4 limit is
+# 1856 us and clipped anything past it (measured on the robot 2026-08-22).
 ELBOW_NEUTRAL = 6720
 ELBOW_UP      = 6300
-ELBOW_DOWN    = 7560
+ELBOW_DOWN    = 7424
+# The bottom of the elbow's travel — where the limp arm hangs with the robot
+# powered off, so it is both the pose shutdown() parks in and the first target
+# commanded on a cold connect (config's "rest"; see
+# servos._assert_startup_rest_pose_locked). Read from config so an .env limit
+# override for this build carries into the park pose too.
+ELBOW_REST    = config.servo_rest_position("elbow")
 
 # Ch 5 — Hand: 1984–9984, neutral 6000
 HAND_NEUTRAL = 6000
@@ -119,11 +127,18 @@ HEROARM_BACK    = 7200
 # The pose shutdown() / sleep() park the head in — head fully lowered, looking down,
 # visor closed, neck centred. startup() seeds its slow raise from this so it never
 # depends on a fresh-connect proprioception read to know where it's starting from.
+#
+# The elbow is here for the mirror-image reason: powered down, the servos go limp
+# and the arm's weight pulls the elbow to the bottom of its travel regardless of
+# where we left it. Parking there means the pose survives the power cut, so the
+# next cold boot's first elbow target matches the arm's actual position instead
+# of yanking it (field 2026-08-22).
 SHUTDOWN_REST_POSE = {
     0: NECK_CENTER,
     1: HEADLIFT_FLOOR,
     2: HEADTILT_DOWN,
     3: VISOR_CLOSED,
+    4: ELBOW_REST,
 }
 
 # Idle arm wander should read as intentional arm motion, not servo creep. The
@@ -1006,15 +1021,19 @@ def shutdown() -> None:
     servos.stop_breathing()
     time.sleep(0.1)   # let breathing thread exit before we move headlift
 
-    # Clear any stale slow speed/accel left on the head channels before the droop.
+    # Clear any stale slow speed/accel left on the head channels — and on the elbow,
+    # which droops with them — before the droop.
     servos.set_motion_profile(
-        config.HEAD_CHANNELS,
+        list(config.HEAD_CHANNELS) + [4],
         speed=int(getattr(config, "SHUTDOWN_DROOP_SERVO_SPEED", 70)),
         acceleration=int(getattr(config, "SHUTDOWN_DROOP_SERVO_ACCELERATION", 14)),
     )
 
+    # The elbow rides down with the head: powered off the arm falls to ELBOW_REST
+    # anyway, so lowering it under control now is what makes the next cold boot's
+    # first elbow target a no-op instead of a violent yank (see SHUTDOWN_REST_POSE).
     servos.move_to(
-        {3: VISOR_CLOSED, 0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN},
+        {3: VISOR_CLOSED, 0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN, 4: ELBOW_REST},
         step_us=50, step_delay=0.012,
     )
     # Freeze the pose the INSTANT the rest targets are commanded — before the

@@ -377,8 +377,11 @@ class BodyBeatAnimationTest(unittest.TestCase):
             animations.shutdown()
 
         stop_breathing.assert_called_once()
-        # Visor, neck, head-lift and head-tilt all droop together in ONE move_to
-        # so the droid powers down in a single motion (not visor→tilt→lift).
+        # Visor, neck, head-lift, head-tilt and the elbow all droop together in ONE
+        # move_to so the droid powers down in a single motion (not visor→tilt→lift).
+        # The elbow lands at ELBOW_REST — the bottom of its travel, where the limp
+        # arm hangs once the power is off — so the next cold boot's first elbow
+        # target matches the arm instead of yanking it up.
         self.assertEqual(len(moves), 1)
         self.assertEqual(
             moves[0],
@@ -387,6 +390,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
                 0: expected_midpoint,
                 1: animations.HEADLIFT_FLOOR,
                 2: animations.HEADTILT_DOWN,
+                4: animations.ELBOW_REST,
             },
         )
         # Shutdown fades the LEDs out (lifelike power-down), not an instant off.
@@ -481,6 +485,64 @@ class BodyBeatAnimationTest(unittest.TestCase):
             with mock.patch.object(animations, "_run_body_beat", return_value=True) as run:
                 self.assertTrue(animations.play_body_beat("eye_roll", spontaneous=False, async_=False))
                 run.assert_called_once()
+
+
+class ElbowUnpoweredRestTest(unittest.TestCase):
+    """The elbow starts and ends the session where gravity leaves it.
+
+    Powered down the servos go limp and the arm's weight drags the elbow to the
+    bottom of its travel. The Maestro ramps the pulse it sends, not the shaft it
+    can't see, so the FIRST target after a cold boot is chased at full torque
+    from wherever the arm actually fell — the violent startup jerk (field
+    2026-08-22). Both ends of the fix are asserted here.
+    """
+
+    def test_rest_is_the_bottom_of_the_elbows_travel(self):
+        import config
+        from sequences import animations
+
+        cfg = config.SERVO_CHANNELS["elbow"]
+        # Higher qus = arm hanging lower, so the resting end is the MAX limit.
+        self.assertEqual(animations.ELBOW_REST, int(cfg["max"]))
+        self.assertEqual(animations.ELBOW_REST, animations.ELBOW_DOWN)
+        self.assertEqual(animations.SHUTDOWN_REST_POSE[4], animations.ELBOW_REST)
+
+    def test_connect_commands_the_rest_pose_before_anything_else_moves(self):
+        import config
+        from hardware import servos
+
+        class FakeSerial:
+            is_open = True
+
+            def __init__(self):
+                self.writes = []
+
+            def write(self, raw):
+                self.writes.append(bytes(raw))
+
+            def close(self):
+                self.is_open = False
+
+        fake = FakeSerial()
+        with (
+            mock.patch.object(servos, "SERVOS_ENABLED", True),
+            mock.patch.object(servos, "_open_serial_with_retries", return_value=fake),
+            mock.patch.object(servos, "_record_servo_positions"),
+        ):
+            self.assertTrue(servos.connect())
+
+        targets = [
+            (raw[1], raw[2] | (raw[3] << 7))
+            for raw in fake.writes
+            if raw[0] == 0x84   # Set Target
+        ]
+        # Exactly one target on connect: the elbow, at gravity's own position. Any
+        # other first target would be a snap from wherever the limp arm fell.
+        self.assertEqual(targets, [(4, config.servo_rest_position("elbow"))])
+        # ...and it lands AFTER the speed/acceleration profile, so every later move
+        # is ramped from a position the Maestro and the arm agree on.
+        self.assertEqual(fake.writes[-1][0], 0x84)
+        self.assertEqual(servos._commanded_positions[4], config.servo_rest_position("elbow"))
 
 
 if __name__ == "__main__":

@@ -2619,6 +2619,14 @@ SERVO_APPLY_STARTUP_MOTION_PROFILE = True
 SERVO_DEFAULT_SPEED = 40
 SERVO_DEFAULT_ACCELERATION = 8
 
+# On connect, command the unpowered-rest position (SERVO_CHANNELS[...]["rest"])
+# on every channel that declares one, BEFORE any behaviour thread can target it.
+# The Maestro's speed limit ramps the commanded pulse, not the servo's actual
+# shaft: after a cold boot the shaft is wherever gravity left it, so the first
+# target — whatever it is — is chased at full torque. Asserting gravity's own
+# pose first makes that first move a no-op. Set False only to debug.
+SERVO_ASSERT_STARTUP_REST_POSE = True
+
 # Brisk profile applied to the head channels at the start of animations.shutdown()
 # so the droop to the rest pose isn't stranded by a stale slow profile (listening
 # 22/6, adaptive-rest 35/6) left behind by the last subsystem. Keep these high
@@ -2679,6 +2687,12 @@ SERVO_LISTENING_MAX_SECS = 20.0       # safety: auto-stop if a stop is ever miss
 # The .env file wins over inherited shell env for servo safety keys, and invalid
 # or incomplete servo limit values raise at startup instead of falling back.
 # headtilt is inverted: low values = head high, high values = head low
+#
+# An optional "rest" is where the channel ends up when the robot is UNPOWERED and
+# the servo goes limp — gravity's answer, not a pose we choose. It is the FIRST
+# target commanded after a cold connect and the pose shutdown() parks in; see
+# servos._assert_startup_rest_pose_locked() for why that matters. Channels the
+# droid's own weight doesn't move omit it and rest at neutral.
 SERVO_CHANNELS = {
     "neck":     {"ch": 0, "min": 1984, "max": 8960, "neutral": 5472},
     # Neutral retuned 6000 -> 3600 qus (900 us) on 2026-08-19: the lift gear
@@ -2688,7 +2702,18 @@ SERVO_CHANNELS = {
     "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 3600},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
     "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — 6000 hid part of the camera
-    "elbow":    {"ch": 4, "min": 6300, "max": 7560, "neutral": 6720},
+    # max retuned 7560 -> 7424 on 2026-08-22: the MAESTRO's own stored channel-4
+    # limit is 1856 us, so it silently clipped every target above 7424 (measured
+    # on the robot: commanding 7560 or 7500 both read back 7424, while 6300 at
+    # the other end is honoured exactly). 7560 was a number only the software
+    # believed. rest = that same 7424, the BOTTOM of the elbow's travel (higher
+    # qus = arm hanging lower; min = arm folded up, see animations.ELBOW_UP /
+    # ELBOW_DOWN). Powered down the servo is limp and the forearm's weight drags
+    # the elbow to this end anyway, so parking and starting here is the only
+    # value that doesn't make the servo yank the fallen arm somewhere else the
+    # instant it gets a pulse (field 2026-08-22: a violent snap on every cold
+    # boot). Raise both together if the Maestro's stored limit is ever widened.
+    "elbow":    {"ch": 4, "min": 6300, "max": 7424, "neutral": 6720, "rest": 7424},
     "hand":     {"ch": 5, "min": 1984, "max": 9984, "neutral": 6000},
     "pokerarm": {"ch": 6, "min": 3968, "max": 8000, "neutral": 6000},
     "heroarm":  {"ch": 7, "min": 3968, "max": 8000, "neutral": 6000},
@@ -2744,12 +2769,27 @@ def _apply_servo_env_overrides() -> None:
         cfg["min"] = _servo_env_us_to_qus(min_key, cfg["min"])
         cfg["max"] = _servo_env_us_to_qus(max_key, cfg["max"])
         cfg["neutral"] = _servo_env_us_to_qus(f"{prefix}_NEUTRAL_US", cfg["neutral"])
+        if "rest" in cfg:
+            cfg["rest"] = _servo_env_us_to_qus(f"{prefix}_REST_US", cfg["rest"])
         if cfg["min"] > cfg["max"]:
             cfg["min"], cfg["max"] = cfg["max"], cfg["min"]
         cfg["neutral"] = max(cfg["min"], min(cfg["max"], cfg["neutral"]))
+        if "rest" in cfg:
+            cfg["rest"] = max(cfg["min"], min(cfg["max"], cfg["rest"]))
 
 
 _apply_servo_env_overrides()
+
+
+def servo_rest_position(name: str) -> int:
+    """Where a channel sits with the robot powered down (gravity's pose).
+
+    Channels that carry no weight — everything but the elbow today — have no
+    "rest" of their own and simply rest at neutral.
+    """
+    cfg = SERVO_CHANNELS[name]
+    return int(cfg.get("rest", cfg["neutral"]))
+
 
 HEAD_CHANNELS = [0, 1, 2, 3]
 ARM_CHANNELS  = [4, 5, 6, 7]

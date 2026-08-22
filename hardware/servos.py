@@ -33,7 +33,9 @@ _CHANNEL_TO_NAME = {
 }
 _ALL_CHANNELS = sorted(_CHANNEL_TO_NAME)
 _commanded_positions: dict[int, int] = {
-    cfg["ch"]: cfg["neutral"]
+    # A channel with an unpowered "rest" (the elbow) starts there, not at neutral:
+    # with the robot powered off that is physically where it is.
+    cfg["ch"]: cfg.get("rest", cfg["neutral"])
     for cfg in config.SERVO_CHANNELS.values()
 }
 _last_reconnect_attempt_at = 0.0
@@ -437,11 +439,44 @@ def _apply_startup_motion_profile_locked() -> None:
         _send_command_locked(_encode(_CMD_SET_SPEED, channel, max(0, default_speed)))
 
 
+def _assert_startup_rest_pose_locked() -> dict[int, int]:
+    """Command gravity's own pose on weight-loaded channels, first thing.
+
+    With the robot fully powered off every servo goes limp, and the arm's weight
+    drags the ELBOW to the bottom of its travel (config's "rest"). The Maestro's
+    speed/acceleration limits ramp the pulse it SENDS, not the shaft it can't
+    see: after a cold boot the channel is off (a position read returns 0), so
+    whatever target is commanded first is a step change the servo chases at full
+    torque, from wherever the arm actually fell. That is the violent elbow jerk
+    on startup (field 2026-08-22).
+
+    So the first thing we ever say to that channel is "stay where you are."
+    Every later move then ramps from a position the Maestro and the physical arm
+    agree on. Returns the pose commanded, for the caller to mirror into
+    proprioception outside the lock.
+    """
+    pose = {
+        int(cfg["ch"]): _clamp(int(cfg["ch"]), int(cfg["rest"]))
+        for cfg in config.SERVO_CHANNELS.values()
+        if "rest" in cfg
+    }
+    for channel, position in pose.items():
+        _send_set_target(channel, position)
+    _remember_positions(pose)
+    if pose:
+        _log.info(
+            "Startup rest pose asserted (unpowered-rest channels): %s",
+            ", ".join(f"{_CHANNEL_TO_NAME.get(ch, ch)}={pos}" for ch, pos in sorted(pose.items())),
+        )
+    return pose
+
+
 def connect() -> bool:
     global _ser, _last_reconnect_attempt_at
     if not SERVOS_ENABLED:
         _log.debug("SERVOS_ENABLED=False — skipping connect")
         return False
+    rest_pose: dict[int, int] = {}
     with _lock:
         _ser = _open_serial_with_retries()
         if _ser is None:
@@ -449,7 +484,11 @@ def connect() -> bool:
             return False
         if bool(getattr(config, "SERVO_APPLY_STARTUP_MOTION_PROFILE", True)):
             _apply_startup_motion_profile_locked()
-        return True
+        if bool(getattr(config, "SERVO_ASSERT_STARTUP_REST_POSE", True)):
+            rest_pose = _assert_startup_rest_pose_locked()
+    if rest_pose:
+        _record_servo_positions(rest_pose)
+    return True
 
 
 def disconnect() -> None:

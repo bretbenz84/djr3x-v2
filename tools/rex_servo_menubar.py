@@ -69,7 +69,7 @@ _SERVO_DEFAULTS: dict[str, dict[str, int]] = {
     "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 6000},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
     "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — 6000 hid part of the camera
-    "elbow":    {"ch": 4, "min": 6300, "max": 7560, "neutral": 6720},
+    "elbow":    {"ch": 4, "min": 6300, "max": 7424, "neutral": 6720},  # 7424 = the Maestro's own stored channel limit (1856 us)
     "hand":     {"ch": 5, "min": 1984, "max": 9984, "neutral": 6000},
     "pokerarm": {"ch": 6, "min": 3968, "max": 8000, "neutral": 6000},
     "heroarm":  {"ch": 7, "min": 3968, "max": 8000, "neutral": 6000},
