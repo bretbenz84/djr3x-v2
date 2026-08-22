@@ -18,6 +18,7 @@ import config
 from hardware.compass import (
     Calibration,
     Compass,
+    calibration_coverage_ok,
     accel_to_pitch_roll,
     alpha_for_current,
     ang_diff,
@@ -154,6 +155,43 @@ class TestMagnitudeGate(unittest.TestCase):
 
     def test_uncalibrated_passes_everything(self):
         self.assertTrue(field_magnitude_ok(9e9, 0.0, 0.0, Calibration(), tolerance=0.25))
+
+
+class TestCalibrationCoverage(unittest.TestCase):
+    """A calibration is only as good as the sweep that produced it."""
+
+    def test_a_robot_that_never_moved_is_refused(self):
+        # Measured 2026-08-22: a stationary 3 s run produced offsets equal to
+        # wherever the sensor was parked and an ambient |B| of 3.0 counts against a
+        # true field of ~231 — and the lopsided-axis ratio test PASSED it, because
+        # three evenly tiny spans are not lopsided. Installing that is worse than
+        # refusing: the compass then reads plausibly and points nowhere.
+        ok, note = calibration_coverage_ok(
+            Calibration(field_norm=3.0, loaded=True), (6.0, 8.0, 7.0))
+        self.assertFalse(ok)
+        self.assertIn("3.0", note)
+        self.assertIn("rotated", note)
+
+    def test_a_real_sweep_passes_clean(self):
+        ok, note = calibration_coverage_ok(
+            Calibration(field_norm=231.0, loaded=True), (460.0, 440.0, 420.0))
+        self.assertTrue(ok)
+        self.assertEqual(note, "")
+
+    def test_a_flat_only_spin_passes_with_a_warning(self):
+        # Z barely moved: still usable, but say so.
+        ok, note = calibration_coverage_ok(
+            Calibration(field_norm=231.0, loaded=True), (460.0, 440.0, 30.0))
+        self.assertTrue(ok)
+        self.assertIn("lopsided", note)
+
+    def test_the_floor_is_configurable(self):
+        from unittest import mock
+        with mock.patch.object(config, "COMPASS_CAL_MIN_FIELD_COUNTS", 500.0,
+                               create=True):
+            ok, _ = calibration_coverage_ok(
+                Calibration(field_norm=231.0, loaded=True), (460.0, 440.0, 420.0))
+        self.assertFalse(ok)
 
 
 class TestAlphaVsCurrent(unittest.TestCase):

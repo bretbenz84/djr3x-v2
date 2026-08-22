@@ -9726,6 +9726,10 @@ COMPASS_FLIP_Z = _env_bool("COMPASS_FLIP_Z", False)
 # (electronics), so the "low" threshold sits above idle, not at zero.
 COMPASS_ALPHA_MAX = _env_float("COMPASS_ALPHA_MAX", 0.05, min_value=0.0, max_value=1.0)   # full trust at/below low current
 COMPASS_ALPHA_MIN = _env_float("COMPASS_ALPHA_MIN", 0.0, min_value=0.0, max_value=1.0)    # trust at/above high current
+# A calibration whose ambient field lands below this has not measured the Earth's
+# field — it has measured sensor noise from a robot that never rotated. Refuse it:
+# an installed bad calibration reads plausibly and points nowhere.
+COMPASS_CAL_MIN_FIELD_COUNTS = 50.0
 COMPASS_CURRENT_LOW_MA = _env_int("COMPASS_CURRENT_LOW_MA", 1600, min_value=0, max_value=50000)    # <= this -> ALPHA_MAX
 COMPASS_CURRENT_HIGH_MA = _env_int("COMPASS_CURRENT_HIGH_MA", 2600, min_value=0, max_value=50000)  # >= this -> ALPHA_MIN
 

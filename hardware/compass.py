@@ -200,6 +200,38 @@ def alpha_for_current(ma: "float | None") -> float:
     return a_max + (a_min - a_max) * frac
 
 
+def calibration_coverage_ok(cal: Calibration,
+                           spans: "tuple[float, float, float]") -> "tuple[bool, str]":
+    """Did the figure-8 actually sweep the field? (ok, reason).
+
+    The lopsided-axis check alone cannot catch the worst case. A robot that never
+    moved AT ALL produces three tiny, EVENLY tiny spans — so the ratio test passes
+    and the tool writes a confident calibration whose offsets are just wherever the
+    sensor happened to be sitting. Measured 2026-08-22: a stationary 3 s run wrote
+    offsets [-193, -2024, -1450] and an ambient |B| of 3.0 counts against a true
+    field of ~231, with no warning of any kind. Silently installing that is worse
+    than refusing: the compass then reads plausibly and points nowhere.
+
+    The absolute test is the ambient field itself. Earth's field is a fixed physical
+    quantity — on this sensor and range it lands in the low hundreds of counts — so
+    a calibration that concludes the ambient field is a handful of counts has not
+    measured the field, it has measured sensor noise.
+    """
+    floor = float(getattr(config, "COMPASS_CAL_MIN_FIELD_COUNTS", 50.0))
+    if cal.field_norm < floor:
+        return False, (
+            f"ambient |B| came out {cal.field_norm:.1f} counts, far below the "
+            f"{floor:.0f} a real Earth-field sweep produces — the robot cannot have "
+            f"rotated much. Nothing was written."
+        )
+    if max(spans) > 0 and min(spans) < 0.25 * max(spans):
+        return True, (
+            f"axis spans {['%.0f' % v for v in spans]} are lopsided — one axis saw "
+            f"little rotation. Consider re-running with more tilt."
+        )
+    return True, ""
+
+
 def field_magnitude_ok(mx: float, my: float, mz: float, cal: Calibration,
                        tolerance: "float | None" = None) -> bool:
     """Magnitude sanity gate: a calibrated sample whose |B| strays beyond
