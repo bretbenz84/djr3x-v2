@@ -6522,7 +6522,13 @@ SPEAKER_ID_ECAPA_TRUST_ENABLED = _env_bool("SPEAKER_ID_ECAPA_TRUST_ENABLED", Tru
 # not ride the face: Rex challenges ("who's speaking?") or leaves the voice
 # off-screen instead. Confident voice matches and short one-word turns are
 # exempt (a brief "Yep" can slip between the detector's 0.25s samples).
-SPEAKER_ID_MOUTH_STILL_VETO_ENABLED = _env_bool("SPEAKER_ID_MOUTH_STILL_VETO_ENABLED", True)
+# DEFAULT OFF (2026-08-21): a sweep of every log on the robot found the detector
+# has never produced a positive visual-speaker reading (visual_speaker=None in all
+# 16 resolutions that logged it; no scoreboard run ever). An always-empty latch
+# is blindness, not silence — with the veto on it re-routed Bret's turns to JT
+# (2026-08-21 23:30). Re-enable only after a scoreboard session
+# (ACTIVE_SPEAKER_LOG_SCOREBOARD=1) shows lip energy actually moving.
+SPEAKER_ID_MOUTH_STILL_VETO_ENABLED = _env_bool("SPEAKER_ID_MOUTH_STILL_VETO_ENABLED", False)
 # A laugh is not speech: ECAPA embeds speech, so laughter lands ~0.4 on the laugher's
 # OWN print, and the active-speaker detector (VAD-gated jaw articulation) reads "mouth
 # still" through it. Both signals fail for the same reason and compound into an identity

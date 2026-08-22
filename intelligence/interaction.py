@@ -24423,6 +24423,21 @@ def _handle_speech_segment(
                     "%r (raw_best=%s score=%.3f) — off-screen/unknown speaker",
                     ws_name, raw_best_id, speaker_score,
                 )
+                if person_id is not None:
+                    # The match that pointed away was MARGINAL (a confident one took
+                    # voice_over_face above). "Unknown speaker" must not keep the
+                    # near-neighbour's name: field 2026-08-21 23:30, Bret alone at
+                    # 6 ft, face locked, scored 0.593 on JT's one-sample print, and
+                    # this branch flagged him unknown yet the turn still carried
+                    # person_id=4 — so the reply greeted "JT". Same shape as the
+                    # who's-that path below: unknown means unnamed.
+                    _log.info(
+                        "[interaction] person resolution: dropping marginal off-camera "
+                        "name %r (%.3f) — unknown speaker stays unnamed",
+                        person_name, speaker_score,
+                    )
+                    person_id = None
+                    person_name = None
         elif ws_person is not None:
             # Legacy face-wins path (voice-primary disabled).
             ws_pid = _safe_int(ws_person.get("person_db_id"))
