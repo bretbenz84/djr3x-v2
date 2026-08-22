@@ -36,6 +36,54 @@ class ConversationModelTest(unittest.TestCase):
             self.assertEqual(LC.conversation_model(), config.LLM_MODEL)
 
 
+class ToolsAndReasoningEffortTest(unittest.TestCase):
+    """Function tools and a thinking budget cannot ride the same chat-completions
+    request. Measured A/B 2026-08-22 on gpt-5.4-mini, same tools, only the effort
+    changed: "none" returns the tool call, "low" and "medium" both 400 with
+    "Function tools with reasoning_effort are not supported for gpt-5.4-mini in
+    /v1/chat/completions". A 400 is a DEAD TURN, not a degraded answer, so the shim
+    resolves the conflict rather than forwarding a request it knows is refused.
+
+    It has never bitten in the field only because config.LLM_REASONING_EFFORT is
+    already "none" and every tool site inherits it — which is exactly what makes it
+    a trap for the next call site that passes its own."""
+
+    TOOLS = [{"type": "function",
+              "function": {"name": "x", "parameters": {"type": "object"}}}]
+
+    def test_a_tool_call_never_carries_a_thinking_budget(self):
+        for effort in ("low", "medium", "high", "xhigh", "MEDIUM"):
+            params = LC.prepare_chat_params(
+                model="gpt-5.4-mini", messages=[], reasoning_effort=effort,
+                extra={"tools": self.TOOLS})
+            self.assertEqual(params["reasoning_effort"], "none", effort)
+            self.assertEqual(params["tools"], self.TOOLS, effort)
+
+    def test_the_config_default_is_already_the_working_value(self):
+        # If this ever stops being "none", every tool-bearing call in the repo that
+        # does NOT pass its own effort starts failing — the guard above only covers
+        # call sites that pass one explicitly.
+        self.assertEqual(str(config.LLM_REASONING_EFFORT).lower(), "none")
+
+    def test_a_toolless_call_keeps_its_effort(self):
+        params = LC.prepare_chat_params(
+            model="gpt-5.4-mini", messages=[], reasoning_effort="low")
+        self.assertEqual(params["reasoning_effort"], "low")
+
+    def test_an_empty_tools_list_is_not_a_tool_call(self):
+        params = LC.prepare_chat_params(
+            model="gpt-5.4-mini", messages=[], reasoning_effort="low",
+            extra={"tools": []})
+        self.assertEqual(params["reasoning_effort"], "low")
+
+    def test_classic_models_are_untouched(self):
+        params = LC.prepare_chat_params(
+            model="gpt-4o-mini", messages=[], reasoning_effort="low",
+            extra={"tools": self.TOOLS})
+        self.assertNotIn("reasoning_effort", params)
+        self.assertEqual(params["tools"], self.TOOLS)
+
+
 class PrepareParamsClassicTest(unittest.TestCase):
     """gpt-4o-mini path must be a pure pass-through (behavior-neutral wiring)."""
 

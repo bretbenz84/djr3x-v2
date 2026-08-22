@@ -13,8 +13,12 @@ Why a shim is needed — GPT-5 / o-series *reasoning* models change the API cont
     MAY accept it when `reasoning_effort` is "none"/omitted, but that is unconfirmed for
     gpt-5.4-mini — so by default we DROP `temperature` for GPT-5 models, gated on the
     `LLM_GPT5_PASS_TEMPERATURE` config flag for testing.
-  - `reasoning_effort` (none|minimal|low|medium|high|xhigh) and `verbosity`
-    (low|medium|high) are GPT-5-only knobs; injected from args or config when present.
+  - `reasoning_effort` (none|low|medium|high|xhigh — NOT "minimal" on gpt-5.4-mini) and
+    `verbosity` (low|medium|high) are GPT-5-only knobs; injected from args or config
+    when present.
+  - FUNCTION TOOLS and a non-"none" `reasoning_effort` cannot ride the same
+    /v1/chat/completions request: the API rejects the pair outright (400), so a
+    tool-bearing call has its effort forced to "none" here. Measured 2026-08-22.
 
 This module is intentionally PURE + tiny: `prepare_chat_params()` does the translation
 and is fully unit-testable with no network (see tests/test_llm_compat.py); `create()`
@@ -25,9 +29,13 @@ Full plan, hybrid-rollout strategy, and A/B method: docs/gpt-5_4_mini.md.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 import config
+
+
+_log = logging.getLogger(__name__)
 
 
 # Model-name prefixes whose API contract differs from gpt-4o (reasoning models).
@@ -88,6 +96,27 @@ def prepare_chat_params(
         effort = reasoning_effort if reasoning_effort is not None else getattr(
             config, "LLM_REASONING_EFFORT", None
         )
+        # Function tools and a thinking budget are MUTUALLY EXCLUSIVE on this endpoint.
+        # Measured A/B 2026-08-22 on gpt-5.4-mini, same tools, only the effort changed:
+        # "none" returns the tool call; "low" and "medium" both fail the request with
+        #   Function tools with reasoning_effort are not supported for gpt-5.4-mini in
+        #   /v1/chat/completions. To use function tools, use /v1/responses or set
+        #   reasoning_effort to 'none'.
+        # It has never bitten in the field only because config.LLM_REASONING_EFFORT is
+        # already "none", so every tool-bearing call site inherits the one working
+        # value. The moment a call site passes its own effort — as motion_route's first
+        # draft did, reasoning that effort was the determinism knob surviving the
+        # temperature drop — every one of its calls 400s. A 400 here is not a degraded
+        # answer, it is a dead turn, so the shim resolves the conflict the only way the
+        # API allows rather than forwarding a request it knows will be rejected. This
+        # is precisely the per-model parameter incompatibility this module exists for.
+        if effort and str(effort).lower() != "none" and (extra or {}).get("tools"):
+            _log.info(
+                "[llm_compat] dropping reasoning_effort=%r for %s — the request "
+                "carries function tools, which this endpoint refuses to combine "
+                "with a thinking budget", effort, model,
+            )
+            effort = "none"
         if effort:
             params["reasoning_effort"] = effort
         verb_value = verbosity if verbosity is not None else getattr(config, "LLM_VERBOSITY", None)

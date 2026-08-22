@@ -256,15 +256,12 @@ def _create(llm_compat, *, model: str, tools: list, text: str, timeout: float,
         ],
         max_tokens=int(getattr(config, "MOTION_ROUTE_MAX_TOKENS", 400)),
         timeout=timeout,
-        # gpt-5.4-mini is a reasoning model, so llm_compat DROPS temperature — the
-        # plan's "temperature low" is a no-op here. And reasoning_effort is not a
-        # free substitute: anything but "none" makes the API refuse the call outright
-        # when tools are attached ("Function tools with reasoning_effort are not
-        # supported for gpt-5.4-mini in /v1/chat/completions"), measured on the
-        # corpus replay 2026-08-22. The determinism this call needs comes from its
-        # shape instead — no persona, no history, two tools, forced choice.
-        reasoning_effort=str(getattr(config, "MOTION_ROUTE_REASONING_EFFORT", "none")
-                             or "none"),
+        # No reasoning_effort, deliberately. gpt-5.4-mini is a reasoning model so
+        # llm_compat DROPS temperature — the plan's "temperature low" is a no-op —
+        # and effort is not a free substitute: anything but "none" makes the API
+        # refuse a tool-bearing request outright, which llm_compat now enforces at
+        # the chokepoint. The determinism this call needs comes from its SHAPE
+        # instead: no persona, no history, two tools, forced choice.
         extra={"tools": tools,
                "tool_choice": "required" if forced else "auto"},
     )

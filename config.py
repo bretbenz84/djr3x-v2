@@ -5567,6 +5567,10 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # invite classifier is already the imperative-addressed-to-Rex test a tool gate
     # would have to be, and a wander seizes the floor for minutes.
     "motion.turn", "motion.move", "motion.arc", "motion.come",
+    # motion.face (2026-08-22): "turn to face me" turns the base onto the requester's
+    # sensed bearing and stops. Live from the start — one bounded turn, and what it
+    # replaces was a guessed 90 deg swing plus a 45 s realign stand-down.
+    "motion.face",
     # motion.route (docs/motion_route_tool_plan.md) is listed so this tuple stays the
     # honest catalog of the reply call's motion surface, but tool_router.live_actions()
     # drops it unless MOTION_ROUTE_ORGANIC_ENABLED is on — Phase 2 of that plan, held
@@ -5675,6 +5679,9 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     # nothing (the c7ef872 failure, 203 audited "not_in_execute_allowlist" events
     # logged while the wheels turned).
     "motion.route",
+    # motion.face turns the drive base, so it belongs in the base's kill switch for
+    # the same reason every other motion.* key does.
+    "motion.face",
 }
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 # The JSON-prose fallback router -- decide()'s blocking LLM call. OFF since
@@ -9245,12 +9252,12 @@ MOTION_ROUTE_SLOW_PACE_SCALE = 0.5    # "take it slow" -> this fraction of the d
 MOTION_ROUTE_MODEL = ""               # "" = LLM_CONVERSATION_MODEL
 MOTION_ROUTE_TIMEOUT_SECS = 6.0
 MOTION_ROUTE_MAX_TOKENS = 400
-# MUST stay "none" on gpt-5.4-mini via /v1/chat/completions. Measured 2026-08-22 by
-# replaying the corpus: every call 400'd with "Function tools with reasoning_effort
-# are not supported for gpt-5.4-mini in /v1/chat/completions. To use function tools,
-# use /v1/responses or set reasoning_effort to 'none'." This matches the global
-# LLM_REASONING_EFFORT above, which is why the live reply call's tool surface works.
-MOTION_ROUTE_REASONING_EFFORT = "none"
+# (There is deliberately no MOTION_ROUTE_REASONING_EFFORT. Measured 2026-08-22 by
+# replaying the corpus: a tool-bearing chat-completions request on gpt-5.4-mini is
+# refused outright unless the effort is "none" — "To use function tools, use
+# /v1/responses or set reasoning_effort to 'none'." A knob whose only legal value is
+# the default is a knob that exists to be turned wrong, so llm_compat enforces it at
+# the chokepoint instead and this call passes none.)
 MOTION_ROUTE_FORCE_TOOL_CHOICE = True  # required; degrades to "auto" if the SDK refuses
 # Model-initiated motion (this tool and the reply call's motion tools) executes
 # only on a transcript the ASR believed. Low-confidence turns already don't write
@@ -9269,6 +9276,64 @@ MOTION_ROUTE_ACK_LINES = [
     "Plotting that out...",
     "Working out the moves...",
     "Let me map that.",
+]
+
+# ── "Turn to face me" (motion.face, intelligence/motion_agency.face_requester) ──
+# One base turn onto the requester's bearing, then stop. Not come-here: no search,
+# no approach, no drive. Before this existed, "turn to face me" reached the reply
+# call, whose only landing spot was motion.turn — a schema that forces
+# left/right/around, so he GUESSED a side, and the commanded turn then stood down
+# the autonomous realign for 45 s. A coin-flip turn plus suppressing the one
+# behavior that would have faced you is worse than either doing it or declining.
+#
+# The prefix is MOTION_FACE_ME_*, not MOTION_FACE_*: that namespace already belongs
+# to the autonomous realign above, and sharing it would tune two behaviors with one
+# knob.
+#
+# Bearing: CAMERA FIRST and identity-resolved (_come_bearing_deg = neck yaw + the
+# face's offset in frame, + = Rex's RIGHT), radar only as a prior when the camera
+# has nobody. Radar reports a body, never WHOSE — so more than one plausible return
+# is a refusal, not a best guess.
+MOTION_FACE_ME_ENABLED = True
+MOTION_FACE_ME_CENTERED_DEG = 12.0    # inside this he says he's already facing you
+                                      # rather than turning. This dead-band runs
+                                      # BEFORE _come_turn_for_bearing, whose
+                                      # MOTION_FACE_TURN_MIN_DEG floor maps a 0 deg
+                                      # bearing to a +10 deg turn and a +3 to a -10.
+MOTION_FACE_ME_TURN_RATE_DEG_S = 40.0 # unhurried; this is a social gesture
+# The camera lane inherits MOTION_FACE_TURN_MAX_DEG (60) through
+# _come_turn_for_bearing, which is right: a camera bearing can only ever be inside
+# the frame. The RADAR lane gets its own, wider cap — someone standing behind him
+# is the single most likely reason to say "turn to face me", and 60 would leave him
+# facing a wall while announcing that he'd turned to face you.
+MOTION_FACE_ME_TURN_MAX_DEG = 180.0
+MOTION_FACE_ME_RADAR_WINDOW_SECS = 2.5
+MOTION_FACE_ME_QUIET_SECS = 3.0       # no maneuver of his own inside this, or the
+                                      # bearings are smeared across his own rotation
+MOTION_FACE_ME_MIN_CONFIDENCE = 0.30
+MOTION_FACE_ME_RANGE_MIN_M = 0.9      # above the shell echo the firmware's own
+                                      # RADAR_RANGE_MIN_M (0.60, set from a measured
+                                      # 0.47 m self-return) leaks; a ghost present in
+                                      # every frame scores max hits and sorts FIRST
+MOTION_FACE_ME_RANGE_MAX_M = 5.0
+MOTION_FACE_ME_REQUIRE_TRUSTED_TRANSCRIPT = True   # mirrors MOTION_ROUTE_* above
+# Refusals, kept SPECIFIC about the ignorance. "I don't know where you are" is a
+# recoverable answer a human can act on; a confident turn to the bookshelf is not.
+MOTION_FACE_ME_NO_BEARING_LINES = [
+    "I can't work out where you are from here. Say something else and let me get a look at you.",
+    "I've lost track of where you're standing — talk to me again so I can find you.",
+]
+MOTION_FACE_ME_AMBIGUOUS_LINES = [
+    "I've got a couple of somethings in the room and no idea which one is you.",
+    "There's more than one shape in here. Which one's you?",
+]
+MOTION_FACE_ME_ALREADY_LINES = [
+    "I'm already pointed right at you.",
+    "Already facing you.",
+]
+MOTION_FACE_ME_TURNING_LINES = [
+    "Turning to face you.",
+    "Coming around to you.",
 ]
 
 # ── Autonomous motion (intelligence/motion_agency.py) ─────────────────────────

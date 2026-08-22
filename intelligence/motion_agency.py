@@ -1700,6 +1700,238 @@ def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
 # the answer latch is trying to capture.
 
 
+def face_requester(person_id: "int | None" = None) -> "tuple[float | None, str]":
+    """"Turn to face me" — one base turn onto the requester's bearing, then stop.
+
+    Returns ``(deg_issued, reason)``. ``deg_issued`` is None whenever no turn was
+    sent; ``reason`` is a machine key the caller maps onto a spoken line:
+    ``turned`` / ``already_facing`` / ``no_bearing`` / ``ambiguous`` /
+    ``come_active`` / ``busy`` / ``traction`` / ``suppressed`` / ``disabled``.
+
+    ONE SHOT, not an errand. The come-here machinery this borrows from is a
+    multi-tick search: turn, dwell, sweep, adopt, approach. "Face me" excludes all
+    of that by construction — there is no search, because if he cannot work out
+    where you are the honest answer is to SAY so, and the human is right there to
+    say something else. So this is a synchronous function on the interaction
+    thread, the shape _handle_router_motion_action already uses to drive the base.
+
+    ONE NUMBER. `_come_bearing_deg` is this codebase's single answer to "which way
+    is that person off my nose", complete with the 2026-08-11 calibration that cost
+    a field session (neck half-span 45 deg, camera half-frame 25 deg; the old math
+    ran both through one 60 deg constant, overstated every bearing 1.5-2.4x, and
+    swung him past the owner and out of view). Nothing here derives a second one.
+
+    The autonomous realign is deliberately NOT reused. It answers a different
+    question — "is tracking failing?" — off a neck-only angle, and in the exact
+    case this function serves (they are speaking, the head is on them, the face is
+    centred) its `frac` is ~0, which `_turn_degrees_for` floors into a 10 degree
+    turn AWAY from the person. Same floor trap as `_come_turn_for_bearing`; see the
+    dead-band below.
+    """
+    if not _flag("MOTION_FACE_ME_ENABLED", True):
+        return None, "disabled"
+    if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
+        return None, "suppressed"
+    now = time.monotonic()
+    # A running come-here STRICTLY CONTAINS a face-turn: it is already aligning on
+    # the way. Interrupting it to turn would restart its search from a heading it
+    # did not choose.
+    if requested_come_active():
+        return None, "come_active"
+    try:
+        from intelligence import exploration
+        if exploration.active():
+            return None, "suppressed"
+    except Exception:
+        pass
+    try:
+        if motion.state() != "idle":
+            return None, "busy"
+    except Exception:
+        return None, "busy"
+    if _traction_lost(now):
+        return None, "traction"
+    # An explicit command lifts a standing "don't move" and the traction latch, the
+    # same way come-here does: the human has plainly just asked him to move.
+    release_user_hold("face request")
+    note_traction_recovered("face request")
+
+    bearing, source = _requester_bearing_deg(person_id, now)
+    if bearing is None:
+        return None, source                    # "no_bearing" or "ambiguous"
+
+    if source == "camera":
+        # Dead-band BEFORE the conversion, never after. _come_turn_for_bearing
+        # carries a MOTION_FACE_TURN_MIN_DEG floor so a 3 degree residual does not
+        # reach the wheels as a twitch — which means it maps a 0 degree bearing to a
+        # +10 degree turn and a +3 to a -10 (measured on this checkout). On a
+        # commanded face-me that floor would turn "you are already looking at me"
+        # into a 10 degree swing off the person.
+        if abs(bearing) < _num("MOTION_FACE_ME_CENTERED_DEG", 12.0):
+            return None, "already_facing"
+        deg = _come_turn_for_bearing(bearing)  # + = LEFT/CCW; the ONE negation
+    else:
+        # RADAR bearings are ALREADY in the turn frame (+ = left/CCW) and go in raw
+        # — the camera's + = Rex's RIGHT is the frame that needs negating. Sending a
+        # radar bearing through _come_turn_for_bearing would mirror it: he would
+        # turn exactly as far the wrong way. (docs/radar-bearing-prior-spec.md;
+        # _step_come_radar and _maybe_radar_orient both pass it through unnegated.)
+        if abs(bearing) < _num("MOTION_FACE_ME_CENTERED_DEG", 12.0):
+            return None, "already_facing"
+        max_deg = _num("MOTION_FACE_ME_TURN_MAX_DEG", 180.0)
+        deg = max(-max_deg, min(max_deg, _wrap180(bearing)))
+
+    # Stamp this as a VOICE-commanded maneuver before issuing it. Two things hang
+    # off that stamp, and both were missing:
+    #   * motion_controller._suppressed only speaks its refusal ("Can't swing that
+    #     way — I'd clip something behind me") when a human asked out loud. Without
+    #     the stamp a swing-blocked face-me is silent at BOTH ends — the controller
+    #     stays quiet because it reads the turn as autonomous, and this function
+    #     returns "suppressed", which the caller maps to no line. Turning toward
+    #     someone BEHIND him is the single likeliest swing block there is, so that
+    #     is the silent no-op the whole _suppressed mechanism exists to prevent.
+    #   * the drive whir plays at the autonomous half-volume instead of the
+    #     commanded overlay, so the confirmation talks over it.
+    motion_controller.note_user_commanded_motion()
+    seq = motion_controller.turn(deg, rate=_num("MOTION_FACE_ME_TURN_RATE_DEG_S", 40.0))
+    if seq is None:
+        # Refused downstream — the swing check, a ToF block, the charger, manual
+        # override. motion_controller has now spoken the why for the cases it can
+        # explain; say nothing more rather than announcing a turn that never went.
+        return None, "suppressed"
+    _state["last_turn_at"] = now
+    _state["face_me_at"] = now
+    _log.info("[motion_agency] face request: %s bearing %+.0f deg -> turn %+.0f deg "
+              "(requester=%s)", source, bearing, deg, person_id)
+    return deg, "turned"
+
+
+def _requester_bearing_deg(person_id: "int | None",
+                           now: float) -> "tuple[float | None, str]":
+    """(bearing, source) for the requester, or (None, refusal-reason).
+
+    CAMERA FIRST and identity-resolved: it is the only source that knows WHICH
+    person it is looking at. Radar is a prior, not a detector — it reports that a
+    body is at a bearing, never whose (hardware/radar.py, the spec doc). With two
+    people in the room a radar-first face-me would turn to whoever is more
+    reflective, which is the JT-on-the-couch failure the come rework fixed.
+    """
+    try:
+        from world_state import world_state
+        snapshot = world_state.snapshot()
+    except Exception as exc:
+        _log.debug("face request: world snapshot unavailable: %s", exc)
+        snapshot = {}
+
+    # person_id None = an unidentified voice. It must NOT widen to "any known
+    # face": that is exactly how "come here" used to deliver Rex to whoever
+    # happened to be on camera instead of whoever called him (owner spec
+    # 2026-08-11). An unknown requester goes straight to the radar prior.
+    locked = _tracked_person(snapshot, person_id) if person_id is not None else None
+    person = locked or (_visible_known_person(snapshot, person_id)
+                        if person_id is not None else None)
+    if person is not None:
+        head_locked = locked is not None
+        if not _neck_term_trustworthy():
+            # Something other than face tracking put the head where it is, so the
+            # neck yaw is a pose, not a bearing. The face's offset within the frame
+            # still is one — it is measured against the frame, not the body — as
+            # long as the neck is near centre so frame centre IS the nose.
+            if _neck_parked_centre():
+                frac = _face_offset_fraction(person)
+                if frac is not None:
+                    return frac * _num("MOTION_COME_CAM_HALF_FOV_DEG", 25.0), "camera"
+        else:
+            bearing = _come_bearing_deg(person, head_locked=head_locked)
+            if bearing is not None:
+                return bearing, "camera"
+
+    bearing = _radar_requester_bearing(now)
+    if bearing is not None:
+        return bearing, "radar"
+    return None, _state.pop("face_me_radar_reason", None) or "no_bearing"
+
+
+def _neck_term_trustworthy() -> bool:
+    """Whether the neck's yaw currently encodes a FACE bearing rather than a pose.
+
+    The neck is a bearing only when face tracking put it there. Everything else
+    that steers it — an idle wander waypoint, a speaker-gaze room scan, a directed
+    look, a come dwell sweep, a gamepad — leaves a number that reads exactly like a
+    bearing and is not one.
+
+    Listening motion is deliberately absent from this list: it is the NORMAL state
+    at the moment a command lands, and its amplitude (SERVO_LISTENING_NECK_QUS) is
+    a sway of ~1.4 deg about a frozen face-tracking baseline, well inside the park
+    tolerance. Excluding it would refuse nearly every real face-me.
+    """
+    try:
+        if _wander_owns_neck():
+            return False
+        from hardware import servos
+        if servos.speech_motion_active() or servos.manual_override_enabled():
+            return False
+        if _come_gaze_busy():
+            return False
+        from intelligence import consciousness
+        if consciousness.directed_gaze_hold_active():
+            return False
+        from world_state import world_state
+        tracking = (world_state.get("self_state") or {}).get("face_tracking") or {}
+        if tracking.get("searching"):
+            return False     # a scan parks the neck at a GUESS, not on a face
+    except Exception as exc:
+        _log.debug("face request: neck trust check failed: %s", exc)
+    return True
+
+
+def _radar_requester_bearing(now: float) -> "float | None":
+    """A single unambiguous radar body's bearing (+ = left/CCW), or None.
+
+    AMBIGUITY IS NOT A BEARING. The ring returns no identity and no track id, and
+    several returns at once is the ordinary case in a furnished room — the
+    (-hits, -confidence) ranking answers "which return is most solidly a thing",
+    which favours furniture over a person who moved. Come-here can afford to take
+    the best guess because it then LOOKS, and marks the bearing spent if nobody is
+    there (field 2026-08-19: three +60 deg chases of a rear return in three
+    minutes, each spinning him away from where the owner sat). A one-shot face-me
+    has no look-and-retry, so more than one plausible body means say so.
+    """
+    _state.pop("face_me_radar_reason", None)
+    quiet = _num("MOTION_FACE_ME_QUIET_SECS", 3.0)
+    busy_at = max(float(_state.get("last_turn_at") or 0.0),
+                  float(_state.get("last_approach_at") or 0.0),
+                  float(_state.get("last_flinch_at") or 0.0))
+    if (now - busy_at) < quiet:
+        return None          # bearings smear across our own rotation
+    window = _num("MOTION_FACE_ME_RADAR_WINDOW_SECS", 2.5)
+    bodies, ready = _radar_bodies(now, since=now - window, window=window)
+    if not ready or not bodies:
+        return None
+    min_conf = _num("MOTION_FACE_ME_MIN_CONFIDENCE", 0.30)
+    # The near floor is above the shell echo the firmware's own range gate leaks
+    # (RADAR_RANGE_MIN_M 0.60 was set from a measured 0.47 m self-return); a ghost
+    # that is present in every frame scores maximum hits and sorts FIRST.
+    near = _num("MOTION_FACE_ME_RANGE_MIN_M", 0.9)
+    far = _num("MOTION_FACE_ME_RANGE_MAX_M", 5.0)
+    plausible = [
+        b for b in bodies
+        if float(b.get("confidence") or 0.0) >= min_conf
+        and near <= float(b.get("range_m") or 0.0) <= far
+    ]
+    if not plausible:
+        return None
+    if len(plausible) > 1:
+        _log.info("[motion_agency] face request: %d plausible bodies (%s) — "
+                  "radar cannot say which is the requester",
+                  len(plausible),
+                  ", ".join(f"{b['bearing_deg']:+.0f}@{b['range_m']:.1f}m"
+                            for b in plausible[:4]))
+        _state["face_me_radar_reason"] = "ambiguous"
+        return None
+    return _wrap180(float(plausible[0]["bearing_deg"]))
+
+
 def request_object_step(camera_yaw_deg: float, label: str = "",
                         source: str = "") -> bool:
     """Arm a step toward an asked-about object. ``camera_yaw_deg`` is the

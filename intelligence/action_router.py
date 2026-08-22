@@ -305,6 +305,15 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "motion.face",
+        "motion",
+        "User asks Rex to physically ROTATE THE DRIVE BASE to point at the person "
+        "speaking — 'turn to face me', 'face me', 'turn towards me', 'point yourself "
+        "at me'. He turns to face them and STOPS: no driving, no approach (that is "
+        "motion.come). Not a head/look gesture, and never a figure of speech.",
+        executable=True,
+    ),
+    ActionSpec(
         "web.search",
         "web",
         "User asks about news, current events, or anything needing live "
@@ -3153,7 +3162,40 @@ _MOTION_FIGURATIVE_RE = re.compile(
     r"\bgo\s+(?:right\s+)?ahead\b|"
     r"\bhead\s+out\b|"
     r"\bturn(?:ed|s|ing)?\s+(?:out|into|down)\b|"
-    r"\bface\s+(?:the\s+music|the\s+facts|reality|it)\b|"
+    # "face" is the widest verb in the positive test — bare, with no object
+    # restriction — because "face me" is a real drive command. That made every idiom
+    # sharing the verb an admission: measured 2026-08-22 on this checkout, 14 of 23
+    # figurative "face" phrasings cleared the gate, including "face your fears",
+    # "face the consequences", "face off", "face palm" and "face me in chess". The
+    # four objects guarded before ("the music", "the facts", "reality", "it") were
+    # the ones someone had already been bitten by.
+    #
+    # "face me <preposition>" is the load-bearing clause: bare "face me" IS the
+    # command and "face me in chess" is not, and the only thing that separates them
+    # is the tail. Deliberately NOT blocked: "face the other way", "face forward",
+    # "face away", "face my way" — those are literal drive commands, and the
+    # possessive clause excepts the direction nouns for the same reason.
+    r"\bface\s+(?:the\s+)?(?:music|facts?|reality|truth|day|consequences?|"
+    r"challenge|problem|world|nation|heat|future|past|public|"
+    r"fears?|demons?|critics?)\b|"
+    r"\bface\s+(?:it|off|palm)\b|"
+    r"\bface\s+up\s+to\b|"
+    r"\bface\s+(?:your|his|her|their|my|our)\s+"
+    r"(?!way\b|direction\b|side\b|seat\b|front\b|left\b|right\b|back\b|rear\b)\w+|"
+    # A CONTEST, not a bare preposition. The first draft of this clause listed
+    # in|on|at|like|for|again|over|one|another|down|head, which reads "face me
+    # &lt;anything&gt;" as an idiom — and measured on the phrasings a human actually uses
+    # it refused 14 of 14 real commands, "face me again" among them. That is the
+    # likeliest utterance of the whole feature: he turns a little short and you say
+    # it. Worse, _MOTION_FIGURATIVE_RE is searched over the WHOLE utterance for
+    # EVERY motion action, so "come here and face me for a sec" stopped being a
+    # come command too. What makes "face me in chess" figurative is the arena, not
+    # the preposition.
+    r"\bface\s+(?:me|us|him|her|them)\s+(?:in|on|at)\s+(?:the\s+|a\s+|an\s+)?"
+    r"(?:chess|checkers|court|ring|field|pitch|rink|arena|octagon|cage|"
+    r"game|match|tournament|final|finals|playoffs?|series|league|season|"
+    r"debate|election|race|battle|war|contest|duel|showdown|primary)\b|"
+    r"\bface\s+(?:me|us|him|her|them)\s+like\s+a\b|"
     r"\blet'?s\s+roll\b|\broll\s+with\s+it\b"
     r")",
     re.I,
@@ -3170,6 +3212,10 @@ _MOTION_TOOL_ACTIONS = frozenset({
     # would veto exactly the disfluent real routes the rescue exists for
     # ("Three feet, and turn a little bit right." leads with a noun phrase).
     "motion.route",
+    # motion.face rides the same test. Its verb is the widest one in there — bare
+    # "face", no object restriction, because "face me" is the command — so this is
+    # the only thing between "face me in chess" and the wheels.
+    "motion.face",
 })
 
 
@@ -3332,7 +3378,7 @@ def missing_required_evidence_reason(
         explicit = classify_explicit_exploration(cleaned)
         return None if explicit and explicit.action == action else "missing_explore_invite_evidence"
     if action in {"motion.turn", "motion.move", "motion.arc", "motion.come",
-                  "motion.stop", "motion.route"}:
+                  "motion.stop", "motion.route", "motion.face"}:
         # Added 2026-08-13 when the motion.* keys joined ACTION_ROUTER_EXECUTE_ACTIONS:
         # that also un-gated the LLM-decided motion branch in
         # interaction._handle_router_takeover_action, which had been dead ONLY because

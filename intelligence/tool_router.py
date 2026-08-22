@@ -375,6 +375,20 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
             },
         }},
         ["steps"]),
+    # motion.face (2026-08-22). ZERO ARGS, deliberately: the requester comes from
+    # voice ID, never from a model argument. The impersonation carve-out is the
+    # precedent — the reply call once passed target='speaker', the previous turn's
+    # argument, and Rex performed the wrong person. A bearing is worse: a model
+    # asserting one it cannot observe would turn him at a wall while announcing that
+    # he had turned to face you. Whose voice it was is the ONE thing the model is not
+    # asked, because the deterministic layer already knows.
+    "motion.face": (
+        "'Turn to face me' / 'face me' / 'turn towards me' / 'point yourself at me' "
+        "— rotate the drive base to point at whoever is speaking, then STOP. Not "
+        "come here (that drives across the room to them), not a head or eye "
+        "movement, and never a figure of speech ('face the music', 'face your "
+        "fears', 'face me in chess').",
+        {}, []),
     "web.search": (
         "The user asks about news, current events, or anything that needs LIVE "
         "up-to-date information Rex cannot know — wars, elections, scores, "
@@ -448,6 +462,12 @@ _DEFAULT_LIVE_ACTIONS = (
     # forward", "scootch to your right".
     # motion.stop and motion.explore are ABSENT ON PURPOSE — see _TOOL_DEFS above.
     "motion.turn", "motion.move", "motion.arc", "motion.come",
+    # motion.face ships LIVE rather than phase-gated like motion.route below: its
+    # worst case is ONE bounded turn onto a sensed bearing, and the status quo it
+    # replaces is worse than that — "turn to face me" reaching motion.turn, whose
+    # schema forces left/right/around, so he guessed a side and then suppressed
+    # realign for 45 s.
+    "motion.face",
     # motion.route is listed so this tuple stays the honest catalog of the reply
     # call's motion surface, but it is PHASE-GATED in live_actions() below: the
     # organic path is the half of docs/motion_route_tool_plan.md that can invent a

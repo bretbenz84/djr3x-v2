@@ -14147,6 +14147,52 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
             _speak_blocking(full)
         return full or ""
 
+    if action == "motion.face":
+        # "Turn to face me." Its own branch, NOT a member of _MOTION_ACTIONS: that
+        # set dispatches to _handle_router_motion_action, which has no face arm and
+        # returns None — Rex would answer with a classic reply and never move (the
+        # aa9acce failure this file documents three times now).
+        #
+        # The evidence gate is the whole guard here, and it earns its keep: "face" is
+        # the widest verb in the positive test (bare, no object restriction, because
+        # "face me" IS the command), so without the figurative widening that landed
+        # with this action, "face your fears" and "face me in chess" both cleared it.
+        decision = action_router.ActionDecision(
+            action=action, confidence=1.0, args={},
+            requires_confirmation=False, reason="tool_router",
+        )
+        block = _router_execution_block_reason(decision, text=text)
+        if block is None and bool(
+            getattr(config, "MOTION_FACE_ME_REQUIRE_TRUSTED_TRANSCRIPT", True)
+        ) and not _turn_transcript_trusted():
+            block = "low_confidence_transcript"
+        if block:
+            _log.info("[tool_router] motion.face declined: %s", block)
+        elif not motion_controller.available():
+            lines = list(getattr(config, "MOTION_NO_BASE_DENIAL_LINES", []) or [])
+            if lines and bool(getattr(config, "MOTION_NO_BASE_DENIAL_ENABLED", True)):
+                resp = random.choice(lines)
+                _log.info("[tool_router] motion.face with no base connected -> "
+                          "verbal denial: text=%r", text)
+                _speak_blocking(resp, emotion="neutral", log_text=False)
+        else:
+            try:
+                resp, _turned = _handle_face_requester(person_id)
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+                resp = None
+            if resp:
+                _speak_blocking(resp, emotion="neutral", log_text=False)
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        # Declined, or nothing to say — answer as conversation so the turn is never
+        # silent, same tail as the other motion branches.
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action == "motion.route":
         # The ORGANIC path (docs/motion_route_tool_plan.md §7 Phase 2): a route
         # phrased as conversation — "back up a little and then face the other way" —
@@ -20194,7 +20240,7 @@ _MOTION_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.stop", "
 # deliberately excluded: with no base there is nothing to halt, and the word must stay free
 # to mean stop-music / stop-game.
 _MOTION_DRIVE_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.arc",
-                         "motion.route"}
+                         "motion.route", "motion.face"}
 # Bare standalone "stop" only counts as a drive-base stop while the base is moving.
 _BARE_MOTION_STOP_RE = re.compile(
     r"^\s*(?:stop|halt|freeze|whoa|hold on|hold up|wait|stop it)\s*[.!]*\s*$", re.I
@@ -20679,6 +20725,62 @@ def _handle_motion_route(
     if not _start_motion_sequence(decisions):
         return None, False
     return "On it — {} moves.".format(len(decisions)), True
+
+
+def _handle_face_requester(
+    person_id: Optional[int] = None,
+) -> "tuple[Optional[str], bool]":
+    """"Turn to face me" — one base turn onto the requester's bearing, then stop.
+
+    Returns (spoken line or None, whether it turned), the same contract
+    _handle_motion_route uses and for the same reason: a refusal is also a line, and
+    a caller that reads "returned a string" as "the wheels moved" writes an audit
+    that says a maneuver executed while the base sat still.
+
+    The physical gates run HERE, in the shared order every commanded maneuver uses,
+    because they are the ones that can refuse in words. motion_agency owns the
+    bearing and the turn; this function owns the conversation.
+    """
+    if not motion_controller.available():
+        return None, False
+    if motion_controller.charging():
+        return "I'm plugged in and charging. Wheels stay locked.", False
+    no_drive_line = _no_drive_room_decline_line()
+    if no_drive_line is not None:
+        return no_drive_line, False
+    try:
+        from intelligence import motion_agency
+        deg, reason = motion_agency.face_requester(person_id)
+    except Exception as exc:
+        _log.error("[motion_face] face_requester failed: %s", exc)
+        return None, False
+
+    def _line(key: str, fallback: str) -> str:
+        pool = [str(x).strip() for x in (getattr(config, key, []) or []) if str(x).strip()]
+        return random.choice(pool) if pool else fallback
+
+    if reason == "turned":
+        _log.info("[motion_face] turning %+.0f deg to face person_id=%s", deg, person_id)
+        return _line("MOTION_FACE_ME_TURNING_LINES", "Turning to face you."), True
+    if reason == "already_facing":
+        return _line("MOTION_FACE_ME_ALREADY_LINES", "I'm already pointed right at you."), False
+    if reason == "ambiguous":
+        # Radar saw more than one body and cannot say which is the requester. Naming
+        # the ambiguity is a recoverable answer; a confident turn to the furniture
+        # is not (field 2026-08-19: three 60 deg chases of a rear return, each
+        # spinning him away from where the owner actually sat).
+        return _line("MOTION_FACE_ME_AMBIGUOUS_LINES",
+                     "I've got a couple of somethings in the room and no idea which one is you."), False
+    if reason == "no_bearing":
+        return _line("MOTION_FACE_ME_NO_BEARING_LINES",
+                     "I can't work out where you are from here."), False
+    if reason == "come_active":
+        return "Already on my way.", False
+    # busy / traction / suppressed / disabled — the base said no, or something else
+    # owns it. Say nothing and let the turn fall through to conversation rather than
+    # narrating an internal state nobody asked about.
+    _log.info("[motion_face] declined: %s (person_id=%s)", reason, person_id)
+    return None, False
 
 
 def _motion_route_from_tool_args(
@@ -21543,6 +21645,11 @@ def _handle_router_takeover_action(
             text, person_id=person_id, person_name=person_name,
             router_audit=router_audit, source="router",
         )
+
+    if action == "motion.face":
+        _log.info("[action_router] executing motion.face person_id=%s text=%r",
+                  person_id, text)
+        return _handle_face_requester(person_id)[0]
 
     if action == "motion.route":
         # The retired JSON-prose router (ACTION_ROUTER_LLM_FALLBACK_ENABLED, off since

@@ -142,6 +142,13 @@ class LiveCutoverTest(unittest.TestCase):
             # deterministic forever, and an explore invite already has a
             # purpose-built imperative test plus a minutes-long floor grab.
             "motion_turn", "motion_move", "motion_arc", "motion_come",
+            # motion.face (2026-08-22): "turn to face me" turns the base onto the
+            # requester's SENSED bearing (camera first, radar as a prior) and stops.
+            # Live from the start, unlike motion.route's organic half: its worst
+            # case is one bounded turn, and what it replaces was strictly worse —
+            # motion_turn's schema forces left/right/around, so "face me" made the
+            # model guess a side, and the commanded turn then stood realign down.
+            "motion_face",
         })
 
     def test_physical_performance_tools_carry_canonical_enums(self):
@@ -289,9 +296,23 @@ class MotionPhase3Test(unittest.TestCase):
     def test_live_motion_set_excludes_stop_and_explore(self):
         self.assertEqual(
             sorted(a for a in tool_router.live_actions() if a.startswith("motion")),
-            ["motion.arc", "motion.come", "motion.move", "motion.turn"])
+            ["motion.arc", "motion.come", "motion.face", "motion.move", "motion.turn"])
         self.assertIsNone(tool_router.resolve_tool_call("motion_stop", "{}"))
         self.assertIsNone(tool_router.resolve_tool_call("motion_explore", "{}"))
+
+    def test_motion_face_takes_no_arguments(self):
+        # The requester comes from voice ID, never from a model argument. The
+        # impersonation carve-out is the precedent — the reply call once passed
+        # target='speaker', the PREVIOUS turn's argument, and Rex performed the
+        # wrong person. A bearing is worse: a model asserting one it cannot observe
+        # turns him at a wall while announcing that he turned to face you.
+        byname = {t["function"]["name"]: t["function"]
+                  for t in tool_router.live_reply_tools()}
+        face = byname["motion_face"]["parameters"]
+        self.assertEqual(face["properties"], {})
+        self.assertEqual(face["required"], [])
+        for banned in ("bearing", "deg", "direction", "target", "person", "side"):
+            self.assertNotIn(banned, face["properties"])
 
     def test_motion_schema_args_are_the_keys_the_executor_reads(self):
         # Arg-name drift, three times over, every one silent: `degrees` (the executor
