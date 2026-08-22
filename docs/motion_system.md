@@ -265,7 +265,7 @@ ESP32 has enough usable GPIO for this; lay out PWM and interrupt pins first.
 
 | Spoken intent | Base behavior |
 | --- | --- |
-| **"turn left/right"** | Spin in place a default step (e.g. 45–90°, configurable) or a stated angle; closed-loop on encoders; abort if the swing path is blocked. |
+| **"turn left/right"** | Spin in place a default step (e.g. 45–90°, configurable) or a stated angle; closed-loop on encoders. The HOST swing check (`intelligence/motion_swing.py`) shrinks or refuses the angle when the ring/arms would sweep into a ToF return — the firmware itself does not gate spins. |
 | **"move back"** | Reverse a default/stated distance; **gated by the rear ToF** — slow then stop if something's behind. |
 | **"move forward"/"go"** | Drive forward a default/stated distance; front ToF gated. |
 | **"stop"** | Immediate controlled stop (always honored, highest priority). |

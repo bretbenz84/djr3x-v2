@@ -53,9 +53,15 @@ Consequences:
 1. `d` becomes a calibration constant (belongs in `calib.h` next to
    `track_width_m`), used by both the scan pre-flight and the point-cloud math.
 2. Any large ungated spin (D-pad turns, voice "turn left", realign-to-face,
-   scan sweeps) in tight quarters can clip obstacles. A future **swing check**
-   (consult side/rear ToF before a big turn; shrink/refuse below ~2d clearance)
-   reuses the same rule.
+   scan sweeps) in tight quarters can clip obstacles. **Swing check — SHIPPED
+   2026-08-22** (`intelligence/motion_swing.py`, wired into
+   `motion_controller.turn()/come()/arc()`): after Rex twice lost his left hand
+   turning left a foot from a bookshelf. Every radial return is re-expressed about
+   the axle, every body extent (ring sampled at 45° plus the arm tips from
+   `MOTION_BODY_EXTENTS`) is swept through the requested angle, and the turn is
+   shrunk to the largest clear angle or refused under `MOTION_SWING_MIN_TURN_DEG`.
+   `d` is `MOTION_AXLE_AFT_OF_CENTER_M` (0.23 m by eye — **still unmeasured**, as
+   are the arm reaches). D-pad turns remain ungated (manual).
 3. Sensor mount transforms must be expressed relative to the **axle midpoint**
    (that is what odometry tracks), with the ring center at `+d` forward in the
    body frame.

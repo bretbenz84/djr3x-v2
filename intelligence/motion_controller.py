@@ -719,7 +719,7 @@ def _suppressed(verb: str, reason: str) -> None:
     2026-07-23 — the same lesson that produced announce_if_blocked)."""
     global _tof_announced_at
     _log.debug("motion %s suppressed: %s", verb, reason)
-    if not reason.startswith("tof_") or not _user_commanded_fx():
+    if not reason.startswith(("tof_", "swing_")) or not _user_commanded_fx():
         return                       # autonomous legs stay quiet; they retry constantly
     now = time.monotonic()
     cooldown = float(getattr(config, "MOTION_TOF_BLOCKED_ANNOUNCE_COOLDOWN_SECS", 30.0))
@@ -727,15 +727,17 @@ def _suppressed(verb: str, reason: str) -> None:
         if (now - _tof_announced_at) < cooldown:
             return
         _tof_announced_at = now
+    if reason.startswith("swing_"):
+        line = str(getattr(config, "MOTION_SWING_BLOCKED_LINE",
+                           "Can't swing that way — I'd clip something behind me."))
+        tag = "motion_swing_blocked"
+    else:
+        line = str(getattr(config, "MOTION_TOF_BLOCKED_LINE",
+                           "My depth sensor is down, sweetheart. I don't drive blind."))
+        tag = "motion_tof_blocked"
     try:
         from audio import speech_queue
-        speech_queue.enqueue(
-            str(getattr(config, "MOTION_TOF_BLOCKED_LINE",
-                        "My depth sensor is down, sweetheart. I don't drive blind.")),
-            emotion="neutral",
-            priority=1,
-            tag="motion_tof_blocked",
-        )
+        speech_queue.enqueue(line, emotion="neutral", priority=1, tag=tag)
     except Exception as exc:
         _log.debug("tof-blocked announce failed: %s", exc)
 
@@ -759,6 +761,24 @@ def _autonomous_allowed() -> "str | None":
     return tof_block_reason()
 
 
+def _swing_gate(verb: str, deg: float) -> "tuple[float, str | None]":
+    """Swing check for an autonomous spin of `deg` (+ = left). Returns the angle
+    to actually send (possibly shrunk) and a refusal reason, or None to go.
+
+    The base pivots about its rear axle and carries arms that reach well past
+    the ring, so a spin near an obstacle — especially one BEHIND him — sweeps
+    the body into it while the firmware reflex, which only gates linear travel,
+    sees nothing wrong (the bookshelf hand-loss incidents, 2026-08). See
+    intelligence/motion_swing.py."""
+    from intelligence import motion_swing
+    tele = motion.telemetry()
+    tof = tele.get("tof_mm") if isinstance(tele, dict) else None
+    send_deg, reason = motion_swing.check_turn(deg, tof)
+    if reason:
+        _suppressed(verb, reason)
+    return send_deg, reason
+
+
 # ── Commands ────────────────────────────────────────────────────────────────────
 # turn/move/come/drive are autonomous (gated). stop/estop/clear always pass while
 # connected — you must always be able to halt the base.
@@ -778,6 +798,9 @@ def turn(
     rate = _get_float("MOTION_DEFAULT_TURN_RATE", 75.0) if rate is None else rate
     rate = _clampf(abs(rate), 1.0, max_rate)
     deg = _clampf(deg, -360.0, 360.0)
+    deg, reason = _swing_gate("turn", deg)
+    if reason:
+        return None
     start_yaw = _calibrated_compass_yaw()
     epoch = _invalidate_turn_verification()
     _cancel_arc()
@@ -859,12 +882,20 @@ def come(heading: float = 0.0, stop_at: "float | None" = None,
     if "come" not in motion.caps():
         _log.debug("motion come unsupported by firmware")
         return None
+    heading = _clampf(heading, -180.0, 180.0)
+    if heading:
+        # The firmware spins to `heading` before advancing — that spin sweeps the
+        # body just like turn(). Don't shrink it (he'd walk off at the wrong
+        # bearing); refuse the whole come if the swing is blocked.
+        _, reason = _swing_gate("come", heading)
+        if reason:
+            return None
     stop_at = _get_float("MOTION_COME_STOP_AT_M", 0.60) if stop_at is None else stop_at
     _invalidate_turn_verification()
     _cancel_arc()
     payload = {
         "cmd": "come",
-        "heading": _clampf(heading, -180.0, 180.0),
+        "heading": heading,
         "stop_at": _clampf(stop_at, 0.05, 5.0),
     }
     if speed is not None:
@@ -891,6 +922,14 @@ def arc(lin: float, ang: float, duration_s: "float | None" = None) -> "int | Non
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.40)
     max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0))
     dur = _get_float("MOTION_ARC_DURATION_SECS", 1.6) if duration_s is None else float(duration_s)
+    ang = _clampf(ang, -max_ang, max_ang)
+    yaw_deg = math.degrees(ang) * max(0.2, dur)
+    if yaw_deg:
+        allowed, reason = _swing_gate("arc", yaw_deg)
+        if reason:
+            return None
+        if abs(allowed) < abs(yaw_deg):      # keep the curve, shorten the swing
+            ang *= allowed / yaw_deg
     _invalidate_turn_verification()
     global _arc_active, _arc_lin, _arc_ang, _arc_until
     with _arc_lock:

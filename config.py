@@ -9740,6 +9740,41 @@ MOTION_TOF_BLOCKED_LINE = (
 )
 MOTION_TOF_BLOCKED_ANNOUNCE_COOLDOWN_SECS = 30.0
 
+# ── Swing check: don't spin the body (or an arm) into something ───────────────
+# Field 2026-08, more than once: a foot from a bookshelf, "turn left", and the
+# left hand swept BACK into the shelf and fell off. The firmware reflex gates only
+# linear travel — a spin has lin=0 and is "always free", even when the obstacle is
+# behind him. And the base does not pivot about its centre: the drive axle sits
+# ~9 in AFT of the ring centre, so a spin orbits the front ~0.5 m out and the
+# arms further still, and a LEFT turn carries every left-side part REARWARD.
+# intelligence/motion_swing.py projects the ring's ToF returns about the axle,
+# sweeps every body extent through the requested angle, and shrinks/refuses the
+# turn (docs/motion_sensing_roadmap.md §2). Applies to every autonomous spin via
+# motion_controller.turn()/come()/arc(); gamepad D-pad turns are manual (the
+# human is the sensing) and untouched.
+MOTION_SWING_CHECK_ENABLED = True
+MOTION_RING_RADIUS_M = 0.27                # 540 mm base ring
+# Axle midpoint (the pivot) behind the ring centre. ⚠ MEASURED BY EYE (~9 in):
+# the roadmap's `d`, never taped. Bigger d = wider front/arm sweep = more caution.
+MOTION_AXLE_AFT_OF_CENTER_M = 0.23
+# Anything proud of the ring that can hit something, as (label, bearing_deg about
+# the ring centre, +left/CCW, radius_m from the ring centre to its TIP). The ring
+# itself is modelled automatically. ⚠ Arm reach/bearing are estimates — "about
+# 1.5 ft" proud of the 0.27 m ring, front-left and back-left — tape them.
+MOTION_BODY_EXTENTS = (
+    ("front-left arm", 45.0, 0.73),
+    ("back-left arm", 135.0, 0.73),
+)
+MOTION_SWING_MARGIN_M = 0.10               # radial clearance kept between a part and a return
+MOTION_SWING_ANGULAR_PAD_DEG = 20.0        # ToF cone (±13.5°) + the part's own width
+# Below this much allowed rotation the turn is refused outright rather than
+# shrunk to a twitch (a 4° "turn left" reads as a glitch, not a decision).
+MOTION_SWING_MIN_TURN_DEG = 10.0
+# Spoken when a turn a human asked for out loud is refused for this reason.
+MOTION_SWING_BLOCKED_LINE = (
+    "Can't swing that way, honey — I'd clip something behind me. Give me some room."
+)
+
 # Serial connection retry (mirrors the servo connect pattern).
 MOTION_SERIAL_TIMEOUT_SECS = 0.1
 MOTION_CONNECT_RETRY_ATTEMPTS = 3

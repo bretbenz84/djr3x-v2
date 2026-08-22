@@ -89,7 +89,8 @@ static float hall_assist_correction(const MotionContext& c, float lin_t) {
 }
 
 // Travel direction a finite command pushes toward (for reflex-block matching).
-// turn has no linear travel; swing-side ToF gating for spins is Phase 1.
+// turn has no linear travel. Spins are NOT ToF-gated here: the host swing check
+// (intelligence/motion_swing.py) shrinks/refuses autonomous turns before they are sent.
 static MotionDir finite_travel_dir(const FiniteCmd& f) {
   switch (f.kind) {
     case CMD_MOVE: return f.target_dist >= 0 ? DIR_FRONT : DIR_REAR;

@@ -165,8 +165,16 @@ Spins in place by `deg`, then stops. When the IMU is healthy at command start, c
 is closed on signed integrated gyro yaw (physical chassis rotation); encoder odometry is
 the fallback when the IMU is unavailable. An IMU-verified turn that does not reach its
 target before the bounded verification timeout aborts instead of accepting wheel slip as
-rotation. **Finite** → emits a `done` (§6.3) when complete/aborted. Aborts if the
-swing-side ToF enters STOP (`done result:"blocked"`).
+rotation. **Finite** → emits a `done` (§6.3) when complete/aborted.
+
+> **The firmware does NOT gate a spin on ToF.** `safety.cpp` only blocks linear
+> travel (a spin has lin=0, so "turning away from a block is always free"), and
+> the base pivots about its rear axle with arms proud of the ring — a spin next to
+> an obstacle, especially one BEHIND the base, sweeps the body into it. The swing
+> check lives on the HOST (`intelligence/motion_swing.py`, applied in
+> `motion_controller.turn()/come()/arc()`): it projects the radial ring's returns
+> about the axle and shrinks or refuses the angle before the command is sent.
+> Gamepad D-pad turns bypass it (manual = the human is the sensing).
 
 ### 5.4 `move` — closed-loop straight distance
 ```json
