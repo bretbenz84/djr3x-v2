@@ -4123,6 +4123,36 @@ def _prefill_slow_path_ack_cache() -> None:
         _log.debug("[slow_path_ack] cache prefill unavailable: %s", exc)
 
 
+def _prefill_motion_route_ack_cache() -> None:
+    """Warm the 'plotting that out' lines so the rescue ack costs no TTS latency.
+
+    The whole point of the ack is that it lands BEFORE the ~1 s interpreter call;
+    fetching its audio at speak time would put the latency back."""
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        return
+    if not bool(getattr(config, "MOTION_ROUTE_ENABLED", True)):
+        return
+    lines = [str(line).strip() for line in
+             (getattr(config, "MOTION_ROUTE_ACK_LINES", []) or []) if str(line).strip()]
+    denial = str(getattr(config, "MOTION_ROUTE_SPIN_DENIAL_LINE", "") or "").strip()
+    if denial:
+        lines.append(denial)
+    if not lines:
+        return
+    try:
+        from audio import tts
+        for line in lines:
+            try:
+                tts.ensure_cached(line)
+            except Exception as exc:
+                _log.debug("[motion_route] cache prefill failed for %r: %s", line, exc)
+    except Exception as exc:
+        _log.debug("[motion_route] cache prefill unavailable: %s", exc)
+
+
 def _interrupt_ack() -> None:
     _speak_blocking(random.choice(config.INTERRUPT_ACKNOWLEDGMENTS), priority=2)
 
@@ -14117,6 +14147,72 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
             _speak_blocking(full)
         return full or ""
 
+    if action == "motion.route":
+        # The ORGANIC path (docs/motion_route_tool_plan.md §7 Phase 2): a route
+        # phrased as conversation — "back up a little and then face the other way" —
+        # that never looked like one to the regex sequence parser, so the rescue arm
+        # never sees it. Its own branch rather than a member of _MOTION_ACTIONS,
+        # because that set dispatches to _handle_router_motion_action, which has no
+        # route arm and would return None: Rex would answer with a classic reply and
+        # not move (the aa9acce failure this file documents twice already).
+        #
+        # Unlike the rescue path this DOES run the evidence gate — the regex never
+        # claimed the turn and the model chose motion.route off a persona reply call,
+        # so action_router.motion_command_refusal_reason (reached through
+        # _router_execution_block_reason, the only call that also applies
+        # ACTION_ROUTER_EXECUTE_ACTIONS) is the whole guard against a six-step drive
+        # invented out of "we should do a lap sometime".
+        decisions, refusal = _motion_route_from_tool_args(args or {})
+        drove = False
+        decision = action_router.ActionDecision(
+            action=action, confidence=1.0,
+            args={"steps": len(decisions or [])},
+            requires_confirmation=False, reason="tool_router",
+        )
+        block = _router_execution_block_reason(decision, text=text)
+        if block is None and _motion_route_transcript_blocked():
+            block = "low_confidence_transcript"
+        if block is None and decisions and not _motion_route_legs_executable(decisions):
+            block = "leg_not_in_execute_allowlist"
+        if block or not decisions:
+            _log.info("[tool_router] motion.route declined: %s args=%s",
+                      block or refusal, args)
+        elif not motion_controller.available():
+            # Same rail the single verbs get: with no wheels there is no physical
+            # acknowledgment, so Rex says so out loud rather than falling through to
+            # a reply that pretends the command landed.
+            lines = list(getattr(config, "MOTION_NO_BASE_DENIAL_LINES", []) or [])
+            if lines and bool(getattr(config, "MOTION_NO_BASE_DENIAL_ENABLED", True)):
+                resp = random.choice(lines)
+                _log.info("[tool_router] motion.route with no base connected -> "
+                          "verbal denial: text=%r", text)
+                _speak_blocking(resp, emotion="neutral", log_text=False)
+        else:
+            try:
+                _clear_motion_continuation()
+                resp, drove = _handle_motion_route(
+                    decisions, requester_person_id=person_id
+                )
+            except Exception as exc:
+                _log.error("[tool_router] executor failed for %s: %s", action, exc)
+                resp, drove = None, False
+            if resp:
+                _speak_blocking(resp, emotion="neutral", log_text=False)
+        if bool(getattr(config, "MOTION_ROUTE_SHADOW_LOG_ENABLED", True)):
+            from intelligence import motion_route as _mr
+            _mr.log_shadow(text, {"args": args, "secs": 0.0}, decisions,
+                           block or refusal, executed=drove)
+        if resp:
+            _tool_routed_path.append(f"tool_router.{action}")
+            return resp
+        # Declined (evidence gate, allowlist, shaky transcript, a plan outside the
+        # clamps, or the base itself suppressing it) — answer as conversation so the
+        # turn is never silent, same tail as the single verbs below.
+        full = llm.get_response(text, person_id, classic=True)
+        if full and full.strip():
+            _speak_blocking(full)
+        return full or ""
+
     if action in _MOTION_ACTIONS:
         # Phase 3 (2026-08-13, docs/tool_router_scope.md §3) — the LAST family, and
         # the only one that did NOT get the detector-not-claim demotion. motion.* is
@@ -20089,11 +20185,16 @@ def _handle_router_identity_name_correction(
     return resp
 
 
+# motion.route is deliberately ABSENT from _MOTION_ACTIONS: every dispatcher that
+# tests this set hands the decision to _handle_router_motion_action, which has no
+# route arm and returns None — the aa9acce failure, where Rex SAYS the command
+# landed and the wheels never move. Routes get their own branch (_handle_motion_route).
 _MOTION_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.stop", "motion.arc"}
 # Drive intents that need a physically-connected base. Bare "stop"/"halt" (motion.stop) is
 # deliberately excluded: with no base there is nothing to halt, and the word must stay free
 # to mean stop-music / stop-game.
-_MOTION_DRIVE_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.arc"}
+_MOTION_DRIVE_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.arc",
+                         "motion.route"}
 # Bare standalone "stop" only counts as a drive-base stop while the base is moving.
 _BARE_MOTION_STOP_RE = re.compile(
     r"^\s*(?:stop|halt|freeze|whoa|hold on|hold up|wait|stop it)\s*[.!]*\s*$", re.I
@@ -20248,6 +20349,45 @@ def _handle_charging_declaration(plugged: bool) -> str:
     return "Copy, I'm on the cord — wheels locked."
 
 
+def _MOTION_DEFAULT_TURN_DEG() -> float:
+    try:
+        return float(getattr(config, "MOTION_DEFAULT_TURN_DEG", 90.0))
+    except (TypeError, ValueError):
+        return 90.0
+
+
+def _MOTION_DEFAULT_MOVE_DIST_M() -> float:
+    try:
+        return float(getattr(config, "MOTION_DEFAULT_MOVE_DIST_M", 0.30))
+    except (TypeError, ValueError):
+        return 0.30
+
+
+def _no_drive_room_decline_line() -> Optional[str]:
+    """The spoken decline for a room the owner told Rex not to drive in, or None.
+
+    "this room has carpet" / "don't move in the workshop" — they said not to move AT
+    ALL in there, so a SPOKEN command is declined too, with the way out stated: the
+    rule was set by voice and has to be liftable by voice.
+
+    Pulled out of _handle_router_motion_action so a multi-step route is declined by
+    the same rule and in the same words. It wasn't, before: the regex route lane
+    checked the charger but never this, so "turn left then move forward" drove in a
+    room where "turn left" alone was refused.
+    """
+    try:
+        from intelligence import motion_agency
+        no_drive = motion_agency.no_drive_room()
+    except Exception:
+        return None
+    if no_drive is None:
+        return None
+    room, why = no_drive
+    because = " — carpet eats my wheels" if why == "carpet" else ""
+    return (f"You told me not to drive in the {room}{because}. "
+            "Say \"you can drive in here\" if that's changed.")
+
+
 def _handle_router_motion_action(
     decision: Optional[action_router.ActionDecision],
     requester_person_id: Optional[int] = None,
@@ -20266,20 +20406,9 @@ def _handle_router_motion_action(
         return "I'm plugged in and charging. Wheels stay locked."
 
     if action != "motion.stop":
-        # A room the owner told him not to drive in ("this room has carpet", "don't
-        # move in the workshop"). They said not to move AT ALL in there, so a spoken
-        # command is declined too — with the way out stated, since the rule was set
-        # by voice and has to be liftable by voice.
-        try:
-            from intelligence import motion_agency
-            _no_drive = motion_agency.no_drive_room()
-        except Exception:
-            _no_drive = None
-        if _no_drive is not None:
-            _room, _why = _no_drive
-            _because = " — carpet eats my wheels" if _why == "carpet" else ""
-            return (f"You told me not to drive in the {_room}{_because}. "
-                    "Say \"you can drive in here\" if that's changed.")
+        _no_drive_line = _no_drive_room_decline_line()
+        if _no_drive_line is not None:
+            return _no_drive_line
 
     if action in {"motion.turn", "motion.move", "motion.arc"}:
         # The human is steering by voice: the social realign behavior must not
@@ -20372,8 +20501,16 @@ def _handle_router_motion_action(
             return f"Turning {card}."
         direction = str(args.get("direction") or "left").lower()
         deg = _f("deg")
+        # `rate` reaches here only from a ONE-STEP motion.route the speaker asked to
+        # take slowly. The voice-friendly turn_left/turn_right wrappers take no rate,
+        # so a paced turn goes to the signed primitive — same command, same clamps,
+        # same swing check. Without this a one-step plan silently dropped the pace
+        # while the identical step inside a two-step route honoured it, because only
+        # motion_sequence._issue was reading the key.
+        rate = _f("rate")
         if direction == "around":
-            seq = motion_controller.turn(180.0 if deg is None else deg)
+            seq = (motion_controller.turn(180.0 if deg is None else deg, rate=rate)
+                   if rate else motion_controller.turn(180.0 if deg is None else deg))
             line = "Spinning around."
             if seq is not None and args.get("behind"):
                 # "I'm behind you" mid-come-search: the search adopts this turn
@@ -20385,10 +20522,14 @@ def _handle_router_motion_action(
                 except Exception:
                     pass
         elif direction == "right":
-            seq = motion_controller.turn_right(deg)
+            seq = (motion_controller.turn(-abs(deg or _MOTION_DEFAULT_TURN_DEG()),
+                                          rate=rate)
+                   if rate else motion_controller.turn_right(deg))
             line = "Turning right."
         else:
-            seq = motion_controller.turn_left(deg)
+            seq = (motion_controller.turn(abs(deg or _MOTION_DEFAULT_TURN_DEG()),
+                                          rate=rate)
+                   if rate else motion_controller.turn_left(deg))
             line = "Turning left."
         if seq is not None and args.get("bearing"):
             # "I'm to your left" mid-come-search: the search adopts this swing
@@ -20430,11 +20571,15 @@ def _handle_router_motion_action(
             return None
         direction = str(args.get("direction") or "forward").lower()
         dist = _f("dist_m")
+        speed = _f("speed")          # one-step motion.route pace; see the turn branch
+        amount = abs(dist or _MOTION_DEFAULT_MOVE_DIST_M())
         if direction == "back":
-            seq = motion_controller.move_back(dist)
+            seq = (motion_controller.move(-amount, speed=speed) if speed
+                   else motion_controller.move_back(dist))
             line = "Backing up."
         else:
-            seq = motion_controller.move_forward(dist)
+            seq = (motion_controller.move(amount, speed=speed) if speed
+                   else motion_controller.move_forward(dist))
             line = "Rolling forward."
         if seq is not None:
             # A spoken move that the firmware cuts on an obstacle must SAY so —
@@ -20458,6 +20603,218 @@ def _handle_router_motion_action(
         return None
 
     return None
+
+
+# ── motion.route: model-planned multi-step routes ───────────────────────────────
+# docs/motion_route_tool_plan.md. Reached two ways, and they differ ONLY in how the
+# route args are obtained and what policy runs first:
+#   * the RESCUE path — _explicit_motion_takeover's tri-state None arm, where the
+#     sequence classifier has already said "this IS an attempted route and I can't
+#     parse it" and today speaks a flat refusal;
+#   * the ORGANIC path — the reply call choosing motion.route (Phase 2, gated on
+#     config.MOTION_ROUTE_ORGANIC_ENABLED).
+# Everything physical below is shared, so the two cannot drift apart on safety.
+
+
+def _motion_route_legs_executable(
+    decisions: list[action_router.ActionDecision],
+) -> bool:
+    """The execute policy, applied PER LEG as well as to the composite key.
+
+    A route is only as executable as its legs: without this, switching motion.turn
+    off in ACTION_ROUTER_EXECUTE_ACTIONS would stop "turn left" and still drive a
+    route whose first step is a turn. The composite motion.route key is checked
+    separately by the caller — checking only the legs would make that allowlist
+    entry a switch that does nothing, which is exactly the c7ef872 failure (203
+    audited "not_in_execute_allowlist" events logged while the wheels turned)."""
+    return all(_motion_takeover_executable(step) for step in decisions or [])
+
+
+def _handle_motion_route(
+    decisions: list[action_router.ActionDecision],
+    *,
+    requester_person_id: Optional[int] = None,
+) -> "tuple[Optional[str], bool]":
+    """Drive a validated route. Returns (spoken line or None, whether it drove).
+
+    Physical gates only — the allowlist/evidence policy belongs to the caller, which
+    knows which evidence applies to its path. Order matters: every check that can
+    refuse in WORDS runs before anything is issued, so a refused route is heard
+    rather than silently doing nothing.
+
+    The second element exists because a refusal is ALSO a line: "I'm plugged in and
+    charging" is spoken, and returning it alone would make every caller's audit and
+    shadow log say a route executed when the wheels never turned. That is the class
+    of untruth c7ef872 was written to end.
+    """
+    if not decisions or not motion_controller.available():
+        return None, False
+    if motion_controller.charging():
+        return "I'm plugged in and charging. Wheels stay locked.", False
+    no_drive_line = _no_drive_room_decline_line()
+    if no_drive_line is not None:
+        return no_drive_line, False
+    try:
+        from intelligence import motion_sequence
+        spin_block = motion_sequence.spin_clearance_reason(decisions)
+    except Exception as exc:
+        _log.debug("[motion_route] spin clearance check unavailable: %s", exc)
+        spin_block = None
+    if spin_block:
+        return (str(getattr(config, "MOTION_ROUTE_SPIN_DENIAL_LINE", "")
+                    or "Not enough elbow room for a full spin in here."), False)
+    if len(decisions) == 1:
+        # motion_sequence.start() refuses anything under two steps and returns False,
+        # which would leave the turn silent. A one-step "route" is just a command —
+        # hand it to the single-verb executor rather than dropping it on the floor.
+        # It re-runs the charging and no-drive checks and can decline in words too,
+        # which would make a line an unreliable proof of motion — except that this
+        # function just ran both of them, so the only way to reach its refusals from
+        # here is for the charger to be plugged in between two statements. It reports
+        # a suppressed command as None, and that is the case worth being right about.
+        line = _handle_router_motion_action(
+            decisions[0], requester_person_id=requester_person_id
+        )
+        return line, bool(line)
+    if not _start_motion_sequence(decisions):
+        return None, False
+    return "On it — {} moves.".format(len(decisions)), True
+
+
+def _motion_route_from_tool_args(
+    args: dict,
+) -> "tuple[list[action_router.ActionDecision] | None, Optional[str]]":
+    """Tool args -> ordered decisions, or (None, reason). Never raises."""
+    try:
+        return action_router.route_tool_to_decisions(args)
+    except Exception as exc:
+        _log.error("[motion_route] translator failed: %s", exc)
+        return None, f"translator_error:{type(exc).__name__}"
+
+
+def _motion_route_transcript_blocked() -> bool:
+    """True when this turn's transcript is too shaky to drive a model-planned route.
+
+    Model-initiated motion only (plan §4.3.1). Low-confidence turns already refuse to
+    write memory — a fabricated FACT is recoverable and a fabricated DRIVE is not,
+    and ASR fabrication is a documented failure class here. The regex fast lane's own
+    bar is deliberately unchanged: its rigidity was the accidental guard, and this is
+    what the LLM lane gives up in exchange for understanding the sentence."""
+    if not bool(getattr(config, "MOTION_ROUTE_REQUIRE_TRUSTED_TRANSCRIPT", True)):
+        return False
+    return not _turn_transcript_trusted()
+
+
+def _speak_motion_route_ack() -> None:
+    """Queue a cached 'working on it' to play WHILE the interpreter thinks (~0.8 s).
+
+    speech_queue.enqueue, not _speak_blocking, and the difference is the whole point.
+    _speak_blocking returns only after playback finishes AND after the 800-1500 ms
+    post-punchline beat a priority-1 line draws, so speaking the ack that way would
+    ADD ~2 s ahead of a call it was supposed to cover — time-to-wheels 2.5-3.7 s
+    against the plan's 1.2 s budget. Enqueued, it overlaps the call it is hiding and
+    the drive confirmation simply queues behind it.
+
+    Same guards as _try_slow_path_ack, for the same reasons: never speak over
+    something already playing, never fetch TTS at speak time (the prefill thread
+    warms these at startup), and stay silent in a no-audio build.
+    """
+    if not bool(getattr(config, "MOTION_ROUTE_ENABLED", True)):
+        return
+    lines = [str(line).strip() for line in
+             (getattr(config, "MOTION_ROUTE_ACK_LINES", []) or []) if str(line).strip()]
+    if not lines:
+        return
+    if bool(getattr(config, "NO_AUDIO_MODE", False)
+            or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)):
+        return
+    try:
+        if speech_queue.is_speaking() or output_gate.is_busy() or _interrupted.is_set():
+            return
+        chosen = random.choice(lines)
+        from audio import tts
+        if not tts.is_cached(chosen):
+            _log.debug("[motion_route] ack skipped, TTS not cached: %r", chosen)
+            return
+        _mark_first_response_queued(_current_character_loop_trace.get(),
+                                    text=chosen, priority=1)
+        speech_queue.enqueue(chosen, "neutral", priority=1, tag="motion_route_ack")
+    except Exception as exc:
+        _log.debug("[motion_route] ack failed: %s", exc)
+
+
+def _rescue_motion_route(
+    text: str,
+    *,
+    person_id: Optional[int] = None,
+    router_audit: Optional["_RouterDecisionAudit"] = None,
+) -> Optional[str]:
+    """The rescue path: plan an unparseable-but-route-shaped utterance with the LLM.
+
+    Returns the spoken line when a route ran (or was refused in character), or None
+    to let the caller speak today's "I couldn't safely parse that whole route."
+
+    The evidence gate (action_router.motion_command_refusal_reason) is NOT re-run
+    here, on purpose (plan §4.3.2). The tri-state None arm has already run the
+    sequence parser's own negation and figurative checks over this utterance and
+    positively identified it as an attempted route; the gate is a SENTENCE-anchored
+    imperative test, and the disfluent real commands this path exists for are exactly
+    the ones it refuses ("Three feet, and turn a little bit right." leads with a noun
+    phrase). What stands in its place: the interpreter's own decline tool, the
+    translator's clamps, and every physical gate in _handle_motion_route.
+    """
+    from intelligence import motion_route
+
+    if not motion_route.available():
+        # Offline, or the master switch is off — the deterministic denial stands
+        # (plan §4.4: the local reply model gets no tool surface, so with the link
+        # down the classifiers are the whole story).
+        return None
+    if _motion_route_transcript_blocked():
+        _log.info("[motion_route] rescue skipped — low-confidence transcript: %r", text)
+        return None
+
+    _speak_motion_route_ack()
+    result = motion_route.interpret(text)
+    decisions, refusal = (None, None)
+    if result.get("args") is not None:
+        decisions, refusal = _motion_route_from_tool_args(result["args"])
+
+    line: Optional[str] = None
+    drove = False
+    if decisions:
+        route_decision = action_router.ActionDecision(
+            action="motion.route", confidence=0.95,
+            args={"steps": len(decisions)},
+            reason="motion.route rescue of an unparseable spoken route",
+        )
+        _router_audit_note_decision(router_audit, route_decision)
+        if not _router_decision_executable(route_decision):
+            _log.info("[motion_route] rescue blocked by execute policy: text=%r", text)
+            refusal = refusal or "not_in_execute_allowlist"
+            decisions = None
+        elif not _motion_route_legs_executable(decisions):
+            _log.info("[motion_route] rescue blocked by per-leg execute policy: "
+                      "text=%r", text)
+            refusal = refusal or "leg_not_in_execute_allowlist"
+            decisions = None
+        else:
+            _clear_motion_continuation()
+            line, drove = _handle_motion_route(
+                decisions, requester_person_id=person_id
+            )
+
+    if bool(getattr(config, "MOTION_ROUTE_SHADOW_LOG_ENABLED", True)):
+        motion_route.log_shadow(text, result, decisions, refusal, executed=drove)
+    if line is None:
+        return None
+    if drove:
+        _router_audit_note_fast_local_action(
+            router_audit, "motion.route", args={"steps": len(decisions or [])},
+            reason="motion.route rescue of an unparseable spoken route",
+        )
+    _speak_blocking(line, emotion="neutral", log_text=False)
+    return line
 
 
 # ── Phase 3 motion tool path (docs/tool_router_scope.md §3) ──────────────────────
@@ -20641,6 +20998,18 @@ def _explicit_motion_takeover(
     )
     if sequence is None:
         _clear_motion_continuation()
+        # The tri-state None arm: route-SHAPED, and the regex could not parse it.
+        # This is the cleanest entry point in the stack for an interpreter — the
+        # utterance has already been positively identified as an attempted route
+        # command, so the only thing missing is someone who can read it. Owner,
+        # 2026-08-19: "instead of a regex failure where he says 'I can't parse that
+        # route' the LLM could plan out the moves." Everything below stays as the
+        # fallback for offline, a declined interpretation, or a refused plan.
+        rescued = _rescue_motion_route(
+            text, person_id=person_id, router_audit=router_audit
+        )
+        if rescued is not None:
+            return rescued
         rejected = action_router.ActionDecision(
             action="motion.sequence", confidence=0.98,
             args={"accepted": False},
@@ -20661,7 +21030,7 @@ def _explicit_motion_takeover(
             reason="explicit ordered motion sequence",
         )
         _router_audit_note_decision(router_audit, decision)
-        if not all(_motion_takeover_executable(step) for step in sequence):
+        if not _motion_route_legs_executable(sequence):
             # A route is only as executable as its legs. Without this, switching a
             # motion key off in ACTION_ROUTER_EXECUTE_ACTIONS would stop "turn left"
             # but still drive "turn left then move forward" — the composite
@@ -20672,16 +21041,20 @@ def _explicit_motion_takeover(
                 text,
             )
             return None
-        if motion_controller.charging():
-            line = "I'm plugged in and charging. Wheels stay locked."
-            _speak_blocking(line, emotion="neutral", log_text=False)
-            return line
-        if not _start_motion_sequence(sequence):
+        # Shared with the model-planned routes so the two lanes cannot drift apart on
+        # the physical gates. This lane GAINED the no-drive-room decline here: it had
+        # only ever checked the charger, so "turn left then move forward" drove in a
+        # room where "turn left" on its own was declined.
+        line, drove = _handle_motion_route(sequence, requester_person_id=person_id)
+        if line is None:
             return None
-        _router_audit_note_fast_local_action(
-            router_audit, "motion.sequence", reason=decision.reason
-        )
-        line = "On it — {} moves.".format(len(sequence))
+        if drove:
+            # A refusal is also a line ("I'm plugged in and charging"), and the audit
+            # must not call one an executed route — the charging arm returned before
+            # this note before the refactor, and it still does not reach it.
+            _router_audit_note_fast_local_action(
+                router_audit, "motion.sequence", reason=decision.reason
+            )
         _speak_blocking(line, emotion="neutral", log_text=False)
         return line
 
@@ -21170,6 +21543,26 @@ def _handle_router_takeover_action(
             text, person_id=person_id, person_name=person_name,
             router_audit=router_audit, source="router",
         )
+
+    if action == "motion.route":
+        # The retired JSON-prose router (ACTION_ROUTER_LLM_FALLBACK_ENABLED, off since
+        # 2026-08-13) is the only thing that reaches this branch today, but a takeover
+        # with no arm falls OPEN into conversation with no error — the failure mode
+        # the new-executable-action checklist exists for — so it is wired anyway.
+        decisions, refusal = _motion_route_from_tool_args(decision.args or {})
+        if not decisions:
+            _log.info("[action_router] motion.route rejected: %s args=%s",
+                      refusal, decision.args)
+            return None
+        if _motion_route_transcript_blocked() or not _motion_route_legs_executable(decisions):
+            _log.info("[action_router] motion.route blocked by policy text=%r", text)
+            return None
+        _log.info(
+            "[action_router] executing motion.route person_id=%s steps=%d text=%r",
+            person_id, len(decisions), text,
+        )
+        _clear_motion_continuation()
+        return _handle_motion_route(decisions, requester_person_id=person_id)[0]
 
     if action in _MOTION_ACTIONS:
         _log.info(
@@ -23753,6 +24146,13 @@ def _handle_speech_segment(
         # False means Rex answers normally but must not LEARN from the turn — no
         # stored facts, no person names, no room names. See audio/transcription.py.
         transcript_trusted = True
+        # Publish the default before the branch, not only on the audio path. The
+        # context var lives on the interaction-loop thread and is never reset per
+        # turn, so a typed-text turn used to INHERIT the previous audio turn's
+        # verdict — an untrusted mumble followed by a typed command left the command
+        # marked untrusted. Harmless while the only consumer was memory-learning;
+        # not harmless now that MOTION_ROUTE_REQUIRE_TRUSTED_TRANSCRIPT gates wheels.
+        _transcript_trusted.set(True)
         if transcribed_text is not None:
             text = str(transcribed_text or "").strip()
             raw_best_id = raw_best_id_override
@@ -28619,6 +29019,11 @@ def start(*, text_only: bool = False) -> None:
         target=_prefill_slow_path_ack_cache,
         daemon=True,
         name="slow-path-ack-cache-prefill",
+    ).start()
+    threading.Thread(
+        target=_prefill_motion_route_ack_cache,
+        daemon=True,
+        name="motion-route-ack-cache-prefill",
     ).start()
     if not wake_word.is_ready():
         _log.warning(

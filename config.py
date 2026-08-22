@@ -5527,6 +5527,12 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # invite classifier is already the imperative-addressed-to-Rex test a tool gate
     # would have to be, and a wander seizes the floor for minutes.
     "motion.turn", "motion.move", "motion.arc", "motion.come",
+    # motion.route (docs/motion_route_tool_plan.md) is listed so this tuple stays the
+    # honest catalog of the reply call's motion surface, but tool_router.live_actions()
+    # drops it unless MOTION_ROUTE_ORGANIC_ENABLED is on — Phase 2 of that plan, held
+    # back until live decoy numbers land. The RESCUE path (the tri-state None arm) does
+    # not go through this set at all and is governed by MOTION_ROUTE_ENABLED.
+    "motion.route",
 )
 
 # Seconds the "say yes, remember this scene" confirmation slot stays open.
@@ -5621,6 +5627,14 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "motion.come",
     "motion.stop",
     "motion.explore",
+    # motion.route added 2026-08-22 (docs/motion_route_tool_plan.md). Listed for the
+    # same reason the single verbs are: this is the drive base's kill switch, and a
+    # route is only ever MORE base travel than one command. Both route paths ask the
+    # policy explicitly — the rescue path checks the composite key AND every leg,
+    # because the per-leg check alone would let this entry read as a switch that does
+    # nothing (the c7ef872 failure, 203 audited "not_in_execute_allowlist" events
+    # logged while the wheels turned).
+    "motion.route",
 }
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 # The JSON-prose fallback router -- decide()'s blocking LLM call. OFF since
@@ -9122,6 +9136,101 @@ MOTION_ARC_ANG_DEG_S = 35.0           # arc turn rate, deg/s (+ = left, REP-103)
 MOTION_ARC_DURATION_SECS = 1.6        # how long the curve drives before auto-stop
 MOTION_ARC_SMALL_DURATION_SECS = 1.0  # "a little / a bit" -> shorter curve
 
+# ── LLM-planned drive routes (docs/motion_route_tool_plan.md) ────────────────
+# The regex sequence parser above is TRI-STATE: [] = not a route, 2+ clauses =
+# a parsed route, and None = "this IS an attempted route and I couldn't parse
+# it", which spoke "I couldn't safely parse that whole route" and moved nothing.
+# That third arm is what these settings replace. Owner, 2026-08-19: "rather than
+# all this fragile regex motion commands... instead of a regex failure where he
+# says 'I can't parse that route' the LLM could plan out the moves."
+#
+# Measured on this checkout's own field logs (all 572 in logs/): 20 distinct
+# utterances ever reached that arm, 12 of them still do after the regex repairs
+# of the last month. Seven are real commands the parser cannot express — "Rex,
+# turn to your right and move forward 10 feet", "Move right a little bit, then
+# forward two feet, then turn around.", "Three feet, and turn a little bit
+# right." — and the rest are ASR debris that must keep being refused.
+#
+# Nothing here loosens a safety rail. The model only ever CHOOSES: the allowlist,
+# the charging lockout, the no-drive-room rule, motion_swing, the firmware ToF
+# reflexes and the traction detector all sit downstream exactly as they were.
+MOTION_ROUTE_ENABLED = True           # master switch: False = the old spoken denial
+# Phase 2 of the plan — motion.route on the REPLY call, so a route phrased as
+# conversation ("back up a little and then face the other way") can route without
+# ever looking like one to the regex. OFF until live decoy numbers say otherwise:
+# this is the half that can invent a drive out of banter, and the reply call is
+# where the 2026-08-14 impersonation record was set ("prose wins").
+MOTION_ROUTE_ORGANIC_ENABLED = False
+# Log the planned route on every rescue attempt ([motion_route] JSON lines,
+# aggregate with tools/motion_route_report.py). Cheap, and it is the only record
+# of what the interpreter would have driven on the turns where it declined.
+MOTION_ROUTE_SHADOW_LOG_ENABLED = True
+# A model-planned route carries its own magnitudes — it cannot re-read them out of
+# the human's words the way a single command does (which number belongs to which
+# leg is the whole problem), so these are the ceilings that make that safe. They
+# are enforced in action_router.route_tool_to_decisions, split two ways:
+#   * a PER-STEP magnitude over its cap is CLAMPED, exactly as the single-verb tool
+#     path already clamps (interaction._motion_args_from_tool), so the same words
+#     get the same motion whether they arrive as one command or as a route leg;
+#   * anything that changes the route's SHAPE — an unknown step, a missing
+#     direction, a placeholder zero, too many steps, or a total over budget —
+#     refuses the WHOLE route. That is the no-partial-execution rule that stops
+#     "turn left then sing" from turning left: a dropped leg leaves the base
+#     somewhere nobody asked for, while a shortened leg does not.
+MOTION_ROUTE_MAX_STEPS = 6            # <= MOTION_SEQUENCE_MAX_STEPS above
+# Per-step distance matches _MOTION_TOOL_MAX_DIST_M, the single-command tool's
+# already-shipped "one room-crossing, deliberately well inside motion_controller's
+# own ±10 m clamp". The plan sketched 1.5 m per leg and 3.0 m total; both are here
+# because the corpus says otherwise — the most common real unparsed route on record
+# is "Rex, turn to your right and move forward 10 feet" (3.048 m), and a ceiling
+# that turns that into a refusal leaves the owner hearing the same denial this
+# feature exists to delete. It would also make the LLM lane STRICTER than the regex
+# route lane it rescues, which caps nothing at all. Every leg is still
+# obstacle-guarded by the firmware and announces a cut move.
+MOTION_ROUTE_MAX_STEP_M = 3.0         # one room-crossing per leg (clamped to)
+MOTION_ROUTE_MAX_TOTAL_M = 6.0        # two, and past that the route refuses
+MOTION_ROUTE_MAX_STEP_DEG = 360.0     # a full spin is the ceiling; the firmware clamps again
+MOTION_ROUTE_MAX_TOTAL_DEG = 720.0    # no pirouette marathons
+# Floors, not clamps. Both executors read the magnitude as
+# `float(args.get("deg") or DEFAULT)` — `or`, so deg=0 is a 90 degree turn and
+# dist_m=0 is a 0.30 m roll. A model emitting a placeholder zero would MOVE the
+# base, so a below-floor magnitude refuses the route instead of being rounded up.
+MOTION_ROUTE_MIN_STEP_M = 0.05
+MOTION_ROUTE_MIN_STEP_DEG = 5.0
+MOTION_ROUTE_SLOW_PACE_SCALE = 0.5    # "take it slow" -> this fraction of the default rate/speed
+# The focused rescue call (intelligence/motion_route.py). Deliberately NOT the
+# persona reply call: docs/tool_router_scope.md's Phase 2 carve-out recorded a
+# persona-loaded call performing in prose instead of calling the tool on four of
+# eight unambiguous imperatives, while the shadow router got every one right.
+MOTION_ROUTE_MODEL = ""               # "" = LLM_CONVERSATION_MODEL
+MOTION_ROUTE_TIMEOUT_SECS = 6.0
+MOTION_ROUTE_MAX_TOKENS = 400
+# MUST stay "none" on gpt-5.4-mini via /v1/chat/completions. Measured 2026-08-22 by
+# replaying the corpus: every call 400'd with "Function tools with reasoning_effort
+# are not supported for gpt-5.4-mini in /v1/chat/completions. To use function tools,
+# use /v1/responses or set reasoning_effort to 'none'." This matches the global
+# LLM_REASONING_EFFORT above, which is why the live reply call's tool surface works.
+MOTION_ROUTE_REASONING_EFFORT = "none"
+MOTION_ROUTE_FORCE_TOOL_CHOICE = True  # required; degrades to "auto" if the SDK refuses
+# Model-initiated motion (this tool and the reply call's motion tools) executes
+# only on a transcript the ASR believed. Low-confidence turns already don't write
+# memory; a FABRICATED DRIVE is strictly worse than a fabricated fact, and the
+# regex lane's rigidity was an accidental guard the LLM lane gives up. The regex
+# fast lane's own bar is unchanged — this gates the tool paths only.
+MOTION_ROUTE_REQUIRE_TRUSTED_TRANSCRIPT = True
+# A near-full spin is checked for elbow room before the route commits, so the
+# refusal can be SPOKEN rather than the first leg silently doing nothing.
+MOTION_ROUTE_SPIN_CHECK_ENABLED = True
+MOTION_ROUTE_SPIN_CHECK_DEG = 270.0
+MOTION_ROUTE_SPIN_DENIAL_LINE = "Not enough elbow room for a full spin in here."
+# Spoken while the interpreter thinks (~1s). Pre-cached at startup like every
+# other canned line, so it costs no TTS latency.
+MOTION_ROUTE_ACK_LINES = [
+    "Plotting that out...",
+    "Working out the moves...",
+    "Let me map that.",
+]
+
 # ── Autonomous motion (intelligence/motion_agency.py) ─────────────────────────
 # Rex moves on his own: turns the base to face the person his head is tracking,
 # and closes distance to someone far away. Decisions only — actual motion runs
@@ -9770,6 +9879,13 @@ MOTION_SWING_ANGULAR_PAD_DEG = 20.0        # ToF cone (±13.5°) + the part's ow
 # Below this much allowed rotation the turn is refused outright rather than
 # shrunk to a twitch (a 4° "turn left" reads as a glitch, not a decision).
 MOTION_SWING_MIN_TURN_DEG = 10.0
+# ...and ABOVE this much requested rotation the turn is refused rather than
+# shrunk at all. A shrink is the right degradation for a 90 — most of the way
+# toward what you asked for is still useful — and the wrong one for "do a 360":
+# the point of a spin is ending where you started, so a 360 quietly delivered as
+# 147° reports `completed` at a heading nobody asked for, and anything sequenced
+# behind it drives off that wrong heading. 0 disables (shrink everything).
+MOTION_SPIN_ALL_OR_NOTHING_DEG = 270.0
 # Before refusing, try to EARN the room: if the front ToF shows at least
 # CLEARANCE_M of floor (the step plus stop zone plus margin), drive forward
 # STEP_M and re-check the swing on arrival — a blocked-behind turn usually just

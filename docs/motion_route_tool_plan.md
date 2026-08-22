@@ -1,10 +1,166 @@
 # LLM Motion Routes — Implementation Plan
 
-**Status: PLAN — not yet implemented.** Owner idea 2026-08-19: "rather than all
-this fragile regex motion commands, an infinite way of saying things could be
-interpreted and the LLM calls the motion... instead of a regex failure where he
-says 'I can't parse that route' the LLM could plan out the moves. Or if someone
-asked him to spin around, the LLM would command a 360."
+**Status: SHIPPED 2026-08-22 — Phases 0, 1 and 3 live; Phase 2 built and held
+behind `MOTION_ROUTE_ORGANIC_ENABLED = False`.** Owner idea 2026-08-19: "rather
+than all this fragile regex motion commands, an infinite way of saying things
+could be interpreted and the LLM calls the motion... instead of a regex failure
+where he says 'I can't parse that route' the LLM could plan out the moves. Or if
+someone asked him to spin around, the LLM would command a 360."
+
+## What shipped, and what the numbers were
+
+Code: `intelligence/motion_route.py` (the focused interpreter),
+`action_router.route_tool_to_decisions` (the translator),
+`tool_router._TOOL_DEFS["motion.route"]` (one schema, both callers),
+`interaction._rescue_motion_route` / `_handle_motion_route` (the two paths and
+their shared physical gates), the `MOTION_ROUTE_*` config cluster,
+`tools/motion_route_report.py` (the Phase-0 harness), `tests/test_motion_route_tool.py`.
+
+**Phase 0 ran for real** rather than being deferred to a collection week — the
+corpus was already in `logs/`. Mining all 571 logs for
+`final_executed_path=fast_local_takeover.motion.sequence_rejected` found **20
+distinct utterances that ever reached the tri-state `None` arm**, of which **13
+still do** (5 were retired by the regex repairs of the last month, 2 now parse).
+Replaying those 13 plus 20 figurative decoys through the real interpreter:
+
+| metric | result |
+| --- | --- |
+| parse rate on real `None`-arm turns | **8/13 (62%)** — and the 5 declines are the 4 pieces of ASR debris plus a find-errand, so it is 8/8 of the real commands |
+| decoy false-fire (interpreter) | **0/20** |
+| decoy false-fire (end to end) | **0/20** |
+| interpreter errors | 0 |
+| latency median / p90 | **0.74 s / 0.86 s** (budget was ≤1.2 s) |
+
+Reproduce with `./venv/bin/python tools/motion_route_report.py --corpus` (free)
+and `--live` (~33 small hosted calls).
+
+The eight it plans, hand-checked: the disfluent repeat ("Turn, turn to your
+left." → one 90° left), the self-correction ("Turn, never mind, move forward,
+four feet." → one 1.2 m forward, the cancelled turn dropped), the elided verb
+("Three feet, and turn a little bit right." → 0.9 m then 15° right), the buried
+command ("Oh, hardline! Yeah, you know Discord... Go turn to your right." → 90°
+right, chatter ignored), the mixed clause ("Turn to your left a little bit, and
+then tell me what you see." → the turn only), and the three plain routes.
+
+## Two things the replay caught that the plan could not have
+
+1. **`reasoning_effort` and function tools are mutually exclusive on
+   `gpt-5.4-mini` via `/v1/chat/completions`.** Every call 400'd with *"To use
+   function tools, use /v1/responses or set reasoning_effort to 'none'."* The
+   plan's "temperature low" was already a no-op (llm_compat drops temperature for
+   reasoning models); `reasoning_effort` is not a substitute for it. Pinned at
+   `"none"`, matching the global `LLM_REASONING_EFFORT` that keeps the live reply
+   call's tool surface working.
+2. **The shared schema's own advice made the rescue call refuse real commands.**
+   "A SINGLE movement is motion_turn / motion_move / motion_arc — use those
+   instead" is right on the reply call, where those tools sit next to it, and
+   wrong on a call whose entire surface is this tool and a decline. With the
+   unmodified schema, 7 of the 13 declined *in as many words* ("single turn
+   command, not a multi-step route"). `motion_route._rescue_schema` re-frames the
+   route level (`minItems` 1, description rewritten) and copies the step shape
+   verbatim, so the drift-prone half still has exactly one definition. Parse rate
+   went 2/13 → 8/13 on that change alone.
+
+## What the adversarial review caught (34 claims, 9 survived refutation)
+
+A multi-lens review of the finished change found four real defects, all fixed here:
+
+1. **An unrecognised direction word drove the base the wrong way instead of
+   refusing.** The step schema carries ONE shared `direction` enum across turn,
+   move and arc, so `{"op":"move","direction":"right"}` is schema-legal — and it
+   fell through to the signed-magnitude fallback and became a metre STRAIGHT
+   FORWARD, at whatever was in front of him. The corpus utterance this feature was
+   built for is literally *"Move right a little bit, then forward two feet, then
+   turn around."* Five of the ten legal (op, direction) pairs were silently
+   rewritten. Now: the signed fallback fires only when the direction word is
+   ABSENT, and a present-but-unrecognised one refuses the route. Direction words
+   are matched as exact set members, not by first letter — a prefix test reads
+   "reverse" as "right".
+2. **An aliased `op` threw away the direction it named.** The op normaliser
+   accepts single-verb tool names (`move_back`, `turn_right`) because a model that
+   pattern-matched them will write them, but it kept only the verb — so
+   `{"op":"move_back","dist_m":1.0}` drove a metre FORWARD, into whoever asked him
+   to back away. `_route_direction_from_op` now harvests it.
+3. **An arc read its `direction` key by position, not by value**, so a `"back"`
+   written there was consumed as the lateral word, dropped for not starting with
+   "r", and replaced with a forward-LEFT curve.
+4. **The ack was blocking, and it added latency instead of hiding it.**
+   `_speak_blocking` returns only after playback AND the 800–1500 ms
+   post-punchline beat a priority-1 line draws, so time-to-wheels was 2.5–3.7 s
+   against a 1.2 s budget. It now rides `speech_queue.enqueue` (the
+   `_try_slow_path_ack` pattern) and plays OVER the call it covers.
+
+Plus two smaller ones: a one-step route dropped the `pace` the translator computed
+(only `motion_sequence._issue` was reading `rate`/`speed`, and a one-step plan goes
+to the single-verb executor — "back up a metre, slowly" is a one-step plan), and a
+refusal line was being stamped in the audit and the shadow log as an executed route.
+The re-run replay is unchanged at 8/13 with 0 clamp-refusals, so none of the
+tightening costs a real command.
+
+## Where the implementation deviates from the plan below
+
+- **§4.1's signed magnitudes are gone.** Neither executor reads a sign
+  (`turn_left`/`move_back` both `abs()`), and the move enum "backward" — one
+  letter from the "back" the executor tests — falls through to FORWARD. Steps
+  carry an explicit direction word plus a positive magnitude; a signed number is
+  still accepted as a fallback when the direction word is missing, and the sign is
+  consumed in the translator.
+- **§4.2's "refused whole" is split.** A per-step magnitude over its cap is
+  CLAMPED, exactly as the single-verb tool path already clamps
+  (`_motion_args_from_tool`); the route's SHAPE — unknown step, missing direction,
+  placeholder zero, too many steps, totals over budget — refuses whole. Clamping a
+  leg is not the truncation §4.2 forbids: the route keeps every step and every
+  direction, and it is a dropped leg that leaves the base somewhere nobody asked for.
+- **The distance ceilings moved** from 1.5 m / 3.0 m to 3.0 m / 6.0 m. At 1.5 m
+  the single most common real unparsed route on record — "Rex, turn to your right
+  and move forward 10 feet" (3.048 m) — refuses whole, and the owner hears the same
+  denial this feature exists to delete. 3.0 m matches `_MOTION_TOOL_MAX_DIST_M`,
+  the single-command tool's already-shipped "one room-crossing"; the regex route
+  lane this rescues caps nothing at all.
+- **§4.3.4's full-spin check does not use `_wander_clearances`.** That helper
+  reports axis minima about the RING centre and cannot say which side is free,
+  while the base pivots about an axle 0.23 m aft of it with arms 0.73 m proud —
+  it would wave through the exact clip `motion_swing` was built to stop. Instead:
+  `motion_controller.turn()` now REFUSES rather than shrinks above
+  `MOTION_SPIN_ALL_OR_NOTHING_DEG` (270°), because a 360 silently delivered as
+  147° reports `completed` at a heading nobody asked for and the next leg drives
+  off it; and `motion_sequence.spin_clearance_reason` is an advisory look-ahead
+  that only decides whether the refusal gets SPOKEN. It never changes an angle.
+- **§3's forced tool choice gained a second tool.** A single forced tool cannot
+  decline, which would make the ASR-debris arm of the corpus unrepresentable as
+  anything but a drive command. `motion_route_decline(reason)` rides alongside,
+  and a prose answer is read as a decline too.
+- **The rescue path skips the positive evidence gate** (as §4.3.2 allows). It is
+  a sentence-anchored imperative test, and the disfluent real commands this path
+  exists for are exactly the ones it refuses — "Three feet, and turn a little bit
+  right." leads with a noun phrase. The organic path runs the full gate.
+- **`pace` is wired** rather than dropped: `motion_sequence._issue` forwards a
+  per-step `rate`/`speed` to `motion_controller.turn(deg, rate=)` /
+  `move(dist, speed=)`, and `_step_timeout` follows it — a half-speed leg measured
+  against the full-speed default times out mid-move, and a timed-out step aborts
+  the remainder.
+- **One adjacent bug fixed**: the regex route lane checked the charger but never
+  the no-drive-room rule, so "turn left then move forward" drove in a room where
+  "turn left" alone was declined. Both lanes now share `_handle_motion_route`.
+- **One adjacent gap closed**: `_transcript_trusted` is a context var that was
+  only ever `.set()` on the audio branch, so a typed-text turn inherited the
+  previous audio turn's verdict. Harmless while memory-learning was the only
+  consumer; not harmless now that it gates wheels.
+
+## What is still owed
+
+- A **live floor test** of the rescue path on the robot — nothing here has driven
+  a real wheel; the replay stops at the plan.
+- **Phase 2** (`MOTION_ROUTE_ORGANIC_ENABLED = True`) once live `[motion_route]`
+  lines show the reply call is not inventing routes out of banter. Watch it with
+  `tools/motion_route_report.py` (no flags).
+- The Phase-3 full-spin refusal has **never been exercised against real ToF** —
+  the arm reach and axle offset it projects are still by-eye estimates
+  (`MOTION_BODY_EXTENTS`, `MOTION_AXLE_AFT_OF_CENTER_M`).
+
+---
+
+*Original plan follows, unchanged.*
 
 This is a handoff document in the style of `exploration_mode_plan.md`: enough
 detail for another session/engineer to build it against the existing codebase.

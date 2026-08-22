@@ -254,11 +254,20 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
         "Rotate the drive base in place. Wheels only — a request to LOOK somewhere "
         "is not a turn, and neither is a figure of speech ('the meeting turned into "
         "a disaster').",
+        # Phase 3 of docs/motion_route_tool_plan.md (§2.2): a full spin had no
+        # encoding. "'around' means a 180" was the whole hint, so "spin around" and
+        # "do a 360" had nowhere to land but a half turn — the executor and the
+        # firmware have taken 360 all along (motion_controller.turn clamps at ±360),
+        # only the schema never said so. Description change only; no executor change.
         {"direction": {"type": "string", "enum": ["left", "right", "around"],
-                       "description": "'around' means a 180"},
+                       "description":
+                       "'around' means keep spinning past a quarter turn — a 180 by "
+                       "default, or whatever deg says (use it with deg=360 for a "
+                       "full spin)"},
          "deg": {**_NUM, "description":
                  "how far to rotate, in DEGREES (90 = a quarter turn, 180 = about "
-                 "face); omit when they did not say an amount"}},
+                 "face, 360 = one full spin, the maximum); omit when they did not "
+                 "say an amount"}},
         ["direction"]),
     "motion.move": (
         "Drive the base straight forward or backward on the floor.",
@@ -294,6 +303,78 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     # motion gate had to be rebuilt into — so there is nothing for a tool to add yet.
     "motion.stop": ("Stop moving RIGHT NOW ('stop', 'halt' while driving).", {}, []),
     "motion.explore": ("An invitation to wander/explore the room.", {}, []),
+    # motion.route (docs/motion_route_tool_plan.md) — the multi-step gap the regex
+    # sequence parser leaves behind. Two callers share this ONE schema: the reply
+    # call (organic path, gated on config.MOTION_ROUTE_ORGANIC_ENABLED) and the
+    # focused rescue interpreter in intelligence/motion_route.py, which is why the
+    # step properties are spelled out here rather than in the interpreter's prompt.
+    #
+    # Every step key is the key the executors READ (motion_sequence._issue and
+    # interaction._handle_router_motion_action) — the Phase-3 arg-name drift class,
+    # four instances of it, every one silent. Two deviations from the plan's §4.1
+    # sketch, both deliberate and both load-bearing:
+    #   * The magnitudes are POSITIVE and the direction is a separate enum word. The
+    #     plan sketched signed numbers (+ = left, - = back); neither executor reads a
+    #     sign (turn_left/move_back both take abs()), and the move enum "backward" —
+    #     one letter off from the "back" the executor tests — falls through to
+    #     FORWARD. action_router.route_tool_to_decisions still accepts a signed
+    #     magnitude as a fallback when the direction word is missing, but it consumes
+    #     the sign there and never forwards it.
+    #   * No `target` field, ever (plan §9). Target-relative motion ("face the
+    #     window") needs a bearing source; with no field for it the model cannot
+    #     pretend it has one.
+    "motion.route": (
+        "A MULTI-STEP drive request: two or more movements the user wants driven in "
+        "order, in ONE command ('go forward a bit, then turn around and come back', "
+        "'back up, swing left, then roll forward two feet'). A SINGLE movement is "
+        "motion_turn / motion_move / motion_arc — use those instead. Give every step "
+        "an explicit direction word and a positive magnitude. Never for a figure of "
+        "speech ('let's move on'), never for a route someone is RETELLING, never for "
+        "a negated command, and never for a place or object he should drive to — he "
+        "has no way to find one, so only geometry belongs here.",
+        {"steps": {
+            "type": "array", "minItems": 2, "maxItems": 6,
+            "description": "the movements, in the order he should drive them",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "enum": ["turn", "move", "arc"],
+                           "description":
+                           "turn = rotate in place, move = drive straight, "
+                           "arc = a brief curve toward one side (the base cannot "
+                           "strafe, so 'scoot over' is an arc)"},
+                    "direction": {"type": "string",
+                                  "enum": ["left", "right", "around",
+                                           "forward", "back"],
+                                  "description":
+                                  "turn steps: left / right / around (an about-face). "
+                                  "move steps: forward / back. Required on every turn "
+                                  "and move step — 'back', never 'backward'"},
+                    "deg": {**_NUM, "description":
+                            "turn steps only: how far to rotate, in DEGREES, as a "
+                            "POSITIVE number (90 = a quarter turn, 180 = an "
+                            "about-face, 360 = one full spin). Omit for a plain "
+                            "'turn left' with no stated amount"},
+                    "dist_m": {**_NUM, "description":
+                               "move steps only: how far to drive, in METRES, as a "
+                               "POSITIVE number — convert what they said (a foot is "
+                               "0.3, a 'bit' or a 'smidge' is about 0.2, a 'step' is "
+                               "about 0.3). Omit for a plain 'move forward' with no "
+                               "stated amount"},
+                    "ang_dir": {"type": "string", "enum": ["left", "right"],
+                                "description": "arc steps only: which side to curve toward"},
+                    "lin_dir": {"type": "string", "enum": ["forward", "back"],
+                                "description":
+                                "arc steps only: curve while driving forward or while backing up"},
+                    "small": {"type": "boolean",
+                              "description": "arc steps only: true when they asked for a little / a bit"},
+                    "pace": {"type": "string", "enum": ["slow", "normal"],
+                             "description": "optional: 'slow' when they asked him to take it easy"},
+                },
+                "required": ["op"],
+            },
+        }},
+        ["steps"]),
     "web.search": (
         "The user asks about news, current events, or anything that needs LIVE "
         "up-to-date information Rex cannot know — wars, elections, scores, "
@@ -367,14 +448,49 @@ _DEFAULT_LIVE_ACTIONS = (
     # forward", "scootch to your right".
     # motion.stop and motion.explore are ABSENT ON PURPOSE — see _TOOL_DEFS above.
     "motion.turn", "motion.move", "motion.arc", "motion.come",
+    # motion.route is listed so this tuple stays the honest catalog of the reply
+    # call's motion surface, but it is PHASE-GATED in live_actions() below: the
+    # organic path is the half of docs/motion_route_tool_plan.md that can invent a
+    # route out of banter, and it stays off until live decoy numbers say otherwise.
+    "motion.route",
 )
 
 
 def live_actions() -> "set[str]":
     if not bool(getattr(config, "TOOL_ROUTER_LIVE_ENABLED", True)):
         return set()
-    return {str(a) for a in getattr(config, "TOOL_ROUTER_LIVE_ACTIONS",
-                                    _DEFAULT_LIVE_ACTIONS)}
+    live = {str(a) for a in getattr(config, "TOOL_ROUTER_LIVE_ACTIONS",
+                                   _DEFAULT_LIVE_ACTIONS)}
+    if not motion_route_organic_enabled():
+        # Phase 2 of docs/motion_route_tool_plan.md. Dropped HERE rather than left
+        # out of the tuple so that config.TOOL_ROUTER_LIVE_ACTIONS still reads as the
+        # full surface and one flag — not two lists that can disagree — decides.
+        live.discard("motion.route")
+    return live
+
+
+def motion_route_organic_enabled() -> bool:
+    """Whether motion.route may be chosen by the REPLY call (plan §7 Phase 2).
+
+    Separate from MOTION_ROUTE_ENABLED, which governs the rescue path: that one only
+    ever fires on a turn the sequence classifier already identified as an attempted
+    route and today answers with a flat refusal, while this one puts a six-step drive
+    plan on the same conversational call that produced the prose-wins impersonation
+    record (docs/tool_router_scope.md, Phase 2 carve-out)."""
+    return (bool(getattr(config, "MOTION_ROUTE_ENABLED", True))
+            and bool(getattr(config, "MOTION_ROUTE_ORGANIC_ENABLED", False)))
+
+
+def tool_schema_for(action: str) -> "dict | None":
+    """The single tool schema for one action key, or None when it has no spec.
+
+    Exists so intelligence/motion_route.py's focused interpreter call can hand the
+    model the EXACT same motion.route schema the reply call sees — one definition,
+    so the two paths cannot drift into disagreeing about arg names."""
+    for schema in tool_schemas():
+        if _NAME_TO_KEY.get(schema["function"]["name"]) == action:
+            return schema
+    return None
 
 
 def live_reply_tools() -> "list[dict] | None":

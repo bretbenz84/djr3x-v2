@@ -296,6 +296,15 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "motion.route",
+        "motion",
+        "User asks Rex to drive a MULTI-STEP route — two or more movements in one "
+        "command ('go forward a bit, then turn around and come back'). The steps run "
+        "in order on the drive base. A single movement is motion.turn/move/arc, not "
+        "this. Not for head/look gestures and never for a figure of speech.",
+        executable=True,
+    ),
+    ActionSpec(
         "web.search",
         "web",
         "User asks about news, current events, or anything needing live "
@@ -2180,6 +2189,280 @@ def classify_explicit_motion_sequence(
     return decisions
 
 
+# ── motion.route: model-planned multi-step routes (docs/motion_route_tool_plan.md) ──
+# The regex sequence parser above is the PRIMARY claim; this translator only ever
+# sees what it declined. It is the safety boundary for the whole feature: the model
+# names the magnitudes here (a route cannot re-read them out of the human's words the
+# way _motion_args_from_tool does — which number belongs to which leg IS the problem),
+# so every bound is enforced on this side and none of them is advisory.
+#
+# Two contracts it must not drift from, both learned expensively:
+#
+#   * ARG KEYS. motion_sequence._issue and interaction._handle_router_motion_action
+#     both read `direction`/`deg`, `direction`/`dist_m`, `ang_dir`/`lin_dir`/`small`.
+#     Neither reads a SIGN: turn_left/turn_right take abs(), move_back takes abs(),
+#     and a move direction of "backward" (not "back") falls through to FORWARD — the
+#     enum-value drift that would have driven Rex into the person who asked him to
+#     back away (2026-08-13). So the translator's output always carries an explicit
+#     direction word, and the schema asks for one. A signed magnitude is still
+#     ACCEPTED as a fallback when the model omits the direction, because a model that
+#     writes dist_m=-0.5 for "back up half a metre" is a likelier failure than one
+#     that writes the wrong enum — but the sign is consumed HERE and never forwarded.
+#
+#   * ZERO IS NOT ZERO. Both executors read the magnitude as
+#     `float(args.get("deg") or DEFAULT)`. `or` — so deg=0 is a 90 degree turn and
+#     dist_m=0 is a 0.30 m roll. A model emitting a placeholder zero would move the
+#     base, so a below-floor magnitude is a refusal, not a clamp.
+_ROUTE_OPS = ("turn", "move", "arc")
+# Direction vocabularies, as EXACT sets rather than prefix tests. A prefix test is
+# how "reverse" reads as "right" and "rearward" as "r-something": the shipped
+# single-verb belt uses `startswith("r")`, which is survivable there because the
+# schema offers a two-value enum, and is not survivable here where one shared
+# `direction` enum serves turn, move and arc steps. Anything outside these sets is
+# REFUSED rather than guessed at — see the ladders in route_tool_to_decisions.
+_ROUTE_LEFT = frozenset({"left", "l", "counterclockwise", "counter-clockwise",
+                         "counter clockwise", "ccw", "port"})
+_ROUTE_RIGHT = frozenset({"right", "r", "clockwise", "cw", "starboard"})
+_ROUTE_AROUND = frozenset({"around", "about", "about-face", "about face",
+                           "about_face", "aboutface", "180", "one-eighty",
+                           "one eighty", "u-turn", "u turn", "uturn",
+                           # A turn cannot be "backward" in any other sense, so
+                           # these are an about-face and not a guess. On a MOVE
+                           # step they mean the opposite thing, which is why the
+                           # two ladders never share a set.
+                           "back", "backward", "backwards"})
+_ROUTE_BACK = frozenset({"back", "backward", "backwards", "reverse", "rearward",
+                         "rear", "astern", "backup", "back up"})
+_ROUTE_FORWARD = frozenset({"forward", "forwards", "ahead", "straight",
+                            "straight ahead", "front", "fwd", "f"})
+
+
+def _route_direction_from_op(op_text: str) -> str:
+    """A direction named inside an aliased op ("move_back", "turn-right"), or "".
+
+    The op normalizer accepts single-verb TOOL names because a model that pattern-
+    matched motion_move/motion_turn will write them — but it consumed only the verb
+    and dropped the rest, so "move_back" arrived with no direction at all and fell to
+    the positive-magnitude default: one metre FORWARD, into whoever asked him to back
+    away. That is verbatim the failure this module's header says the design prevents.
+    """
+    tokens = [t for t in re.split(r"[^a-z0-9]+", str(op_text or "").lower()) if t]
+    for word in tokens:
+        if word in ("turn", "move", "arc", "motion"):
+            continue
+        if word in _ROUTE_LEFT or word in _ROUTE_RIGHT or word in _ROUTE_AROUND \
+                or word in _ROUTE_BACK or word in _ROUTE_FORWARD:
+            return word
+    if "u" in tokens and "turn" in tokens:
+        return "around"
+    return ""
+
+
+def _route_num(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if out != out or out in (float("inf"), float("-inf")):
+        return None
+    return out
+
+
+def _route_word(step: dict, *keys: str) -> str:
+    for key in keys:
+        value = str(step.get(key) or "").strip().lower()
+        if value:
+            return value
+    return ""
+
+
+def route_tool_to_decisions(
+    args: dict[str, Any] | None,
+) -> "tuple[list[ActionDecision] | None, str | None]":
+    """Validated motion.route tool args -> ordered ActionDecisions, or a refusal.
+
+    Returns ``(decisions, None)`` on success and ``(None, reason)`` on refusal. A
+    route with ONE bad step is a REFUSED route, never a truncated one — the same
+    no-partial-execution rule the tri-state above exists to enforce ("turn left then
+    sing" must not turn left).
+
+    Pure: no hardware, no config mutation, no speech. Every bound comes from config
+    so the ceiling is tunable from user_config.py without touching this file.
+    """
+    if not isinstance(args, dict):
+        return None, "route_args_not_an_object"
+    raw_steps = args.get("steps")
+    if isinstance(raw_steps, dict):          # a lone step emitted unwrapped
+        raw_steps = [raw_steps]
+    if not isinstance(raw_steps, (list, tuple)) or not raw_steps:
+        return None, "route_has_no_steps"
+
+    max_steps = max(1, int(_cfg_float("MOTION_ROUTE_MAX_STEPS", 6.0)))
+    if len(raw_steps) > max_steps:
+        return None, "route_too_many_steps"
+    max_step_m = _cfg_float("MOTION_ROUTE_MAX_STEP_M", 1.5)
+    max_total_m = _cfg_float("MOTION_ROUTE_MAX_TOTAL_M", 3.0)
+    max_step_deg = _cfg_float("MOTION_ROUTE_MAX_STEP_DEG", 360.0)
+    max_total_deg = _cfg_float("MOTION_ROUTE_MAX_TOTAL_DEG", 720.0)
+    min_step_m = _cfg_float("MOTION_ROUTE_MIN_STEP_M", 0.05)
+    min_step_deg = _cfg_float("MOTION_ROUTE_MIN_STEP_DEG", 5.0)
+    slow_scale = _cfg_float("MOTION_ROUTE_SLOW_PACE_SCALE", 0.5)
+
+    decisions: list[ActionDecision] = []
+    total_m = 0.0
+    total_deg = 0.0
+    for index, raw in enumerate(raw_steps, 1):
+        if not isinstance(raw, dict):
+            return None, "route_step_not_an_object"
+        op = _route_word(raw, "op", "action", "type")
+        if op not in _ROUTE_OPS:
+            # "motion.turn" / "turn_left" — a model that pattern-matched the
+            # single-verb TOOL names instead of the enum. Matched on token
+            # boundaries, not `in`: a bare substring test reads "march" as an arc.
+            tokens = set(re.split(r"[^a-z]+", op))
+            hit = [known for known in _ROUTE_OPS if known in tokens]
+            op = hit[0] if len(hit) == 1 else op
+        if op not in _ROUTE_OPS:
+            return None, "route_step_unknown_op"
+
+        raw_op = _route_word(raw, "op", "action", "type")
+        step_args: dict[str, Any] = {}
+        if op == "turn":
+            direction = (_route_word(raw, "direction", "dir", "side", "ang_dir")
+                         or _route_direction_from_op(raw_op))
+            deg = _route_num(raw.get("deg"))
+            if deg is None:
+                deg = _route_num(raw.get("degrees"))
+            if direction in _ROUTE_AROUND:
+                direction = "around"
+            elif direction in _ROUTE_RIGHT:
+                direction = "right"
+            elif direction in _ROUTE_LEFT:
+                direction = "left"
+            elif direction:
+                # A direction word this ladder does not know REFUSES. It used to fall
+                # through to the signed default below, which turned any unrecognized
+                # word into a LEFT turn — and the step schema's single shared
+                # `direction` enum offers "forward"/"back" on a turn step, so the
+                # model does not have to be creative to land here.
+                return None, "route_turn_bad_direction"
+            elif deg is not None and deg < 0:
+                direction = "right"          # signed fallback: - = right/CW
+            elif deg is not None and deg > 0:
+                direction = "left"
+            else:
+                return None, "route_turn_without_direction"
+            if deg is None:
+                deg = 180.0 if direction == "around" else _cfg_float(
+                    "MOTION_DEFAULT_TURN_DEG", 90.0)
+            deg = abs(deg)
+            if deg < min_step_deg:
+                return None, "route_turn_too_small"
+            # Per-step magnitude CLAMPS; the route's shape and its totals refuse.
+            # Same split, and the same numbers, as the single-verb tool path
+            # (interaction._motion_args_from_tool: min(abs(deg), 360)), so the same
+            # words get the same motion whether they arrive as one command or as a
+            # leg of a route. Clamping is not the truncation §4.2 forbids — the route
+            # keeps every step and every direction it was given; what §4.2 forbids is
+            # DROPPING a leg, which would leave the base somewhere nobody asked for.
+            deg = min(deg, max_step_deg)
+            total_deg += deg
+            if total_deg > max_total_deg:
+                return None, "route_over_total_rotation_cap"
+            step_args = {"direction": direction, "deg": deg}
+        elif op == "move":
+            direction = (_route_word(raw, "direction", "dir", "lin_dir")
+                         or _route_direction_from_op(raw_op))
+            dist = _route_num(raw.get("dist_m"))
+            if dist is None:
+                dist = _route_num(raw.get("distance"))
+            if direction in _ROUTE_BACK:
+                direction = "back"
+            elif direction in _ROUTE_FORWARD:
+                direction = "forward"
+            elif direction:
+                # "move" + a LATERAL word ("move right a little bit" — a real corpus
+                # utterance) used to become a straight metre FORWARD, at whatever was
+                # in front of him. The base cannot strafe; sideways is an `arc` step,
+                # and picking one of the two readings for the model is exactly the
+                # silent substitution this translator exists to refuse.
+                return None, "route_move_bad_direction"
+            elif dist is not None and dist < 0:
+                direction = "back"           # signed fallback: - = back
+            elif dist is not None and dist > 0:
+                direction = "forward"
+            else:
+                return None, "route_move_without_direction"
+            if dist is None:
+                dist = _cfg_float("MOTION_DEFAULT_MOVE_DIST_M", 0.30)
+            dist = abs(dist)
+            if dist < min_step_m:
+                return None, "route_move_too_small"
+            dist = min(dist, max_step_m)   # clamps; see the turn branch above
+            total_m += dist
+            if total_m > max_total_m:
+                return None, "route_over_total_distance_cap"
+            step_args = {"direction": direction, "dist_m": dist}
+        else:  # arc
+            # An arc carries BOTH senses, and the step schema's one shared
+            # `direction` enum can hold either. Read it by VALUE rather than by
+            # position: a "back" written into `direction` used to be consumed as the
+            # lateral word, discarded for not starting with "r", and replaced with a
+            # forward-LEFT curve — the same enum-drift class as the single-verb arc's
+            # lone `direction`, which is why that schema has no such field at all.
+            shared = _route_word(raw, "direction", "dir")
+            lateral = _route_word(raw, "ang_dir", "side")
+            linear = _route_word(raw, "lin_dir", "linear")
+            if not lateral and shared in (_ROUTE_LEFT | _ROUTE_RIGHT):
+                lateral = shared
+            elif not linear and shared in (_ROUTE_FORWARD | _ROUTE_BACK):
+                linear = shared
+            elif shared and not lateral:
+                return None, "route_arc_bad_direction"
+            if lateral in _ROUTE_LEFT:
+                lateral = "left"
+            elif lateral in _ROUTE_RIGHT:
+                lateral = "right"
+            elif lateral:
+                return None, "route_arc_bad_direction"
+            else:
+                return None, "route_arc_without_direction"
+            if linear in _ROUTE_BACK:
+                linear = "back"
+            elif linear in _ROUTE_FORWARD or not linear:
+                linear = "forward"
+            else:
+                return None, "route_arc_bad_direction"
+            step_args = {"ang_dir": lateral, "lin_dir": linear,
+                         "small": bool(raw.get("small"))}
+
+        # pace -> the per-command rate/speed motion_sequence._issue forwards to the
+        # wire. Arcs carry config magnitudes and a fixed duration, so a slow arc has
+        # nothing to scale — pace is accepted and ignored there rather than refused.
+        if _route_word(raw, "pace", "speed") in ("slow", "gentle", "careful", "easy"):
+            if op == "turn":
+                step_args["rate"] = max(
+                    1.0, _cfg_float("MOTION_DEFAULT_TURN_RATE", 75.0) * slow_scale)
+            elif op == "move":
+                step_args["speed"] = max(
+                    0.03, _cfg_float("MOTION_MAX_LINEAR_MS", 0.40) * slow_scale)
+
+        decisions.append(ActionDecision(
+            action=f"motion.{op}",
+            confidence=0.95,
+            args=step_args,
+            reason=f"motion.route step {index}/{len(raw_steps)}",
+        ))
+    return decisions, None
+
+
+def _cfg_float(name: str, default: float) -> float:
+    try:
+        return float(getattr(config, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def classify_explicit_motion(text: str) -> ActionDecision | None:
     """Classify explicit drive-base motion commands without an LLM call.
 
@@ -2877,6 +3160,16 @@ _MOTION_FIGURATIVE_RE = re.compile(
 )
 _MOTION_TOOL_ACTIONS = frozenset({
     "motion.turn", "motion.move", "motion.arc", "motion.come",
+    # motion.route rides the SAME positive test as the single verbs, deliberately.
+    # A route is only ever more base travel than a single command, so the gate that
+    # keeps "let's move on" from driving one leg has to keep it from driving six.
+    # The rescue path (interaction._explicit_motion_takeover's tri-state None arm)
+    # is the one caller that skips this: the sequence classifier has already run its
+    # own negation/figurative checks over that utterance and positively identified
+    # it as route-shaped, so re-running a SENTENCE-anchored imperative test there
+    # would veto exactly the disfluent real routes the rescue exists for
+    # ("Three feet, and turn a little bit right." leads with a noun phrase).
+    "motion.route",
 })
 
 
@@ -3038,7 +3331,8 @@ def missing_required_evidence_reason(
         # turn — require the deterministic imperative-invite classifier to agree.
         explicit = classify_explicit_exploration(cleaned)
         return None if explicit and explicit.action == action else "missing_explore_invite_evidence"
-    if action in {"motion.turn", "motion.move", "motion.arc", "motion.come", "motion.stop"}:
+    if action in {"motion.turn", "motion.move", "motion.arc", "motion.come",
+                  "motion.stop", "motion.route"}:
         # Added 2026-08-13 when the motion.* keys joined ACTION_ROUTER_EXECUTE_ACTIONS:
         # that also un-gated the LLM-decided motion branch in
         # interaction._handle_router_takeover_action, which had been dead ONLY because

@@ -877,6 +877,20 @@ def turn(
     tele = motion.telemetry()
     send_deg, reason = motion_swing.check_turn(
         deg, tele.get("tof_mm") if isinstance(tele, dict) else None)
+    spin_floor = _get_float("MOTION_SPIN_ALL_OR_NOTHING_DEG", 270.0)
+    if (not reason and spin_floor > 0.0 and abs(deg) >= spin_floor
+            and abs(send_deg) < abs(deg) - 1.0):
+        # A near-full spin is ALL OR NOTHING. check_turn's shrink is the right
+        # degradation for a 90 — turning most of the way toward what you asked for
+        # is still useful — and the wrong one for "do a 360": the point of a spin is
+        # ending where you started, so a 360 quietly delivered as 147 reports
+        # `completed` at a heading nobody asked for, and anything sequenced behind it
+        # (a route's next leg) then drives off that wrong heading. Fall into the same
+        # arm a hard block takes: step forward to earn the room if the front is open
+        # (694a975), else refuse and let the caller say so.
+        _log.info("[motion] %+.0f° spin refused rather than shrunk to %+.0f°",
+                  deg, send_deg)
+        reason = "swing_blocked"
     if reason:
         if not _escaped:
             seq = _try_swing_escape(deg, rate)
