@@ -101,15 +101,17 @@ class PromptSurfaceTest(HomieTestCase):
         homie.maybe_trigger("wassup homie")
         lines = homie.prompt_lines()
         self.assertEqual(len(lines), 1)
-        # The register lives HERE, not in the baseline — and it must carry BOTH
-        # halves: the code-switch itself and the guard against overdoing it.
+        # The register lives HERE, not in the baseline — full volume (owner
+        # second pass 2026-08-23: every line in register, no averaging down),
+        # with the one guard that survives: speak it, never mock it.
         for token in (
             "African American Vernacular English",
             "code-switch",
+            "every single reply",
+            "no neutral lines",
             "habitual \"be\"",
             "greet them back",
-            "NOT a costume",
-            "caricature",
+            "don't do an impression",
             "still Rex",
         ):
             self.assertIn(token, lines[0])
