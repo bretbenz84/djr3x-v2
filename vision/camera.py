@@ -280,6 +280,18 @@ def wait_for_frame(timeout_secs: float = 2.0) -> bool:
     return False
 
 
+def _visor_capture_target(visor_cfg: dict) -> int:
+    """How far to open the visor before a deliberate capture.
+
+    The channel max, and never below VISOR_CAMERA_CLEAR_FLOOR_QUS (1650 us) — the
+    point where the visor starts eating the top of the frame. Rex's expressive
+    speech motion is allowed to sit lower than that (VISOR_SPEECH_FLOOR_QUS, 1500
+    us), so a capture always has to raise it.
+    """
+    clear_floor = int(getattr(config, "VISOR_CAMERA_CLEAR_FLOOR_QUS", 6600))
+    return max(int(visor_cfg["max"]), clear_floor)
+
+
 def capture_still() -> Optional[np.ndarray]:
     """
     High-quality single capture for face enrollment and vision queries.
@@ -304,7 +316,7 @@ def capture_still() -> Optional[np.ndarray]:
 
     try:
         servos.set_servos({
-            visor_cfg["ch"]: visor_cfg["max"],
+            visor_cfg["ch"]: _visor_capture_target(visor_cfg),
             neck_cfg["ch"]:  neck_cfg["neutral"],
         })
         time.sleep(config.CAMERA_POSE_SETTLE_SECS)
@@ -334,14 +346,16 @@ def capture_current_gaze(settle_secs: float = 0.15) -> Optional[np.ndarray]:
     from hardware import servos
 
     visor_cfg = config.SERVO_CHANNELS["visor"]
-    visor_open = int(visor_cfg["max"])
+    visor_open = _visor_capture_target(visor_cfg)
     visor_before = servos.get_servo(visor_cfg["ch"]) or visor_cfg["neutral"]
 
     try:
         # Hold the visor fully open for the WHOLE settle. A single set-then-sleep let
         # the idle breathing/mood loop tug the visor back toward neutral (below the
         # 6400 lens-clear floor) before the grab, so a longer settle could still
-        # photograph a partly-covered lens. Re-assert across the settle to keep it clear.
+        # photograph a partly-covered lens. Re-assert across the settle to keep it
+        # clear — doubly so since speech motion may now dip to VISOR_SPEECH_FLOOR_QUS
+        # (1500 us), well below what a picture can tolerate.
         deadline = time.monotonic() + max(0.0, float(settle_secs))
         while True:
             servos.set_servo(visor_cfg["ch"], visor_open)

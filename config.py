@@ -2647,6 +2647,22 @@ SERVO_SPEECH_TILT_WOBBLE_QUS = 120
 SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS = 0.35
 SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS = 0.75
 SERVO_SPEECH_HAND_DIVISOR = 3
+# Visor travel while TALKING (hardware/servos._speech_targets). Each emotion picks
+# the bottom of its visor swing with visor_open_floor_frac (0.35 brooding … 0.92
+# wide-eyed); this is the hard floor underneath those. It used to be the visor's
+# own neutral, 6560 q-µs / 1640 µs — which sat ABOVE six of the ten emotion fracs
+# and flattened them all to the same opening, so the visor barely moved while he
+# talked. 6000 q-µs = 1500 µs (owner-set 2026-08-22) puts the quiet emotions back
+# below the talkative ones. It does clip the top of the camera frame, but not
+# enough to stop face recognition even standing right next to him, and any
+# deliberate capture re-opens the visor first (VISOR_CAMERA_CLEAR_FLOOR_QUS).
+# Raise toward 6560 to undo; the per-emotion fracs are the finer knob.
+VISOR_SPEECH_FLOOR_QUS = 6000
+# Floor for DELIBERATE captures (camera.capture_still / capture_current_gaze):
+# 6600 q-µs = 1650 µs, the point below which the visor starts eating the top of
+# the frame. Both paths open to the channel max, comfortably above this — the
+# floor is what keeps a picture off the expressive floor above if that changes.
+VISOR_CAMERA_CLEAR_FLOOR_QUS = 6600
 # Pokerarm sways back and forth while speaking on a SLOWER cadence than the hero arm
 # (which re-targets every update frame) — a slow, deliberate beat, yet far livelier
 # than the idle arm wander (which moves the pokerarm only every 4-9s).

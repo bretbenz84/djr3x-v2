@@ -904,8 +904,13 @@ def speech_reactive_move(intensity: float) -> None:
 
     visor_cfg = config.SERVO_CHANNELS["visor"]
     visor_floor_frac = max(0.0, min(1.0, _motion_float(motion, "visor_open_floor_frac", 0.55)))
+    # The hard floor under the emotion's own frac is VISOR_SPEECH_FLOOR_QUS, not the
+    # visor's neutral: neutral sat above six of the ten emotion fracs and flattened
+    # them to one opening, so the visor hardly moved while Rex talked (see the config
+    # note). Below the lens-clear floor by design — deliberate captures re-open the
+    # visor before they photograph anything.
     visor_open_floor = max(
-        visor_cfg["neutral"],
+        _get_config_int("VISOR_SPEECH_FLOOR_QUS", 6000),
         int(visor_cfg["min"] + (visor_cfg["max"] - visor_cfg["min"]) * visor_floor_frac),
     )
     visor_wave = 0.5 + 0.5 * math.sin(now * 8.0)

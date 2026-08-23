@@ -3608,7 +3608,9 @@ def _resolve_anonymous_speaker_slot(
         if (
             prior_pid is not None
             and bool(getattr(config, "VOICE_SIGNATURE_RESOLVE_PERSON_ENABLED", True))
-            and _signature_resolves_to_person(prior_score, prior.get("last_seen_at"))
+            and _signature_resolves_to_person(
+                prior_score, prior.get("last_seen_at"), person_id=prior_pid
+            )
         ):
             prow = None
             try:
@@ -3986,6 +3988,33 @@ def _intro_would_mint_unknown_name(
             return False  # links to an existing person — that path is fine
     except Exception as exc:
         _log.debug("[identity] mint-guard name lookup failed: %s", exc)
+        return False
+    return True
+
+
+def _challenged_voice_is_answering_whos_that(
+    text: str,
+    anonymous_speaker_label: Optional[str],
+) -> bool:
+    """True when an unresolved voice that Rex has just asked "who's speaking?" is
+    replying with its own name (no relationship word — "this is my brother Wade"
+    is still a third-party introduction)."""
+    pending = _pending_offscreen_identify
+    if not isinstance(pending, dict):
+        return False
+    ttl = float(getattr(config, "OFFSCREEN_IDENTIFY_WINDOW_SECS", 30.0))
+    try:
+        if (time.monotonic() - float(pending.get("asked_at") or 0.0)) > ttl:
+            return False
+    except (TypeError, ValueError):
+        return False
+    asked_label = pending.get("anonymous_speaker_label")
+    if asked_label and anonymous_speaker_label and asked_label != anonymous_speaker_label:
+        return False
+    if not _challenged_self_identified_name(text):
+        return False
+    parsed = introductions.detect(_split_aka_alias(text)[0], has_unknown_face=False)
+    if getattr(parsed, "relationship", None) or getattr(parsed, "subject_kind", "person") == "pet":
         return False
     return True
 
@@ -7698,11 +7727,45 @@ _CHALLENGED_SELF_ID_STOPWORDS = {
 }
 
 
+# "This is Exudica, A.K.A. Joy." / "I'm Joy, also known as Exudica" — the alias tail
+# is not name-shaped ("A.K.A." fails the alphabetic-token check), so the whole
+# self-introduction used to be rejected and the turn fell through to the
+# third-party introduction flow (field log 2026-08-22-20-12: Joy answered the
+# who's-that ask this way and Rex filed it as "JT introduced Exudica"). Split the
+# tail off: the text before it is the self-introduction, the tail is an alias.
+_AKA_ALIAS_RE = re.compile(
+    r"\s*,?\s*(?:\(?\s*)?(?:a\.?\s?k\.?\s?a\.?|also\s+known\s+as|otherwise\s+known\s+as)"
+    r"\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,2})\s*\)?\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _split_aka_alias(text: str) -> tuple[str, Optional[str]]:
+    """Return ``(text_without_alias_tail, alias)`` for "X, a.k.a. Y" phrasings.
+
+    Only a trailing alias is recognized; the returned alias is normalized like a
+    name. Texts without an alias tail come back unchanged with ``None``."""
+    raw = (text or "").strip()
+    if not raw:
+        return raw, None
+    m = _AKA_ALIAS_RE.search(raw)
+    if not m:
+        return raw, None
+    alias = _normalize_name(m.group(1).strip())
+    head = raw[: m.start()].strip()
+    if not head or not alias:
+        return raw, None
+    if not head.endswith((".", "!", "?")):
+        head += "."
+    return head, alias
+
+
 def _challenged_self_identified_name(text: str) -> Optional[str]:
     """Name from a self-identifying utterance by an ALREADY-CHALLENGED unknown voice
     ('This is JT', "it's Joy", 'I'm JT'). Field bug 2026-07-05-02-51: 'This is JT'
     armed the who's-that ask and Rex answered a self-introduction with
     'Nice to meet you, JT — who's speaking?'."""
+    text, _alias = _split_aka_alias(text)
     name = _extract_self_identified_name(text)
     if name:
         return name
@@ -9060,6 +9123,10 @@ def _extract_offscreen_identify_reply(
     In this slot a bare one-word reply is usually a name. Trust that context
     before letting words like "Joy" drift into ordinary sentiment/content.
     """
+    # "This is Exudica, A.K.A. Joy." — parse the primary name; the alias is filed
+    # separately by the caller (the extractor otherwise answered "Joy", which
+    # matched no person row while "Exudica" was already on file).
+    text, _alias = _split_aka_alias(text)
     try:
         parsed = llm.extract_relationship_introduction(text, speaker_name)
     except Exception as exc:
@@ -9500,6 +9567,16 @@ def _handle_pending_offscreen_identify_reply(
                         exc,
                     )
             _bind_world_state_identity(new_pid, intro_name)
+            _, aka_alias = _split_aka_alias(text)
+            if aka_alias and not _same_person_name(aka_alias, intro_name):
+                try:
+                    if people_memory.add_alias(new_pid, aka_alias, source="self_introduction"):
+                        _log.info(
+                            "[interaction] off-camera speaker %r also known as %r — alias filed",
+                            intro_name, aka_alias,
+                        )
+                except Exception as exc:
+                    _log.debug("off-camera alias save failed: %s", exc)
             retired_labels = {
                 pending.get("anonymous_speaker_label"),
                 anonymous_speaker_label,
@@ -9862,7 +9939,7 @@ def _voice_ambiguous_between_knowns(
     return float(score or 0.0) >= thr and 0.0 <= float(margin or 0.0) < known_margin
 
 
-def _signature_resolves_to_person(score: float, last_seen_at) -> bool:
+def _signature_resolves_to_person(score: float, last_seen_at, person_id=None) -> bool:
     """Should a person-linked voice signature resolve the speaker outright?
 
     Cold signatures (from an earlier session) need the strict bar. But a WARM one —
@@ -9878,6 +9955,17 @@ def _signature_resolves_to_person(score: float, last_seen_at) -> bool:
     if float(score or 0.0) < warm_bar:
         return False
     warm_secs = float(getattr(config, "VOICE_SIGNATURE_WARM_WINDOW_SECS", 900.0))
+    # Warm by PERSON, not just by signature: the linked person was confidently
+    # matched on their real prints minutes ago, so a short clip that scores low
+    # on the prints but lands on their linked signature is them still talking
+    # (field log 2026-08-22-20-12: Bret's 3-word "Yeah, that's Max" scored 0.444
+    # on his prints, 0.760 on his linked signature, and minted unknown_voice_2
+    # five minutes after he was matched at 0.89).
+    pid = _safe_int(person_id)
+    if pid is not None:
+        anchor = _last_confident_voice_at.get(pid)
+        if anchor is not None and 0.0 <= (time.monotonic() - anchor) <= warm_secs:
+            return True
     try:
         from datetime import datetime, timezone
         seen = datetime.fromisoformat(str(last_seen_at))
@@ -25855,6 +25943,24 @@ def _handle_speech_segment(
             except (TypeError, ValueError):
                 intro_introducer_id = None
             intro_introducer_name = recent_engagement.get("name")
+        # The speaker Rex is currently asking "who are you?" answering with a
+        # name-only "This is X" is ANSWERING, not introducing a third party. With
+        # person_id=None the introducer above is borrowed from recent engagement,
+        # so without this guard the answer becomes "<friend> introduced X" and the
+        # unknown voice is never enrolled or retired (field log 2026-08-22-20-12:
+        # Joy answered the ask and stayed unknown_voice_1 for the whole visit).
+        # The pending off-camera reply handler below consumes it instead.
+        if (
+            intro_introducer_id is not None
+            and person_id is None
+            and _challenged_voice_is_answering_whos_that(text, anonymous_speaker_label)
+        ):
+            _log.info(
+                "[introduction] challenged unknown voice is answering the who's-that "
+                "ask itself — not treating %r as an introduction by %r",
+                text, intro_introducer_name,
+            )
+            intro_introducer_id = None
         if intro_introducer_id is not None and not game_conversation_lock:
             has_unknown_for_intro = has_unknown_visible_now
             parsed_intro = introductions.detect(
