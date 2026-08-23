@@ -19,6 +19,11 @@ more often and swings the elbow through nearly its whole travel (the
 PRIDE_SPEECH_* knobs in config.py, which also explain why the wrist needs its own
 motion profile to move at all). Voice going full camp while the body kept its
 small polite gestures read as half a costume.
+
+Arming it also throws a ONE-SHOT: animations.pride_flourish() — head all the way
+down, visor all the way open, wrist all the way over, held together for a beat —
+fired from the same interaction hook, async so it plays over the LLM round trip
+and is finished by the time the answer comes out.
 """
 
 from __future__ import annotations
