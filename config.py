@@ -10293,3 +10293,20 @@ except ImportError:
 # ACTION_ROUTER_MODEL no longer follows LLM_MODEL (decoupled 2026-08-02, see its
 # definition above) — override it directly in user_config.py if needed.
 STARTUP_BOOT_TTS_LINE = STARTUP_BOOT_TTS_LINES[0]
+
+# ── Short-clip continuity (intelligence/interaction.py, 2026-08-22) ──────────
+# A clip of ≤ SHORT_CLIP_MAX_WORDS words or < SHORT_CLIP_MAX_SECS seconds that the
+# normal voice ladder leaves unresolved is attributed by CONTINUITY instead of
+# minting an unknown_voice_N slot and firing the who's-that ask: a person
+# confidently heard within SHORT_CLIP_ROSTER_WINDOW_SECS whose scan score clears
+# SHORT_CLIP_ROSTER_FLOOR and trails the top candidate by at most
+# SHORT_CLIP_ROSTER_MARGIN wins; else an existing anonymous slot at its normal
+# bar; else whoever spoke within SHORT_CLIP_LAST_SPEAKER_SECS; else the turn is
+# left unattributed with no ask. Never print material (AUTO_VOICE_REFRESH_MIN_SECS).
+SHORT_CLIP_CONTINUITY_ENABLED = _env_bool("SHORT_CLIP_CONTINUITY_ENABLED", True)
+SHORT_CLIP_MAX_WORDS = _env_int("SHORT_CLIP_MAX_WORDS", 3, min_value=0, max_value=10)
+SHORT_CLIP_MAX_SECS = _env_float("SHORT_CLIP_MAX_SECS", 1.5, min_value=0.0, max_value=10.0)
+SHORT_CLIP_ROSTER_WINDOW_SECS = _env_float("SHORT_CLIP_ROSTER_WINDOW_SECS", 600.0, min_value=0.0, max_value=7200.0)
+SHORT_CLIP_ROSTER_FLOOR = _env_float("SHORT_CLIP_ROSTER_FLOOR", 0.40, min_value=0.0, max_value=1.0)
+SHORT_CLIP_ROSTER_MARGIN = _env_float("SHORT_CLIP_ROSTER_MARGIN", 0.06, min_value=0.0, max_value=1.0)
+SHORT_CLIP_LAST_SPEAKER_SECS = _env_float("SHORT_CLIP_LAST_SPEAKER_SECS", 90.0, min_value=0.0, max_value=3600.0)

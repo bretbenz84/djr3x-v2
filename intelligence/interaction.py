@@ -3438,7 +3438,8 @@ def _normalize_voice_embedding(embedding: Any) -> Optional[np.ndarray]:
 
 
 def _clear_anonymous_speaker_slots() -> None:
-    global _anonymous_speaker_next_id
+    global _anonymous_speaker_next_id, _last_speaker_turn
+    _last_speaker_turn = None
     _anonymous_speaker_slots.clear()
     _anonymous_speaker_next_id = 1
 
@@ -3483,8 +3484,12 @@ def _resolve_anonymous_speaker_slot(
     raw_best_id: Optional[int],
     raw_best_name: Optional[str],
     raw_best_score: float,
+    short_clip: bool = False,
 ) -> tuple[Optional[str], Optional[float], Optional[dict]]:
     """Resolve an unresolved recurring voice.
+
+    ``short_clip``: the clip is too brief to trust as a NEW voice — an existing
+    slot or a person-linked signature may still claim it, but no slot is minted.
 
     Returns ``(label, match_score, resolved_person)``:
       * ``label`` — a session-only anonymous slot label (``unknown_voice_N``) when
@@ -3631,6 +3636,15 @@ def _resolve_anonymous_speaker_slot(
                     "person_id": prior_pid,
                     "person_name": prow.get("name"),
                 }
+
+    if short_clip:
+        _log.info(
+            "[anonymous_speaker] short clip — not minting a slot (best_existing=%s "
+            "raw_candidate=%s/%r raw_score=%.3f)",
+            f"{best_score:.3f}" if best_score is not None else None,
+            raw_best_id, raw_best_name, float(raw_best_score or 0.0),
+        )
+        return None, _safe_round_score(best_score), None
 
     max_slots = int(getattr(config, "ANONYMOUS_SPEAKER_SLOT_MAX", 8) or 0)
     if max_slots <= 0 or len(_anonymous_speaker_slots) >= max_slots:
@@ -13148,6 +13162,97 @@ def _maybe_onboarding_timeout() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Short-clip continuity: "mmhmm" is whoever was just talking, not a new person
+# ─────────────────────────────────────────────────────────────────────────────
+# A human identifies a cough or a one-word reply because they already know who
+# is in the room and who spoke last — not because the sound itself is distinctive.
+# ECAPA has almost nothing to work with under ~1.5 s (Bret's own "Yeah, that's
+# Max" scored 0.444 on five of his prints, field log 2026-08-22-20-12), so short
+# clips that fall through the normal ladder used to mint a fresh unknown_voice_N
+# and fire the who's-that ask. Owner request 2026-08-22: stop that. Short clips
+# resolve by continuity — a recently-confident known voice near the top of the
+# scoreboard, else an existing anonymous slot, else whoever spoke last — and are
+# NEVER print material (the refresh path's own 2.5 s floor already holds that).
+
+# Full per-person scoreboard of the most recent scan: [(pid, name, score, rows)].
+_last_scan_ranked: list = []
+
+# Final attribution of the last accepted human turn: who "has the floor".
+_last_speaker_turn: Optional[dict] = None
+
+
+def _note_last_speaker_turn(
+    person_id: Optional[int],
+    person_name: Optional[str],
+    anonymous_label: Optional[str],
+) -> None:
+    global _last_speaker_turn
+    pid = _safe_int(person_id)
+    if pid is None and not anonymous_label:
+        return
+    _last_speaker_turn = {
+        "person_id": pid,
+        "person_name": person_name,
+        "label": anonymous_label if pid is None else None,
+        "at": time.monotonic(),
+    }
+
+
+def _is_short_clip(text: str, audio_array: Optional[np.ndarray]) -> bool:
+    """A clip too short for the embedder to be trusted: few words OR brief audio.
+    Both tests, because the capture buffer pads short replies (a 2-word "yeah,
+    yeah" can arrive as 3 s of audio) and a long mumble can be one word."""
+    max_words = int(getattr(config, "SHORT_CLIP_MAX_WORDS", 3) or 0)
+    max_secs = float(getattr(config, "SHORT_CLIP_MAX_SECS", 1.5) or 0.0)
+    words = len([w for w in re.findall(r"[A-Za-z0-9']+", text or "")])
+    if max_words > 0 and 0 < words <= max_words:
+        return True
+    secs = _audio_duration_secs(audio_array)
+    return max_secs > 0 and 0.0 < secs < max_secs
+
+
+def _short_clip_roster_candidate(ranked: list) -> Optional[tuple[int, str, float]]:
+    """Among people confidently heard this session within the roster window, the
+    best-scoring one that clears the short-clip floor and sits within the margin
+    of the scoreboard's top candidate. None when nobody qualifies."""
+    if not ranked:
+        return None
+    window = float(getattr(config, "SHORT_CLIP_ROSTER_WINDOW_SECS", 600.0))
+    floor = float(getattr(config, "SHORT_CLIP_ROSTER_FLOOR", 0.40))
+    margin = float(getattr(config, "SHORT_CLIP_ROSTER_MARGIN", 0.06))
+    now = time.monotonic()
+    top_score = float(ranked[0][2])
+    best = None
+    for row in ranked:
+        try:
+            pid, name, score = int(row[0]), row[1], float(row[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        anchor = _last_confident_voice_at.get(pid)
+        if anchor is None or (now - anchor) > window:
+            continue
+        if score < floor or (top_score - score) > margin:
+            continue
+        if best is None or score > best[2]:
+            best = (pid, name, score)
+    return best
+
+
+def _short_clip_last_speaker() -> Optional[dict]:
+    last = _last_speaker_turn
+    if not isinstance(last, dict):
+        return None
+    window = float(getattr(config, "SHORT_CLIP_LAST_SPEAKER_SECS", 90.0))
+    if (time.monotonic() - float(last.get("at") or 0.0)) > window:
+        return None
+    if last.get("label") and not any(
+        s.label == last.get("label") for s in _anonymous_speaker_slots
+    ):
+        return None  # the slot was retired/cleared since
+    return dict(last)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Concurrent transcription + speaker identification
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -13172,6 +13277,8 @@ def _process_audio(
     when the runner-up's print set is thin) — callers compare raw_best_margin
     against it instead of the raw config value.
     """
+    global _last_scan_ranked
+    _last_scan_ranked = []
     default_margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07))
     text_box: list[str] = [""]
     # [person_id, name, score, margin, required_margin]
@@ -13184,7 +13291,9 @@ def _process_audio(
             text_box[0] = transcription.transcribe(audio_array)
 
     def _identify() -> None:
+        global _last_scan_ranked
         ranked = speaker_id.rank_speakers(audio_array)
+        _last_scan_ranked = list(ranked or [])
         if not ranked:
             return
         speaker_id._log_scoreboard(ranked)
@@ -25260,6 +25369,24 @@ def _handle_speech_segment(
             "raw_best_name": raw_best_name,
             "raw_best_score": float(speaker_score or 0.0),
         }
+        short_clip = (
+            bool(getattr(config, "SHORT_CLIP_CONTINUITY_ENABLED", True))
+            and transcribed_text is None
+            and _is_short_clip(text, audio_array)
+        )
+        short_clip_resolution: Optional[str] = None
+        if short_clip and person_id is None:
+            roster_pick = _short_clip_roster_candidate(_last_scan_ranked)
+            if roster_pick is not None:
+                person_id, person_name, _roster_score = roster_pick
+                off_camera_unknown = False
+                short_clip_resolution = "short_clip_roster"
+                _log.info(
+                    "[interaction] person resolution: short clip — roster continuity "
+                    "person_id=%s name=%r score=%.3f (raw_best=%s/%r %.3f)",
+                    person_id, person_name, _roster_score,
+                    raw_best_id, raw_best_name, float(speaker_score or 0.0),
+                )
         anonymous_speaker_label, anonymous_speaker_match_score, resolved_voice_person = (
             _resolve_anonymous_speaker_slot(
                 audio_array,
@@ -25267,8 +25394,41 @@ def _handle_speech_segment(
                 raw_best_id=raw_best_id,
                 raw_best_name=raw_best_name,
                 raw_best_score=speaker_score,
+                short_clip=short_clip,
             )
         )
+        if (
+            short_clip
+            and person_id is None
+            and resolved_voice_person is None
+            and not anonymous_speaker_label
+        ):
+            last = _short_clip_last_speaker()
+            if last is not None and last.get("person_id") is not None:
+                person_id = last.get("person_id")
+                person_name = last.get("person_name")
+                short_clip_resolution = "short_clip_last_speaker"
+                _log.info(
+                    "[interaction] person resolution: short clip — attributed to the "
+                    "last speaker person_id=%s name=%r",
+                    person_id, person_name,
+                )
+            elif last is not None and last.get("label"):
+                anonymous_speaker_label = last.get("label")
+                short_clip_resolution = "short_clip_last_speaker"
+                _log.info(
+                    "[interaction] person resolution: short clip — attributed to the "
+                    "last speaker %s", anonymous_speaker_label,
+                )
+            else:
+                short_clip_resolution = "short_clip_unattributed"
+                _log.info(
+                    "[interaction] person resolution: short clip from nobody recent — "
+                    "leaving it unattributed, no who's-that ask text=%r", text,
+                )
+            off_camera_unknown = False
+        if short_clip_resolution is not None:
+            identity_resolution_for_turn = short_clip_resolution
         if resolved_voice_person is not None:
             # Cross-session voice memory: this voice matched a signature already
             # linked to a known person. Treat the turn as that known speaker (the
@@ -25349,6 +25509,7 @@ def _handle_speech_segment(
                 speaker_label, person_id, text,
             )
             _note_session_person_turn(person_id)
+            _note_last_speaker_turn(person_id, person_name, anonymous_speaker_label)
             # Anchor for the lean-impulse flow gate: REAL accepted speech only. The
             # VAD-level _begin_user_turn also fires for Whisper hallucinations
             # ("and the"), which must not read as "the conversation is flowing".
