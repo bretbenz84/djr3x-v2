@@ -149,5 +149,137 @@ class PromptSurfaceTest(PrideTestCase):
         self.assertIn("QUEENY MODE", prompt)
 
 
+class QueenyBodyTest(PrideTestCase):
+    """Queeny mode moves as well as it talks (hardware/servos.speech_reactive_move).
+
+    Owner request 2026-08-22: more flamboyant WRIST (more waves, wider) and more
+    ELBOW range while he talks — the voice going full camp over the same small
+    polite gestures read as half a costume.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        from hardware import servos
+
+        self.servos = servos
+        servos._manual_override.clear()
+        servos._speech_active.set()
+        servos._speech_emotion_frame = {}
+        servos._speech_baseline = {}
+        self.addCleanup(servos._speech_active.clear)
+        self.addCleanup(setattr, servos, "_speech_emotion_frame", {})
+
+    def _frames(self, count: int = 6) -> list:
+        """`count` talking beats' worth of servo targets, with the per-beat jitter
+        pinned out so only the amplitude math shows."""
+        servos = self.servos
+        captured: list = []
+        servos._speech_hand_counter = 0
+        servos._speech_elbow_target = None
+        servos._speech_elbow_direction = 1
+        servos._next_speech_elbow_at = 0.0
+        servos._speech_poker_target = None
+        servos._next_speech_poker_at = 0.0
+        with (
+            mock.patch.object(servos, "SERVOS_ENABLED", True),
+            mock.patch.object(servos, "_program_servo_updates_blocked", return_value=False),
+            mock.patch.object(servos.random, "randint", return_value=0),
+            mock.patch.object(servos.random, "uniform", return_value=10.0),
+            mock.patch.object(servos, "set_servos", side_effect=lambda t: captured.append(dict(t))),
+        ):
+            servos.end_arm_gesture()
+            for _ in range(count):
+                servos._last_speech_move_at = 0.0
+                servos.speech_reactive_move(0.5)
+        return captured
+
+    def test_elbow_swings_wider_and_wrist_waves_more_often(self) -> None:
+        servos = self.servos
+        elbow_ch = servos._channel("elbow")
+        hand_ch = servos._channel("hand")
+        # The talking elbow swings around 55 % of its travel, not its neutral.
+        elbow_cfg = servos.config.SERVO_CHANNELS["elbow"]
+        center = int(elbow_cfg["min"] + (elbow_cfg["max"] - elbow_cfg["min"]) * 0.55)
+
+        plain = self._frames()
+        pride.maybe_trigger("are you gay?")
+        queeny = self._frames()
+
+        # Elbow: same beat (random.uniform is pinned, so the re-target schedule is
+        # identical) — just a bigger throw off centre.
+        plain_throw = abs(plain[0][elbow_ch] - center)
+        queeny_throw = abs(queeny[0][elbow_ch] - center)
+        self.assertGreater(queeny_throw, plain_throw * 1.5)
+        # And it stays inside the channel's travel — the elbow's range is only 1124
+        # q-us, so a mult that clamps would flatten the swing instead of widening it.
+        self.assertLessEqual(queeny[0][elbow_ch], servos.config.SERVO_CHANNELS["elbow"]["max"])
+        self.assertGreaterEqual(queeny[0][elbow_ch], servos.config.SERVO_CHANNELS["elbow"]["min"])
+
+        # Wrist: more waves — a reversal every 2nd beat instead of every 3rd.
+        plain_waves = [f[hand_ch] for f in plain if hand_ch in f]
+        queeny_waves = [f[hand_ch] for f in queeny if hand_ch in f]
+        self.assertEqual(len(plain_waves), 2)
+        self.assertEqual(len(queeny_waves), 3)
+        # … and a wider one.
+        hand_center = servos.config.SERVO_CHANNELS["hand"]["neutral"]
+        self.assertGreater(
+            abs(queeny_waves[0] - hand_center), abs(plain_waves[0] - hand_center) * 1.5
+        )
+
+    def test_wrist_gets_its_own_motion_profile_only_while_armed(self) -> None:
+        """The commanded amplitude is not what you see — at the speech profile's slew
+        the wrist covers under a tenth of its travel per beat. The flair is only real
+        if the hand channel is reprofiled, and only until the line ends."""
+        servos = self.servos
+        hand_ch = servos._channel("hand")
+
+        def _profiles() -> list:
+            calls: list = []
+            with (
+                mock.patch.object(servos, "SERVOS_ENABLED", True),
+                mock.patch.object(servos, "_program_servo_updates_blocked", return_value=False),
+                mock.patch.object(servos, "set_servos"),
+                mock.patch.object(servos, "set_breathing_emotion"),
+                mock.patch.object(
+                    servos,
+                    "set_motion_profile",
+                    side_effect=lambda chans=None, **kw: calls.append((list(chans or []), kw)),
+                ),
+            ):
+                servos.begin_speech_motion("neutral")
+            return calls
+
+        plain = _profiles()
+        self.assertFalse(any(chans == [hand_ch] for chans, _ in plain))
+        self.assertFalse(servos._pride_arm_profile)
+
+        pride.maybe_trigger("are you gay?")
+        armed = _profiles()
+        wrist = [kw for chans, kw in armed if chans == [hand_ch]]
+        self.assertEqual(len(wrist), 1)
+        self.assertEqual(wrist[0]["speed"], config.PRIDE_SPEECH_HAND_SPEED)
+        self.assertEqual(wrist[0]["acceleration"], config.PRIDE_SPEECH_HAND_ACCEL)
+        self.assertTrue(servos._pride_arm_profile)
+
+        # The line ends → the wrist goes back to the ordinary profile.
+        with (
+            mock.patch.object(servos, "SERVOS_ENABLED", True),
+            mock.patch.object(servos, "_program_servo_updates_blocked", return_value=False),
+            mock.patch.object(servos, "set_servos"),
+            mock.patch.object(servos, "set_breathing_emotion"),
+            mock.patch.object(servos, "set_motion_profile"),
+        ):
+            servos.end_speech_motion()
+        self.assertFalse(servos._pride_arm_profile)
+
+    def test_kill_switch_leaves_the_body_alone(self) -> None:
+        servos = self.servos
+        hand_ch = servos._channel("hand")
+        with mock.patch.object(config, "PRIDE_MODE_ENABLED", False):
+            pride.maybe_trigger("are you gay?")
+            frames = self._frames()
+        self.assertEqual(len([f for f in frames if hand_ch in f]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

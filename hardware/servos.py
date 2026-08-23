@@ -86,6 +86,10 @@ _speech_poker_target: int | None = None
 _speech_poker_direction = -1
 _next_speech_poker_at = 0.0
 _speech_emotion_frame: dict = {}
+# Queeny mode gives the wrist (and the elbow's ramp) their own motion profile for the
+# duration of a line; True while that override is on the Maestro so end_speech_motion
+# knows to hand the channels back to the normal speech profile.
+_pride_arm_profile = False
 
 # Listening-motion state: gentle "I'm processing you" body language that runs
 # from speech onset through transcription/LLM/TTS so Rex isn't frozen while he
@@ -153,6 +157,17 @@ def _resolve_speech_emotion_frame(emotion) -> dict:
             "motion_style": "neutral",
             "speech_motion": {},
         }
+
+
+def _pride_flair_active() -> bool:
+    """Is queeny mode on? Then the talking motion goes flamboyant (config
+    PRIDE_SPEECH_*). Lazy, guarded import — the hardware layer must never hard-depend
+    on intelligence/, and a pride module that fails to import just means no flair."""
+    try:
+        from intelligence import pride
+        return bool(pride.is_active())
+    except Exception:
+        return False
 
 
 def _scaled_profile_value(base: int, mult: float) -> int:
@@ -713,7 +728,7 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
     global _last_speech_move_at, _speech_hand_counter
     global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
     global _speech_poker_target, _speech_poker_direction, _next_speech_poker_at
-    global _speech_emotion_frame
+    global _speech_emotion_frame, _pride_arm_profile
 
     if _program_servo_updates_blocked():
         return
@@ -768,11 +783,25 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
                 speed=arm_speed,
                 acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
             )
+            # Queeny mode: the wrist can't wave at the speech profile's slew (it covers
+            # under a tenth of its travel per beat), so give it — and the elbow's ramp —
+            # their own profile for this line. end_speech_motion hands them back.
+            _pride_arm_profile = _pride_flair_active()
+            if _pride_arm_profile:
+                set_motion_profile(
+                    [_channel("hand")],
+                    speed=_get_config_int("PRIDE_SPEECH_HAND_SPEED", 120),
+                    acceleration=_get_config_int("PRIDE_SPEECH_HAND_ACCEL", 40),
+                )
+                set_motion_profile(
+                    [_channel("elbow")],
+                    acceleration=_get_config_int("PRIDE_SPEECH_ELBOW_ACCEL", 25),
+                )
 
 
 def end_speech_motion() -> None:
     """Return speech-owned channels toward their baseline and release arms."""
-    global _speech_emotion_frame
+    global _speech_emotion_frame, _pride_arm_profile
     _speech_active.clear()
     # A sleep/shutdown ack clip ends INSIDE the transition — the state has already
     # flipped (or is about to latch) by the time this fires from the audio-end
@@ -780,6 +809,16 @@ def end_speech_motion() -> None:
     # (field 2026-08-13: the "Going dark" clip's release raced the sleep glide and
     # the visor never fully closed). Keep the bookkeeping, skip the pose.
     if not _automatic_motion_allowed():
+        # A profile is not a pose — handing the wrist/elbow back costs no motion, and
+        # leaving queeny mode's fast wrist armed would make whatever moves the arm next
+        # (after a sleep, say) snap.
+        if _pride_arm_profile:
+            _pride_arm_profile = False
+            set_motion_profile(
+                config.ARM_CHANNELS,
+                speed=_get_config_int("SERVO_DEFAULT_SPEED", 40),
+                acceleration=_get_config_int("SERVO_DEFAULT_ACCELERATION", 8),
+            )
         _speech_emotion_frame = {}
         set_breathing_emotion("neutral")
         return
@@ -814,6 +853,11 @@ def end_speech_motion() -> None:
         elif _gui_servo_sim_enabled():
             set_servos(_baseline_pose())
     finally:
+        # The reprofile above already put the arm back on the default speed/accel
+        # (it covers ARM_CHANNELS whenever a scripted gesture doesn't own them); if a
+        # gesture DOES own them it set its own profile, so either way the override is
+        # no longer ours.
+        _pride_arm_profile = False
         _speech_emotion_frame = {}
         set_breathing_emotion("neutral")
         resume_arm_idle()
@@ -851,6 +895,14 @@ def speech_reactive_move(intensity: float) -> None:
     _last_speech_move_at = now
 
     intensity = max(0.0, min(1.0, float(intensity)))
+    # Queeny mode talks with its hands: a wider wrist swing on a quicker beat and a
+    # much bigger elbow. Read once per update so a mode that expires mid-line simply
+    # settles back on the next beat.
+    pride_flair = _pride_flair_active()
+    pride_hand_mult = _get_config_float("PRIDE_SPEECH_HAND_AMP_MULT", 1.7) if pride_flair else 1.0
+    pride_elbow_mult = (
+        _get_config_float("PRIDE_SPEECH_ELBOW_AMP_MULT", 1.9) if pride_flair else 1.0
+    )
     frame_intensity = _motion_float(frame, "intensity", 0.35)
     expression_gain = 0.70 + 0.45 * max(0.0, min(1.0, frame_intensity))
     expressive_intensity = min(1.0, intensity * expression_gain)
@@ -932,6 +984,7 @@ def speech_reactive_move(intensity: float) -> None:
             span
             * (0.10 + 0.12 * arm_intensity)
             * _motion_float(motion, "elbow_amp_mult", 1.0)
+            * pride_elbow_mult
         )
         _speech_elbow_target = _clamp(
             elbow_ch,
@@ -968,7 +1021,12 @@ def speech_reactive_move(intensity: float) -> None:
     targets[poker_ch] = _speech_poker_target
 
     _speech_hand_counter += 1
-    hand_divisor = max(1, _get_config_int("SERVO_SPEECH_HAND_DIVISOR", 3))
+    hand_divisor = max(
+        1,
+        _get_config_int("PRIDE_SPEECH_HAND_DIVISOR", 2)
+        if pride_flair
+        else _get_config_int("SERVO_SPEECH_HAND_DIVISOR", 3),
+    )
     if _speech_hand_counter % hand_divisor == 0:
         hand_cfg = config.SERVO_CHANNELS["hand"]
         center = hand_cfg["neutral"]
@@ -976,6 +1034,7 @@ def speech_reactive_move(intensity: float) -> None:
             (hand_cfg["max"] - hand_cfg["min"])
             * (0.08 + 0.12 * arm_intensity)
             * _motion_float(motion, "hand_amp_mult", 1.0)
+            * pride_hand_mult
         )
         direction = -1 if (_speech_hand_counter // hand_divisor) % 2 == 0 else 1
         targets[hand_ch] = _clamp(hand_ch, center + direction * amplitude)

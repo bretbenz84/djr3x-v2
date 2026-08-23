@@ -7970,6 +7970,33 @@ REX_MOOD_GREETING_ASIDE_ENABLED = _env_bool("REX_MOOD_GREETING_ASIDE_ENABLED", T
 # voices. Re-asking refreshes the TTL.
 PRIDE_MODE_ENABLED = _env_bool("PRIDE_MODE_ENABLED", True)
 PRIDE_MODE_TTL_SECS = 600.0
+
+# QUEENY MODE also moves differently — the voice going full camp while the body
+# talks with the same small polite gestures reads as half a costume. While pride
+# is active, the talking motion (hardware/servos.speech_reactive_move) gets a
+# flamboyant wrist and a bigger elbow.
+#
+# THE WRIST. During ordinary speech the hand channel is profiled at
+# SERVO_SPEECH_ARM_SPEED=35 / SERVO_SPEECH_ACCELERATION=8 — 3500 and 10000
+# quarter-us per second (and per second squared). Its beat is one reversal every
+# SERVO_SPEECH_HAND_DIVISOR * SERVO_SPEECH_UPDATE_INTERVAL_SECS = 0.36 s, and in
+# 0.36 s an accel-limited servo covers ~650 q-us of the wrist's 8000 q-us travel
+# — under 8 %, most of it spent ramping. The commanded amplitude has never been
+# what you see; the SLEW is. So the wrist gets its own profile here, the way the
+# wave-back gesture does (which runs speed ~250 / accel 0 for a full-travel sweep
+# in 0.32 s — these are deliberately gentler than that: a talking flourish, not a
+# semaphore). Raising the amplitude alone does nothing.
+PRIDE_SPEECH_HAND_AMP_MULT = 1.7        # commanded swing, x the normal 0.08-0.20 of travel
+PRIDE_SPEECH_HAND_DIVISOR = 2           # reversal every 2 update ticks (0.24 s) vs 3 (0.36 s)
+PRIDE_SPEECH_HAND_SPEED = 120           # q-us/s / 100 — so the wider sweep is actually reached
+PRIDE_SPEECH_HAND_ACCEL = 40            # eased, not snapped (0 = the Maestro's unlimited)
+#
+# THE ELBOW gets range WITHOUT a higher top speed: its travel is only 1124 q-us,
+# so at speed 35 the limiter on a wider swing is the ACCELERATION, not the cap.
+# Peak elbow speed is therefore unchanged — it just stops ramping so lazily and
+# reaches the wider target inside the same 0.35-0.75 s beat.
+PRIDE_SPEECH_ELBOW_AMP_MULT = 1.9       # ~0.42 of travel at full intensity, vs ~0.22
+PRIDE_SPEECH_ELBOW_ACCEL = 25
 # Higher than the lull roll (0.3): the hello is a better-fitting moment, and the
 # once-per-day spend is shared with the lull cue, so this mostly decides WHICH of
 # the two gets it rather than adding a second chance to hear about his day.

@@ -12,6 +12,13 @@ already lands in register.
 
 Trigger detection happens at the top of interaction._stream_llm_response — before
 any reply tokens are generated — so activation and the answer share one turn.
+
+The BODY reads the same activation: hardware/servos.speech_reactive_move asks
+is_active() on every talking beat and, while it's on, waves the wrist wider and
+more often and swings the elbow through nearly its whole travel (the
+PRIDE_SPEECH_* knobs in config.py, which also explain why the wrist needs its own
+motion profile to move at all). Voice going full camp while the body kept its
+small polite gestures read as half a costume.
 """
 
 from __future__ import annotations
