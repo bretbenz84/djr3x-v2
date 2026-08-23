@@ -442,9 +442,9 @@ def _apply_startup_motion_profile_locked() -> None:
 def _assert_startup_rest_pose_locked() -> dict[int, int]:
     """Command gravity's own pose on weight-loaded channels, first thing.
 
-    With the robot fully powered off every servo goes limp, and the arm's weight
-    drags the ELBOW to the bottom of its travel (config's "rest"). The Maestro's
-    speed/acceleration limits ramp the pulse it SENDS, not the shaft it can't
+    With the robot fully powered off every servo goes limp and the arm falls,
+    landing the ELBOW at config's "rest". The Maestro's speed/acceleration
+    limits ramp the pulse it SENDS, not the shaft it can't
     see: after a cold boot the channel is off (a position read returns 0), so
     whatever target is commanded first is a step change the servo chases at full
     torque, from wherever the arm actually fell. That is the violent elbow jerk

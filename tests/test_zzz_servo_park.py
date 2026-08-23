@@ -10,7 +10,7 @@ rising smoothly (field 2026-08-11: "he's started up and jerked to these
 locations").
 
 The single test below glides every channel back to the shutdown rest pose (head
-lowered, tilt down, visor closed, neck centred, elbow down at its rest, the
+lowered, tilt down, visor closed, neck centred, elbow at its unpowered rest, the
 other arm channels neutral) — the exact pose startup() assumes. The module name
 starts with `test_zzz` so an alphabetical per-module sweep (the standard
 full-suite runner, see CLAUDE.md) reaches it last. With no Maestro connected
@@ -59,9 +59,9 @@ class ServoParkTest(unittest.TestCase):
             acceleration=int(getattr(config, "SHUTDOWN_DROOP_SERVO_ACCELERATION", 14)),
         )
 
-        # SHUTDOWN_REST_POSE already carries the elbow at ELBOW_REST (the bottom of
-        # its travel, where the limp arm hangs once the power is off) — don't put it
-        # back to neutral here, or the next cold boot jerks the fallen arm up.
+        # SHUTDOWN_REST_POSE already carries the elbow at ELBOW_REST (where the limp
+        # arm falls once the power is off) — don't put it back to neutral here, or
+        # the next cold boot jerks the fallen arm out of it.
         targets = dict(animations.SHUTDOWN_REST_POSE)
         targets.update({
             5: animations.HAND_NEUTRAL,

@@ -2702,18 +2702,19 @@ SERVO_CHANNELS = {
     "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 3600},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
     "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — 6000 hid part of the camera
-    # max retuned 7560 -> 7424 on 2026-08-22: the MAESTRO's own stored channel-4
-    # limit is 1856 us, so it silently clipped every target above 7424 (measured
-    # on the robot: commanding 7560 or 7500 both read back 7424, while 6300 at
-    # the other end is honoured exactly). 7560 was a number only the software
-    # believed. rest = that same 7424, the BOTTOM of the elbow's travel (higher
-    # qus = arm hanging lower; min = arm folded up, see animations.ELBOW_UP /
-    # ELBOW_DOWN). Powered down the servo is limp and the forearm's weight drags
-    # the elbow to this end anyway, so parking and starting here is the only
-    # value that doesn't make the servo yank the fallen arm somewhere else the
-    # instant it gets a pulse (field 2026-08-22: a violent snap on every cold
-    # boot). Raise both together if the Maestro's stored limit is ever widened.
-    "elbow":    {"ch": 4, "min": 6300, "max": 7424, "neutral": 6720, "rest": 7424},
+    # rest = 6300, the MIN end and the lowest value the limits allow. Powered
+    # down the servo is limp and the arm falls; owner-confirmed 2026-08-22 that
+    # it lands at this end of the travel, so parking and starting here is the
+    # only value that doesn't make the servo yank the fallen arm somewhere else
+    # the instant it gets a pulse (a violent snap on every cold boot). NOTE the
+    # constants in animations name this end ELBOW_UP — the names predate this
+    # and disagree with which way the arm actually hangs.
+    # max retuned 7560 -> 7424 the same day, unrelated to the rest pose: the
+    # MAESTRO's own stored channel-4 limit is 1856 us, so it silently clipped
+    # every target above 7424 (measured on the robot — commanding 7560 or 7500
+    # both read back 7424, while 6300 at the other end is honoured exactly).
+    # 7560 was a number only the software believed.
+    "elbow":    {"ch": 4, "min": 6300, "max": 7424, "neutral": 6720, "rest": 6300},
     "hand":     {"ch": 5, "min": 1984, "max": 9984, "neutral": 6000},
     "pokerarm": {"ch": 6, "min": 3968, "max": 8000, "neutral": 6000},
     "heroarm":  {"ch": 7, "min": 3968, "max": 8000, "neutral": 6000},

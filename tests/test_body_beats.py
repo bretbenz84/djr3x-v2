@@ -377,11 +377,10 @@ class BodyBeatAnimationTest(unittest.TestCase):
             animations.shutdown()
 
         stop_breathing.assert_called_once()
-        # Visor, neck, head-lift, head-tilt and the elbow all droop together in ONE
+        # Visor, neck, head-lift, head-tilt and the elbow all travel together in ONE
         # move_to so the droid powers down in a single motion (not visor→tilt→lift).
-        # The elbow lands at ELBOW_REST — the bottom of its travel, where the limp
-        # arm hangs once the power is off — so the next cold boot's first elbow
-        # target matches the arm instead of yanking it up.
+        # The elbow lands at ELBOW_REST — where the limp arm falls once the power is
+        # off — so the next cold boot's first elbow target matches the arm.
         self.assertEqual(len(moves), 1)
         self.assertEqual(
             moves[0],
@@ -490,21 +489,19 @@ class BodyBeatAnimationTest(unittest.TestCase):
 class ElbowUnpoweredRestTest(unittest.TestCase):
     """The elbow starts and ends the session where gravity leaves it.
 
-    Powered down the servos go limp and the arm's weight drags the elbow to the
-    bottom of its travel. The Maestro ramps the pulse it sends, not the shaft it
-    can't see, so the FIRST target after a cold boot is chased at full torque
-    from wherever the arm actually fell — the violent startup jerk (field
-    2026-08-22). Both ends of the fix are asserted here.
+    Powered down the servos go limp and the arm falls. The Maestro ramps the
+    pulse it sends, not the shaft it can't see, so the FIRST target after a cold
+    boot is chased at full torque from wherever the arm actually fell — the
+    violent startup jerk (2026-08-22). Both ends of the fix are asserted here.
     """
 
-    def test_rest_is_the_bottom_of_the_elbows_travel(self):
+    def test_rest_is_the_lowest_value_the_elbow_limits_allow(self):
         import config
         from sequences import animations
 
         cfg = config.SERVO_CHANNELS["elbow"]
-        # Higher qus = arm hanging lower, so the resting end is the MAX limit.
-        self.assertEqual(animations.ELBOW_REST, int(cfg["max"]))
-        self.assertEqual(animations.ELBOW_REST, animations.ELBOW_DOWN)
+        # Owner-confirmed: the unpowered arm falls to the MIN end of the travel.
+        self.assertEqual(animations.ELBOW_REST, int(cfg["min"]))
         self.assertEqual(animations.SHUTDOWN_REST_POSE[4], animations.ELBOW_REST)
 
     def test_connect_commands_the_rest_pose_before_anything_else_moves(self):
