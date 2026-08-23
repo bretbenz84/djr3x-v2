@@ -71,9 +71,25 @@ _speaking = False
 _speaking_lock = threading.Lock()
 
 
+# Emoji and screen-only symbols (owner 2026-08-23: "wassup homie 😏" — the LLM
+# emits them despite the no-emoji prompt rule, and they're at best silence and at
+# worst read aloud). Pictographs, dingbats/misc symbols, arrows/stars, and the
+# ZWJ/variation-selector glue that composes them.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"  # pictographs, emoticons, transport, flags, ext-A
+    "☀-➿"          # misc symbols + dingbats
+    "⬀-⯿"          # arrows, stars
+    "️‍"           # variation selector, zero-width joiner
+    "]+"
+)
+
+
 def _normalize_for_speech(text: str) -> str:
-    """Expand compact forms that ElevenLabs tends to pronounce badly."""
-    spoken = " ".join((text or "").split())
+    """Expand compact forms that ElevenLabs tends to pronounce badly, and drop
+    emoji — every caller here is a speech path, so screen-only symbols are never
+    part of the take (they also poison the cache key with invisible variants)."""
+    spoken = " ".join(_EMOJI_RE.sub(" ", text or "").split())
     replacements = [
         (r"\bWWII\b", "World War Two"),
         (r"\bWW2\b", "World War Two"),

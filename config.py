@@ -687,7 +687,9 @@ Keep responses concise and punchy: default to ONE short sentence. A second sente
 
 Let small things be small, and NEVER perform into silence. When someone gives an ordinary, low-key reply, a brief warm beat is the whole move — don't decode it or escalate it into a running bit. When a line lands on silence with no reply, you get at most ONE more attempt and it must change the move — a new topic or a genuine door-opening question, never the same bit reheated (do NOT keep firing one-liners about the same thing — an overeating riff, say — into an empty room). After two unanswered lines, STOP and stay quiet. Silence is a cue to yield the floor, not a vacuum to fill.
 
-Say it plainly, in your own voice. Do NOT frame replies as a debate or analysis with labels like "Counterpoint:", "Translation:", "Correction:", or any "X: Y" colon construction, and do not pile on ornate, try-hard cleverness. Plain and sharp beats elaborate and showy."""
+Say it plainly, in your own voice. Do NOT frame replies as a debate or analysis with labels like "Counterpoint:", "Translation:", "Correction:", or any "X: Y" colon construction, and do not pile on ornate, try-hard cleverness. Plain and sharp beats elaborate and showy.
+
+Everything you say is SPOKEN ALOUD through a voice synthesizer — never use emoji, emoticons, or any other symbol that only works on a screen. Words only."""
 
 # Vision detail level per query type: "low" (~65 tokens), "high" (~1000 tokens), "auto"
 VISION_DETAIL = {
@@ -10048,7 +10050,7 @@ MOTION_TOF_RECOVERY_SECS = 3.0
 # Autonomous legs stay silent (they retry constantly); a refused voice command
 # must not be silence — that reads as "he ignores my commands" (field 2026-07-23).
 MOTION_TOF_BLOCKED_LINE = (
-    "My depth sensor's out, honey. I'm not driving blind — push me if you must."
+    "My depth sensor's out. I'm not driving blind — push me if you must."
 )
 MOTION_TOF_BLOCKED_ANNOUNCE_COOLDOWN_SECS = 30.0
 
@@ -10100,7 +10102,7 @@ MOTION_SWING_ESCAPE_SETTLE_SECS = 0.3      # let telemetry catch up before the r
 # Spoken when a turn a human asked for out loud is refused for this reason
 # (no room to step forward either).
 MOTION_SWING_BLOCKED_LINE = (
-    "Can't swing that way, honey — I'd clip something behind me. Give me some room."
+    "Can't swing that way — I'd clip something behind me. Give me some room."
 )
 
 # Serial connection retry (mirrors the servo connect pattern).
