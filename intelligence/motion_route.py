@@ -93,14 +93,39 @@ _SYSTEM = (
     "- surrounding chatter that is not addressed to the robot is ignored;\n"
     "- when a clause asks for something OTHER than driving ('...and tell me what "
     "you see'), plan only the driving and leave the rest alone.\n"
-    "A plan of a single step is a complete, correct answer — do not decline "
-    "because there is only one movement. Decline only when there is no real drive "
-    "command in there at all, or when it names a place or an object to drive to.\n"
-    "A drive verb is not a drive command. These are all declines: a discourse "
-    "marker that opens a sentence about something else ('moving forward, I want to "
-    "try something', 'going forward, let's...'), a figure of speech ('let's move "
-    "on', 'let's roll', 'back me up'), a story about someone else moving, a plan "
-    "for later ('we should do a lap sometime'), and a negated or withdrawn command."
+    # SCOPING. Every decline rule below judges the COMMAND; the ignore-chatter
+    # rule above judges a SPAN. That mismatch was a live bug: field 2026-08-23
+    # 13:49, "No, cause I don't have not. We don't have places to go. Turn to
+    # your right, then move forward five feet." declined 8 times in 12, and the
+    # model's own reasons said why — "no real drive command UNTIL THE FINAL
+    # ROUTE", "it also says no places to go". It could see the command and let a
+    # negation, and the bare word "places", outvote it. Measured on the mined
+    # field corpus, this rewrite takes chatter-wrapped commands from 31/42 to
+    # 36/42 with 39/39 chatter-only and 18/18 negated declines both unchanged.
+    "Find the drive command first, then judge only it. Chatter, an answer to "
+    "an earlier question, an aside to someone else, a false start, a "
+    "self-correction: set them aside, do not weigh them. Heard on the robot — "
+    "'No, "
+    "cause I don't have not. We don't have places to go. Turn to your right, "
+    "then move forward five feet.' — the command is the last sentence and the "
+    "plan is a turn and then a move; the muttering in front of it is not "
+    "evidence against it. A negation, a figure of speech, or a word like "
+    "'place' or 'go' sitting elsewhere in the utterance is never a reason to "
+    "refuse a command that is plainly there. A plan of a single step is a "
+    "complete, correct answer — do not decline because there is only one "
+    "movement. "
+    "\n"
+    "Decline when, with the rest set aside, no drive command is left, or when "
+    "the command's own target is a place or an object he would have to find "
+    "('go to the couch', 'drive to the kitchen') instead of plain geometry — "
+    "never merely because the word 'place' was said. A drive verb is not a "
+    "drive command: a discourse marker opening a sentence about something "
+    "else ('moving forward, I want to try something', 'going forward, "
+    "let's...'), a figure of speech ('let's move on', 'let's roll', 'back me "
+    "up'), a story about someone else moving, a route someone is retelling, a "
+    "plan for later ('we should do a lap sometime'). A negation counts only "
+    "when it negates the drive command itself — 'don't move', 'turn left, no, "
+    "forget it' — not when it negates something else nearby. "
 )
 
 

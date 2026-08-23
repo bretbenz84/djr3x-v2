@@ -131,6 +131,31 @@ def _corpus(paths, *, verbose=True):
     return [t for t, _ in buckets.get("rescue", [])]
 
 
+# Chatter wrapped around a REAL drive command — mined from the logs, because this
+# is how people actually talk to him. Every one of these SHOULD plan. They are the
+# regression set for the decline-scoping bug of 2026-08-23: the rules that refuse a
+# figure of speech were being applied to the whole utterance while the rule that
+# ignores chatter was applied to a span, so a negation or the bare word "places"
+# elsewhere in the sentence vetoed a command sitting right there. Measured on this
+# set: 31/42 before the rewrite, 36/42 after, with the decoys unmoved.
+EMBEDDED = (
+    "No, cause I don't have not. We don't have places to go. Turn to your right, then move forward five feet.",
+    'Yeah. Uh huh. Turn to your right and move forward.',
+    "Oh, hardline! Yeah, you know Discord. I'm on Discord right now. Yeah. He actually isn't in it right now, but he can actually get on. Go turn to your right.",
+    "Actually, nothing's in your way. Your sensor is lying to you. You should move forward two feet.",
+    "Did you just say man? The way she's mean? Rex, move forward 5 feet",
+    "Oh, you went a little far, but I'm over here, turn right, find the black guy.",
+    'You still have three feet ahead of you. Can you move forward two feet?',
+    "Turn right a little. Alright, it's got two sides.",
+    "Turn to your right. I don't think you should have entered anymore at all.",
+    'Turn to your left a little bit, and then tell me what you see.',
+    'Turn to your left, Max. Go to where.',
+    'Turn around and come forward, Ozzie',
+    'Turn, never mind, move forward, four feet.',
+    'Turn, turn to your left.',
+)
+
+
 def _would_be_stopped(text: str) -> "str | None":
     """Whether the deterministic layers would stop this plan before the wheels.
 
@@ -162,12 +187,13 @@ def _live(corpus):
     if not motion_route.available():
         print("interpreter unavailable (offline, or MOTION_ROUTE_ENABLED is off)")
         return
-    rows = ([(t, "route") for t in corpus] + [(t, "decoy") for t in DECOYS])
-    planned = {"route": 0, "decoy": 0}
-    reached = {"route": 0, "decoy": 0}
-    stopped = {"route": 0, "decoy": 0}
-    declined = {"route": 0, "decoy": 0}
-    refused = {"route": 0, "decoy": 0}
+    rows = ([(t, "route") for t in corpus] + [(t, "embedded") for t in EMBEDDED]
+            + [(t, "decoy") for t in DECOYS])
+    planned = {"route": 0, "embedded": 0, "decoy": 0}
+    reached = {"route": 0, "embedded": 0, "decoy": 0}
+    stopped = {"route": 0, "embedded": 0, "decoy": 0}
+    declined = {"route": 0, "embedded": 0, "decoy": 0}
+    refused = {"route": 0, "embedded": 0, "decoy": 0}
     errors = 0
     secs: list[float] = []
     print(f"replaying {len(corpus)} None-arm utterances + {len(DECOYS)} decoys\n")
@@ -206,6 +232,8 @@ def _live(corpus):
           f"[declined {declined['decoy']}, clamp-refused {refused['decoy']}]")
     print(f"   decoys that would REACH the wheels: {reached['decoy']}/{len(DECOYS)}  "
           f"(want 0 — {stopped['decoy']} stopped by the deterministic gates)")
+    print(f"   chatter-wrapped commands planned  : {planned['embedded']}/{len(EMBEDDED)}  "
+          f"[declined {declined['embedded']}, clamp-refused {refused['embedded']}]")
     print(f"   interpreter errors                : {errors}")
     if secs:
         print(f"   latency median/p90                : {statistics.median(secs):.2f}s / "
