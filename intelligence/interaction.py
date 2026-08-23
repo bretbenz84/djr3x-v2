@@ -14686,9 +14686,13 @@ def _stream_llm_response(
     """
     # Queeny-mode trigger (intelligence/pride.py): "are you gay?" arms the overlay
     # BEFORE any reply tokens stream, so the answer itself is already in register.
+    # Arming also throws the physical flourish (head down, visor wide, wrist out, held)
+    # — async, so it plays over the LLM round trip and is done by the time he answers.
     try:
         from intelligence import pride as _pride
-        _pride.maybe_trigger(text)
+        if _pride.maybe_trigger(text):
+            from sequences import animations as _animations
+            _animations.pride_flourish()
     except Exception as exc:
         _log.debug("[pride] trigger hook skipped: %s", exc)
     # Current-info web search branch: when the turn needs live data (explicit ask or

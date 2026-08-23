@@ -1937,6 +1937,163 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
 
 
 # ---------------------------------------------------------------------------
+# Pride flourish
+# ---------------------------------------------------------------------------
+
+def _suspend_face_tracking(seconds: float) -> None:
+    """Best-effort: keep face centering off the head for the length of a gesture.
+
+    Face tracking writes the neck/lift/tilt on its own cadence and would drag the head
+    out of a held pose. Lazy + guarded because consciousness imports animations.
+    """
+    try:
+        from intelligence import consciousness
+        consciousness.suspend_face_tracking(max(0.0, float(seconds)))
+    except Exception as exc:
+        _log.debug("[animations] face-tracking suspend skipped: %s", exc)
+
+
+def pride_flourish(*, async_: bool = True) -> bool:
+    """The one-shot Rex throws the instant queeny mode is armed ("are you gay?").
+
+    Head tilts all the way DOWN with the visor thrown all the way OPEN while the wrist
+    flicks to one end of its travel, all three held together for a beat, then released
+    back to whatever the head was doing. Brisk in, brisk out, the pose is the joke.
+    """
+    if not bool(getattr(config, "PRIDE_FLOURISH_ENABLED", True)):
+        return False
+    if async_:
+        threading.Thread(
+            target=_run_pride_flourish, daemon=True, name="pride_flourish",
+        ).start()
+        return True
+    return _run_pride_flourish()
+
+
+def _pride_flourish_profile(kind: str) -> "dict[int, tuple[int, int]]":
+    """Per-channel (speed, acceleration) for the flourish's entry or return.
+
+    Each of the three channels gets its own numbers because they are mechanically
+    nothing alike: the wrist has 8000 q-us of travel and needs real speed to cross it
+    inside the entry, the visor has 2432 and barely needs any, and the headtilt carries
+    a ~5 lb head on an 8 mm rod (see [[djr3x-headtilt-fragile]] — the one channel here
+    that must never snap, which is why its numbers are the most conservative and the
+    return is gentler than the entry).
+    """
+    suffix = "ENTRY" if kind == "entry" else "RETURN"
+    return {
+        2: (
+            int(getattr(config, f"PRIDE_FLOURISH_TILT_{suffix}_SPEED", 45 if kind == "entry" else 30)),
+            int(getattr(config, f"PRIDE_FLOURISH_TILT_{suffix}_ACCEL", 15 if kind == "entry" else 10)),
+        ),
+        3: (
+            int(getattr(config, f"PRIDE_FLOURISH_VISOR_{suffix}_SPEED", 60 if kind == "entry" else 40)),
+            int(getattr(config, f"PRIDE_FLOURISH_VISOR_{suffix}_ACCEL", 20 if kind == "entry" else 12)),
+        ),
+        5: (
+            int(getattr(config, f"PRIDE_FLOURISH_WRIST_{suffix}_SPEED", 150 if kind == "entry" else 90)),
+            int(getattr(config, f"PRIDE_FLOURISH_WRIST_{suffix}_ACCEL", 60 if kind == "entry" else 30)),
+        ),
+    }
+
+
+def _apply_pride_flourish_profile(kind: str) -> None:
+    for channel, (speed, accel) in _pride_flourish_profile(kind).items():
+        servos.set_acceleration(channel, accel)
+        servos.set_speed(channel, speed)
+
+
+def _restore_flourish_profile() -> None:
+    """Hand the three channels back to whichever profile owns them now.
+
+    Speech can start while the flourish is still holding (the reply is being generated
+    the whole time), and listening motion runs its own slow profile (speed 22 / accel 6)
+    — restoring a flat default 40/8 would leave whichever of them resumes running at the
+    wrong rate for the rest of the line, or the rest of the session.
+    """
+    if servos.speech_motion_active():
+        head_speed = int(getattr(config, "SERVO_SPEECH_HEAD_SPEED", 45))
+        arm_speed = int(getattr(config, "SERVO_SPEECH_ARM_SPEED", 35))
+        accel = int(getattr(config, "SERVO_SPEECH_ACCELERATION", 8))
+        for channel, speed in ((2, head_speed), (3, head_speed), (5, arm_speed)):
+            servos.set_speed(channel, speed)
+            servos.set_acceleration(channel, accel)
+        return
+    if servos.listening_motion_active():
+        speed = int(getattr(config, "SERVO_LISTENING_SPEED", 22))
+        accel = int(getattr(config, "SERVO_LISTENING_ACCELERATION", 6))
+    else:
+        speed = int(getattr(config, "SERVO_DEFAULT_SPEED", 40))
+        accel = int(getattr(config, "SERVO_DEFAULT_ACCELERATION", 8))
+    for channel in (2, 3, 5):
+        servos.set_speed(channel, speed)
+        servos.set_acceleration(channel, accel)
+
+
+def _run_pride_flourish() -> bool:
+    if not _body_beat_allowed():
+        _log.info("[animations] pride flourish skipped — state not active (sleep/shutdown)")
+        return False
+    if not _body_beat_lock.acquire(blocking=False):
+        _log.info("[animations] pride flourish skipped — another beat is running")
+        return False
+
+    hold = max(0.0, float(getattr(config, "PRIDE_FLOURISH_HOLD_SECS", 1.0)))
+    entry = max(0.05, float(getattr(config, "PRIDE_FLOURISH_ENTRY_SECS", 0.45)))
+    ret = max(0.05, float(getattr(config, "PRIDE_FLOURISH_RETURN_SECS", 0.5)))
+    hand_cfg = config.SERVO_CHANNELS["hand"]
+    # All the way to one end of the wrist's travel. These are the safe limits from
+    # config/.env — the wave-back sweeps between both of them routinely.
+    wrist = int(getattr(config, "PRIDE_FLOURISH_WRIST_TARGET_QUS", 0)) or int(hand_cfg["max"])
+
+    arm_acquired = False
+    try:
+        servos.pause_arm_idle()
+        # A moment's wait rather than an instant bail: a transient idle-arm wander
+        # shouldn't be what swallows the flourish.
+        arm_acquired = _arm_motion_lock.acquire(timeout=0.4)
+        snapshot = _current_body_pose((2, 3, 5) if arm_acquired else (2, 3))
+        pose = {2: HEADTILT_DOWN, 3: VISOR_OPEN}
+        if arm_acquired:
+            pose[5] = _clamp_channel_position(5, wrist)
+        else:
+            _log.info("[animations] pride flourish: arm busy — head only")
+
+        _log.info(
+            "[animations] pride flourish: tilt->%d visor->%d wrist->%s hold=%.2fs",
+            HEADTILT_DOWN, VISOR_OPEN, pose.get(5), hold,
+        )
+        # Claim the head (and the arm if we got it) so the 0.12 s speech/listening ticks
+        # can't overwrite the pose mid-hold — without this there is nothing to see.
+        servos.begin_head_gesture([2, 3])
+        if arm_acquired:
+            servos.begin_arm_gesture()
+        _suspend_face_tracking(entry + hold + ret + 0.5)
+        try:
+            with _motion_lock:
+                _apply_pride_flourish_profile("entry")
+                servos.set_servos(pose)
+                time.sleep(entry)   # travel: the pose is still arriving
+                time.sleep(hold)    # and NOW he holds it
+                _apply_pride_flourish_profile("return")
+                servos.set_servos(snapshot)
+                time.sleep(ret)
+        finally:
+            _restore_flourish_profile()
+        return True
+    except Exception as exc:
+        _log.warning("[animations] pride flourish failed: %s", exc)
+        return False
+    finally:
+        servos.end_head_gesture()
+        if arm_acquired:
+            servos.end_arm_gesture()
+            _arm_motion_lock.release()
+        servos.resume_arm_idle()
+        _body_beat_lock.release()
+
+
+# ---------------------------------------------------------------------------
 # Composite reactions
 # ---------------------------------------------------------------------------
 

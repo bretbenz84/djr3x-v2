@@ -72,6 +72,48 @@ def end_arm_gesture() -> None:
 def arm_gesture_active() -> bool:
     return _scripted_arm_gesture.is_set()
 
+
+# The head's equivalent of the above: set while a scripted HEAD gesture owns the
+# neck/lift/tilt/visor. Speech motion and the listening loop both yield those channels
+# while it's set, which is what lets a gesture HOLD a pose — without it the 0.12 s
+# talking/listening ticks overwrite the pose before anyone sees it. Face tracking has
+# its own suspend (consciousness.suspend_face_tracking), which such a gesture should
+# call for the same reason.
+_scripted_head_gesture = threading.Event()
+_scripted_head_channels: "set[int]" = set()
+
+
+def begin_head_gesture(channels: "list[int] | tuple[int, ...] | None" = None) -> None:
+    """Mark that a scripted head gesture owns some head channels; speech and listening
+    motion leave exactly those alone until end_head_gesture().
+
+    Pass the channels the gesture actually holds — a gesture that only tilts has no
+    business freezing the neck, and the channels it does NOT name keep their normal
+    talking motion and their normal motion profile.
+    """
+    global _scripted_head_channels
+    selected = config.HEAD_CHANNELS if channels is None else channels
+    _scripted_head_channels = {int(ch) for ch in selected}
+    _scripted_head_gesture.set()
+
+
+def end_head_gesture() -> None:
+    global _scripted_head_channels
+    _scripted_head_gesture.clear()
+    _scripted_head_channels = set()
+
+
+def head_gesture_active() -> bool:
+    return _scripted_head_gesture.is_set()
+
+
+def head_gesture_channels() -> "set[int]":
+    """Head channels a scripted gesture currently owns (empty when none does)."""
+    if not _scripted_head_gesture.is_set():
+        return set()
+    return set(_scripted_head_channels)
+
+
 # Speech-reactive servo state.
 _speech_active = threading.Event()
 _speech_baseline: dict[int, int] = {}
@@ -668,17 +710,21 @@ def speech_motion_active() -> bool:
     return _speech_active.is_set()
 
 
-def _baseline_position(channel: int) -> int:
+def _baseline_position(channel: int, *, ignore_commanded: bool = False) -> int:
+    """Where speech/breathing motion should orbit this channel.
+
+    Normally the last commanded position — that's the gaze Rex is holding. Pass
+    ignore_commanded while a scripted head gesture owns the channel: its held pose is
+    a gesture, not a gaze, and capturing it as the speech baseline would leave Rex
+    talking the rest of the line from wherever the gesture parked him.
+    """
     cfg = _channel_cfg(channel)
     if cfg is None:
         return _commanded_positions.get(channel, 6000)
-    return _clamp(
-        channel,
-        _commanded_positions.get(
-            channel,
-            _face_tracking_baseline.get(channel, cfg["neutral"]),
-        ),
-    )
+    fallback = _face_tracking_baseline.get(channel, cfg["neutral"])
+    if ignore_commanded:
+        return _clamp(channel, fallback)
+    return _clamp(channel, _commanded_positions.get(channel, fallback))
 
 
 def set_face_tracking_baseline(
@@ -739,12 +785,15 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
     frame = _resolve_speech_emotion_frame(emotion)
     motion = frame.get("speech_motion") or {}
 
+    # A scripted head gesture mid-hold must not become the baseline Rex talks around.
+    head_owned = head_gesture_channels()
+
     pause_arm_idle()
     with _lock:
         _speech_emotion_frame = frame
         _speech_baseline.clear()
         for channel in (_channel("neck"), _channel("headlift"), _channel("headtilt")):
-            baseline = _baseline_position(channel)
+            baseline = _baseline_position(channel, ignore_commanded=channel in head_owned)
             if channel == _channel("headlift"):
                 baseline += int(_motion_float(motion, "lift_bias_qus", 0.0))
             elif channel == _channel("headtilt"):
@@ -770,11 +819,17 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
             _get_config_int("SERVO_SPEECH_ARM_SPEED", 35),
             _motion_float(motion, "arm_speed_mult", 1.0),
         )
-        set_motion_profile(
-            config.HEAD_CHANNELS,
-            speed=head_speed,
-            acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
-        )
+        # Same rule as the arm below, per channel: a scripted gesture set its own
+        # profile for the channels it holds and speech is yielding those anyway. The
+        # rest of the head still gets the speech profile — otherwise a line that starts
+        # mid-gesture is delivered at whatever slow profile happened to be loaded.
+        free_head = [ch for ch in config.HEAD_CHANNELS if ch not in head_owned]
+        if free_head:
+            set_motion_profile(
+                free_head,
+                speed=head_speed,
+                acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
+            )
         # Don't reprofile the arm if a scripted gesture (wave-back) owns it — it set its
         # own fast speed for the wave and the speech motion is yielding the arm anyway.
         if not _scripted_arm_gesture.is_set():
@@ -826,10 +881,15 @@ def end_speech_motion() -> None:
     # when the line finishes mid-gesture — leave the arm channels to the gesture; only the
     # head/visor return to baseline.
     arm_owned = _scripted_arm_gesture.is_set()
+    # Likewise for a scripted HEAD gesture still holding its pose: let it finish and
+    # restore the channels it holds itself, rather than yanking them back mid-gesture.
+    head_owned = head_gesture_channels()
 
     def _baseline_pose() -> dict[int, int]:
         baseline = dict(_speech_baseline) if _speech_baseline else _default_head_pose()
         baseline[_channel("visor")] = config.SERVO_CHANNELS["visor"]["neutral"]
+        for channel in head_owned:
+            baseline.pop(channel, None)
         if not arm_owned:
             baseline[_channel("elbow")] = config.SERVO_CHANNELS["elbow"]["neutral"]
             baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
@@ -841,7 +901,7 @@ def end_speech_motion() -> None:
         if SERVOS_ENABLED:
             # Don't reset the arm channels' motion profile while a gesture owns them
             # (it set its own fast speed for the wave).
-            profile_channels = list(config.HEAD_CHANNELS)
+            profile_channels = [ch for ch in config.HEAD_CHANNELS if ch not in head_owned]
             if not arm_owned:
                 profile_channels += list(config.ARM_CHANNELS)
             set_motion_profile(
@@ -1052,10 +1112,15 @@ def speech_reactive_move(intensity: float) -> None:
 
     # If a scripted arm gesture (e.g. the wave-back) owns the arm, leave the arm channels
     # to it — keep only the head/visor talking motion. Otherwise the per-frame talking
-    # motion overrides the wave and you see no wave.
+    # motion overrides the wave and you see no wave. Same for a scripted head gesture
+    # holding a pose: without this the next talking tick, 0.12 s later, erases it.
     if _scripted_arm_gesture.is_set():
         for ch in config.ARM_CHANNELS:
             targets.pop(ch, None)
+    for ch in head_gesture_channels():
+        targets.pop(ch, None)
+    if not targets:
+        return
 
     set_servos(targets)
 
@@ -1234,7 +1299,19 @@ def _listening_loop() -> None:
             time.sleep(0.1)
             continue
         try:
-            set_servos(_listening_targets(now))
+            targets = _listening_targets(now)
+            # Yield whatever a scripted gesture is holding — this loop ticks every
+            # 0.12 s, so without it a gesture's pose is erased before anyone sees it
+            # (the arm hole was there for the wave-back too, not just the head).
+            for ch in head_gesture_channels():
+                targets.pop(ch, None)
+            if _scripted_arm_gesture.is_set():
+                for ch in config.ARM_CHANNELS:
+                    targets.pop(ch, None)
+            if not targets:
+                time.sleep(tick)
+                continue
+            set_servos(targets)
         except Exception as exc:
             _log.debug("listening tick failed: %s", exc)
         time.sleep(tick)

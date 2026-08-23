@@ -7997,6 +7997,40 @@ PRIDE_SPEECH_HAND_ACCEL = 40            # eased, not snapped (0 = the Maestro's 
 # reaches the wider target inside the same 0.35-0.75 s beat.
 PRIDE_SPEECH_ELBOW_AMP_MULT = 1.9       # ~0.42 of travel at full intensity, vs ~0.22
 PRIDE_SPEECH_ELBOW_ACCEL = 25
+
+# THE FLOURISH — the one-shot Rex throws the instant the mode is armed, before the
+# answering line ("are you gay?" -> this, then the reply). Head tilts all the way DOWN
+# (headtilt is the inverted channel: its MAX is down) with the visor thrown all the way
+# OPEN, while the wrist flicks to one end of its travel; all three held together, then
+# released back to whatever the head was doing.
+#
+# It needs its own per-channel motion profile for the same reason the wrist flair above
+# does — at the listening profile (speed 22) the wrist's 8000 q-us travel takes ~1.8 s
+# and the "flick" would still be in flight when the hold ended. The tilt's numbers are
+# the conservative ones on purpose: it swings a ~5 lb head on an 8 mm rod and must never
+# snap. Set PRIDE_FLOURISH_ENABLED=False to keep the mode voice-and-talking-motion only.
+PRIDE_FLOURISH_ENABLED = _env_bool("PRIDE_FLOURISH_ENABLED", True)
+# Entry/return are the TRAVEL times the profiles below actually need, not padding: a
+# trapezoidal move takes distance/speed + speed/accel, which is 0.50 s for the tilt's
+# 1184 q-us and 0.47 s for the wrist's 3984 going out (and ~0.68 s each coming back on
+# the gentler return profile). Shorten these and the hold starts while he is still
+# moving; shorten the profiles instead if you want the whole thing snappier.
+PRIDE_FLOURISH_ENTRY_SECS = 0.55        # time allowed to reach the pose
+PRIDE_FLOURISH_HOLD_SECS = 1.0          # held there, after it arrives
+PRIDE_FLOURISH_RETURN_SECS = 0.7        # time allowed to settle back
+PRIDE_FLOURISH_WRIST_TARGET_QUS = 0     # 0 -> the hand channel's own max (all the way)
+PRIDE_FLOURISH_TILT_ENTRY_SPEED = 45
+PRIDE_FLOURISH_TILT_ENTRY_ACCEL = 15
+PRIDE_FLOURISH_TILT_RETURN_SPEED = 30
+PRIDE_FLOURISH_TILT_RETURN_ACCEL = 10
+PRIDE_FLOURISH_VISOR_ENTRY_SPEED = 60
+PRIDE_FLOURISH_VISOR_ENTRY_ACCEL = 20
+PRIDE_FLOURISH_VISOR_RETURN_SPEED = 40
+PRIDE_FLOURISH_VISOR_RETURN_ACCEL = 12
+PRIDE_FLOURISH_WRIST_ENTRY_SPEED = 150
+PRIDE_FLOURISH_WRIST_ENTRY_ACCEL = 60
+PRIDE_FLOURISH_WRIST_RETURN_SPEED = 90
+PRIDE_FLOURISH_WRIST_RETURN_ACCEL = 30
 # Higher than the lull roll (0.3): the hello is a better-fitting moment, and the
 # once-per-day spend is shared with the lull cue, so this mostly decides WHICH of
 # the two gets it rather than adding a second chance to hear about his day.
