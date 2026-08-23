@@ -174,6 +174,25 @@ Servo limits in `.env` use the Maestro app's microsecond values, such as `496 - 
 
 Connecting the Maestro before limits are programmed can drive a servo past its safe travel range and damage the mechanism.
 
+### Direction of travel
+
+**`headtilt` is the only inverted channel.** Every other channel correlates: a higher quarter-microsecond value moves that joint in the direction named below, and a lower value moves it back.
+
+| Ch | Channel | Higher value → | Lower value → |
+| --- | --- | --- | --- |
+| 0 | `neck` | head turns right | head turns left |
+| 1 | `headlift` | head physically higher | head lower |
+| 2 | `headtilt` | **inverted** — head tilted *down* | head tilted *up* |
+| 3 | `visor` | visor more open (lens clear) | visor closed over the lens |
+| 4 | `elbow` | arm lifted up | arm hanging down — where it falls unpowered |
+| 5 | `hand` | wrist rotates one way | wrist rotates the other |
+| 6 | `pokerarm` | — | — |
+| 7 | `heroarm` | arm raised toward horizontal | arm hanging down the torso |
+
+The elbow's low end is also its **unpowered rest**: with the robot off the servos go limp and the arm falls there, so `config.SERVO_CHANNELS["elbow"]["rest"]` parks and starts it at that value. See "unpowered rest" in [config.py](config.py).
+
+> ⚠ The `ELBOW_UP` / `ELBOW_DOWN` constants in [sequences/animations.py](sequences/animations.py) currently hold values that contradict this table — `ELBOW_UP` is the *low* (arm-hanging) end. Trust the table, not those names.
+
 ## Motion Base (optional)
 
 An optional ESP32-controlled drive base lets Rex physically move around a room on spoken command while avoiding obstacles. The ESP32 runs a real-time, fail-safe motor loop (PID speed control, Time-of-Flight obstacle stop, heartbeat watchdog) and the Mac sends high-level commands (`turn`, `move`, `come`, `stop`) over USB serial. Spoken intents like "turn left", "back up", "come here", and "halt" route through the normal conversation pipeline to the base; "stop" only steers the base while it is actually moving, so it never hijacks stop-music/stop-game.

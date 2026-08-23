@@ -96,16 +96,22 @@ VISOR_HALF    = 6400   # default resting open — clear of camera lens
 VISOR_NEUTRAL = 6000
 VISOR_OPEN    = 6976   # max — required before any camera capture
 
-# Ch 4 — Elbow: 6300–7424, neutral 6720. ELBOW_DOWN is 7424, not the old 7560:
-# the Maestro's own stored channel-4 limit is 1856 us and clipped anything past
-# it (measured on the robot 2026-08-22).
+# Ch 4 — Elbow: 6300–7424, neutral 6720. Higher value = arm lifted UP, lower =
+# arm hanging down (headtilt is the only inverted channel on the droid; see the
+# README's "Direction of travel" table). 7424, not the old 7560, because the
+# Maestro's own stored channel-4 limit is 1856 us and clipped anything past it
+# (measured on the robot 2026-08-22).
+#
+# ⚠ The two names below are BACKWARDS and predate the table: ELBOW_UP holds the
+# arm-hanging value and ELBOW_DOWN the raised one. Left as-is for now because
+# swapping them changes what a dozen gestures physically do — don't take them as
+# evidence of which way the joint travels. Use ELBOW_REST or the table.
 ELBOW_NEUTRAL = 6720
 ELBOW_UP      = 6300
 ELBOW_DOWN    = 7424
-# Where the limp arm hangs with the robot powered off — the MIN end, the lowest
-# value the limits allow (owner-confirmed 2026-08-22; note that end also carries
-# the older, contradictory name ELBOW_UP). It is both the pose shutdown() parks
-# in and the first target commanded on a cold connect (config's "rest"; see
+# Where the limp arm hangs with the robot powered off: the low end, the lowest
+# value the limits allow. It is both the pose shutdown() parks in and the first
+# target commanded on a cold connect (config's "rest"; see
 # servos._assert_startup_rest_pose_locked). Read from config so an .env limit
 # override for this build carries into the park pose too.
 ELBOW_REST    = config.servo_rest_position("elbow")

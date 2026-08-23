@@ -2686,7 +2686,12 @@ SERVO_LISTENING_MAX_SECS = 20.0       # safety: auto-stop if a stop is ever miss
 # and SERVO_<NAME>_MAX_US using Maestro Control Center microsecond values.
 # The .env file wins over inherited shell env for servo safety keys, and invalid
 # or incomplete servo limit values raise at startup instead of falling back.
-# headtilt is inverted: low values = head high, high values = head low
+# DIRECTION OF TRAVEL: headtilt is the ONLY inverted channel (low values = head
+# high, high values = head low). Every other channel correlates — a higher value
+# moves the joint the way its name implies, so a higher elbow lifts the arm and a
+# lower one lets it hang. The README's "Direction of travel" table is the
+# authoritative copy; the ELBOW_UP / ELBOW_DOWN constants in animations are NOT
+# (they hold contradictory values).
 #
 # An optional "rest" is where the channel ends up when the robot is UNPOWERED and
 # the servo goes limp — gravity's answer, not a pose we choose. It is the FIRST
@@ -2702,13 +2707,13 @@ SERVO_CHANNELS = {
     "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 3600},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
     "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — 6000 hid part of the camera
-    # rest = 6300, the MIN end and the lowest value the limits allow. Powered
-    # down the servo is limp and the arm falls; owner-confirmed 2026-08-22 that
-    # it lands at this end of the travel, so parking and starting here is the
-    # only value that doesn't make the servo yank the fallen arm somewhere else
-    # the instant it gets a pulse (a violent snap on every cold boot). NOTE the
-    # constants in animations name this end ELBOW_UP — the names predate this
-    # and disagree with which way the arm actually hangs.
+    # A higher value lifts the arm, so the MIN end is the arm hanging down —
+    # rest = 6300, the lowest value the limits allow. Powered down the servo is
+    # limp and the arm falls to exactly there, so parking and starting here is
+    # the only value that doesn't make the servo yank the fallen arm somewhere
+    # else the instant it gets a pulse (a violent snap on every cold boot).
+    # NOTE the constants in animations name this end ELBOW_UP; those names are
+    # backwards and are not evidence of anything.
     # max retuned 7560 -> 7424 the same day, unrelated to the rest pose: the
     # MAESTRO's own stored channel-4 limit is 1856 us, so it silently clipped
     # every target above 7424 (measured on the robot — commanding 7560 or 7500
