@@ -1281,6 +1281,17 @@ def assemble_system_prompt(
     except Exception as exc:
         _log.debug("pride section injection skipped: %s", exc)
 
+    # 3b1a. Homie-mode overlay (intelligence/homie.py) — classic-fallback mirror of
+    # lean_brain._homie_lines, so the greeting's own reply lands in register on
+    # this path too.
+    try:
+        from intelligence import homie as _homie
+        homie_section = _homie.prompt_section()
+        if homie_section:
+            sections.append(homie_section)
+    except Exception as exc:
+        _log.debug("homie section injection skipped: %s", exc)
+
     # 3b2. A reaction Rex just caused (they smiled at his last line) — first-person
     # awareness for the classic fallback, mirroring lean_brain._reaction_lines.
     try:

@@ -384,6 +384,18 @@ def _pride_lines() -> list[str]:
         return []
 
 
+def _homie_lines() -> list[str]:
+    """Homie-mode overlay (intelligence/homie.py) while armed by a "wassup
+    homie" greeting. Shared-builder placement for the same reason as
+    _pride_lines: the answering reply AND any proactive line inside the TTL
+    should both land in register."""
+    try:
+        from intelligence import homie
+        return homie.prompt_lines()
+    except Exception:
+        return []
+
+
 def _reaction_lines(person_id: Optional[int]) -> list[str]:
     """"Your last line just LANDED — you saw them smile" (reaction_awareness).
 
@@ -447,6 +459,7 @@ def _system_prompt(
         + _room_belief_lines()
         + _mood_lines()
         + _pride_lines()
+        + _homie_lines()
         + _taste_lines(user_text)
         + _reaction_lines(person_id)
         + _cadence_lines(person_id)

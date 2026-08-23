@@ -14695,6 +14695,14 @@ def _stream_llm_response(
             _animations.pride_flourish()
     except Exception as exc:
         _log.debug("[pride] trigger hook skipped: %s", exc)
+    # Homie-mode trigger (intelligence/homie.py): "wassup homie" arms the AAVE
+    # overlay BEFORE any reply tokens stream, so the greeting-back is already in
+    # register. Voice-only — no flourish.
+    try:
+        from intelligence import homie as _homie
+        _homie.maybe_trigger(text)
+    except Exception as exc:
+        _log.debug("[homie] trigger hook skipped: %s", exc)
     # Current-info web search branch: when the turn needs live data (explicit ask or
     # autonomous gate), Rex looks it up and speaks the answer here, skipping the normal
     # reply. Failure-safe — on no-trigger / no-result it returns None and we proceed.

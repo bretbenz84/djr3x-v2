@@ -8034,6 +8034,16 @@ PRIDE_FLOURISH_WRIST_ENTRY_SPEED = 150
 PRIDE_FLOURISH_WRIST_ENTRY_ACCEL = 60
 PRIDE_FLOURISH_WRIST_RETURN_SPEED = 90
 PRIDE_FLOURISH_WRIST_RETURN_ACCEL = 30
+
+# ── Homie mode (intelligence/homie.py) ───────────────────────────────────────
+# Greeting Rex like family ("what's up my homie", "what's up homeboy", "wassup
+# homie") arms HOMIE MODE — a decaying delivery overlay that code-switches his
+# whole register into natural AAVE, injected into both voices. Re-greeting
+# refreshes the TTL. Voice-only: no body-motion overlay (that was queeny-mode
+# specific).
+HOMIE_MODE_ENABLED = _env_bool("HOMIE_MODE_ENABLED", True)
+HOMIE_MODE_TTL_SECS = 600.0
+
 # Higher than the lull roll (0.3): the hello is a better-fitting moment, and the
 # once-per-day spend is shared with the lull cue, so this mostly decides WHICH of
 # the two gets it rather than adding a second chance to hear about his day.
