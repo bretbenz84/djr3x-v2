@@ -2719,7 +2719,10 @@ SERVO_CHANNELS = {
     # system was rebuilt and the tube now rides much higher at the same servo
     # value, so the normal TALKING height moved down. Excitement/emphasis still
     # lift above this; looking-down poses still drop below it.
-    "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 3600},
+    # min raised 1984 -> 2600 qus (496 -> 650 us) on 2026-08-23 (owner-set): the
+    # bottom of the old travel is below anything the rebuilt lift gear should be
+    # driven to.
+    "headlift": {"ch": 1, "min": 2600, "max": 7744, "neutral": 3600},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
     "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — 6000 hid part of the camera
     # A higher value lifts the arm, so the MIN end is the arm hanging down —
@@ -10161,7 +10164,7 @@ SOUND_EFFECTS_SERVO_COOLDOWN_SECS  = 8.0
 # never trigger). Muted while starting up (the boot sound covers that register) and
 # outside normal operation (sleep/quiet/shutdown droop).
 SOUND_EFFECTS_HEADLIFT_ENABLED = True
-SOUND_EFFECTS_HEADLIFT_MIN_TRAVEL_QUS = 1200   # ~21% of the head-lift's full travel
+SOUND_EFFECTS_HEADLIFT_MIN_TRAVEL_QUS = 1200   # ~23% of the head-lift's full travel
 SOUND_EFFECTS_HEADLIFT_COOLDOWN_SECS = 5.0
 SOUND_EFFECTS_HEADLIFT_STARTUP_MUTE_SECS = 20.0
 # Optional overrides: map an emotion/key to different clip stem lists without code

@@ -654,8 +654,13 @@ class FaceTrackingTests(unittest.TestCase):
         high_lift, _ = c._greeting_height_targets("high")
         center_lift, _ = c._greeting_height_targets("center")
 
-        self.assertLess(low_lift, neutral - 1000)        # head drops well below neutral
-        self.assertGreater(high_lift, neutral + 1000)    # head rises well above neutral
+        # "Well below/above" is measured against the travel actually available on
+        # each side of neutral, so retuning the channel limits can't make these
+        # thresholds unreachable (the min moved to 650 us on 2026-08-23).
+        down_travel = neutral - int(lift_cfg["min"])
+        up_travel = int(lift_cfg["max"]) - neutral
+        self.assertLess(low_lift, neutral - down_travel * 0.5)     # head drops well below neutral
+        self.assertGreater(high_lift, neutral + up_travel * 0.5)   # head rises well above neutral
         self.assertEqual(center_lift, neutral)
         self.assertGreaterEqual(low_lift, int(lift_cfg["min"]))
         self.assertLessEqual(high_lift, int(lift_cfg["max"]))

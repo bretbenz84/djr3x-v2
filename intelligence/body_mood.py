@@ -47,7 +47,7 @@ def visor_lens_clear_floor() -> int:
         return _VISOR_LENS_CLEAR_FLOOR_DEFAULT
 
 # mood → (headlift_delta_qus, headtilt_delta_qus, visor_target_qus | None)
-#   headlift: +up / -down (neutral 3600 since the 2026-08-19 gear rebuild, range 1984..7744)
+#   headlift: +up / -down (neutral 3600 since the 2026-08-19 gear rebuild, range 2600..7744)
 #   headtilt: INVERTED — -chin-up / +chin-down (neutral 4320, range 3904..5504)
 #   visor:    higher = more open (lens-clear floor 6400, max 6976); None = don't command
 # Magnitudes are tuned "medium / playful": clearly readable, not constant motion.

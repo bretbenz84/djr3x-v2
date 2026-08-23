@@ -204,7 +204,7 @@ class GazeConfig:
     tilt_min: int = 3904
     tilt_max: int = 5504
     tilt_neutral: int = 4320
-    lift_min: int = 1984
+    lift_min: int = 2600   # 650 us; the live value loads from SERVO_CHANNELS at init
     lift_max: int = 7744
     lift_neutral: int = 3600   # 900 us — normal talking height (2026-08-19 gear rebuild);
                                # the live value loads from SERVO_CHANNELS at init
