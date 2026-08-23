@@ -102,18 +102,19 @@ VISOR_OPEN    = 6976   # max — required before any camera capture
 # Maestro's own stored channel-4 limit is 1856 us and clipped anything past it
 # (measured on the robot 2026-08-22).
 #
-# ⚠ The two names below are BACKWARDS and predate the table: ELBOW_UP holds the
-# arm-hanging value and ELBOW_DOWN the raised one. Left as-is for now because
-# swapping them changes what a dozen gestures physically do — don't take them as
-# evidence of which way the joint travels. Use ELBOW_REST or the table.
+# UP and DOWN held each other's values until 2026-08-22 — the names, not the
+# poses, were wrong. Swapping them was a pure relabel: every call site was
+# rewritten to the other name at the same time, so no gesture moved. Which does
+# mean a gesture that reads "elbow down" today has always put the elbow there.
 ELBOW_NEUTRAL = 6720
-ELBOW_UP      = 6300
-ELBOW_DOWN    = 7424
+ELBOW_UP      = 7424
+ELBOW_DOWN    = 6300
 # Where the limp arm hangs with the robot powered off: the low end, the lowest
-# value the limits allow. It is both the pose shutdown() parks in and the first
-# target commanded on a cold connect (config's "rest"; see
-# servos._assert_startup_rest_pose_locked). Read from config so an .env limit
-# override for this build carries into the park pose too.
+# value the limits allow — the same value as ELBOW_DOWN, named separately
+# because it answers a different question (gravity's pose, not a gesture's).
+# It is both the pose shutdown() parks in and the first target commanded on a
+# cold connect (config's "rest"; see servos._assert_startup_rest_pose_locked).
+# Read from config so an .env limit override for this build carries into it.
 ELBOW_REST    = config.servo_rest_position("elbow")
 
 # Ch 5 — Hand: 1984–9984, neutral 6000
@@ -342,7 +343,7 @@ def _beat_proud_dj_pose(snapshot: dict[int, int]) -> None:
             1: HEADLIFT_HIGH,
             2: HEADTILT_SLIGHT_UP,
             3: VISOR_OPEN,
-            4: ELBOW_UP,
+            4: ELBOW_DOWN,
             5: HAND_RIGHT,
             6: POKERARM_OUT,
             7: HEROARM_FORWARD,
@@ -368,7 +369,7 @@ def _beat_offended_recoil(snapshot: dict[int, int]) -> None:
             1: HEADLIFT_HIGH,
             2: HEADTILT_UP,
             3: VISOR_OPEN,
-            4: ELBOW_UP,
+            4: ELBOW_DOWN,
             5: HAND_NEUTRAL,
             7: HEROARM_BACK,
         },
@@ -414,7 +415,7 @@ def _beat_tiny_victory_dance(snapshot: dict[int, int]) -> None:
             1: HEADLIFT_UP,
             2: HEADTILT_SLIGHT_UP,
             3: VISOR_OPEN,
-            4: ELBOW_UP,
+            4: ELBOW_DOWN,
             5: HAND_RIGHT,
             6: POKERARM_OUT,
             7: HEROARM_FORWARD,
@@ -433,7 +434,7 @@ def _beat_tiny_victory_dance(snapshot: dict[int, int]) -> None:
             step_delay=0.004,
         )
         time.sleep(0.06)
-    _move_body({1: HEADLIFT_HIGH, 4: ELBOW_DOWN, 6: POKERARM_IN}, step_us=110, step_delay=0.005)
+    _move_body({1: HEADLIFT_HIGH, 4: ELBOW_UP, 6: POKERARM_IN}, step_us=110, step_delay=0.005)
     time.sleep(0.08)
     _restore_body_pose(snapshot)
 
@@ -467,7 +468,7 @@ def _beat_anger_flash(snapshot: dict[int, int]) -> None:
             2: HEADTILT_DOWN,
             3: VISOR_SQUINT,   # dip the visor below neutral — narrowed, displeased
                                # squint (this is the beat insults route to)
-            4: ELBOW_UP,
+            4: ELBOW_DOWN,
             5: HAND_RIGHT if side > 0 else HAND_LEFT,
             7: HEROARM_FORWARD,
         },
@@ -511,7 +512,7 @@ def _beat_happy_bounce(snapshot: dict[int, int]) -> None:
             1: HEADLIFT_UP,
             2: HEADTILT_SLIGHT_UP,
             3: VISOR_OPEN,
-            4: ELBOW_UP,
+            4: ELBOW_DOWN,
             7: HEROARM_FORWARD,
         },
         step_us=95,
@@ -530,7 +531,7 @@ def _beat_giddy_wiggle(snapshot: dict[int, int]) -> None:
         {
             1: HEADLIFT_UP,
             3: VISOR_OPEN,
-            4: ELBOW_UP,
+            4: ELBOW_DOWN,
             5: HAND_RIGHT,
             6: POKERARM_OUT,
             7: HEROARM_FORWARD,
@@ -1655,7 +1656,7 @@ def travel_glance_pose(side: str = "center", pitch: str = "level",
 
 def arm_hero_pose() -> None:
     """Heroarm forward, elbow up, hand neutral — confident presentation pose."""
-    servos.set_servos({7: HEROARM_FORWARD, 4: ELBOW_UP, 5: HAND_NEUTRAL})
+    servos.set_servos({7: HEROARM_FORWARD, 4: ELBOW_DOWN, 5: HAND_NEUTRAL})
 
 
 def arm_idle() -> None:
@@ -1677,7 +1678,7 @@ def arm_rhythm_tick(beat_phase: float) -> None:
     Call from the DJ playback loop on each detected beat downbeat.
     """
     if beat_phase < 0.15:
-        servos.set_servo(4, ELBOW_DOWN)
+        servos.set_servo(4, ELBOW_UP)
     elif beat_phase < 0.5:
         servos.set_servo(4, ELBOW_NEUTRAL)
 
@@ -1701,9 +1702,9 @@ def arm_wave(count: int | None = None) -> None:
                     step_delay=step_delay,
                 )
                 for _ in range(count):
-                    servos.move_to({4: ELBOW_UP}, step_us=step_us, step_delay=step_delay)
-                    time.sleep(hold)
                     servos.move_to({4: ELBOW_DOWN}, step_us=step_us, step_delay=step_delay)
+                    time.sleep(hold)
+                    servos.move_to({4: ELBOW_UP}, step_us=step_us, step_delay=step_delay)
                     time.sleep(hold)
                 servos.move_to(
                     {4: ELBOW_NEUTRAL, 5: HAND_NEUTRAL, 7: HEROARM_NEUTRAL},
@@ -1757,13 +1758,13 @@ def _run_wake_word_ack_wave(count: int) -> bool:
             )
             for _ in range(count):
                 servos.move_to(
-                    {4: ELBOW_UP, 5: HAND_RIGHT},
+                    {4: ELBOW_DOWN, 5: HAND_RIGHT},
                     step_us=step_us,
                     step_delay=step_delay,
                 )
                 time.sleep(hold)
                 servos.move_to(
-                    {4: ELBOW_DOWN, 5: HAND_LEFT},
+                    {4: ELBOW_UP, 5: HAND_LEFT},
                     step_us=step_us,
                     step_delay=step_delay,
                 )
@@ -1858,12 +1859,12 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
     # hard jerk that opened every wave.
     raise_speed = max(1, int(getattr(config, "WAVE_BACK_RAISE_SPEED", 55)))
     raise_accel = int(getattr(config, "WAVE_BACK_RAISE_ACCEL", 14))
-    # Elbow wave: bob between ELBOW_UP and ELBOW_UP + amplitude in sync with the wrist,
+    # Elbow wave: bob between ELBOW_DOWN and ELBOW_DOWN + amplitude in sync with the wrist,
     # at its own speed sized to its (much smaller) travel so it eases rather than snaps.
     elbow_amp = max(0, int(getattr(config, "WAVE_BACK_ELBOW_WAVE_QUS", 340)))
     elbow_cfg = config.SERVO_CHANNELS.get("elbow", {})
-    elbow_hi = min(int(elbow_cfg.get("max", ELBOW_DOWN)), ELBOW_UP + elbow_amp)
-    elbow_speed = max(1, round(max(1, elbow_hi - ELBOW_UP) / (max(0.05, half_period) * 100.0)))
+    elbow_hi = min(int(elbow_cfg.get("max", ELBOW_UP)), ELBOW_DOWN + elbow_amp)
+    elbow_speed = max(1, round(max(1, elbow_hi - ELBOW_DOWN) / (max(0.05, half_period) * 100.0)))
     elbow_accel = int(getattr(config, "WAVE_BACK_ELBOW_ACCEL", 20))
 
     _log.info(
@@ -1871,7 +1872,7 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
         "half_period=%.2fs elbow %d↔%d speed=%d raise speed=%d accel=%d "
         "servos_enabled=%s start_pose=%s",
         hand_min, hand_max, count, wave_speed, wave_accel, half_period,
-        ELBOW_UP, elbow_hi, elbow_speed, raise_speed, raise_accel,
+        ELBOW_DOWN, elbow_hi, elbow_speed, raise_speed, raise_accel,
         getattr(servos, "SERVOS_ENABLED", "?"), snapshot,
     )
     arm_channels = (4, 5, 7)
@@ -1890,7 +1891,12 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
                 for ch in arm_channels:
                     servos.set_acceleration(ch, raise_accel)
                     servos.set_speed(ch, raise_speed)
-                raise_targets = {7: HEROARM_FORWARD, 4: ELBOW_UP, 5: HAND_NEUTRAL}
+                # The HEROARM does the raising here; the elbow goes to ELBOW_DOWN so
+                # the forearm hangs off it. That reads odd next to "smooth raise" and
+                # only became visible when the elbow labels were un-swapped
+                # (2026-08-22) — the value is unchanged from every wave-back Rex has
+                # ever done, so it is a question about the pose, not a regression.
+                raise_targets = {7: HEROARM_FORWARD, 4: ELBOW_DOWN, 5: HAND_NEUTRAL}
                 servos.set_servos(raise_targets)
                 max_travel = max(
                     abs(int(raise_targets[ch]) - int(snapshot.get(ch, raise_targets[ch])))
@@ -1908,9 +1914,9 @@ def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool
                 for _ in range(count):
                     servos.set_servos({5: hand_max, 4: elbow_hi})
                     time.sleep(half_period)
-                    servos.set_servos({5: hand_min, 4: ELBOW_UP})
+                    servos.set_servos({5: hand_min, 4: ELBOW_DOWN})
                     time.sleep(half_period)
-                servos.set_servos({5: HAND_NEUTRAL, 4: ELBOW_UP})
+                servos.set_servos({5: HAND_NEUTRAL, 4: ELBOW_DOWN})
                 time.sleep(half_period)
             finally:
                 # Restore the channels' normal (slow, smooth) speed/accel.
@@ -1945,7 +1951,7 @@ def excited_burst() -> None:
     leds_chest.speak("excited")
     leds_head.speak("excited")
     leds_head.set_eye_emotion("excited")
-    servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_HIGH, 7: HEROARM_FORWARD, 4: ELBOW_UP})
+    servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_HIGH, 7: HEROARM_FORWARD, 4: ELBOW_DOWN})
     time.sleep(0.25)
     servos.set_servo(1, HEADLIFT_NEUTRAL)
     time.sleep(0.15)

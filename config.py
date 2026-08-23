@@ -2690,8 +2690,7 @@ SERVO_LISTENING_MAX_SECS = 20.0       # safety: auto-stop if a stop is ever miss
 # high, high values = head low). Every other channel correlates — a higher value
 # moves the joint the way its name implies, so a higher elbow lifts the arm and a
 # lower one lets it hang. The README's "Direction of travel" table is the
-# authoritative copy; the ELBOW_UP / ELBOW_DOWN constants in animations are NOT
-# (they hold contradictory values).
+# authoritative copy.
 #
 # An optional "rest" is where the channel ends up when the robot is UNPOWERED and
 # the servo goes limp — gravity's answer, not a pose we choose. It is the FIRST
@@ -2712,8 +2711,6 @@ SERVO_CHANNELS = {
     # limp and the arm falls to exactly there, so parking and starting here is
     # the only value that doesn't make the servo yank the fallen arm somewhere
     # else the instant it gets a pulse (a violent snap on every cold boot).
-    # NOTE the constants in animations name this end ELBOW_UP; those names are
-    # backwards and are not evidence of anything.
     # max retuned 7560 -> 7424 the same day, unrelated to the rest pose: the
     # MAESTRO's own stored channel-4 limit is 1856 us, so it silently clipped
     # every target above 7424 (measured on the robot — commanding 7560 or 7500
@@ -3619,7 +3616,8 @@ WAVE_BACK_WRIST_SWEEPS = _env_int("WAVE_BACK_WRIST_SWEEPS", 4, min_value=1, max_
 # which used to snap the arm up hard from wherever it was resting.
 WAVE_BACK_RAISE_SPEED = _env_int("WAVE_BACK_RAISE_SPEED", 55, min_value=1, max_value=16383)
 WAVE_BACK_RAISE_ACCEL = _env_int("WAVE_BACK_RAISE_ACCEL", 14, min_value=0, max_value=255)
-# Elbow bob during the wave: amplitude below ELBOW_UP (q-µs; 0 = wrist-only wave) and the
+# Elbow bob during the wave: amplitude away from the presenting pose (q-µs; 0 =
+# wrist-only wave) and the
 # elbow's acceleration while bobbing. Its speed is auto-sized so the bob spans the
 # amplitude in one wrist half-period (eased, not snapped).
 WAVE_BACK_ELBOW_WAVE_QUS = _env_int("WAVE_BACK_ELBOW_WAVE_QUS", 340, min_value=0, max_value=1260)

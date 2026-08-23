@@ -216,10 +216,10 @@ class BodyBeatAnimationTest(unittest.TestCase):
                 5: animations.HAND_NEUTRAL,
             },
         )
-        self.assertEqual(moves[1], {4: animations.ELBOW_UP, 5: animations.HAND_RIGHT})
-        self.assertEqual(moves[2], {4: animations.ELBOW_DOWN, 5: animations.HAND_LEFT})
-        self.assertEqual(moves[3], {4: animations.ELBOW_UP, 5: animations.HAND_RIGHT})
-        self.assertEqual(moves[4], {4: animations.ELBOW_DOWN, 5: animations.HAND_LEFT})
+        self.assertEqual(moves[1], {4: animations.ELBOW_DOWN, 5: animations.HAND_RIGHT})
+        self.assertEqual(moves[2], {4: animations.ELBOW_UP, 5: animations.HAND_LEFT})
+        self.assertEqual(moves[3], {4: animations.ELBOW_DOWN, 5: animations.HAND_RIGHT})
+        self.assertEqual(moves[4], {4: animations.ELBOW_UP, 5: animations.HAND_LEFT})
         self.assertEqual(moves[-1], snapshot)
 
     def test_wave_back_gesture_sweeps_wrist_full_travel_count_times(self):
@@ -239,7 +239,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
         hand_min = animations.config.SERVO_CHANNELS["hand"]["min"]
         hand_max = animations.config.SERVO_CHANNELS["hand"]["max"]
         elbow_max = animations.config.SERVO_CHANNELS["elbow"]["max"]
-        elbow_hi = min(elbow_max, animations.ELBOW_UP + animations.config.WAVE_BACK_ELBOW_WAVE_QUS)
+        elbow_hi = min(elbow_max, animations.ELBOW_DOWN + animations.config.WAVE_BACK_ELBOW_WAVE_QUS)
         default_speed = animations.config.SERVO_DEFAULT_SPEED
 
         with (
@@ -265,7 +265,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
         # The elbow (ch4) bobs in sync with the wrist — one lift per outbound sweep.
         self.assertEqual(sum(1 for ch, pos in sets if ch == 4 and pos == elbow_hi), 4)
         # Arm raised (elbow up + hero arm forward) before the wave.
-        self.assertIn((4, animations.ELBOW_UP), sets)
+        self.assertIn((4, animations.ELBOW_DOWN), sets)
         self.assertIn((7, animations.HEROARM_FORWARD), sets)
         # The wrist channel was sped up then restored to the default speed.
         self.assertTrue(any(ch == 5 and sp != default_speed for ch, sp in speeds))

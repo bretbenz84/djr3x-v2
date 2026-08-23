@@ -191,8 +191,6 @@ Connecting the Maestro before limits are programmed can drive a servo past its s
 
 The elbow's low end is also its **unpowered rest**: with the robot off the servos go limp and the arm falls there, so `config.SERVO_CHANNELS["elbow"]["rest"]` parks and starts it at that value. See "unpowered rest" in [config.py](config.py).
 
-> ⚠ The `ELBOW_UP` / `ELBOW_DOWN` constants in [sequences/animations.py](sequences/animations.py) currently hold values that contradict this table — `ELBOW_UP` is the *low* (arm-hanging) end. Trust the table, not those names.
-
 ## Motion Base (optional)
 
 An optional ESP32-controlled drive base lets Rex physically move around a room on spoken command while avoiding obstacles. The ESP32 runs a real-time, fail-safe motor loop (PID speed control, Time-of-Flight obstacle stop, heartbeat watchdog) and the Mac sends high-level commands (`turn`, `move`, `come`, `stop`) over USB serial. Spoken intents like "turn left", "back up", "come here", and "halt" route through the normal conversation pipeline to the base; "stop" only steers the base while it is actually moving, so it never hijacks stop-music/stop-game.
