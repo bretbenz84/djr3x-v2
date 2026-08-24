@@ -3751,12 +3751,32 @@ FACE_RECOGNITION_MARGIN = 0.06
 
 # ArcFace (InsightFace) equivalents — 512-dim L2-NORMALIZED embeddings, so Euclidean
 # distance maps to cosine similarity as d = sqrt(2 - 2*cos). Genuine matches land
-# roughly d 0.8-1.05 (cos 0.45-0.68); impostors d 1.25-1.41 (cos ~0.0-0.2). 1.10
-# corresponds to cos ~0.40, the standard ArcFace acceptance band. The matcher in
-# memory/people.find_by_face picks dlib vs ArcFace thresholds by the QUERY dimension
+# roughly d 0.8-1.05 (cos 0.45-0.68); impostors d 1.25-1.41 (cos ~0.0-0.2). The matcher
+# in memory/people.find_by_face picks dlib vs ArcFace thresholds by the QUERY dimension
 # (128 vs 512), so stale dlib rows and new ArcFace rows can coexist in biometrics.
-FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE = 1.10
+#
+# TIGHTENED 1.10 → 1.00 (cos 0.40 → 0.50) after the 2026-08-23 PJ run: the face
+# pipeline identified PJ (un-enrolled, alone in front of the camera — once from
+# 2-3 ft) as Bret three times, against Bret's single auto-captured ArcFace
+# reference. A false accept steals a person's identity AND suppresses the
+# camera-contradiction voice guards (5adc6bb) that trust "known person visible";
+# a miss merely leaves the face unknown, which routes to the who-are-you prompt.
+# That cost asymmetry wants the strict bar. Reference hygiene matters more than
+# the bar, though: stored refs are unverified single-frame grabs (Exudica's two
+# refs sit d=1.20 from EACH OTHER) — re-capture with
+#   venv/bin/python tools/test_face_id.py --enroll "Name" --replace
+FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE = 1.00
 FACE_RECOGNITION_MARGIN_ARCFACE = 0.08
+# A match at/below this distance is STRONG — it binds identity on a single frame.
+# Between strong and the accept threshold is the GRAY ZONE, where a wrong-person
+# cross-match on a weak reference lives (the PJ-as-Bret shape): a gray-zone match
+# must repeat FACE_IDENTIFY_CONFIRM_FRAMES consecutive ticks before a NEW identity
+# binding is created (existing bindings and the switch hysteresis are unaffected).
+FACE_IDENTIFY_STRONG_DISTANCE_ARCFACE = 0.90
+FACE_IDENTIFY_STRONG_DISTANCE_DLIB = 0.45
+FACE_IDENTIFY_CONFIRM_FRAMES = _env_int(
+    "FACE_IDENTIFY_CONFIRM_FRAMES", 2, min_value=1, max_value=30,
+)
 # Temporal hysteresis: when a single visible face is already bound to one known person,
 # require this many consecutive recognition ticks agreeing on a DIFFERENT person before
 # the world-state/overlay identity switches. Damps known<->known flicker. 1 disables.

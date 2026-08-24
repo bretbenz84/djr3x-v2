@@ -161,11 +161,13 @@ def find_by_face(encoding: np.ndarray) -> Optional[dict]:
     query = encoding.astype(np.float32)
 
     if query.shape[-1] == 512:  # ArcFace (insightface)
-        threshold = float(getattr(config, "FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE", 1.10))
+        threshold = float(getattr(config, "FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE", 1.00))
         margin    = float(getattr(config, "FACE_RECOGNITION_MARGIN_ARCFACE", 0.08) or 0.0)
+        strong    = float(getattr(config, "FACE_IDENTIFY_STRONG_DISTANCE_ARCFACE", 0.90))
     else:                       # dlib 128-dim
         threshold = float(config.FACE_RECOGNITION_DISTANCE_THRESHOLD)
         margin    = float(getattr(config, "FACE_RECOGNITION_MARGIN", 0.0) or 0.0)
+        strong    = float(getattr(config, "FACE_IDENTIFY_STRONG_DISTANCE_DLIB", 0.45))
 
     rows = db.fetchall(
         "SELECT person_id, encoding FROM biometrics WHERE type = 'face'"
@@ -197,7 +199,16 @@ def find_by_face(encoding: np.ndarray) -> Optional[dict]:
             best_id, best_dist, second_dist, second_dist - best_dist, margin,
         )
         return None
-    return get_person(best_id)
+    person = get_person(best_id)
+    if person is not None:
+        # Match-quality metadata for callers: consciousness gates NEW identity
+        # bindings on it (gray-zone matches need consecutive-tick confirmation —
+        # the 2026-08-23 PJ-as-Bret false accept carried no distance anywhere in
+        # the logs, which made the incident undiagnosable after the fact).
+        person["face_match_distance"] = round(best_dist, 3)
+        person["face_match_threshold"] = threshold
+        person["face_match_strong"] = best_dist <= strong
+    return person
 
 
 def find_by_voice(embedding: np.ndarray) -> Optional[dict]:

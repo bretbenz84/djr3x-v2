@@ -349,6 +349,9 @@ _last_seen: dict = {}
 # identified a second ago, carry the last identity forward for this many seconds.
 _last_solo_identity: Optional[tuple[int, str, float, tuple[float, float, float, float] | None]] = None
 _SOLO_IDENTITY_STICKY_SECS = 5.0
+# Consecutive-tick match streaks per person_db_id, for gray-zone new-identity
+# confirmation (_confirm_new_identity). Pruned every tick to matched ids only.
+_identify_streaks: dict[int, int] = {}
 # Temporal hysteresis for a single visible face: (candidate_person_id, consecutive_count)
 # of recognition ticks that disagree with the currently-held identity. The bound
 # identity only switches once a NEW person is seen for FACE_IDENTITY_SWITCH_CONFIRM_FRAMES
@@ -4912,6 +4915,58 @@ def _face_boxes_sticky_compatible(
     return size_ratio <= 4.0
 
 
+def _confirm_new_identity(
+    person_record: Optional[dict],
+    people: list,
+    tick_matched_pids: set,
+) -> Optional[dict]:
+    """Hold a FRESH gray-zone face match from creating a NEW identity binding
+    until it has repeated for FACE_IDENTIFY_CONFIRM_FRAMES consecutive ticks.
+
+    Field 2026-08-23 (PJ run): un-enrolled PJ, alone in front of the camera,
+    matched Bret's single unverified ArcFace reference and was bound as Bret on
+    ONE frame — which then also suppressed the camera-contradiction voice guards
+    that trust "known person visible". A STRONG match (face_match_strong, i.e.
+    comfortably inside the same-person band) still binds instantly, as does the
+    continuation of an identity already bound to a world-state slot; carried
+    identities from the sticky/switch-hysteresis paths (no face_match_distance
+    key) pass through untouched — they were vouched for when first bound.
+
+    NOTE: this defeats flicker-class false accepts only. A systematically
+    confusable face (the PJ shape persisted 12+ s) is handled by the tightened
+    accept threshold and by reference re-capture, not by this gate."""
+    global _identify_streaks
+    if person_record is None:
+        return None
+    if "face_match_distance" not in person_record:
+        return person_record
+    pid = person_record.get("id")
+    if pid is None:
+        return person_record
+    if pid not in tick_matched_pids:
+        _identify_streaks[pid] = _identify_streaks.get(pid, 0) + 1
+        tick_matched_pids.add(pid)
+    if person_record.get("face_match_strong"):
+        return person_record
+    confirm = int(getattr(config, "FACE_IDENTIFY_CONFIRM_FRAMES", 2) or 1)
+    if confirm <= 1:
+        return person_record
+    for slot in people or []:
+        if slot.get("person_db_id") == pid:
+            return person_record
+    streak = _identify_streaks.get(pid, 0)
+    if streak >= confirm:
+        return person_record
+    _log.info(
+        "consciousness: gray-zone face match %s (d=%s) held for confirmation (%d/%d)",
+        person_record.get("name"),
+        person_record.get("face_match_distance"),
+        streak,
+        confirm,
+    )
+    return None
+
+
 def _apply_solo_switch_hysteresis(
     person_record: Optional[dict],
     box: tuple | list | None,
@@ -5170,8 +5225,12 @@ def _step_person_recognition(frame) -> None:
         expose_unknown = (_unknown_visible_streak + 1) >= _unknown_confirm_frames()
         any_identified_this_tick = False
         active_box_keys: set[str] = set()
+        tick_matched_pids: set[int] = set()
         for idx, det in enumerate(detected):
             person_record = face_mod.identify_face(det["encoding"])
+            person_record = _confirm_new_identity(
+                person_record, people, tick_matched_pids
+            )
             if (
                 person_record is None
                 and sticky_identity is not None
@@ -5298,10 +5357,17 @@ def _step_person_recognition(frame) -> None:
                         target_slot["voice_id"] = incoming_name
                     changed = True
                     _log.info(
-                        "consciousness: face identified → %s (db_id=%s)",
+                        "consciousness: face identified → %s (db_id=%s, d=%s)",
                         incoming_name,
                         incoming_id,
+                        person_record.get("face_match_distance", "carried"),
                     )
+
+        # Prune identify streaks to this tick's matches — a missed tick resets
+        # the consecutive-frame count (conservative on purpose).
+        for _stale_pid in list(_identify_streaks.keys()):
+            if _stale_pid not in tick_matched_pids:
+                _identify_streaks.pop(_stale_pid, None)
 
         # Commit this tick's unknown-persistence streak (resets when no unknown was seen).
         _update_unknown_streak(had_raw_unknown)
