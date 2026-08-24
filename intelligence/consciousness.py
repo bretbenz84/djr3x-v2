@@ -428,6 +428,10 @@ _pending_jt_volleyball_greetings: dict[int, dict] = {}
 _hair_stylist_greeted_this_session: set[int] = set()
 _pending_hair_stylist_greetings: dict[int, dict] = {}
 
+# Special-case celebrity greeting for PJ, Sacramento Kings royalty.
+_pj_kings_greeted_this_session: set[int] = set()
+_pending_pj_kings_greetings: dict[int, dict] = {}
+
 # Persons who have left frame but whose departure reaction hasn't fired yet.
 # Maps tracking_key → (departure_monotonic, person_name_or_None).
 # Departure reactions are delayed until situation.apparent_departure is True so that
@@ -2158,6 +2162,180 @@ def _try_fire_hair_stylist_greeting(
             pass
         _log.debug("hair-stylist greeting failed: %s", exc)
         return False
+
+
+def _is_pj_kings_celebrity(name: object) -> bool:
+    return person_specials.is_pj_kings_celebrity(name)
+
+
+def mark_pj_kings_greeted(person_id: int) -> None:
+    """External identity flows (the off-camera who's-that ask) delivered the PJ
+    Kings intro bit — don't repeat it when his face later hits the camera."""
+    try:
+        _pj_kings_greeted_this_session.add(int(person_id))
+    except (TypeError, ValueError):
+        pass
+
+
+def _can_pj_kings_speak(profile: SituationProfile) -> bool:
+    return _can_jeff_celebrity_speak(profile)
+
+
+def _stage_pj_kings_greeting(*, key: int, person_name: str, returning: bool = False) -> None:
+    if not returning and key in _pj_kings_greeted_this_session:
+        return
+    existing = _pending_pj_kings_greetings.get(key)
+    if existing:
+        existing["last_seen_at"] = time.monotonic()
+        existing["returning"] = bool(existing.get("returning") or returning)
+        return
+    _pending_pj_kings_greetings[key] = {
+        "person_name": person_name,
+        "returning": bool(returning),
+        "first_seen_at": time.monotonic(),
+        "last_seen_at": time.monotonic(),
+    }
+    _log.info(
+        "consciousness: PJ Kings celebrity greeting staged (returning=%s)", bool(returning)
+    )
+
+
+def _try_fire_pj_kings_greeting(
+    *,
+    key,
+    person_name: Optional[str],
+    person_db_id: Optional[int],
+    profile: SituationProfile,
+    returning: bool = False,
+) -> bool:
+    if not isinstance(key, int) or not _is_pj_kings_celebrity(person_name):
+        return False
+    if not returning and key in _pj_kings_greeted_this_session:
+        return False
+    if not _can_pj_kings_speak(profile):
+        return False
+    label = (
+        "return celebrity greeting for PJ Kings"
+        if returning
+        else "first-sight celebrity greeting for PJ Kings"
+    )
+    text = person_specials.pj_kings_line(returning=returning)
+    candidate_id = _observe_governor_candidate(
+        purpose="presence_reaction",
+        label=label,
+        suggested_text=text,
+        emotion="starstruck",
+        # NO priority= here — see the note in _try_fire_jt_volleyball_greeting.
+        # speech_queue.enqueue's `priority` is a small ordinal; CandidateMove.priority
+        # is the governor's 0-100 SCORE with a floor of ACTION_GOVERNOR_MIN_SCORE.
+        # Let _PURPOSE_PRIORITIES["presence_reaction"] supply the score.
+        target_person_id=key,
+        requires_llm=False,
+    )
+    if not _presence_reaction_lock.acquire(blocking=False):
+        _mark_governor_candidate(candidate_id, "dropped", "presence_reaction_lock_busy")
+        return False
+
+    try:
+        from audio import speech_queue
+
+        _proactive_speech_pending.set()
+        speech_queue.clear_below_priority(2)
+        tag = f"presence:pj_kings:{key}"
+        _last_presence_reaction_at[key] = time.monotonic()
+        _log.info("consciousness: firing PJ Kings celebrity greeting: %r", text)
+        done = speech_queue.enqueue(text, "starstruck", priority=2, tag=tag)
+        _mark_governor_candidate(candidate_id, "accepted", "pj_kings_enqueued")
+        try:
+            from memory import people as people_mod
+            people_mod.record_greeting(key)
+        except Exception as exc:
+            _log.debug("record greeting failed for PJ person_id=%s: %s", key, exc)
+        try:
+            conv_log.log_rex(text)
+        except Exception as exc:
+            _log.debug("conversation log write failed for PJ greeting: %s", exc)
+        note_rex_utterance(
+            text,
+            open_response_wait=False,
+            source="presence_reaction",
+            topic=label,
+            target_person_id=key,
+        )
+        _pj_kings_greeted_this_session.add(key)
+        _greeted_this_session.add(key)
+        _first_sight_seen_at.pop(key, None)
+        _pending_pj_kings_greetings.pop(key, None)
+        # "I met PJ" → rex.db (celebrity easter egg).
+        episodic_hooks.celebrity(
+            key, person_name, "PJ (Sacramento Kings royalty)", returning=returning
+        )
+
+        def _clear_pending_flag() -> None:
+            done.wait()
+            _proactive_speech_pending.clear()
+            try:
+                _presence_reaction_lock.release()
+            except RuntimeError:
+                pass
+
+        threading.Thread(
+            target=_clear_pending_flag,
+            daemon=True,
+            name="pj-kings-presence-done",
+        ).start()
+        return True
+    except Exception as exc:
+        _mark_governor_candidate(candidate_id, "dropped", "pj_kings_error")
+        _proactive_speech_pending.clear()
+        try:
+            _presence_reaction_lock.release()
+        except RuntimeError:
+            pass
+        _log.debug("PJ Kings greeting failed: %s", exc)
+        return False
+
+
+def _step_pj_kings_detection(snapshot: dict, profile: SituationProfile) -> bool:
+    """PJ, Sacramento Kings royalty — mirrors the JT volleyball detection bit."""
+    now = time.monotonic()
+    confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
+    visible_pj: Optional[tuple[int, str]] = None
+    for person in snapshot.get("people", []) or []:
+        person_name = person.get("face_id") or person.get("voice_id") or ""
+        if not _is_pj_kings_celebrity(person_name):
+            continue
+        try:
+            key = int(person.get("person_db_id"))
+        except (TypeError, ValueError):
+            continue
+        if key in _pj_kings_greeted_this_session:
+            continue
+        first_visible = _first_sight_seen_at.setdefault(key, now)
+        if (now - first_visible) < max(0.0, confirm_visible):
+            return True
+        _stage_pj_kings_greeting(key=key, person_name=person_name)
+        visible_pj = (key, person_name)
+        break
+
+    for pending_key, pending in list(_pending_pj_kings_greetings.items()):
+        name = str(pending.get("person_name") or "PJ")
+        if not _is_pj_kings_celebrity(name):
+            _pending_pj_kings_greetings.pop(pending_key, None)
+            continue
+        stale_after = float(getattr(config, "JEFF_CELEBRITY_GREETING_PENDING_SECS", 45.0) or 45.0)
+        if (now - float(pending.get("last_seen_at") or now)) > max(1.0, stale_after):
+            _pending_pj_kings_greetings.pop(pending_key, None)
+            continue
+        _try_fire_pj_kings_greeting(
+            key=pending_key,
+            person_name=name,
+            person_db_id=pending_key,
+            profile=profile,
+            returning=bool(pending.get("returning")),
+        )
+        return True
+    return visible_pj is not None
 
 
 def _step_hair_stylist_detection(snapshot: dict, profile: SituationProfile) -> bool:
@@ -9628,6 +9806,24 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 first_sight_pending_keys.add(key)
                 continue
 
+        if _is_pj_kings_celebrity(person_name):
+            first_visible = _first_sight_seen_at.setdefault(key, now)
+            confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
+            if (now - first_visible) < max(0.0, confirm_visible):
+                first_sight_pending_keys.add(key)
+                continue
+            _stage_pj_kings_greeting(key=key, person_name=person_name)
+            if _try_fire_pj_kings_greeting(
+                key=key,
+                person_name=person_name,
+                person_db_id=person_db_id,
+                profile=profile,
+            ):
+                continue
+            if key not in _pj_kings_greeted_this_session:
+                first_sight_pending_keys.add(key)
+                continue
+
         if _is_galactic_hair_stylist(person_name):
             first_visible = _first_sight_seen_at.setdefault(key, now)
             confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
@@ -10326,6 +10522,20 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     returning=True,
                 )
                 _try_fire_jt_volleyball_greeting(
+                    key=key,
+                    person_name=person_name,
+                    person_db_id=person_db_id,
+                    profile=profile,
+                    returning=True,
+                )
+                continue
+            if _is_pj_kings_celebrity(person_name):
+                _stage_pj_kings_greeting(
+                    key=key,
+                    person_name=person_name,
+                    returning=True,
+                )
+                _try_fire_pj_kings_greeting(
                     key=key,
                     person_name=person_name,
                     person_db_id=person_db_id,
@@ -14080,6 +14290,7 @@ def _loop() -> None:
             if (
                 _step_jeff_history_hunters_detection(snapshot, profile)
                 or _step_jt_volleyball_detection(snapshot, profile)
+                or _step_pj_kings_detection(snapshot, profile)
                 or _step_hair_stylist_detection(snapshot, profile)
             ):
                 _finish_governor_cycle()
@@ -14292,6 +14503,8 @@ def start() -> None:
     _pending_jeff_celebrity_greetings.clear()
     _jt_volleyball_greeted_this_session.clear()
     _pending_jt_volleyball_greetings.clear()
+    _pj_kings_greeted_this_session.clear()
+    _pending_pj_kings_greetings.clear()
     _pending_departure_keys.clear()
     _first_missing_at.clear()
     _confirmed_absent_at.clear()
@@ -14465,6 +14678,8 @@ def stop() -> None:
     _pending_jeff_celebrity_greetings.clear()
     _jt_volleyball_greeted_this_session.clear()
     _pending_jt_volleyball_greetings.clear()
+    _pj_kings_greeted_this_session.clear()
+    _pending_pj_kings_greetings.clear()
     _confirmed_absent_at.clear()
     _first_sight_seen_at.clear()
     _animal_seen_signatures.clear()

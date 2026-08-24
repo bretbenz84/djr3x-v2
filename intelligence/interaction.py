@@ -7590,6 +7590,12 @@ def _special_intro_prompt(name: str) -> Optional[str]:
             "warm, reverent, loyal, and still dryly Rex about being Bret's "
             "high-maintenance droid creation."
         )
+    elif person_specials.is_pj_kings_celebrity(name):
+        special_instruction = (
+            "acknowledge PJ by name as Sacramento Kings royalty. Include one "
+            "affectionate joke orbiting his Kings devotion, with the beam, a "
+            "cowbell, or the color purple as the absurd target."
+        )
     elif person_specials.is_galactic_hair_stylist(name):
         special_instruction = (
             "acknowledge them by name as one of the greatest hair stylists in "
@@ -9644,6 +9650,8 @@ def _handle_pending_offscreen_identify_reply(
         try:
             if _specials.is_jt_volleyball_celebrity(intro_name) and new_pid is not None:
                 consciousness.mark_jt_volleyball_greeted(int(new_pid))
+            if _specials.is_pj_kings_celebrity(intro_name) and new_pid is not None:
+                consciousness.mark_pj_kings_greeted(int(new_pid))
         except Exception:
             pass
     else:
@@ -11756,6 +11764,12 @@ def _intro_ack_and_followup(
             "acknowledge Bret Benziger by name as Rex's creator and maker. Be "
             "warm, reverent, loyal, and still dryly Rex about being Bret's "
             "high-maintenance droid creation."
+        )
+    elif person_specials.is_pj_kings_celebrity(introduced_name):
+        special_quip_instruction = (
+            f"acknowledge {introduced_first} by name as Sacramento Kings "
+            "royalty with one affectionate joke about the beam, a cowbell, or "
+            "purple loyalty."
         )
     elif person_specials.is_galactic_hair_stylist(introduced_name):
         special_quip_instruction = (

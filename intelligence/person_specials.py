@@ -12,6 +12,13 @@ _BRET_CREATOR_KEYS = {
     "bret benziger",
     "brett benziger",
 }
+_PJ_KINGS_KEYS = {
+    "pj",
+    "p j",
+    "pee jay",
+    "peejay",
+    "pj thomas",
+}
 _HAIR_STYLIST_KEYS = {
     "joy",
     "t joy",
@@ -32,6 +39,18 @@ JT_VOLLEYBALL_LINES = (
 JT_VOLLEYBALL_RETURN_LINES = (
     "JT is back. Volleyball celebrity protocol restored; the bones have filed a formal complaint.",
     "Jay Tee returns. Somewhere, a veteran volleyball muscle just asked if warmups count as cardio.",
+)
+
+PJ_KINGS_LINES = (
+    "PJ detected. Sacramento Kings royalty in the building. Somebody light the beam and tell the cowbell this is not a drill.",
+    "Hold on. PJ is here? Kings royalty. Every cowbell in the quadrant just rang itself out of sheer respect.",
+    "Alert: PJ, Sacramento Kings royalty. Light the beam, clear the lane, and find the man a seat with a view.",
+    "PJ in the building. Purple loyalty at maximum. I'd offer him a drink, but he has already sworn allegiance to a cowbell.",
+)
+
+PJ_KINGS_RETURN_LINES = (
+    "PJ is back. Kings royalty protocol restored; the beam is warming up as we speak.",
+    "PJ returns. Somewhere a cowbell just clocked in for another shift.",
 )
 
 HAIR_STYLIST_LINES = (
@@ -74,6 +93,13 @@ def is_rex_creator(name: object) -> bool:
     return key in _BRET_CREATOR_KEYS or compact in {"bretbenziger", "brettbenziger"}
 
 
+def is_pj_kings_celebrity(name: object) -> bool:
+    """Return True for the PJ / P.J. Sacramento Kings royalty bit."""
+    key = _special_name_key(name)
+    compact = _compact_special_name_key(name)
+    return key in _PJ_KINGS_KEYS or compact in {"pj", "peejay", "pjthomas"}
+
+
 def is_galactic_hair_stylist(name: object) -> bool:
     """Return True for Joy / T-Joy / Excudica hair-styling legend bits."""
     key = _special_name_key(name)
@@ -98,6 +124,7 @@ def is_special_person(name: object) -> bool:
     return bool(
         is_rex_creator(name)
         or is_jt_volleyball_celebrity(name)
+        or is_pj_kings_celebrity(name)
         or is_galactic_hair_stylist(name)
     )
 
@@ -106,6 +133,11 @@ def is_special_person(name: object) -> bool:
 
 def jt_volleyball_line(*, returning: bool = False) -> str:
     lines = JT_VOLLEYBALL_RETURN_LINES if returning else JT_VOLLEYBALL_LINES
+    return random.choice(lines)
+
+
+def pj_kings_line(*, returning: bool = False) -> str:
+    lines = PJ_KINGS_RETURN_LINES if returning else PJ_KINGS_LINES
     return random.choice(lines)
 
 
@@ -147,6 +179,16 @@ def rex_creator_intro_ack(name: object) -> Optional[str]:
     )
 
 
+def pj_kings_intro_ack(name: object) -> Optional[str]:
+    """Immediate deterministic-shaped fallback for PJ name enrollment."""
+    if not is_pj_kings_celebrity(name):
+        return None
+    return (
+        "PJ. Sacramento Kings royalty. Filed under purple, permanent, and loud "
+        "enough to be heard from orbit, right between the beam and the cowbell."
+    )
+
+
 def galactic_hair_stylist_intro_ack(name: object) -> Optional[str]:
     """Immediate deterministic-shaped fallback for hair-stylist name enrollment."""
     if not is_galactic_hair_stylist(name):
@@ -163,6 +205,7 @@ def special_intro_ack(name: object) -> Optional[str]:
     return (
         rex_creator_intro_ack(name)
         or jt_volleyball_intro_ack(name)
+        or pj_kings_intro_ack(name)
         or galactic_hair_stylist_intro_ack(name)
     )
 
@@ -179,6 +222,23 @@ def jt_volleyball_prompt_context(name: object) -> Optional[str]:
         "to retire, muscles going missing, warmups becoming survival paperwork. "
         "Keep it playful and obviously fictional; do not frame it as real "
         "illness, disability, cruelty, or body-shaming."
+    )
+
+
+def pj_kings_prompt_context(name: object) -> Optional[str]:
+    """Prompt rule for LLM-generated replies to or about PJ."""
+    if not is_pj_kings_celebrity(name):
+        return None
+    return (
+        "SPECIAL PERSON HOOK: This person is PJ (he also goes by P), treated by "
+        "Rex as Sacramento Kings royalty — basketball celebrity status. Be "
+        "theatrically starstruck in the same spirit as the JT volleyball bit. Rex "
+        "may crack affectionate, absurd jokes orbiting Kings devotion: lighting "
+        "the beam, cowbells, purple everything, the sacred loyalty of sitting "
+        "through a long playoff drought, treating a basketball team like a "
+        "religion. The jokes CELEBRATE how devoted he is — they are never at his "
+        "expense, and Rex does not trash the Kings in a way that lands as an "
+        "insult to PJ himself. Keep it playful and obviously fictional."
     )
 
 
@@ -234,6 +294,7 @@ def special_prompt_context(name: object) -> Optional[str]:
         for context in (
             rex_creator_prompt_context(name),
             jt_volleyball_prompt_context(name),
+            pj_kings_prompt_context(name),
             galactic_hair_stylist_prompt_context(name),
         )
         if context

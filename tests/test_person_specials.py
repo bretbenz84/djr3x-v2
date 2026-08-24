@@ -178,6 +178,103 @@ class JTPersonSpecialTests(unittest.TestCase):
         self.assertEqual(enqueue.call_args.kwargs["priority"], 2)
         self.assertIn(12, consciousness._jt_volleyball_greeted_this_session)
 
+    def test_pj_name_variants_match_kings_special(self):
+        from intelligence import person_specials
+
+        self.assertTrue(person_specials.is_pj_kings_celebrity("PJ"))
+        self.assertTrue(person_specials.is_pj_kings_celebrity("P J"))
+        self.assertTrue(person_specials.is_pj_kings_celebrity("P.J."))
+        self.assertTrue(person_specials.is_pj_kings_celebrity("PJ Thomas"))
+        self.assertFalse(person_specials.is_pj_kings_celebrity("JT"))
+        # A bare "P" is his nickname, not a routing key — too collision-prone.
+        self.assertFalse(person_specials.is_pj_kings_celebrity("P"))
+
+    def test_pj_prompt_context_has_kings_bit_and_guard(self):
+        from intelligence import person_specials
+
+        context = person_specials.pj_kings_prompt_context("PJ")
+
+        self.assertIsNotNone(context)
+        self.assertIn("Sacramento Kings royalty", context)
+        self.assertIn("beam", context)
+        self.assertIn("cowbell", context)
+        # The bit celebrates his devotion; it never lands on him.
+        self.assertIn("never at his", context)
+
+    def test_identity_enrollment_ack_uses_pj_kings_bit(self):
+        from intelligence import interaction
+
+        ack = interaction._identity_enrollment_ack("PJ")
+
+        self.assertIn("Sacramento Kings royalty", ack)
+        self.assertIn("cowbell", ack)
+
+    def test_intro_prompt_for_pj_mentions_kings_royalty(self):
+        from intelligence import interaction
+
+        with mock.patch.object(interaction.llm, "get_response", return_value="PJ line.") as get_response:
+            response = interaction._intro_ack_and_followup(
+                introducer_id=1,
+                introducer_name="Bret Benziger",
+                introduced_id=None,
+                introduced_name="PJ",
+                relationship=None,
+            )
+
+        self.assertEqual(response, "PJ line.")
+        prompt = get_response.call_args.args[0]
+        self.assertIn("Sacramento Kings", prompt)
+        self.assertIn("cowbell", prompt)
+
+    def test_pj_is_covered_by_the_shared_special_predicate(self):
+        from intelligence import person_specials
+
+        # is_special_person gates onboarding: a VIP is not interrogated for a profile.
+        self.assertTrue(person_specials.is_special_person("PJ"))
+        self.assertIsNotNone(person_specials.special_prompt_context("PJ"))
+        self.assertIsNotNone(person_specials.special_intro_ack("PJ"))
+
+    def test_pj_kings_special_uses_starstruck_direct_greeting(self):
+        from intelligence import consciousness, person_specials
+
+        consciousness._pj_kings_greeted_this_session.clear()
+        consciousness._first_sight_seen_at.clear()
+        consciousness._pending_pj_kings_greetings.clear()
+        done = Event()
+        done.set()
+        with (
+            mock.patch.object(consciousness, "_can_pj_kings_speak", return_value=True),
+            mock.patch("audio.speech_queue.clear_below_priority") as clear_lower,
+            mock.patch("audio.speech_queue.enqueue", return_value=done) as enqueue,
+            mock.patch("memory.people.record_greeting"),
+        ):
+            fired = consciousness._try_fire_pj_kings_greeting(
+                key=7,
+                person_name="PJ",
+                person_db_id=7,
+                profile=mock.Mock(),
+            )
+
+        self.assertTrue(fired)
+        clear_lower.assert_called_once_with(2)
+        args = enqueue.call_args.args
+        self.assertIn(args[0], person_specials.PJ_KINGS_LINES)
+        self.assertEqual(args[1], "starstruck")
+        self.assertEqual(enqueue.call_args.kwargs["priority"], 2)
+        self.assertIn(7, consciousness._pj_kings_greeted_this_session)
+
+    def test_pj_kings_greeting_fires_only_once_per_session(self):
+        from intelligence import consciousness
+
+        consciousness._pj_kings_greeted_this_session.clear()
+        consciousness._pj_kings_greeted_this_session.add(7)
+        with mock.patch.object(consciousness, "_can_pj_kings_speak", return_value=True):
+            fired = consciousness._try_fire_pj_kings_greeting(
+                key=7, person_name="PJ", person_db_id=7, profile=mock.Mock(),
+            )
+        self.assertFalse(fired)
+        consciousness._pj_kings_greeted_this_session.clear()
+
 
 if __name__ == "__main__":
     unittest.main()
