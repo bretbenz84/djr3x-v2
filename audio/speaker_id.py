@@ -335,6 +335,40 @@ def identify_speaker(
     return (best_id, name, float(best_sim))
 
 
+_BACKEND_EMBED_DIMS = {"ecapa": 192, "resemblyzer": 256}
+
+
+def comparable_print_count(person_id) -> int:
+    """How many enrolled voice clips this person has under the ACTIVE embedder.
+
+    0 is the VOICELESS-FACE signature: this person's speech cannot match their
+    own row, so it necessarily lands on someone ELSE's print — at whatever score
+    the embedder hands their nearest acoustic neighbor (field 2026-08-23 21:08:
+    print-less PJ scored 0.79-0.94 on Bret's centroid, turn after turn, while
+    PJ's recognized face was on camera). Rows from the other embedder don't
+    count: they can never match a live query."""
+    try:
+        rows = db.fetchall(
+            "SELECT encoding FROM biometrics WHERE type = 'voice' AND person_id = ?",
+            (int(person_id),),
+        )
+    except Exception:
+        return 0
+    try:
+        backend = voice_score.active_backend()
+    except Exception:
+        backend = None
+    dim = _BACKEND_EMBED_DIMS.get(str(backend or "").lower())
+    if dim is None:
+        return len(rows)
+    count = 0
+    for row in rows:
+        arr = np.frombuffer(bytes(row["encoding"]), dtype=np.float32)
+        if arr.shape[0] == dim:
+            count += 1
+    return count
+
+
 def enroll_voice(person_id: int, audio_array: np.ndarray) -> bool:
     """Compute an embedding from audio and store it as a voice biometric for person_id."""
     embedding = get_embedding(audio_array)

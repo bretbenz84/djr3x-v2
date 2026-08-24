@@ -3909,6 +3909,25 @@ INTRO_VOICE_INTRODUCER_VISUAL_OVERRIDE_CEILING = 0.87
 # identity and routes to the face-only describe-newcomer path.
 IDENTITY_PROMPT_DEMOTION_ENABLED = True
 
+# Voiceless-face rule (field 2026-08-23 21:08, the PJ face-only run): a person
+# enrolled by FACE but with NO voice print under the active embedder cannot
+# match their own row — their speech necessarily lands on someone ELSE's print,
+# at whatever score the embedder hands their nearest neighbor (print-less PJ
+# scored 0.79–0.94 on Bret's centroid while PJ's recognized face was on camera,
+# so "voice over visible face" kept crediting off-camera Bret). When the sole
+# visible known face is voiceless, an off-camera voice match — even a confident
+# one — does not override it, UNLESS the matched person was themselves on
+# camera moments ago or the visual active-speaker latch contradicts the face.
+VOICELESS_FACE_WINS_ENABLED = True
+
+# The enrollment half of the same fix: on a voiceless-face turn Rex owes the
+# person a voice print, so after replying he asks them for a line and the next
+# qualifying utterance (their face on camera, no confidently-matched OTHER
+# person also on camera, sample quality gates) is enrolled onto their row.
+# Once per person per session; window mirrors the intro voice capture.
+VOICE_SAMPLE_REQUEST_ENABLED = True
+VOICE_SAMPLE_REQUEST_WINDOW_SECS = 45.0
+
 # Off-screen "who was that?" claim verification: when the answer names an EXISTING
 # person who already has voice prints, the held clip must score at least this
 # against their prints to be ENROLLED onto them (conversation attribution is not

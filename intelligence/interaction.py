@@ -722,6 +722,16 @@ _pending_introduction: Optional[dict] = None
 _pending_intro_followup: Optional[dict] = None
 _pending_intro_voice_capture: Optional[dict] = None
 
+# Voice-sample request flow (the enrollment half of the voiceless-face rule):
+# a KNOWN visible face with no voice print got cross-matched to someone else's
+# print, so after replying Rex asks them for a line and the next qualifying
+# utterance is enrolled onto their row. Armed by _maybe_request_voice_sample
+# (asked_at stays None until the ask is actually spoken by the post-response
+# hook); consumed by _handle_voice_sample_capture. Once per person per session.
+#   keys: person_id, name, armed_at, asked_at
+_pending_voice_sample_capture: Optional[dict] = None
+_voice_sample_requested_pids: set[int] = set()
+
 # Impersonation live-capture flow: "do an impersonation of me" opens this slot,
 # Rex asks the person to repeat a fixed line, and the next speech segment from that
 # person is saved as their voice-clone reference before the parody performs.
@@ -2230,6 +2240,8 @@ def _voice_primary_face_decision(
     score_genuine_band: bool = False,
     short_utterance: bool = False,
     non_speech_vocalization: bool = False,
+    ws_voiceless: bool = False,
+    raw_best_recently_visible: bool = False,
 ) -> str:
     """Voice-primary attribution decision when exactly one known face (``ws_pid``)
     is visible. Pure (no side effects) so it is directly unit-testable.
@@ -2258,6 +2270,10 @@ def _voice_primary_face_decision(
       ``voice_weak_face_wins``    voice marginally matched someone else while a known
                                   face is visible and the camera does not contradict it
                                   — the present face anchors identity, no refresh
+      ``voiceless_face_wins``     the visible known face has NO voice print under the
+                                  active embedder, so ANY match — even a confident one —
+                                  is a nearest-neighbor artifact of their own speech;
+                                  the face wins and a voice-sample request is owed
       ``corroborate``             voice weakly leans toward the visible face — attribute + refresh
       ``face_only_continuity``    no voice signal at all in a clean 1:1 — attribute, no refresh
       ``short_face_wins``         clip too short for the embedder to score reliably and the
@@ -2320,6 +2336,24 @@ def _voice_primary_face_decision(
     if pid is not None:
         # Accepted voice match points at someone OTHER than the visible known face.
         confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
+        if (
+            ws_voiceless
+            and bool(getattr(config, "VOICELESS_FACE_WINS_ENABLED", True))
+            and single_visible
+            and not raw_best_recently_visible
+            and (vis is None or vis == ws)
+        ):
+            # The visible known face has NO voice print under the active
+            # embedder, so its speech CANNOT match its own row — it necessarily
+            # lands on someone else's print, at whatever score the embedder
+            # hands the nearest neighbor. Field 2026-08-23 21:08: print-less PJ
+            # scored 0.79-0.94 on Bret's centroid, turn after turn, while PJ's
+            # recognized face was on camera, and voice_over_face kept crediting
+            # off-camera Bret. A confident cross-match only wins here when the
+            # matched person was themselves on camera moments ago (they just
+            # stepped out of frame — a real off-camera speaker) or the visual
+            # active-speaker latch points away from the visible face.
+            return "voiceless_face_wins"
         if speaker_score >= confident:
             return "voice_over_face"            # confident → a real off-camera speaker
         if vis is not None and vis != ws:
@@ -8425,9 +8459,11 @@ def _clear_memory_related_pending_state() -> None:
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
     global _identity_prompt_until
+    global _pending_voice_sample_capture
 
     _awaiting_followup_event = None
     _pending_post_greet_relationship[0] = None
+    _pending_voice_sample_capture = None
     _pending_offscreen_identify = None
     _pending_face_reveal_confirm = None
     global _pending_dual_intro
@@ -12000,6 +12036,130 @@ def _intro_capture_window_open() -> bool:
     a sticky/visible introducer face from capturing the newcomer's turn.
     """
     return _intro_voice_capture_fresh(_pending_intro_voice_capture)
+
+
+def _maybe_request_voice_sample(person_id, name) -> None:
+    """Arm a voice-sample ask for a KNOWN visible face with no voice print.
+
+    Fired from the voiceless_face_wins resolution branch. The ask itself is
+    spoken by the post-response hook (after Rex's reply to the current turn),
+    which stamps asked_at and opens the capture window. Once per person per
+    session, and never while an intro voice-capture is already pending."""
+    global _pending_voice_sample_capture
+    if not bool(getattr(config, "VOICE_SAMPLE_REQUEST_ENABLED", True)):
+        return
+    pid = _safe_int(person_id)
+    if pid is None or pid in _voice_sample_requested_pids:
+        return
+    if _pending_voice_sample_capture is not None or _pending_intro_voice_capture is not None:
+        return
+    _voice_sample_requested_pids.add(pid)
+    _pending_voice_sample_capture = {
+        "person_id": pid,
+        "name": name,
+        "armed_at": time.monotonic(),
+        "asked_at": None,
+    }
+    _log.info("[voice_sample] request armed for %r (person_id=%s)", name, pid)
+
+
+def _voice_sample_capture_fresh(ctx: Optional[dict]) -> bool:
+    if not ctx or ctx.get("asked_at") is None:
+        return False
+    ttl = float(getattr(config, "VOICE_SAMPLE_REQUEST_WINDOW_SECS", 45.0))
+    return (time.monotonic() - float(ctx["asked_at"])) <= ttl
+
+
+def _handle_voice_sample_capture(
+    text: str,
+    audio_array: np.ndarray,
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    speaker_score: float,
+) -> Optional[str]:
+    """Consume the reply to Rex's "give me a line so I can learn your voice" ask.
+
+    Enrolls the utterance onto the requested person when the camera still backs
+    them (their face on frame now/recently) and no OTHER known person is both
+    confidently voice-matched AND on camera. A cross-match onto an off-camera
+    print does NOT disqualify — that cross-match is the exact symptom the flow
+    exists to cure (print-less PJ read as Bret at 0.79-0.94, 2026-08-23)."""
+    global _pending_voice_sample_capture
+
+    ctx = _pending_voice_sample_capture
+    if ctx is None or ctx.get("asked_at") is None:
+        return None
+    if not _voice_sample_capture_fresh(ctx):
+        _log.info("[voice_sample] capture window expired for %s", ctx.get("name"))
+        _pending_voice_sample_capture = None
+        return None
+
+    target_id = int(ctx["person_id"])
+    target_name = ctx.get("name") or "friend"
+    cleaned = (text or "").strip().lower()
+    if re.search(r"\b(no|nope|not now|not right now|later|wait|hold on|can'?t|cannot)\b", cleaned):
+        _log.info("[voice_sample] declined by reply — dropping request for %s", target_name)
+        _pending_voice_sample_capture = None
+        return None
+    if not _known_person_visible_recently(target_id):
+        # The person stepped away — don't blind-enroll a room voice onto them.
+        return None
+    confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
+    rb = _safe_int(raw_best_id)
+    if (
+        rb is not None
+        and rb != target_id
+        and float(speaker_score or 0.0) >= confident
+        and _known_person_visible_recently(rb)
+    ):
+        _log.info(
+            "[voice_sample] reply confidently matches VISIBLE person %s — not "
+            "enrolling it onto %s",
+            rb, target_name,
+        )
+        return None
+
+    ok = _safe_enroll_voice(
+        target_id,
+        audio_array,
+        transcript_text=text,
+        source="voice_sample_request",
+        confirmed=False,
+    )
+    first = _first_name_or(target_name, "there")
+    if not ok:
+        ctx["asked_at"] = time.monotonic()
+        return (
+            f"{first}, static ate that one. Give me one more line so my ears "
+            f"can catch up with my eyes."
+        )
+
+    _pending_voice_sample_capture = None
+    _log.info(
+        "[voice_sample] enrolled voice for %r (person_id=%s) from sample request",
+        target_name, target_id,
+    )
+    try:
+        _session_person_ids.add(target_id)
+        consciousness.mark_engagement(target_id)
+        consciousness.note_person_spoke(target_id)
+    except Exception:
+        pass
+    try:
+        conv_memory.add_to_transcript(target_name, text)
+        conv_log.log_heard(target_name, text)
+        print(f"[HEARD] {target_name}: {text}", flush=True)
+    except Exception as exc:
+        _log.debug("voice sample transcript log failed: %s", exc)
+    try:
+        topic_thread.note_user_turn(text, target_id)
+        user_energy.note_user_turn(text, target_id)
+    except Exception as exc:
+        _log.debug("voice sample turn tracking failed: %s", exc)
+    return (
+        f"Got it, {first} — voice locked in. My eyes and ears finally agree "
+        f"about you."
+    )
 
 
 def _intro_camera_contradicts_introducer(
@@ -25340,6 +25500,15 @@ def _handle_speech_segment(
                 )
             except Exception as exc:
                 _log.debug("active-speaker recent lookup (single-visible) failed: %s", exc)
+            # Voiceless-face signature: the visible person has no voice print
+            # under the active embedder, so a voice match pointing elsewhere is
+            # expected for THEIR OWN speech (see voiceless_face_wins).
+            _ws_voiceless = False
+            if person_id is not None and _safe_int(person_id) != ws_pid:
+                try:
+                    _ws_voiceless = speaker_id.comparable_print_count(ws_pid) == 0
+                except Exception as exc:
+                    _log.debug("comparable_print_count failed: %s", exc)
             decision = _voice_primary_face_decision(
                 person_id=person_id,
                 raw_best_id=raw_best_id,
@@ -25367,6 +25536,8 @@ def _handle_speech_segment(
                 # followed broke the face lock come-here depends on).
                 short_utterance=_is_short_utterance(audio_array, text),
                 non_speech_vocalization=_is_non_speech_vocalization(text),
+                ws_voiceless=_ws_voiceless,
+                raw_best_recently_visible=_known_person_visible_recently(person_id),
             )
             if decision == "voice_agrees":
                 _note_confident_voice(person_id, speaker_score)
@@ -25417,6 +25588,26 @@ def _handle_speech_segment(
                     "person_id=%s name=%r (visible ws_pid=%s) score=%.3f",
                     person_id, person_name, ws_pid, speaker_score,
                 )
+            elif decision == "voiceless_face_wins":
+                # The visible face's person has NO voice print, so the match on
+                # someone else's print IS their own speech's expected landing
+                # spot — the face anchors identity. NEVER refresh anyone's print
+                # from this audio (whose voice it is was decided by the camera,
+                # not the embedder); instead arm the explicit voice-sample
+                # request so the person gets a real, consented print and this
+                # branch stops being needed.
+                voice_lost_name = person_name
+                voice_lost_pid = person_id
+                person_id = ws_pid
+                person_name = ws_name
+                identity_resolution_override = "voiceless_face_wins"
+                _log.info(
+                    "[interaction] person resolution: visible face %r has no "
+                    "voiceprint — cross-match %s/%r (%.3f) does not override it "
+                    "(voiceless-face rule); arming voice-sample request",
+                    ws_name, voice_lost_pid, voice_lost_name, speaker_score,
+                )
+                _maybe_request_voice_sample(ws_pid, ws_name)
             elif decision == "voice_weak_face_wins":
                 # A marginal (<confident) voice match pointed at someone OTHER than
                 # the visible known face, and the camera did not contradict the face
@@ -26677,6 +26868,28 @@ def _handle_speech_segment(
             conv_log.log_rex(intro_voice_response)
             _session_exchange_count += 1
             _register_rex_utterance(intro_voice_response)
+            return
+
+        voice_sample_response = _handle_voice_sample_capture(
+            text,
+            audio_array,
+            person_id,
+            raw_best_id,
+            speaker_score,
+        )
+        if voice_sample_response:
+            _record_heard_turn_once()
+            _speak_blocking(
+                voice_sample_response,
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", voice_sample_response)
+            conv_log.log_rex(voice_sample_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(voice_sample_response)
+            final_executed_path = "identity.voice_sample_capture"
             return
 
         # Targeted-forget confirmation, in the same pending-slot ladder as the scene
@@ -29133,12 +29346,48 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("post-greet relationship ask error: %s", exc)
 
+        # Voice-sample ask (voiceless-face rule): this turn resolved to a known
+        # visible face with no voice print, so their speech cross-matched
+        # someone else's print. Ask them for a line now — the capture window
+        # opens when the ask is spoken, and _handle_voice_sample_capture
+        # enrolls their next utterance.
+        voice_sample_ask_fired = False
+        pending_vs = _pending_voice_sample_capture
+        if (
+            pending_vs is not None
+            and pending_vs.get("asked_at") is None
+            and not _interrupted.is_set()
+            and not post_greet_fired
+            and _known_person_visible_recently(pending_vs.get("person_id"))
+        ):
+            vs_first = _first_name_or(pending_vs.get("name"), "friend")
+            ask_text = (
+                f"Oh, and {vs_first} — my eyes know you, but my ears don't yet. "
+                f"Give me a line so I can learn your voice."
+            )
+            try:
+                _speak_blocking(ask_text)
+                conv_memory.add_to_transcript("Rex", ask_text)
+                conv_log.log_rex(ask_text)
+                _register_rex_utterance(ask_text)
+                assistant_asked_question = True
+                question_recovery_text = ask_text
+                voice_sample_ask_fired = True
+                pending_vs["asked_at"] = time.monotonic()
+                _log.info(
+                    "[voice_sample] ask spoken for %r — capture window open",
+                    pending_vs.get("name"),
+                )
+            except Exception as exc:
+                _log.debug("voice sample ask error: %s", exc)
+
         # Curiosity routine — skip if we just asked a relationship question.
         if (
             match is None
             and response_text
             and not _interrupted.is_set()
             and not post_greet_fired
+            and not voice_sample_ask_fired
             and not used_agenda_llm
             and not used_classified_intent
         ):
