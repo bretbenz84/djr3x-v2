@@ -192,6 +192,50 @@ def normalized_name_key(value: str) -> str:
     return " ".join(tokens)
 
 
+# Dictated initials arrive spelled out, with or without periods: "JT" is heard as
+# "J.T.", "J. T." or "J T". The dotted spellings used to be TRUNCATED to the first
+# letter by the sentence-splitting below (it cuts at the first "."), which is how the
+# live 2026-08-23 session enrolled a phantom person named "J" off someone answering
+# "It was JT" — that row then sat one fuzzy match away from the real JT. Collapse an
+# initial run back into one token BEFORE the punctuation split so the letters survive.
+_DOTTED_INITIALS_RE = re.compile(r"\b(?:[A-Za-z]\.\s*){2,}|\b(?:[A-Za-z]\.\s*)+[A-Za-z]\b")
+
+
+def _collapse_dotted_initials(text: str) -> str:
+    def _join(match: re.Match) -> str:
+        run = match.group(0)
+        letters = "".join(re.findall(r"[A-Za-z]", run))
+        # Keep the separator that followed the run, or "A. J. Foyt" welds into "AJFoyt".
+        return letters + (" " if run[-1:].isspace() else "")
+
+    return _DOTTED_INITIALS_RE.sub(_join, text)
+
+
+def _merge_initial_tokens(tokens: list[str]) -> list[str]:
+    """Fold a run of consecutive single-letter tokens into one ("J T" -> "JT").
+
+    Only ADJACENT single letters merge, so a middle initial between real words
+    ("Bret M Benziger") is left alone, while "J T" / "J J Watt" resolve correctly.
+    """
+    merged: list[str] = []
+    run: list[str] = []
+    for token in tokens:
+        if len(token) == 1 and token.isalpha():
+            run.append(token)
+            continue
+        if len(run) > 1:
+            merged.append("".join(run).upper())
+        elif run:
+            merged.append(run[0])
+        run = []
+        merged.append(token)
+    if len(run) > 1:
+        merged.append("".join(run).upper())
+    elif run:
+        merged.append(run[0])
+    return merged
+
+
 def _clean_candidate(value: str) -> str:
     text = (value or "").strip()
     if not text:
@@ -199,6 +243,7 @@ def _clean_candidate(value: str) -> str:
     call_me_parts = _PREFERRED_NAME_SPLIT_RE.split(text, maxsplit=1)
     if len(call_me_parts) > 1:
         text = call_me_parts[1].strip()
+    text = _collapse_dotted_initials(text)
     text = re.split(r"[,.!?;:]", text, maxsplit=1)[0].strip()
     text = _INTRO_SPLIT_RE.split(text, maxsplit=1)[0].strip()
     text = _TRAILING_FILLER_RE.sub("", text).strip()
@@ -243,6 +288,10 @@ def normalize_person_name(value: str, *, allow_single: bool = True) -> Optional[
             return None
         if any(token in _BAD_SINGLE_TOKENS or token in _BAD_PHRASE_TOKENS for token in lowered):
             return None
+
+    # Applied after the guards above on purpose: merging earlier would shrink a
+    # rejected phrase ("It was J T") back under the word limit and let it through.
+    tokens = _merge_initial_tokens(tokens)
 
     if all(token.islower() for token in tokens):
         tokens = [token.capitalize() for token in tokens]

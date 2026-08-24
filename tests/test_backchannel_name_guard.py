@@ -42,3 +42,28 @@ class BackchannelNameGuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DictatedInitialsTest(unittest.TestCase):
+    """Dictated initials must survive normalization as one token.
+
+    Live 2026-08-23: someone answered "It was JT" and a phantom person named "J"
+    was enrolled with a stranger's face+voice, one fuzzy match from the real JT.
+    """
+
+    def test_spaced_and_dotted_initials_collapse(self):
+        for spelling in ("J T", "J.T.", "J. T.", "J.T", "j t"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(normalize_person_name(spelling), "JT")
+
+    def test_initials_keep_a_following_surname(self):
+        self.assertEqual(normalize_person_name("J T Thomas"), "JT Thomas")
+        self.assertEqual(normalize_person_name("P. J. Thomas"), "PJ Thomas")
+        self.assertEqual(normalize_person_name("A. J. Foyt"), "AJ Foyt")
+
+    def test_lone_middle_initial_is_left_alone(self):
+        self.assertEqual(normalize_person_name("Bret M Benziger"), "Bret M Benziger")
+        self.assertEqual(normalize_person_name("Mary J Blige"), "Mary J Blige")
+
+    def test_non_name_phrase_still_rejected(self):
+        self.assertIsNone(normalize_person_name("It was J T."))
