@@ -3862,6 +3862,33 @@ INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD = 0.75
 # Brat/Exudica twin chaos, logs 2026-07-23-19-50-57).
 INTRO_VOICE_INTRODUCER_GUARD_FLOOR = 0.70
 
+# Camera-contradiction override for that guard. Field 2026-08-23 18:17 (PJ run):
+# PJ — un-enrolled, standing alone in front of the camera, personally invited to
+# say hello — answered "Hello." and scored 0.751 on BRET's print, so the guard
+# above called him "confidently the introducer" three turns in a row, the window
+# expired, and PJ spent the whole night attributed to Bret. Score alone cannot
+# separate a voice-twin newcomer from the introducer, but the camera could: the
+# introducer had never been on camera while an unknown face was front and
+# center. When ALL of that independent evidence lines up (unknown face visible
+# NOW, introducer not seen recently, the visual active-speaker latch does not
+# say the introducer, newcomer-shaped text), a sub-ceiling "confident" match is
+# overridden and the reply is enrolled as the newcomer. The ceiling keeps
+# slam-dunk introducer turns safe: genuine Bret landed 0.83–0.89 in that same
+# session while PJ-as-Bret landed 0.60–0.75.
+INTRO_VOICE_VISUAL_NEWCOMER_OVERRIDE_ENABLED = True
+INTRO_VOICE_INTRODUCER_VISUAL_OVERRIDE_CEILING = 0.87
+
+# Same failure, one window earlier: Rex asked the visible unknown "What name
+# should I save for you?" and PJ's reply ("Call me Playa P") scored 0.602 on
+# Bret's print — above the 0.50 accept bar — so the reply was attributed to
+# Bret and the enrollment path never saw it. While the identity-prompt reply
+# window is open, a SUB-CONFIDENT voice match to a person who is NOT on camera
+# (while an unknown face is) is demoted back to unknown so the reply binds to
+# the person Rex actually asked. Third-party phrasings ("this is PJ") are NOT
+# demoted — a known introducer answering FOR the newcomer keeps their own
+# identity and routes to the face-only describe-newcomer path.
+IDENTITY_PROMPT_DEMOTION_ENABLED = True
+
 # Off-screen "who was that?" claim verification: when the answer names an EXISTING
 # person who already has voice prints, the held clip must score at least this
 # against their prints to be ENROLLED onto them (conversation attribution is not

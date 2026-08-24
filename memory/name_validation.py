@@ -66,7 +66,10 @@ _BAD_SINGLE_TOKENS = {
     "great",
     "have",
     "has",
+    "headed",
+    "heading",
     "here",
+    "home",
     "hi",
     "hello",
     "hey",
@@ -137,6 +140,11 @@ _BAD_PHRASE_TOKENS = {
     "down",
     "funny",
     "gonna",
+    # "I'm headed home" → candidate "headed home" minted phantom person
+    # "Headed Home" with a real speaker's voice+face (live 2026-08-23 18:26).
+    "headed",
+    "heading",
+    "home",
     "know",
     "manual",
     "override",
@@ -242,7 +250,10 @@ def _clean_candidate(value: str) -> str:
         return ""
     call_me_parts = _PREFERRED_NAME_SPLIT_RE.split(text, maxsplit=1)
     if len(call_me_parts) > 1:
-        text = call_me_parts[1].strip()
+        # ASR may close the sentence right after the verb ("Call me. Playa P"),
+        # leaving leading punctuation that would make the sentence-split below
+        # return an empty candidate — strip it before splitting.
+        text = call_me_parts[1].strip().lstrip(".,!?;: ").strip()
     text = _collapse_dotted_initials(text)
     text = re.split(r"[,.!?;:]", text, maxsplit=1)[0].strip()
     text = _INTRO_SPLIT_RE.split(text, maxsplit=1)[0].strip()

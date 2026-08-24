@@ -835,7 +835,10 @@ _NAME_PATTERNS = [
     re.compile(r"\bi['’]m\s+(.+)$", re.IGNORECASE),
     re.compile(r"\bim\s+(.+)$", re.IGNORECASE),
     re.compile(r"\bthis is\s+(.+)$", re.IGNORECASE),
-    re.compile(r"\bcall me\s+(.+)$", re.IGNORECASE),
+    # ASR often drops a sentence break after the verb phrase ("Call me. Playa P"
+    # — field 2026-08-23 18:16, PJ's identity-prompt reply), so tolerate
+    # punctuation between "call me" and the name.
+    re.compile(r"\bcall me[.,!?:]*\s+(.+)$", re.IGNORECASE),
     re.compile(r"\brename me(?:\s+to)?\s+(.+)$", re.IGNORECASE),
 ]
 _SELF_NAME_PATTERNS = _NAME_PATTERNS[:4]
@@ -844,12 +847,18 @@ _SELF_INTRO_NON_NAME_RE = re.compile(
     r"from|in|at|on|near|around|inside|outside|with|for|to|into|"
     r"going\b|doing\b|feeling\b|still\b|just\b|not\b|so\b|very\b|"
     r"fine\b|okay\b|ok\b|good\b|great\b|happy\b|sad\b|tired\b|busy\b|"
-    r"hungry\b|thirsty\b|sorry\b|ready\b|here\b|home\b|back\b"
+    r"hungry\b|thirsty\b|sorry\b|ready\b|here\b|home\b|back\b|"
+    # Verb-phrase idioms: "I'm headed home" minted phantom person "Headed Home"
+    # with a REAL speaker's voice+face (field 2026-08-23 18:26). A leading
+    # participle/adverb is a state of motion, never a name.
+    r"headed\b|heading\b|leaving\b|staying\b|coming\b|walking\b|driving\b|"
+    r"getting\b|gonna\b|about\b|done\b|almost\b|already\b|out\b|off\b|"
+    r"up\b|down\b|over\b|glad\b|afraid\b|sure\b|kind\b|kinda\b"
     r")\b",
     re.IGNORECASE,
 )
 _CALL_ME_NAME_RE = re.compile(
-    r"\b(?:you can\s+)?call me\s+(.+)$",
+    r"\b(?:you can\s+)?call me[.,!?:]*\s+(.+)$",
     re.IGNORECASE,
 )
 _NAME_CORRECTION_RE = re.compile(
@@ -10101,6 +10110,81 @@ def _voice_only_attribution_suspect(person_id, speaker_score: float) -> bool:
     return True
 
 
+_IDENTITY_REPLY_THIRD_PARTY_RE = re.compile(
+    r"\b(?:this is|that is|that'?s|meet|say hi to|his name is|her name is|"
+    r"their name is)\s",
+    re.IGNORECASE,
+)
+_IDENTITY_REPLY_FIRST_PERSON_RE = re.compile(
+    r"\b(?:i'?m|i am|my name is|call me|im)\b",
+    re.IGNORECASE,
+)
+
+
+def _identity_prompt_reply_names_third_party(text: str) -> bool:
+    """True when an identity-prompt-window reply is a KNOWN person answering FOR
+    the newcomer ("this is PJ") rather than the newcomer speaking for themselves.
+    First-person markers win when both appear ("I'm PJ, this is my dog")."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _IDENTITY_REPLY_FIRST_PERSON_RE.search(cleaned):
+        return False
+    return bool(_IDENTITY_REPLY_THIRD_PARTY_RE.search(cleaned))
+
+
+def _identity_prompt_demotes_voice_match(
+    *,
+    person_id,
+    speaker_score: float,
+    visible_known_ids: set,
+    matched_visible_recently: bool,
+    unknown_visible_or_recent: bool,
+    visual_speaker_pid,
+    text: str,
+    text_input: bool = False,
+) -> bool:
+    """While Rex's "what name should I save for you?" reply window is open, a
+    sub-confident voice match to someone NOT on camera must not steal the reply.
+
+    Field 2026-08-23 18:16 (PJ run): Rex asked the visible unknown for a name;
+    un-enrolled PJ answered "Call me Playa P" and scored 0.602 on Bret's print —
+    above the 0.50 accept bar — so the reply resolved as Bret, the forced
+    enrollment path at the identity-prompt handler saw a KNOWN speaker, and PJ
+    was never enrolled (then read as Bret for the rest of the night). The window
+    plus a visible unknown face is the same "Rex invited THIS person to speak"
+    prior the intro voice-capture window already trusts.
+
+    Never demotes: GUI text turns; a CONFIDENT match (the introducer answering
+    at their genuine in-session level); a matched person who is actually on
+    camera (now or within the recent-grace window) or whom the visual
+    active-speaker latch confirms talking; or a third-party reply ("this is
+    PJ") — that stays the known speaker and routes to the face-only
+    describe-newcomer path, so the introducer's voice is never bound to the
+    newcomer."""
+    if not bool(getattr(config, "IDENTITY_PROMPT_DEMOTION_ENABLED", True)):
+        return False
+    if text_input:
+        return False
+    pid = _safe_int(person_id)
+    if pid is None:
+        return False
+    if not unknown_visible_or_recent:
+        return False
+    confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
+    if float(speaker_score or 0.0) >= confident:
+        return False
+    if pid in (visible_known_ids or set()):
+        return False
+    if matched_visible_recently:
+        return False
+    if visual_speaker_pid is not None and _safe_int(visual_speaker_pid) == pid:
+        return False
+    if _identity_prompt_reply_names_third_party(text):
+        return False
+    return True
+
+
 def _has_unknown_visible_person() -> bool:
     """True if WorldState currently includes at least one person without a face match."""
     try:
@@ -11918,6 +12002,52 @@ def _intro_capture_window_open() -> bool:
     return _intro_voice_capture_fresh(_pending_intro_voice_capture)
 
 
+def _intro_camera_contradicts_introducer(
+    introducer_id: Optional[int],
+    speaker_score: float,
+    looks_like_newcomer: bool,
+) -> bool:
+    """POSITIVE camera evidence that an intro-window reply is NOT the introducer.
+
+    Field 2026-08-23 18:17 (PJ run): PJ — un-enrolled, alone in front of the
+    camera, personally invited to say hello — scored 0.751 on Bret's print, so
+    the score-only "confidently the introducer" guard refused to enroll him
+    three turns running, the window expired, and PJ stayed attributed to Bret
+    all night. Score cannot separate a voice-twin newcomer from the introducer;
+    the camera can. Contradiction requires ALL of:
+      - a newcomer-shaped reply (the guard's text check already ran),
+      - an unknown face visible RIGHT NOW (the newcomer is standing there),
+      - the introducer NOT seen on camera recently (grace covers pans),
+      - the visual active-speaker latch not pointing at the introducer,
+      - the score below INTRO_VOICE_INTRODUCER_VISUAL_OVERRIDE_CEILING —
+        genuine-Bret turns landed 0.83–0.89 that session, PJ-as-Bret 0.60–0.75,
+        so a slam-dunk introducer match still wins.
+    With NO unknown face in frame this never fires, so the phantom-"Leaf" shape
+    (introducer's correction enrolled onto a newcomer nobody could see) stays
+    blocked exactly as before."""
+    if not bool(getattr(config, "INTRO_VOICE_VISUAL_NEWCOMER_OVERRIDE_ENABLED", True)):
+        return False
+    if not looks_like_newcomer:
+        return False
+    ceiling = float(
+        getattr(config, "INTRO_VOICE_INTRODUCER_VISUAL_OVERRIDE_CEILING", 0.87)
+    )
+    if float(speaker_score or 0.0) >= ceiling:
+        return False
+    if not _has_unknown_visible_person():
+        return False
+    if introducer_id is not None and _known_person_visible_recently(introducer_id):
+        return False
+    try:
+        from vision import active_speaker as _asp
+        vis_pid = _safe_int((_asp.recent_visual_speaker() or {}).get("person_db_id"))
+        if vis_pid is not None and vis_pid == _safe_int(introducer_id):
+            return False
+    except Exception as exc:
+        _log.debug("intro camera-contradiction visual lookup failed: %s", exc)
+    return True
+
+
 def _intro_voice_text_sounds_like_newcomer(text: str, name: str) -> bool:
     cleaned = (text or "").strip().lower()
     if not cleaned:
@@ -12008,11 +12138,23 @@ def _handle_intro_voice_capture(
         float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70)),
         float(getattr(config, "INTRO_VOICE_INTRODUCER_GUARD_FLOOR", 0.70)),
     )
+    looks_like_newcomer = _intro_voice_text_sounds_like_newcomer(text, introduced_name)
+    # Camera contradiction (field 2026-08-23, PJ run): an un-enrolled newcomer
+    # can land a "confident" cross-match on the introducer's print — 0.751 on a
+    # one-word "Hello." — and this guard then eats every capture attempt until
+    # the window expires, leaving the newcomer permanently attributed to the
+    # introducer. When the camera positively contradicts the score (newcomer's
+    # unknown face in frame, introducer unseen, sub-ceiling score), believe the
+    # window's expectation instead. See _intro_camera_contradicts_introducer.
+    camera_contradicts = _intro_camera_contradicts_introducer(
+        introducer_id, speaker_score, looks_like_newcomer
+    )
     if (
         introducer_id is not None
         and person_id == introducer_id
         and raw_best_id == introducer_id
         and float(speaker_score or 0.0) >= confident_id_threshold
+        and not camera_contradicts
     ):
         _log.info(
             "[introduction] intro voice-capture: live speaker is confidently the "
@@ -12021,6 +12163,14 @@ def _handle_intro_voice_capture(
             introduced_name,
         )
         return None
+    if camera_contradicts and float(speaker_score or 0.0) >= confident_id_threshold:
+        _log.info(
+            "[introduction] intro voice-capture: camera contradicts the confident "
+            "introducer match (score=%.3f, introducer unseen, unknown face in "
+            "frame) — treating the reply as newcomer %s",
+            float(speaker_score or 0.0),
+            introduced_name,
+        )
 
     # Rex just invited the NEWCOMER to speak ("say hi so I can learn your
     # voice"), so the next short hello is overwhelmingly likely to be them — not
@@ -12035,12 +12185,11 @@ def _handle_intro_voice_capture(
     confident_introducer_threshold = float(
         getattr(config, "INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD", 0.75)
     )
-    looks_like_newcomer = _intro_voice_text_sounds_like_newcomer(text, introduced_name)
     accepted_unknown = person_id is None
     weak_introducer_match = (
         person_id == introducer_id
         and raw_best_id == introducer_id
-        and speaker_score < confident_introducer_threshold
+        and (speaker_score < confident_introducer_threshold or camera_contradicts)
         and looks_like_newcomer
     )
     if not accepted_unknown and not weak_introducer_match:
@@ -25259,6 +25408,43 @@ def _handle_speech_segment(
         )
         has_unknown_visible_now = _has_unknown_visible_person()
         has_unknown_visible_or_recent = has_unknown_visible_now or _has_unknown_visible_or_recent()
+        if identity_prompt_active and person_id is not None:
+            # Rex just asked the visible unknown for THEIR name; a sub-confident
+            # cross-match on a known print (an un-enrolled newcomer's usual fate)
+            # must not steal the reply — demote it so the enrollment path below
+            # binds the answer to the person Rex actually asked (field
+            # 2026-08-23 18:16: PJ's "Call me Playa P" at 0.602 resolved as Bret
+            # and PJ read as Bret all night).
+            _ip_visual_pid = None
+            try:
+                from vision import active_speaker as _asp
+                _ip_visual_pid = _safe_int(
+                    (_asp.recent_visual_speaker() or {}).get("person_db_id")
+                )
+            except Exception as exc:
+                _log.debug("identity-prompt visual lookup failed: %s", exc)
+            if _identity_prompt_demotes_voice_match(
+                person_id=person_id,
+                speaker_score=speaker_score,
+                visible_known_ids=set(visible_known_by_id.keys()),
+                matched_visible_recently=_known_person_visible_recently(person_id),
+                unknown_visible_or_recent=has_unknown_visible_or_recent,
+                visual_speaker_pid=_ip_visual_pid,
+                text=text,
+                text_input=text_input,
+            ):
+                _log.info(
+                    "[interaction] person resolution: identity-prompt window open — "
+                    "demoting sub-confident off-camera voice match %r (%.3f) so the "
+                    "reply binds to the unknown person Rex asked",
+                    person_name,
+                    speaker_score,
+                )
+                person_id = None
+                person_name = None
+                sticky_accepted = False
+                off_camera_unknown = False
+                identity_resolution_override = "identity_prompt_window_demoted"
         anonymous_speaker_label: Optional[str] = None
         anonymous_speaker_match_score: Optional[float] = None
         speaker_label_for_turn = person_name or anonymous_speaker_label or "user"
