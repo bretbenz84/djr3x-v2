@@ -7229,6 +7229,14 @@ END_OF_THREAD_GRACE_SECS = 35.0
 FAREWELL_DEPART_WINDOW_SECS = 120.0
 FAREWELL_CLOSED_MAX_SECS = 600.0
 
+# Third-person departure report ("she left already", "PJ went home") from a
+# resolved speaker: the departed person's engagement closes immediately and a
+# presence latch arms — when the camera confirms the absence within this
+# window, the visit resolves silently instead of firing a departure quip at
+# whoever is still in the room. Sized to the still-here guard's max hold, the
+# longest a stale face-track can delay camera confirmation.
+REPORTED_DEPARTURE_WINDOW_SECS = 600.0
+
 # If a person hasn't visited in this many days Rex comments on the long absence
 LONG_ABSENCE_THRESHOLD_DAYS = 60
 

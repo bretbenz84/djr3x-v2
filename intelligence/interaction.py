@@ -22482,6 +22482,224 @@ _CORRECTION_NON_NAMES = {
 }
 
 
+# Third-person departure reports ("she left already", "PJ went home", "they're
+# gone"). First-person farewells belong to end_thread; second person ("you
+# left") would be aimed at Rex. The verb must END the clause so "she left her
+# keys on the couch" (left + object) never reads as a departure.
+_DEPARTURE_TAIL = (
+    r"(?:has\s+|have\s+|had\s+)?(?:already\s+|just\s+)?"
+    r"(?:left|gone(?:\s+home)?|went\s+(?:back\s+)?home|took\s+off|"
+    r"headed\s+(?:home|out)|walked\s+out|stepped\s+out)"
+    r"(?:\s+already)?\s*[.!]*\s*$"
+)
+_PRONOUN_DEPARTURE_PAT = re.compile(
+    r"^\s*(?:(?:no|well|yeah|yes|oh|uh|um|hey|dude|man)[,.]?\s+)*"
+    r"(she|he|they)\s*(?:'s|'re|'ve|\s+is|\s+are|\s+was|\s+just)?\s*"
+    + _DEPARTURE_TAIL,
+    re.IGNORECASE,
+)
+_NAMED_DEPARTURE_PAT = re.compile(
+    r"^\s*([A-Za-z][A-Za-z'.-]*(?:\s+[A-Za-z][A-Za-z'.-]*)?)\s*"
+    r"(?:'s|\s+is|\s+was|\s+just)?\s*"
+    + _DEPARTURE_TAIL,
+    re.IGNORECASE,
+)
+# "You're asking questions to somebody that already left." — the exasperated
+# third repeat from the field log; catch it on the first try next time.
+_META_DEPARTURE_PAT = re.compile(
+    r"\b(?:asking|talking|questions?)\b[^.?!]*\b"
+    r"(?:somebody|someone|a\s+person|people|her|him|them)\s+"
+    r"(?:that|who)(?:'s|\s+is|\s+has|\s+had)?\s+(?:already\s+)?"
+    r"(?:left|gone)\b",
+    re.IGNORECASE,
+)
+# Subject tokens the named pattern may capture that are never a person's name.
+_DEPARTURE_NON_NAME_WORDS = frozenset({
+    "she", "he", "they", "i", "you", "we", "it", "who", "that", "this",
+    "everyone", "everybody", "somebody", "someone", "anybody", "anyone",
+    "nobody", "people", "the", "a", "an", "my", "your", "her", "his", "their",
+})
+
+_REPORTED_DEPARTURE_ACKS_NAMED = (
+    "Ah, {name} slipped out on me. Fair enough — the rest of my questions will keep.",
+    "Gone already — noted. I'll file my follow-ups for {name} under next visit.",
+    "So {name} made a clean exit while I was mid-interview. Respect. Moving on.",
+)
+_REPORTED_DEPARTURE_ACKS_GENERIC = (
+    "Ah, gone already. I'll stop interviewing the empty air, then.",
+    "Noted — my audience shrank by one. The questions will keep.",
+)
+
+
+def _reported_departure_match(text: str) -> Optional[dict]:
+    """Classify a third-person departure report, or None.
+
+    Returns {"kind": "pronoun"|"meta"|"named", "pronoun", "name"}. A question
+    ("did she leave?") is never a report.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned or "?" in cleaned:
+        return None
+    m = _PRONOUN_DEPARTURE_PAT.match(cleaned)
+    if m:
+        return {"kind": "pronoun", "pronoun": m.group(1).lower(), "name": None}
+    if _META_DEPARTURE_PAT.search(cleaned):
+        return {"kind": "meta", "pronoun": None, "name": None}
+    m = _NAMED_DEPARTURE_PAT.match(cleaned)
+    if m:
+        # The two-token capture can greedily swallow the auxiliary ("PJ is" +
+        # "gone") — strip a trailing aux so the name resolves clean.
+        tokens = (m.group(1) or "").strip().split()
+        while tokens and tokens[-1].lower() in ("is", "was", "has", "have", "had", "just"):
+            tokens.pop()
+        candidate = " ".join(tokens)
+        if candidate and candidate.lower() not in _DEPARTURE_NON_NAME_WORDS:
+            return {"kind": "named", "pronoun": None, "name": candidate}
+    return None
+
+
+def _resolve_departed_person_by_name(
+    candidate: str,
+) -> tuple[Optional[int], Optional[str]]:
+    """Resolve a named departure report against people from THIS session.
+
+    Only someone who was actually part of the room's life (spoke this session,
+    or is the recent engagement) can be closed — "Alice left" about a DB-known
+    person who was never here should not make Rex eulogize a stranger.
+    """
+    cleaned = (candidate or "").strip().rstrip(".!,")
+    if not cleaned:
+        return None, None
+    session_ids = set(_session_person_ids)
+    try:
+        recent = consciousness.get_recent_engagement() or {}
+        recent_id = _safe_int(recent.get("person_id"))
+        if recent_id is not None:
+            session_ids.add(recent_id)
+    except Exception:
+        pass
+    try:
+        row = people_memory.find_person_by_name(cleaned)
+        pid = _safe_int((row or {}).get("id"))
+        if pid is not None and pid in session_ids:
+            return pid, str(row.get("name") or cleaned)
+    except Exception:
+        pass
+    # ASR often keeps only the first name — match it against session people.
+    lowered = cleaned.lower()
+    for sid in session_ids:
+        try:
+            person = people_memory.get_person(int(sid))
+        except Exception:
+            person = None
+        name = str((person or {}).get("name") or "")
+        if not name:
+            continue
+        if name.lower() == lowered or name.split()[0].lower() == lowered:
+            return int(sid), name
+    return None, None
+
+
+def _handle_reported_departure(
+    text: str, person_id: Optional[int], person_name: Optional[str]
+) -> Optional[str]:
+    """Handle "she left already" / "<Name> went home" from a resolved speaker.
+
+    Field log 2026-08-23 18:26: Bret's guest said "She left already." twice
+    (and then "You're asking questions to somebody that already left.") while
+    Rex kept riding the conversational thread aimed at the departed Exudica —
+    each report was swallowed as an answer and chained into the next interview
+    question. Now the report closes the departed person's engagement, pending
+    questions, and topic thread, and Rex acknowledges briefly instead.
+
+    Returns the ack line (caller consumes the turn), or None when the text is
+    not a departure report or the departed person can't be resolved. A pronoun
+    ("she") resolves to the most recent NON-SPEAKER engaged person — never the
+    speaker, who is describing someone else's exit."""
+    if person_id is None:
+        # Un-resolved voice: don't let a stray mumble close someone's threads.
+        return None
+    match = _reported_departure_match(text)
+    if match is None:
+        return None
+    speaker_id = _safe_int(person_id)
+    departed_id: Optional[int] = None
+    departed_name: Optional[str] = None
+    if match["kind"] == "named":
+        departed_id, departed_name = _resolve_departed_person_by_name(match["name"])
+    else:
+        try:
+            recent = consciousness.get_recent_engagement() or {}
+        except Exception:
+            recent = {}
+        recent_id = _safe_int(recent.get("person_id"))
+        if recent_id is not None and recent_id != speaker_id:
+            departed_id, departed_name = recent_id, recent.get("name")
+        else:
+            try:
+                other = consciousness.most_recent_other_speaker(speaker_id) or {}
+            except Exception:
+                other = {}
+            departed_id = _safe_int(other.get("person_id"))
+            departed_name = other.get("name")
+    if departed_id is None or departed_id == speaker_id:
+        return None
+
+    _log.info(
+        "[interaction] reported departure %r — closing threads for person_id=%s "
+        "name=%r (reported by person_id=%s)",
+        text, departed_id, departed_name, person_id,
+    )
+    # Whose conversation was the live one? Captured BEFORE the report clears it,
+    # so the topic thread is only dropped when it belonged to the departed person.
+    engaged_was_departed = False
+    try:
+        recent = consciousness.get_recent_engagement() or {}
+        engaged_was_departed = _safe_int(recent.get("person_id")) == departed_id
+    except Exception:
+        pass
+    try:
+        consciousness.note_reported_departure(departed_id, departed_name)
+    except Exception as exc:
+        _log.debug("reported-departure consciousness update failed: %s", exc)
+    # An onboarding burst aimed at the departed person has no audience left.
+    # (A burst aimed at the REPORTER stays open — this turn just isn't its answer.)
+    try:
+        state = _pending_onboarding
+        if state is not None and _safe_int(state.get("person_id")) == departed_id:
+            _close_onboarding("reported departure")
+    except Exception as exc:
+        _log.debug("reported-departure onboarding close failed: %s", exc)
+    if engaged_was_departed:
+        # The open topic thread was the conversation Rex was having WITH them
+        # ("work trip" → "where are they dragging you?") — drop it so the next
+        # reply doesn't chase the departed person's thread at whoever is left.
+        try:
+            topic_thread.clear()
+        except Exception:
+            pass
+    try:
+        consciousness.clear_response_wait()
+    except Exception:
+        pass
+    # The report teaches nothing durable about the REPORTER.
+    try:
+        conv_memory.mark_last_human_turn_unlearnable()
+    except Exception:
+        pass
+    # Engagement transfers to whoever is telling us — they are the partner now.
+    try:
+        consciousness.mark_engagement(speaker_id)
+        consciousness.note_person_spoke(speaker_id)
+    except Exception:
+        pass
+    first = _first_name_or(departed_name, "")
+    if first:
+        line = random.choice(_REPORTED_DEPARTURE_ACKS_NAMED)
+        return line.format(name=first)
+    return random.choice(_REPORTED_DEPARTURE_ACKS_GENERIC)
+
+
 def _handle_speaker_correction(
     text: str, person_id: Optional[int], person_name: Optional[str]
 ) -> Optional[str]:
@@ -26236,6 +26454,30 @@ def _handle_speech_segment(
                 conv_log.log_rex(exploration_response)
                 _session_exchange_count += 1
                 _register_rex_utterance(exploration_response, source="exploration")
+                return
+
+        # Third-person departure report ("she left already", "PJ went home"):
+        # someone still in the room is telling Rex his conversation partner is
+        # gone. Consume it BEFORE the onboarding/answer captures below — field
+        # 2026-08-23: "She left already." was swallowed twice as an answer to
+        # the open question and Rex kept interviewing the departed guest.
+        if not game_conversation_lock:
+            departure_ack = _handle_reported_departure(text, person_id, person_name)
+            if departure_ack:
+                _record_heard_turn_once()
+                response_text = departure_ack
+                final_executed_path = "legacy.reported_departure"
+                suppress_memory_learning = True
+                _speak_blocking(
+                    departure_ack,
+                    emotion="neutral",
+                    pre_beat_ms=100,
+                    post_beat_ms_override=200,
+                )
+                conv_memory.add_to_transcript("Rex", departure_ack)
+                conv_log.log_rex(departure_ack)
+                _session_exchange_count += 1
+                _register_rex_utterance(departure_ack, source="reported_departure")
                 return
 
         # First-meeting onboarding burst: while a freshly-enrolled newcomer's

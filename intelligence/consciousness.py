@@ -505,6 +505,14 @@ _engaged_last_touch_at: float = 0.0
 _recent_engaged_person_id: Optional[int] = None
 _recent_engaged_touch_at: float = 0.0
 
+# Reported departures: person_db_id → monotonic time someone in the room SAID
+# this person already left ("she left already"). The report closes the
+# engagement immediately (trust the human over the camera) and, when the
+# presence loop later confirms the absence, the visit resolves silently — the
+# exit was already acknowledged out loud, so a "lost visual on X" quip minutes
+# later would read as interviewing the empty room (field 2026-08-23).
+_reported_departure_at: dict[int, float] = {}
+
 # Speaker-gaze intent: recent speech asks the head to find/center the speaker.
 _speaker_gaze_lock = threading.Lock()
 _speaker_gaze_intent: dict = {}
@@ -566,6 +574,13 @@ def mark_engagement(person_id: Optional[int]) -> None:
         _engaged_last_touch_at = now
         _recent_engaged_person_id = person_id
         _recent_engaged_touch_at = now
+    # A "departed" person speaking again is the strongest possible proof the
+    # report was wrong (or they came back) — drop the silent-close latch so a
+    # later real departure gets its normal reaction.
+    try:
+        _reported_departure_at.pop(int(person_id), None)
+    except (TypeError, ValueError):
+        pass
 
 
 def note_person_spoke(person_id: Optional[int]) -> None:
@@ -630,6 +645,107 @@ def get_recent_engagement(window_secs: Optional[float] = None) -> Optional[dict]
     except Exception:
         pass
     return {"person_id": pid, "name": None}
+
+
+def note_reported_departure(
+    person_id: Optional[int],
+    person_name: Optional[str] = None,
+) -> None:
+    """Someone still in the room said this person already left ("she left
+    already", "PJ went home").
+
+    Trust the human over the camera: close the engagement NOW — active AND
+    recent, so get_recent_engagement() stops chaining attribution and follow-up
+    questions to the departed person — and arm the presence latch so that when
+    _step_presence_tracking confirms the absence it resolves the visit
+    silently instead of firing a departure quip at the room. Field 2026-08-23:
+    Rex was told twice that Exudica had left and kept interviewing her for
+    three more turns.
+    """
+    global _engaged_person_id, _engaged_last_touch_at
+    global _recent_engaged_person_id, _recent_engaged_touch_at
+    if person_id is None:
+        return
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return
+    _reported_departure_at[pid] = time.monotonic()
+    with _engaged_lock:
+        if _engaged_person_id == pid:
+            _engaged_person_id = None
+            _engaged_last_touch_at = 0.0
+        if _recent_engaged_person_id == pid:
+            _recent_engaged_person_id = None
+            _recent_engaged_touch_at = 0.0
+    _log.info(
+        "consciousness: reported departure for %s (person_id=%s) — engagement "
+        "cleared, silent-close presence latch armed",
+        person_name or "unnamed person",
+        pid,
+    )
+
+
+def recent_reported_departure(
+    person_id: Optional[int],
+    within_secs: Optional[float] = None,
+) -> bool:
+    """True while a spoken third-person departure report for person_id is fresh
+    enough that a camera-confirmed absence should close the visit silently."""
+    if person_id is None:
+        return False
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return False
+    stamp = _reported_departure_at.get(pid)
+    if not stamp:
+        return False
+    window = (
+        float(getattr(config, "REPORTED_DEPARTURE_WINDOW_SECS", 600.0))
+        if within_secs is None
+        else float(within_secs)
+    )
+    return (time.monotonic() - stamp) <= window
+
+
+def most_recent_other_speaker(
+    exclude_person_id: Optional[int] = None,
+    window_secs: Optional[float] = None,
+) -> Optional[dict]:
+    """The most recently heard identified speaker OTHER than exclude_person_id.
+
+    Resolves third-person pronouns in departure reports ("SHE left already"):
+    the referent is the most recent other voice in the room — never the
+    speaker, who is describing someone else's exit. Same shape as
+    get_recent_engagement: {person_id, name} or None.
+    """
+    if window_secs is None:
+        window_secs = float(getattr(config, "GROUP_TURN_RECENT_WINDOW_SECS", 180.0))
+    now = time.monotonic()
+    try:
+        exclude = int(exclude_person_id) if exclude_person_id is not None else None
+    except (TypeError, ValueError):
+        exclude = None
+    best_pid: Optional[int] = None
+    best_at = 0.0
+    for pid, turns in list(_group_turn_speaker_times.items()):
+        if not turns or (exclude is not None and pid == exclude):
+            continue
+        last = turns[-1]
+        if (now - last) > window_secs or last <= best_at:
+            continue
+        best_pid, best_at = pid, last
+    if best_pid is None:
+        return None
+    try:
+        from memory import people as _people_mod
+        row = _people_mod.get_person(best_pid)
+        if row and row.get("name"):
+            return {"person_id": best_pid, "name": row["name"]}
+    except Exception:
+        pass
+    return {"person_id": best_pid, "name": None}
 
 
 def _person_has_visible_face(person_id: Optional[int]) -> bool:
@@ -9692,6 +9808,37 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         except Exception:
             _log.debug("farewell-departure check failed", exc_info=True)
 
+        # Someone in the room SAID this person already left and the absence is
+        # now camera-confirmed: close the visit silently. The exit was already
+        # acknowledged out loud when it was reported, so a "lost visual on X"
+        # quip now would narrate old news at whoever is still here. Runs before
+        # the still-here guards on purpose — a stale face-track hold must not
+        # keep the visit open after a human said they were gone (same rule as
+        # the explicit-goodbye latch above).
+        if recent_reported_departure(
+            person_db_id if person_db_id is not None else key
+        ):
+            _first_missing_at.pop(key, None)
+            del _pending_departure_keys[key]
+            _last_departure_reaction_at[key] = now
+            _last_presence_reaction_at[key] = now
+            _visit_arrival = _visit_started_at.pop(key, None)
+            if isinstance(key, int) and person_name:
+                _log.info(
+                    "consciousness: %s's departure was reported by someone in "
+                    "the room — visit closed silently, no departure quip",
+                    person_name,
+                )
+                episodic_hooks.visit_departure(
+                    person_db_id, person_name, _visit_arrival, departed_at,
+                )
+            else:
+                _log.info(
+                    "consciousness: reported departure resolved silently for "
+                    "key=%s", key,
+                )
+            continue
+
         # Face gone but they are still HERE → just stepped off-camera (or Rex
         # turned away). These two guards must run BEFORE the silent-departure
         # resolution below, not after it: sitting underneath it, they could only
@@ -9829,6 +9976,15 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     first_sight_pending_keys: set = set()
     for key in current_keys - _visible_people:
         person_name, person_db_id = current_tracked[key]
+
+        # Back in view after a reported departure ("she left" — but here she
+        # is): the report is spent. Drop the silent-close latch so the NEXT
+        # departure reacts normally.
+        if person_db_id is not None:
+            try:
+                _reported_departure_at.pop(int(person_db_id), None)
+            except (TypeError, ValueError):
+                pass
 
         if _is_jeff_benziger(person_name):
             first_visible = _first_sight_seen_at.setdefault(key, now)
@@ -14611,6 +14767,7 @@ def start() -> None:
     _emotional_checkin_fired_at.clear()
     _negative_streak_started_at.clear()
     _group_turn_speaker_times.clear()
+    _reported_departure_at.clear()
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()
     _group_turn_invited_this_session.clear()
@@ -14760,6 +14917,7 @@ def stop() -> None:
     _last_startle_sound_reaction_at = 0.0
     _last_notable_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()
+    _reported_departure_at.clear()
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()
     _group_turn_invited_this_session.clear()
