@@ -27,6 +27,7 @@ after switching.
 import json
 import logging
 import time
+import warnings
 from typing import Optional
 
 import numpy as np
@@ -158,6 +159,16 @@ def _load_insightface() -> bool:
     missing (setup_assets.py pre-downloads it so the robot never needs to).
     """
     global _insight_app
+
+    # insightface's face_align still calls skimage's deprecated
+    # SimilarityTransform.estimate(), which emits a FutureWarning on every
+    # aligned embed (skimage >= 0.26; upstream must migrate before skimage
+    # 2.2). Library-internal and harmless — keep it out of the logs.
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*`estimate` is deprecated.*",
+        category=FutureWarning,
+    )
 
     try:
         from insightface.app import FaceAnalysis

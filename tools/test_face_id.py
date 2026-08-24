@@ -123,17 +123,30 @@ def main() -> None:
     largest = max(dets, key=lambda f: f["bounding_box"][2] * f["bounding_box"][3])
 
     if args.enroll:
-        row = db.fetchone("SELECT id FROM people WHERE name = ? COLLATE NOCASE", (args.enroll,))
+        # Resolve aliases and unique first tokens the way the live stack does
+        # ("PJ" is an alias of the row named "PJ Thomas" — an exact-name-only
+        # lookup refused it, field 2026-08-23).
+        row = db.fetchone("SELECT id, name FROM people WHERE name = ? COLLATE NOCASE", (args.enroll,))
         if row is None:
-            sys.exit(f"no person named {args.enroll!r} in people.db")
+            resolved = people.find_person_by_name(args.enroll)
+            if resolved is not None:
+                row = {"id": resolved["id"], "name": resolved["name"]}
+                print(f"  resolved {args.enroll!r} → {resolved['name']!r} (person_id={resolved['id']})")
+        if row is None:
+            names = [r["name"] for r in db.fetchall("SELECT name FROM people ORDER BY id")]
+            sys.exit(
+                f"no person named {args.enroll!r} in people.db "
+                f"(names or aliases work; people on file: {', '.join(names)})"
+            )
         pid = row["id"]
+        display = row["name"]
         if args.replace:
             db.execute("DELETE FROM biometrics WHERE person_id = ? AND type = 'face'", (pid,))
-            print(f"  deleted prior face rows for {args.enroll}")
+            print(f"  deleted prior face rows for {display}")
         result = people.add_biometric(pid, "face", largest["encoding"])
         if result is None:
             sys.exit("  DB write failed")
-        print(f"  enrolled {args.enroll} (person_id={pid}, dim={largest['encoding'].shape[-1]})")
+        print(f"  enrolled {display} (person_id={pid}, dim={largest['encoding'].shape[-1]})")
 
     _scoreboard(largest["encoding"])
 
