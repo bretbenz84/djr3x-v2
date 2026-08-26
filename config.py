@@ -8790,6 +8790,30 @@ JEOPARDY_PLAY_THINKING_THEME = True
 # full clip runs 12.6s — a quarter-minute of nothing before anyone hears the
 # category. The opening bars carry the moment; cap it.
 JEOPARDY_DAILY_DOUBLE_MAX_SECS = 6.0
+# Daily Double wagering (owner ask 2026-08-25): the picker wagers by voice
+# before hearing the clue — min JEOPARDY_DD_MIN_WAGER, max = the larger of
+# their score and the round's top value ($1000 R1 / $2000 R2), "everything" /
+# "true daily double" goes all in. No rebound — a DD belongs to its picker
+# (show rules). False restores the old flat auto-double.
+JEOPARDY_DD_WAGER_ENABLED = True
+JEOPARDY_DD_MIN_WAGER = 5
+# Final Jeopardy (owner ask 2026-08-25): after Double Jeopardy completes (or on
+# "final jeopardy" by voice), the category is announced, wagers are collected
+# lowest-score-first (zero-or-below players ride along at $0 but still answer),
+# the clue is read over the real think music, answers are collected in the same
+# order, then the reveal settles wagers and crowns the winner. Uses the ~364
+# real round-3 clues in the dataset. Degrades to the plain finish line when
+# disabled, when no final clues load, or when nobody has money.
+JEOPARDY_FINAL_ENABLED = True
+JEOPARDY_FINAL_THINK_MAX_SECS = 30.0    # the clip is 30.5s
+# Full-scoreboard cadence (owner note: reading every total after every answer
+# made single responses run 20+ seconds). Normally only the answerer's new
+# total is spoken; every Nth scoring event reads the whole board. Round
+# transitions, the finish, and "what's the score?" always read it in full.
+JEOPARDY_SCOREBOARD_EVERY = 4
+# Once per round, when this many squares (or fewer) remain, Rex mentions that
+# "next round" deals a fresh board. 0 disables the offer.
+JEOPARDY_ROUND_JUMP_OFFER_REMAINING = 15
 # When the answer timer expires while a player is mid-utterance (or their
 # just-finished utterance is still transcribing), the timeout re-arms for this
 # grace instead of stealing the turn — the answer in the pipe grades normally

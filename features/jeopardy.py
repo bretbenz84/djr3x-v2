@@ -367,6 +367,11 @@ def _format_score_value(score: int) -> str:
     return f"${amount}"
 
 
+def format_score(score: int) -> str:
+    """One player's score, spoken ("$400" / "negative $200")."""
+    return _format_score_value(int(score))
+
+
 def _display_name(fragment: str) -> str:
     fragment = re.sub(r"[^A-Za-z0-9'\-\s.]", " ", fragment or "")
     words = [w for w in fragment.split() if w]
@@ -1153,6 +1158,137 @@ def is_turn_request(text: str) -> bool:
 def mentions_value(text: str) -> bool:
     """Public wrapper: does the utterance carry a dollar value (digits or words)?"""
     return _mentioned_any_value(text) is not None
+
+
+def selection_category_hint(text: str, board: dict) -> Optional[str]:
+    """The category a FAILED pick named, or None.
+
+    Field 2026-08-25 18:50: "Pop culture for three hundred" was rejected (no
+    $300 square), then the bare "400" that followed picked BIBLICAL PEOPLE —
+    the last PLAYED category — because the failed attempt's category was
+    thrown away. The caller stashes this hint so a bare value completes the
+    category the player actually named.
+    """
+    query = _selection_query(text)
+    if not query:
+        return None
+    category = _match_category(query, board)
+    if category is None:
+        return None
+    return str(category.get("name") or "") or None
+
+
+# ── Wagers (Daily Double + Final Jeopardy) ────────────────────────────────────
+
+_WAGER_ALL_RE = re.compile(
+    r"\b(?:everything|all\s+(?:of\s+it|in)|the\s+whole\s+thing|"
+    r"true\s+daily\s+double|max(?:imum)?(?:\s+wager)?|the\s+max)\b"
+)
+_WAGER_MIN_RE = re.compile(r"\b(?:minimum|the\s+min|as\s+little\s+as\s+possible)\b")
+_WAGER_FILLER_RE = re.compile(
+    r"\b(?:i|ill|i\s+will|would|like|want|to|wager|bet|put|go|going|with|make|"
+    r"it|its|lets|let|s|do|say|um+|uh+|dollars?|bucks?|please|only|just|"
+    r"the|a|an|give|me|on|risk)\b"
+)
+
+
+def parse_wager(text: str, *, min_wager: int, max_wager: int) -> Optional[int]:
+    """Parse a spoken wager. Returns the RAW number (or the resolved all-in /
+    minimum), un-clamped — the caller owns range validation so it can re-ask
+    with the real bounds. None when no number was said."""
+    plain = _plain(text)
+    if not plain:
+        return None
+    if _WAGER_ALL_RE.search(plain):
+        return int(max_wager)
+    if _WAGER_MIN_RE.search(plain):
+        return int(min_wager)
+    cleaned = _WAGER_FILLER_RE.sub(" ", plain)
+    cleaned = _canonicalize_number_tokens(" ".join(cleaned.split()))
+    # "a thousand" / "a hundred": the article was stripped as filler, leaving a
+    # bare multiplier the number parser has no leading digit for.
+    cleaned = re.sub(r"^(?:and\s+)?(hundred|thousand)\b", r"1 \1", cleaned)
+    number = _spoken_number_string(cleaned)
+    if number and number.isdigit():
+        return int(number)
+    match = re.search(r"\b(\d{1,5})\b", cleaned)
+    return int(match.group(1)) if match else None
+
+
+# ── Round jumping ─────────────────────────────────────────────────────────────
+
+_ROUND_JUMP_FINAL_RES = [
+    re.compile(r"\bfinal\s+jeopardy\b"),
+    re.compile(r"\b(?:go|skip|move|jump)\s+(?:on\s+)?to\s+(?:the\s+)?final\b"),
+    re.compile(r"\b(?:last|final)\s+round\b"),
+]
+_ROUND_JUMP_NEXT_RES = [
+    re.compile(r"\b(?:next|new)\s+round\b"),
+    re.compile(r"\bdouble\s+jeopardy\b"),
+    re.compile(r"\b(?:go|skip|move|jump)\s+(?:on\s+)?to\s+(?:the\s+)?"
+               r"(?:next\s+round|round\s+(?:two|2)|double)\b"),
+    re.compile(r"\bnew\s+(?:board|categories)\b"),
+    re.compile(r"\bfresh\s+(?:board|categories)\b"),
+]
+
+
+def round_jump_request(text: str) -> Optional[str]:
+    """"next" (fresh board / Double Jeopardy), "final", or None.
+
+    A dollar value in the utterance means a pick, never a jump.
+    """
+    if _mentioned_any_value(text) is not None:
+        return None
+    spoken = _spoken(text)
+    if not spoken:
+        return None
+    if any(p.search(spoken) for p in _ROUND_JUMP_FINAL_RES):
+        return "final"
+    if any(p.search(spoken) for p in _ROUND_JUMP_NEXT_RES):
+        return "next"
+    return None
+
+
+# ── Final Jeopardy clues ──────────────────────────────────────────────────────
+
+_FINAL_CACHE: Optional[list[dict]] = None
+
+
+def load_final_clues() -> list[dict]:
+    """Real Final Jeopardy clues (round 3 of the dataset, ~364 of them)."""
+    global _FINAL_CACHE
+    if _FINAL_CACHE is not None:
+        return _FINAL_CACHE
+    path = _clues_path()
+    if not path.exists():
+        _FINAL_CACHE = []
+        return _FINAL_CACHE
+    clues: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                if _to_int(row.get("round")) != 3:
+                    continue
+                if not _valid_clue(row):
+                    continue
+                clues.append({
+                    "category": _clean_category(row.get("category") or ""),
+                    "clue": _clean_cell(row.get("answer") or ""),
+                    "answer": _clean_cell(row.get("question") or ""),
+                })
+    except Exception as exc:
+        _log.error("[jeopardy] failed to load final clues from %s: %s", path, exc)
+        _FINAL_CACHE = []
+        return _FINAL_CACHE
+    _FINAL_CACHE = clues
+    _log.info("[jeopardy] loaded %d final jeopardy clues", len(clues))
+    return _FINAL_CACHE
+
+
+def pick_final_clue() -> Optional[dict]:
+    clues = load_final_clues()
+    return dict(random.choice(clues)) if clues else None
 
 
 def looks_like_question(text: str) -> bool:

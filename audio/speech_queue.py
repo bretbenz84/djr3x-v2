@@ -611,6 +611,7 @@ class _SpeechQueue:
                 clip_caps = {
                     "jeopardy-theme.mp3": "JEOPARDY_THEME_MAX_SECS",
                     "jeopardy-daily-double.mp3": "JEOPARDY_DAILY_DOUBLE_MAX_SECS",
+                    "jeopardy-final-jeopardy-thinking-music.mp3": "JEOPARDY_FINAL_THINK_MAX_SECS",
                 }
                 cap_key = clip_caps.get(path_obj.name)
                 if cap_key:

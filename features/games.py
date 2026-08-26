@@ -1233,6 +1233,7 @@ _JEOPARDY_CLIPS = {
     "wrong": "jeopardy-incorrect-answer.mp3",
     "timesup": "jeopardy-timesup.mp3",
     "theme": "jeopardy-theme.mp3",
+    "final_theme": "jeopardy-final-jeopardy-thinking-music.mp3",
     "outro": "jeopardy-outro-no-talking.mp3",
 }
 
@@ -1372,6 +1373,45 @@ def _jeopardy_cancel_timeout() -> None:
             timer.cancel()
         except Exception:
             pass
+
+
+def _jeopardy_maybe_offer_round_jump() -> str:
+    """Once per round, when the board is half-cleared, mention the jump.
+
+    Owner note 2026-08-25: a full round is 30 clues and the table quit
+    mid-round-one — they never knew fresh categories were a sentence away.
+    """
+    threshold = int(getattr(config, "JEOPARDY_ROUND_JUMP_OFFER_REMAINING", 15))
+    if threshold <= 0 or _game_state.get("jump_offered"):
+        return ""
+    remaining = int((_game_state.get("board") or {}).get("remaining", 0) or 0)
+    if remaining <= 0 or remaining > threshold:
+        return ""
+    _game_state["jump_offered"] = True
+    current_round = int(_game_state.get("jeopardy_round", 1) or 1)
+    destination = "Double Jeopardy" if current_round < 2 else "Final Jeopardy"
+    return f"Say 'next round' any time and I'll deal {destination}. "
+
+
+def _jeopardy_score_announcement(player: dict) -> str:
+    """The score line after a scoring event.
+
+    Owner call 2026-08-25: reading EVERY player's total after EVERY answer made
+    single responses run 20+ seconds. Normally just the answerer's new total;
+    the full scoreboard every JEOPARDY_SCOREBOARD_EVERY-th scoring event (and
+    always on round transitions, at the finish, and on "what's the score?").
+    """
+    events = int(_game_state.get("score_events", 0) or 0)
+    _game_state["score_events"] = events + 1
+    every = int(getattr(config, "JEOPARDY_SCOREBOARD_EVERY", 4))
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception:
+        return ""
+    if every > 0 and (events + 1) % every == 0:
+        return f"Scores: {jeopardy_bank.format_scores(_game_state.get('players') or [])}. "
+    total = jeopardy_bank.format_score(int(player.get("score", 0) or 0))
+    return f"That puts {player['name']} at {total}. "
 
 
 def _jeopardy_finish_line(prefix: str = "") -> str:
@@ -1660,6 +1700,7 @@ def _jeopardy_finish_missed_clue(
     done: bool,
     players: list[dict],
     score_line: bool = True,
+    score_player: Optional[dict] = None,
 ) -> tuple[str, bool]:
     _game_state.pop("current_clue", None)
     _game_state.pop("current_clue_attempts", None)
@@ -1674,14 +1715,18 @@ def _jeopardy_finish_missed_clue(
     next_player = _jeopardy_advance_player()
     scores = ""
     if score_line:
-        try:
-            from features import jeopardy as jeopardy_bank
-            scores = f"Scores: {jeopardy_bank.format_scores(players)} "
-        except Exception:
-            scores = "Scores unavailable. "
+        if score_player is not None:
+            scores = _jeopardy_score_announcement(score_player)
+        else:
+            try:
+                from features import jeopardy as jeopardy_bank
+                scores = f"Scores: {jeopardy_bank.format_scores(players)} "
+            except Exception:
+                scores = "Scores unavailable. "
     categories = _jeopardy_categories_reminder()
     return (
         f"{prefix}{correct_response}. {scores}{categories}"
+        f"{_jeopardy_maybe_offer_round_jump()}"
         f"{next_player['name']}, choose the next square.",
         False,
     )
@@ -1754,8 +1799,11 @@ def _jeopardy_load_round(
         "board_values": _jeopardy_board_values(board),
         "last_category": None,
         "jeopardy_round": round_no,
-        # Fresh board, fresh memories: the reminder fatigue curve starts over.
+        # Fresh board, fresh memories: the fatigue curves and the once-per-round
+        # jump offer start over.
         "categories_reminder_reads": 0,
+        "score_events": 0,
+        "jump_offered": False,
     }
     if current_player_idx is not None:
         update["current_player_idx"] = current_player_idx
@@ -1810,7 +1858,234 @@ def _jeopardy_complete_round_or_finish(
                 False,
             )
 
-    return _jeopardy_finish_line(prefix), True
+    # Double Jeopardy is done — to Final (which degrades to the finish line
+    # when disabled, when no final clues exist, or when nobody has money).
+    return _jeopardy_begin_final(f"{prefix}That's the board. ")
+
+
+def _jeopardy_round_jump(kind: str) -> tuple[str, bool]:
+    """Voice-requested round change: "next round" / "final jeopardy"."""
+    players = _game_state.get("players") or [{"name": "Player", "score": 0}]
+    current_round = int(_game_state.get("jeopardy_round", 1) or 1)
+    if kind == "next" and current_round < 2:
+        try:
+            from features import jeopardy as jeopardy_bank
+            scores = jeopardy_bank.format_scores(players)
+        except Exception:
+            scores = "scores unavailable"
+        current_idx = int(_game_state.get("current_player_idx", 0)) % len(players)
+        next_round = _jeopardy_load_round(2, players, current_player_idx=current_idx)
+        if next_round:
+            return (f"Fresh board coming up. Scores so far: {scores}. {next_round}", False)
+        return ("I couldn't deal a new board — the one you have will have to do.", False)
+    return _jeopardy_begin_final("Very well — to Final Jeopardy. ")
+
+
+def _jeopardy_begin_final(prefix: str = "") -> tuple[str, bool]:
+    """Start Final Jeopardy: category announced, wagers collected one by one
+    (lowest score first, show style), then the clue + think music, then answers,
+    then the reveal. Degrades to the plain finish line when disabled, when no
+    final clues load, or when every player is at zero or below."""
+    final_clue = None
+    if bool(getattr(config, "JEOPARDY_FINAL_ENABLED", True)):
+        try:
+            from features import jeopardy as jeopardy_bank
+            final_clue = jeopardy_bank.pick_final_clue()
+        except Exception as exc:
+            _log.debug("[jeopardy] final clue pick failed: %s", exc)
+    players = _game_state.get("players") or []
+    if (
+        not final_clue
+        or not players
+        or all(int(p.get("score", 0) or 0) <= 0 for p in players)
+    ):
+        return _jeopardy_finish_line(prefix), True
+
+    _jeopardy_cancel_timeout()
+    order = sorted(
+        range(len(players)), key=lambda i: int(players[i].get("score", 0) or 0)
+    )
+    _game_state.update({
+        "phase": "final_wager",
+        "final": {"clue": final_clue, "wagers": {}, "answers": {}, "order": order},
+        "final_queue": list(order),
+    })
+    _game_state.pop("current_clue", None)
+    _game_state.pop("current_clue_attempts", None)
+    _jeopardy_queue_clip("board")
+    category = _jeopardy_speak_category(final_clue.get("category"))
+    return _jeopardy_next_final_wager_prompt(
+        f"{prefix}This is Final Jeopardy. The category: {category}. "
+    )
+
+
+def _jeopardy_next_final_wager_prompt(prefix: str) -> tuple[str, bool]:
+    """Prompt the next positive-score player for a wager; players at zero or
+    below ride along at $0 (still get to answer — pride is on the line)."""
+    players = _game_state.get("players") or []
+    final = _game_state.get("final") or {}
+    queue = _game_state.get("final_queue") or []
+    bits: list[str] = [prefix]
+    try:
+        from features import jeopardy as jeopardy_bank
+        fmt = jeopardy_bank.format_score
+    except Exception:
+        fmt = lambda s: f"${s}"    # noqa: E731
+    while queue:
+        idx = int(queue[0])
+        player = players[idx]
+        score = int(player.get("score", 0) or 0)
+        if score <= 0:
+            final.setdefault("wagers", {})[idx] = 0
+            bits.append(
+                f"{player['name']}, you're at {fmt(score)} — you ride along "
+                "for pride. "
+            )
+            queue.pop(0)
+            continue
+        bits.append(
+            f"{player['name']}, you have {fmt(score)} — what's your wager?"
+        )
+        return ("".join(bits), False)
+    return _jeopardy_read_final_clue("".join(bits))
+
+
+def _jeopardy_handle_final_wager(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception:
+        return ("My final-round circuits glitched. Say your wager again.", False)
+    players = _game_state.get("players") or []
+    final = _game_state.get("final") or {}
+    queue = _game_state.get("final_queue") or []
+    if not queue or not players:
+        return _jeopardy_read_final_clue("")
+
+    idx = int(queue[0])
+    player = players[idx]
+    score = int(player.get("score", 0) or 0)
+
+    meta = _jeopardy_answer_board_question(text)
+    if meta is not None:
+        return (
+            f"{meta}{player['name']}, what's your wager — zero to ${score}?",
+            False,
+        )
+
+    wager = jeopardy_bank.parse_wager(text, min_wager=0, max_wager=score)
+    if wager is None:
+        return (
+            f"A number, {player['name']} — anything from zero to ${score}.",
+            False,
+        )
+    if wager < 0 or wager > score:
+        return (
+            f"${wager} is outside the rails. Zero to ${score}, "
+            f"{player['name']} — what's your wager?",
+            False,
+        )
+    final.setdefault("wagers", {})[idx] = int(wager)
+    queue.pop(0)
+    return _jeopardy_next_final_wager_prompt(
+        f"${wager} locked for {player['name']}. "
+    )
+
+
+def _jeopardy_read_final_clue(prefix: str) -> tuple[str, bool]:
+    final = _game_state.get("final") or {}
+    order = list(final.get("order") or [])
+    players = _game_state.get("players") or []
+    clue = final.get("clue") or {}
+    _game_state["phase"] = "final_answer"
+    _game_state["final_queue"] = list(order)
+    _game_state["pending_after_response_clip"] = "final_theme"
+    first = players[int(order[0])]["name"] if order and players else "Player"
+    return (
+        f"{prefix}Wagers are locked. Here is your clue: {clue.get('clue')}. "
+        f"Think it over while the music plays — {first}, your answer first.",
+        False,
+    )
+
+
+def _jeopardy_handle_final_answer(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception:
+        jeopardy_bank = None
+    players = _game_state.get("players") or []
+    final = _game_state.get("final") or {}
+    queue = _game_state.get("final_queue") or []
+    clue = final.get("clue") or {}
+    if not queue or not players or jeopardy_bank is None:
+        return _jeopardy_reveal_final()
+
+    if jeopardy_bank.is_clue_repeat_request(text):
+        current = players[int(queue[0])]["name"]
+        return (
+            f"Once more. The category: "
+            f"{_jeopardy_speak_category(clue.get('category'))}. "
+            f"Clue: {clue.get('clue')}. {current}, your answer?",
+            False,
+        )
+
+    idx = int(queue[0])
+    correct, passed = _jeopardy_grade(text, clue)
+    final.setdefault("answers", {})[idx] = {
+        "said": "no answer" if (passed and not correct) else text,
+        "correct": bool(correct),
+    }
+    queue.pop(0)
+    if queue:
+        nxt = players[int(queue[0])]["name"]
+        return (f"Locked in. {nxt}, your answer?", False)
+    return _jeopardy_reveal_final()
+
+
+def _jeopardy_reveal_final() -> tuple[str, bool]:
+    """Score the wagers, reveal the response, crown a winner, end the game."""
+    players = _game_state.get("players") or []
+    final = _game_state.get("final") or {}
+    clue = final.get("clue") or {}
+    correct_response = _jeopardy_correct_response_text({
+        "answer": clue.get("answer", "unknown"),
+        "clue": clue.get("clue", ""),
+        "category": clue.get("category", ""),
+    })
+    bits = [f"Time to settle up. The correct response was: {correct_response}. "]
+    for idx in final.get("order") or range(len(players)):
+        idx = int(idx)
+        if idx >= len(players):
+            continue
+        player = players[idx]
+        entry = (final.get("answers") or {}).get(idx)
+        wager = int((final.get("wagers") or {}).get(idx, 0) or 0)
+        if entry is None:
+            continue
+        if entry.get("correct"):
+            player["score"] = int(player.get("score", 0) or 0) + wager
+            bits.append(
+                f"{player['name']} had it — plus ${wager}. " if wager
+                else f"{player['name']} had it right, for the honor alone. "
+            )
+        else:
+            player["score"] = int(player.get("score", 0) or 0) - wager
+            bits.append(
+                f"{player['name']} — no, minus ${wager}. " if wager
+                else f"{player['name']} — no, but nothing lost. "
+            )
+    try:
+        from features import jeopardy as jeopardy_bank
+        scores = jeopardy_bank.format_scores(players)
+    except Exception:
+        scores = "unavailable"
+    top = max((int(p.get("score", 0) or 0) for p in players), default=0)
+    winners = [p["name"] for p in players if int(p.get("score", 0) or 0) == top]
+    if len(winners) == 1:
+        crown = f"{winners[0]} takes the game."
+    else:
+        crown = f"A tie between {' and '.join(winners)}. The rematch writes itself."
+    _jeopardy_queue_clip("outro")
+    return (f"{''.join(bits)}Final scores: {scores}. {crown}", True)
 
 
 def _jeopardy_answer_in_flight() -> bool:
@@ -1856,7 +2131,8 @@ def _jeopardy_timeout_fired(token: str) -> None:
         _game_state.pop("answer_timer_token", None)
         correct_response = _jeopardy_correct_response_text(clue)
         timed_out_idx = int(_game_state.get("current_player_idx", 0))
-        next_player = _jeopardy_offer_rebound()
+        # A Daily Double belongs to its picker alone — no rebound (show rules).
+        next_player = None if clue.get("daily_double") else _jeopardy_offer_rebound()
         if next_player:
             line = _jeopardy_rebound_prompt("Time's up. ", next_player, clue)
             schedule_rebound = True
@@ -2024,11 +2300,30 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
                 f"{player['name']}, pick a category and dollar value.",
                 False,
             )
+        # "Next round" / "final jeopardy" — the table votes for a fresh board
+        # or the endgame instead of grinding all thirty clues.
+        jump = jeopardy_bank.round_jump_request(text)
+        if jump is not None:
+            return _jeopardy_round_jump(jump)
+        pending_category = _game_state.pop("pending_category", None)
         clue, error = jeopardy_bank.parse_selection(
             text,
             board,
-            last_category=_game_state.get("last_category"),
+            last_category=pending_category or _game_state.get("last_category"),
         )
+        if not clue:
+            # Remember the category a FAILED pick named, so the bare value that
+            # usually follows ("Pop culture for 300" → "no $300 square" → "400")
+            # completes THAT category — not the last one played (field
+            # 2026-08-25 18:50: the bare "400" picked BIBLICAL PEOPLE instead
+            # of the Pop Culture the table had just asked for).
+            hint = jeopardy_bank.selection_category_hint(text, board)
+            if hint:
+                _game_state["pending_category"] = hint
+            elif pending_category:
+                # The retry named nothing either (another bare value) — the
+                # remembered category stays live for the next attempt.
+                _game_state["pending_category"] = pending_category
     except Exception as exc:
         _log.error("[jeopardy] selection parse failed: %s", exc)
         clue, error = None, "My board parser fell into a reactor shaft. Try the category and value again."
@@ -2042,9 +2337,13 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
         return (error, False)
 
     player = _jeopardy_current_player()
-    effective_value = int(clue.get("value", 0) or 0)
     daily = bool(clue.get("daily_double"))
+    if daily and bool(getattr(config, "JEOPARDY_DD_WAGER_ENABLED", True)):
+        return _jeopardy_begin_daily_double(clue, player)
+
+    effective_value = int(clue.get("value", 0) or 0)
     if daily:
+        # Legacy no-wager mode (JEOPARDY_DD_WAGER_ENABLED=False): flat double.
         effective_value *= 2
         _jeopardy_queue_clip("daily_double")
         _body_beat("dramatic_visor_peek")
@@ -2062,16 +2361,121 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
     if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
         _game_state["pending_after_response_clip"] = "theme"
 
-    daily_line = (
-        "Daily Double. Automatic double, because my wagering subsystem was built during lunch. "
-        if daily else ""
-    )
+    daily_line = "Daily Double. Automatic double. " if daily else ""
     return (
         f"{daily_line}{player['name']}, "
         f"{jeopardy_bank.speak_category(clue.get('category') or '')} for ${clue.get('value')}. "
         f"Clue: {clue.get('clue')}.",
         False,
     )
+
+
+def _jeopardy_max_wager(score: int) -> int:
+    """Show rules: wager up to your score, floored at the round's top value."""
+    current_round = int(_game_state.get("jeopardy_round", 1) or 1)
+    return max(int(score), 1000 * max(1, current_round))
+
+
+def _jeopardy_begin_daily_double(clue: dict, player: dict) -> tuple[str, bool]:
+    """A Daily Double square: sting, then ask for the wager before the clue."""
+    _jeopardy_queue_clip("daily_double")
+    _body_beat("dramatic_visor_peek")
+    _game_state.update({
+        "phase": "awaiting_wager",
+        "current_clue": clue,
+        "current_clue_attempts": [],
+        "last_category": clue.get("category"),
+    })
+    score = int(player.get("score", 0) or 0)
+    min_wager = int(getattr(config, "JEOPARDY_DD_MIN_WAGER", 5))
+    max_wager = _jeopardy_max_wager(score)
+    try:
+        from features import jeopardy as jeopardy_bank
+        score_text = jeopardy_bank.format_score(score)
+    except Exception:
+        score_text = f"${score}"
+    return (
+        f"Daily Double! {player['name']}, you're at {score_text}. "
+        f"Wager anything from ${min_wager} to ${max_wager}. What's your wager?",
+        False,
+    )
+
+
+def _jeopardy_handle_wager(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    """Consume the Daily Double wager, then read the clue for it."""
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception:
+        jeopardy_bank = None
+    clue = dict(_game_state.get("current_clue") or {})
+    if not clue or jeopardy_bank is None:
+        _game_state["phase"] = "selecting"
+        return ("I lost the Daily Double in a reactor shaft. Pick another square.", False)
+
+    player = _jeopardy_current_player()
+    score = int(player.get("score", 0) or 0)
+    min_wager = int(getattr(config, "JEOPARDY_DD_MIN_WAGER", 5))
+    max_wager = _jeopardy_max_wager(score)
+
+    # "What's the score?" is a fair thing to check before wagering.
+    meta = _jeopardy_answer_board_question(text)
+    if meta is not None:
+        return (
+            f"{meta}{player['name']}, what's your wager — ${min_wager} to ${max_wager}?",
+            False,
+        )
+
+    wager = jeopardy_bank.parse_wager(text, min_wager=min_wager, max_wager=max_wager)
+    if wager is None:
+        return (
+            f"Give me a number, {player['name']} — anything from "
+            f"${min_wager} to ${max_wager}.",
+            False,
+        )
+    if wager < min_wager or wager > max_wager:
+        return (
+            f"${wager} is outside the rails. ${min_wager} to ${max_wager} — "
+            "what's your wager?",
+            False,
+        )
+
+    clue["effective_value"] = int(wager)
+    _game_state.update({
+        "current_clue": clue,
+        "phase": "awaiting_answer",
+        "awaiting_prompt_delivery": True,
+    })
+    if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
+        _game_state["pending_after_response_clip"] = "theme"
+    _body_beat("thinking_tilt")
+    return (
+        f"${wager} on the line. "
+        f"{_jeopardy_speak_category(clue.get('category'))}. Clue: {clue.get('clue')}.",
+        False,
+    )
+
+
+def _jeopardy_grade(text: str, clue: dict) -> tuple[bool, bool]:
+    """(correct, passed) — the full grading ladder used everywhere an answer is
+    scored. A hedge is a LEAD-IN when a real answer follows it ("no idea, maybe
+    Lincoln"): the residual can only PROMOTE to correct, never demote a shrug
+    into a deduction (routing audit 2026-08-13). The strict LLM judge gets one
+    look at a borderline miss, and is deliberately NOT re-run on the residual —
+    a hedged answer the lexical matcher cannot score fails safe to a pass."""
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception:
+        return (False, False)
+    answer = clue.get("answer", "unknown")
+    passed = bool(jeopardy_bank.is_pass_or_timeout(text))
+    correct = bool(jeopardy_bank.is_correct(text, answer))
+    if passed and not correct:
+        residual = jeopardy_bank.strip_pass_hedge(text)
+        if residual and jeopardy_bank.is_correct(residual, answer):
+            correct = True
+    if not correct and not passed:
+        correct = _jeopardy_llm_judge(text, answer, clue)
+    return correct, passed
 
 
 def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, bool]:
@@ -2120,26 +2524,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     if jeopardy_bank is not None and jeopardy_bank.is_clue_repeat_request(text):
         return (_jeopardy_repeat_clue_reply(clue, player, prefix="Once more. "), False)
 
-    passed = bool(jeopardy_bank and jeopardy_bank.is_pass_or_timeout(text))
-    correct = bool(jeopardy_bank and jeopardy_bank.is_correct(text, answer))
-    if passed and not correct and jeopardy_bank is not None:
-        # A hedge is a LEAD-IN when a real answer follows it. "no idea, maybe
-        # Lincoln" scored as "No answer" while Lincoln sat in the utterance
-        # (routing audit 2026-08-13): is_pass_or_timeout matches the hedge anywhere,
-        # and `passed` wins the branch below. Grade the residual so the answer
-        # counts. Deliberately ONE-WAY — the residual can only promote to CORRECT,
-        # never to a wrong answer with a deduction, so "I don't know what that is"
-        # (residual "what that is") stays a pass. The LLM judge is deliberately NOT
-        # re-run on the residual: that would add a hosted call to every "I don't
-        # know", and a hedged answer the lexical matcher cannot score fails safe to
-        # a pass rather than to a deduction.
-        residual = jeopardy_bank.strip_pass_hedge(text)
-        if residual and jeopardy_bank.is_correct(residual, answer):
-            correct = True
-    if not correct and not passed and jeopardy_bank is not None:
-        # Speech-transcript fallback: give a borderline miss one strict LLM look
-        # before the deduction (phonetic mangling the lexical matcher can't score).
-        correct = _jeopardy_llm_judge(text, answer, clue)
+    correct, passed = _jeopardy_grade(text, clue)
 
     # "What are the categories?" / "what's left in pop culture?" / "what's the
     # score?" asked a beat late — questions, not wrong answers. Checked only
@@ -2167,7 +2552,8 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     if passed and not correct:
         _body_beat("suspicious_glance")
         _jeopardy_queue_clip("timesup")
-        next_player = _jeopardy_offer_rebound()
+        # A Daily Double belongs to its picker alone — no rebound (show rules).
+        next_player = None if clue.get("daily_double") else _jeopardy_offer_rebound()
         if next_player:
             return (_jeopardy_rebound_prompt("No answer. ", next_player, clue), False)
         return _jeopardy_finish_missed_clue(
@@ -2192,11 +2578,11 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         if done:
             return _jeopardy_complete_round_or_finish(f"{flourish} ")
         _game_state["phase"] = "selecting"
-        scores = jeopardy_bank.format_scores(players) if jeopardy_bank else "scores unavailable"
+        scores_line = _jeopardy_score_announcement(player)
         categories = _jeopardy_categories_reminder()
         return (
-            f"{flourish} ${value} to {player['name']}. Scores: {scores}. "
-            f"{categories}"
+            f"{flourish} ${value} to {player['name']}. {scores_line}"
+            f"{categories}{_jeopardy_maybe_offer_round_jump()}"
             f"{player['name']}, pick the next category and value.",
             False,
         )
@@ -2209,7 +2595,8 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         "The board accepts your sacrifice.",
         "That answer landed somewhere near Alderaan.",
     ])
-    next_player = _jeopardy_offer_rebound()
+    # A Daily Double belongs to its picker alone — no rebound (show rules).
+    next_player = None if clue.get("daily_double") else _jeopardy_offer_rebound()
     if next_player:
         return (
             _jeopardy_rebound_prompt(
@@ -2225,6 +2612,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         correct_response,
         done=done,
         players=players,
+        score_player=player,
     )
 
 
@@ -2277,6 +2665,12 @@ def _jeopardy_handle_voice_enroll(
 
 def _jeopardy_handle(text: str, person_id: Optional[int], audio_array=None) -> tuple[str, bool]:
     phase = _game_state.get("phase")
+    if phase == "awaiting_wager":
+        return _jeopardy_handle_wager(text, person_id)
+    if phase == "final_wager":
+        return _jeopardy_handle_final_wager(text, person_id)
+    if phase == "final_answer":
+        return _jeopardy_handle_final_answer(text, person_id)
     if phase == "awaiting_players":
         return _jeopardy_handle_player_setup(text, person_id)
     if phase == "voice_enroll":
@@ -2452,6 +2846,14 @@ _GAME_HANDLERS: dict[str, dict] = {
 
 def _clear_game() -> None:
     global _active_game, _game_state
+    # A still-armed answer timer must not outlive the game it belongs to — the
+    # token checks make a stray fire harmless, but only until someone edits them.
+    timer = _game_state.pop("answer_timer", None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
     _active_game = None
     _game_state = {}
 
@@ -2718,20 +3120,35 @@ def _stop_confirm_verdict(text: str) -> str:
 def _stop_confirm_resume_line() -> str:
     """Rex's line when the table votes to keep playing."""
     if _active_game == "jeopardy":
+        phase = _game_state.get("phase")
         clue = _game_state.get("current_clue")
+        players = _game_state.get("players") or []
         try:
             player = _jeopardy_current_player()
         except Exception:
             player = {"name": "Player"}
-        if _game_state.get("phase") == "awaiting_answer" and clue:
+        if phase == "awaiting_answer" and clue:
             return _jeopardy_repeat_clue_reply(
                 dict(clue), player, prefix="That's the spirit — back to it. "
             )
-        if _game_state.get("phase") == "selecting":
+        if phase == "selecting":
             return (
                 f"That's the spirit. {player['name']}, "
                 "pick a category and dollar value."
             )
+        if phase == "awaiting_wager":
+            score = int(player.get("score", 0) or 0)
+            min_wager = int(getattr(config, "JEOPARDY_DD_MIN_WAGER", 5))
+            return (
+                f"That's the spirit. {player['name']}, what's your wager — "
+                f"${min_wager} to ${_jeopardy_max_wager(score)}?"
+            )
+        if phase in ("final_wager", "final_answer") and players:
+            queue = _game_state.get("final_queue") or []
+            if queue:
+                name = players[int(queue[0]) % len(players)]["name"]
+                ask = "what's your wager?" if phase == "final_wager" else "your answer?"
+                return f"That's the spirit. {name}, {ask}"
     return "That's the spirit. Back to the game — where were we?"
 
 

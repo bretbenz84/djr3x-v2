@@ -2585,6 +2585,41 @@ surfaced five distinct failures; each is fixed at its own layer:
   speech_queue clip-cap table. DD squares themselves: predetermined at board
   build (real air-date positions from the dataset; if the sampled six
   categories carry none, one random higher-value square is marked).
+- **Round/wager batch (owner: "fix the rest", same session).** Six changes:
+  (1) *Pending category*: a FAILED pick that named a category stashes it
+  (`pending_category`, consumed by the next parse) so the bare value that
+  follows completes THAT category — 18:50 field case: "Pop culture for 300"
+  rejected, then bare "400" picked the last PLAYED category instead.
+  (2) *Score cadence*: `_jeopardy_score_announcement` — the answerer's new
+  total normally ("That puts Bret at $1200"), full scoreboard every
+  `JEOPARDY_SCOREBOARD_EVERY` (4) scoring events; counter resets per round;
+  round transitions / finish / "what's the score?" always full. One 22s
+  response in the log was mostly scoreboard.
+  (3) *Daily Double wagers* (`JEOPARDY_DD_WAGER_ENABLED`): a DD square goes to
+  phase `awaiting_wager` — sting, "you're at $X, wager $5 to $MAX" (max =
+  max(score, 1000×round)); `jeopardy.parse_wager` handles digits, number
+  words ("fifteen hundred", "a thousand"), "everything"/"true daily double",
+  "minimum"; out-of-range re-asks with the rails; then the clue reads for the
+  wager. NO rebound on a DD (show rules — gated at all three rebound sites).
+  False restores flat auto-double.
+  (4) *Final Jeopardy* (`JEOPARDY_FINAL_ENABLED`): auto after Double Jeopardy
+  completes, or by voice. `jeopardy.load_final_clues()` — the ~364 real
+  round-3 clues the loader used to filter out. Phases `final_wager` (lowest
+  score first; ≤$0 players "ride along" at $0 but still answer) →
+  `final_answer` (clue + the real 30.5s think music via after-response clip
+  `final_theme`, capped `JEOPARDY_FINAL_THINK_MAX_SECS`; answers collected in
+  the same order, graded silently by the shared `_jeopardy_grade` ladder) →
+  reveal: wagers settled, winner crowned (ties handled), outro, game ends.
+  (5) *Round jumping*: `jeopardy.round_jump_request` — "next round"/"double
+  jeopardy"/"new categories" → deal round 2 (scores kept); from round 2, or
+  "final jeopardy" from anywhere → begin Final. A dollar value in the
+  utterance is a pick, never a jump. Once per round at ≤
+  `JEOPARDY_ROUND_JUMP_OFFER_REMAINING` (15) squares, the pick prompt
+  mentions the jump. (6) `_clear_game` cancels a live answer timer.
+  `_jeopardy_grade(text, clue)` now holds the single grading ladder
+  (matcher → hedge-residual promote → LLM judge) used by the live board and
+  Final. Stop-guard resume lines cover the new phases. Tests:
+  `tests/test_jeopardy_rounds.py` (32).
 - **PJ's voiceprint AND impersonation ref were junk/contaminated.** His print
   enrolled from a ~1s "Hey Rex." (worthless under ECAPA short-turn behavior →
   the whole game heard PJ as "Bret Benziger" or unknown_voice_N), and his
