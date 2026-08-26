@@ -8825,6 +8825,14 @@ JEOPARDY_READ_CATEGORIES_WITH_GUI = False
 # always answered in full regardless.
 JEOPARDY_CATEGORIES_REMINDER_FULL_READS = 4
 JEOPARDY_CATEGORIES_REMINDER_EVERY = 3
+# Mid-game board questions (owner ask 2026-08-25). Deterministic lanes answer
+# "what's left in <category>?", "is the $400 still there in <category>?",
+# "what's the score?", and "whose turn is it?" without consuming a square or
+# grading the question as a wrong answer. Anything question-shaped the lanes
+# don't recognize (and that carries NO dollar value — a value means a pick)
+# gets one LLM look with the real remaining board + scores in context, in the
+# selecting phase only; a live clue keeps strict deterministic grading.
+JEOPARDY_BOARD_QA_LLM_FALLBACK_ENABLED = True
 
 # I Spy: on the physical droid, Rex LOOKS AROUND the room (left → center → right,
 # a frame captured at each pose under a directed-gaze hold) before picking the

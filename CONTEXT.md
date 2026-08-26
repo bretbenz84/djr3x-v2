@@ -2536,6 +2536,30 @@ surfaced five distinct failures; each is fixed at its own layer:
   streak and keeps the patient clock, so a replugged mic still recovers
   in-process. Tests: `tests/test_stream_watchdog.py` (wedge-streak +
   plain-failure cases).
+- **Mid-game board Q&A + LLM fallback (owner ask, same session).** New
+  deterministic lanes in `features/jeopardy.py`, answered in BOTH phases via
+  `games._jeopardy_answer_board_question` (selecting: answer + re-prompt;
+  during a clue: only after is_correct AND the judge say no — answer, then
+  `_jeopardy_repeat_clue_reply`): `category_board_query` ("what's left /
+  what squares are free / what values are open / how much is left / anything
+  left in X", "what does X have left" — 14 phrasings pinned in tests; empty
+  category → "cleaned out", unknown → full readout), `value_availability_query`
+  ("is the $400 still there in history?" — checked BEFORE parse_selection
+  because the value-wins pick rule used to CONSUME the square; answers
+  yes/gone, and with no category names where that value is still live),
+  `is_score_request` / `is_turn_request` ("what's the score", "who's winning",
+  "whose turn/pick") — a score question during a live clue used to grade as a
+  wrong answer and deduct. Anything question-shaped
+  (`jeopardy.looks_like_question`) the lanes miss, carrying NO dollar value,
+  gets `_jeopardy_board_question_llm`: one `_rex_respond` call with the real
+  remaining board + scores + whose turn in context ("answer from THIS data
+  only"), selecting phase only (`JEOPARDY_BOARD_QA_LLM_FALLBACK_ENABLED`).
+  Also `interaction._GAME_STOP_INTENT_RE`: start-anchored natural stop shapes
+  ("let's stop playing this game", "no more games", "we're done playing") now
+  escape to stop_game — both failed live at 19:04 and the game played on.
+  Tests: `tests/test_jeopardy_answers.py::BoardQuestionLanesTest` /
+  `BoardQuestionHandlerTest`,
+  `tests/test_regex_routing_guards.py::GameStopIntentTest`.
 - **PJ's voiceprint AND impersonation ref were junk/contaminated.** His print
   enrolled from a ~1s "Hey Rex." (worthless under ECAPA short-turn behavior →
   the whole game heard PJ as "Bret Benziger" or unknown_voice_N), and his

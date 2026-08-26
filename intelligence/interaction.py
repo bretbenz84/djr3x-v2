@@ -1291,6 +1291,22 @@ _GAME_BARE_STOP_WORDS = frozenset({
     "stop the game", "end the game", "quit the game", "stop playing",
 })
 
+# Natural stop phrasings the exact table misses. Anchored to the utterance
+# START (with polite lead-ins) so a Jeopardy answer can never match — field
+# 2026-08-25 19:04: "Let's stop playing this game." and "Stop playing. No more
+# games." both fell through to "pick a dollar value too" and the game played on.
+_GAME_STOP_INTENT_RE = re.compile(
+    r"^(?:ok(?:ay)?[,\s]+|hey\s+rex[,\s]+|rex[,\s]+|please[,\s]+|"
+    r"let'?s[,\s]+|can\s+we[,\s]+|we\s+should[,\s]+|i\s+want\s+to[,\s]+|"
+    r"i'?d\s+like\s+to[,\s]+)*"
+    r"(?:"
+    r"(?:stop|quit|end|finish)\s+(?:playing|(?:the|this)\s+game|jeopardy|trivia)"
+    r"|no\s+more\s+(?:games?|jeopardy|trivia)"
+    r"|(?:i'?m|we'?re)\s+done\s+(?:playing|with\s+(?:this|the)\s+game)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _game_escape_command(text: str) -> Optional[command_parser.CommandMatch]:
     """The escape command an in-game utterance carries, or None to grade it."""
@@ -1303,6 +1319,8 @@ def _game_escape_command(text: str) -> Optional[command_parser.CommandMatch]:
     if normalized in _GAME_BARE_STOP_WORDS and key in (None, "dj_stop"):
         # A bare "stop"/"quit" parses as dj_stop (or as nothing at all); inside a
         # game it means THIS game, not the music.
+        return command_parser.CommandMatch("stop_game", "active_game_stop", {})
+    if key in (None, "dj_stop") and _GAME_STOP_INTENT_RE.match(normalized):
         return command_parser.CommandMatch("stop_game", "active_game_stop", {})
     if key == "dj_skip" and normalized == "skip":
         # "skip" mid-game means skip the question — a MOVE, not an escape.

@@ -1509,6 +1509,104 @@ def _jeopardy_speak_category(name: Optional[str]) -> str:
         return str(name or "")
 
 
+def _jeopardy_answer_board_question(text: str) -> Optional[str]:
+    """Deterministic answer to a mid-game board/score/turn question, or None.
+
+    Owner ask 2026-08-25: "what's left in pop culture?", "is the 400 still
+    there in history?", "what's the score?" — answerable mid-game without
+    consuming a square or grading the question as a wrong answer. Value
+    availability runs FIRST: it is the only question shape that carries a
+    dollar value, and everything downstream treats a value as a pick.
+    """
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception:
+        return None
+    board = _game_state.get("board") or {}
+    players = _game_state.get("players") or []
+
+    avail = jeopardy_bank.value_availability_query(text, board)
+    if avail is not None:
+        value = int(avail["value"])
+        category = avail["category"]
+        if category is not None:
+            name = jeopardy_bank.speak_category(category.get("name") or "")
+            if value in (category.get("clues") or {}):
+                return f"Yes — {name} for ${value} is still on the board. "
+            return f"No — {name} for ${value} is gone. "
+        open_in = avail["open_in"]
+        if open_in:
+            names = ", ".join(jeopardy_bank.speak_category(n) for n in open_in)
+            return f"The ${value} squares still live: {names}. "
+        return f"Every ${value} square is gone. "
+
+    catq = jeopardy_bank.category_board_query(text, board)
+    if catq is not None:
+        category, fragment = catq
+        if category is None:
+            readout = _jeopardy_board_text()
+            if readout:
+                return (
+                    f"No category sounds like '{fragment}'. "
+                    f"Still on the board: {readout}. "
+                )
+            return "The board is picked clean. "
+        name = jeopardy_bank.speak_category(category.get("name") or "")
+        values = sorted(int(v) for v in (category.get("clues") or {}).keys())
+        if values:
+            values_text = ", ".join(f"${v}" for v in values)
+            return f"{name} still has {values_text}. "
+        return f"{name} is cleaned out. "
+
+    if jeopardy_bank.is_score_request(text):
+        return f"Scores: {jeopardy_bank.format_scores(players)}. "
+
+    if jeopardy_bank.is_turn_request(text):
+        player = _jeopardy_current_player()
+        if _game_state.get("phase") == "awaiting_answer":
+            return f"{player['name']} is on the clock for this clue. "
+        return f"It's {player['name']}'s pick. "
+
+    return None
+
+
+def _jeopardy_board_question_llm(text: str, person_id: Optional[int]) -> Optional[str]:
+    """LLM fallback for a board question no deterministic lane recognized.
+
+    Selecting phase ONLY (a live clue keeps strict deterministic grading), and
+    only for value-free, question-shaped turns — a mangled pick keeps the
+    canned retry error, which lists what is actually available.
+    """
+    if not bool(getattr(config, "JEOPARDY_BOARD_QA_LLM_FALLBACK_ENABLED", True)):
+        return None
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception:
+        return None
+    if jeopardy_bank.mentions_value(text):
+        return None
+    if not jeopardy_bank.looks_like_question(text):
+        return None
+    board_text = _jeopardy_board_text()
+    players = _game_state.get("players") or []
+    player = _jeopardy_current_player()
+    try:
+        scores = jeopardy_bank.format_scores(players)
+    except Exception:
+        scores = "unavailable"
+    round_no = int(_game_state.get("jeopardy_round", 1) or 1)
+    context = (
+        f'[GAME: Jeopardy — BOARD QUESTION] Mid-game, a player asked: "{text}". '
+        "Answer from THIS data only — never invent squares, values, or scores. "
+        f"Remaining board: {board_text or 'nothing — the board is empty'}. "
+        f"Scores: {scores}. Round {round_no}. It is {player['name']}'s turn to pick. "
+        f"Reply in one or two short sentences, then tell {player['name']} to pick "
+        "a category and dollar value."
+    )
+    response = _rex_respond(context, person_id)
+    return response or None
+
+
 def _jeopardy_repeat_clue_reply(clue: dict, player: dict, prefix: str = "") -> str:
     """Re-read the live clue and restart the answer window, scoring nothing."""
     _game_state["phase"] = "awaiting_answer"
@@ -1903,6 +2001,16 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
     try:
         from features import jeopardy as jeopardy_bank
         board = _game_state.get("board") or {}
+        # Board QUESTIONS come before pick parsing: "is the 400 still there in
+        # history?" carries a value, and the value-wins pick rule would consume
+        # the square instead of answering (owner ask 2026-08-25).
+        meta = _jeopardy_answer_board_question(text)
+        if meta is not None:
+            player = _jeopardy_current_player()
+            return (
+                f"{meta}{player['name']}, pick a category and dollar value.",
+                False,
+            )
         # The categories are announced once when the round loads. A voice-only
         # player who missed them had no way to get them back — the old path fell
         # through to "pick a dollar value too", which reads as being ignored.
@@ -1926,6 +2034,11 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
         clue, error = None, "My board parser fell into a reactor shaft. Try the category and value again."
 
     if not clue:
+        # A question the deterministic lanes did not recognize gets one LLM look
+        # with the real board in context, instead of "pick a dollar value too".
+        fallback = _jeopardy_board_question_llm(text, person_id)
+        if fallback is not None:
+            return (fallback, False)
         return (error, False)
 
     player = _jeopardy_current_player()
@@ -2028,18 +2141,24 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         # before the deduction (phonetic mangling the lexical matcher can't score).
         correct = _jeopardy_llm_judge(text, answer, clue)
 
-    # "What are the categories?" asked a beat late — a question, not a wrong
-    # answer. Checked only AFTER is_correct and the judge both said no, so it can
-    # never swallow a legitimate response like "What is the board of directors?".
-    if (
-        not correct
-        and not passed
-        and jeopardy_bank is not None
-        and jeopardy_bank.is_board_request(text)
-    ):
-        readout = _jeopardy_board_text()
-        prefix = f"Still on the board: {readout}. Now, back to your square. " if readout else ""
-        return (_jeopardy_repeat_clue_reply(clue, player, prefix=prefix), False)
+    # "What are the categories?" / "what's left in pop culture?" / "what's the
+    # score?" asked a beat late — questions, not wrong answers. Checked only
+    # AFTER is_correct and the judge both said no, so they can never swallow a
+    # legitimate response like "What is the board of directors?". Each answers
+    # the question, then re-reads the live clue and restarts the window.
+    if not correct and not passed and jeopardy_bank is not None:
+        meta = _jeopardy_answer_board_question(text)
+        if meta is not None:
+            return (
+                _jeopardy_repeat_clue_reply(
+                    clue, player, prefix=f"{meta}Back to your square. "
+                ),
+                False,
+            )
+        if jeopardy_bank.is_board_request(text):
+            readout = _jeopardy_board_text()
+            prefix = f"Still on the board: {readout}. Now, back to your square. " if readout else ""
+            return (_jeopardy_repeat_clue_reply(clue, player, prefix=prefix), False)
 
     done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
     # `and not correct`: a hedged RIGHT answer is right. Pass used to win this

@@ -972,6 +972,202 @@ def is_board_request(text: str) -> bool:
     return any(pattern.search(spoken) for pattern in _BOARD_REQUEST_RES) or is_clue_repeat_request(text)
 
 
+# ── Mid-game board questions (owner ask 2026-08-25) ──────────────────────────
+# Players interrogate the board out loud: "what's left in pop culture?", "is
+# the 400 still there in history?", "what's the score?". These are QUESTIONS,
+# not picks — before these lanes existed, a value mention was treated as a
+# selection (the availability question would have PICKED the square) and a
+# score question during a live clue graded as a wrong answer.
+
+_LEFT_WORDS = r"(?:left|open|free|available|remaining|there|live|up)"
+_IN_PREP = r"(?:in|for|under|on)"
+
+_CATEGORY_QUERY_RES = [
+    # "what's (still) left/open/free in pop culture", "what else is left in X"
+    re.compile(
+        rf"\bwhat(?:s|\s+is|\s+are)?(?:\s+else)?\s+(?:is\s+|are\s+)?(?:still\s+)?"
+        rf"{_LEFT_WORDS}\s+{_IN_PREP}\s+(?P<cat>.+)$"
+    ),
+    # "what squares/values/dollar amounts are (still) free/left/open in X"
+    re.compile(
+        rf"\bwhat\s+(?:squares?|values?|amounts?|dollar\s+(?:values?|amounts?)|"
+        rf"options?|choices?|numbers?|money)\s+(?:is|are|do\s+we\s+have)?\s*"
+        rf"(?:still\s+)?{_LEFT_WORDS}?\s*{_IN_PREP}\s+(?P<cat>.+)$"
+    ),
+    # "what do we have left in X" / "what have we got left in X"
+    re.compile(
+        rf"\bwhat\s+(?:do\s+(?:we|i)\s+have|have\s+we\s+got)\s+(?:still\s+)?"
+        rf"{_LEFT_WORDS}\s+{_IN_PREP}\s+(?P<cat>.+)$"
+    ),
+    # "how much/many is/are (still) left in X"
+    re.compile(
+        rf"\bhow\s+(?:much|many)\s+(?:is|are)?\s*(?:still\s+)?{_LEFT_WORDS}\s+"
+        rf"{_IN_PREP}\s+(?P<cat>.+)$"
+    ),
+    # "(is there) anything (still) left in X"
+    re.compile(
+        rf"\banything\s+(?:still\s+)?{_LEFT_WORDS}\s+{_IN_PREP}\s+(?P<cat>.+)$"
+    ),
+    # "what does X have left" / "what does X still have"
+    re.compile(
+        r"\bwhat\s+does\s+(?P<cat>.+?)\s+(?:still\s+have|have\s+(?:left|remaining|open))\b"
+    ),
+]
+
+_VALUE_AVAIL_RES = [
+    # "is the 400 still there (in history)" / "is 400 still available/gone/taken"
+    re.compile(
+        r"\bis\s+(?:the\s+)?\d{2,4}\s+(?:still\s+)?"
+        r"(?:there|left|open|available|free|up|live|alive|on\s+the\s+board|gone|taken)\b"
+    ),
+    # "is history for 400 still available"
+    re.compile(
+        r"\bis\s+.{0,30}\bfor\s+\d{2,4}\s+(?:still\s+)?"
+        r"(?:there|left|open|available|free|gone|taken)\b"
+    ),
+    # "do you/we still have the 400 (in X)"
+    re.compile(r"\bdo(?:es)?\s+(?:you|we|it)\s+still\s+have\s+(?:the\s+|an?\s+)?\d{2,4}\b"),
+    # "is there still a 400" / "is there a 400 left"
+    re.compile(r"\bis\s+there\s+still\s+(?:an?\s+|the\s+)?\d{2,4}\b"),
+    re.compile(
+        r"\bis\s+there\s+(?:an?\s+|the\s+)?\d{2,4}\s+"
+        r"(?:left|still|available|open|remaining|there)\b"
+    ),
+]
+
+_SCORE_REQUEST_RES = [
+    re.compile(r"\bwhat(?:s|\s+(?:is|are))\s+(?:the\s+|our\s+|my\s+)?scores?\b"),
+    re.compile(r"\b(?:read|tell|give)\s+(?:me\s+|us\s+)?the\s+scores?\b"),
+    re.compile(r"\bscore\s+(?:check|report|update)\b"),
+    re.compile(r"\bwho(?:s|\s+is)\s+(?:winning|ahead|in\s+the\s+lead)\b"),
+    re.compile(r"\bhow\s+(?:much|many\s+points?)\s+do(?:es)?\s+(?:i|we)\s+have\b"),
+    re.compile(r"\bwhat\s+am\s+i\s+at\b"),
+    re.compile(r"\bhow\s+are\s+we\s+doing\b"),
+]
+
+_TURN_REQUEST_RES = [
+    re.compile(r"\bwhose\s+(?:turn|pick|go|move)\b"),
+    re.compile(r"\bwho(?:s|\s+is)\s+(?:up|next|picking|choosing)\b"),
+    re.compile(r"\bis\s+it\s+my\s+(?:turn|pick|go)\b"),
+]
+
+
+def _digitize_values(spoken: str) -> str:
+    """Spoken value words -> digits ("four hundred" -> "400") so the
+    availability regexes see one shape."""
+    for phrase, value in _VALUE_WORDS:
+        spoken = re.sub(rf"\b{re.escape(phrase)}\b", str(value), spoken)
+    return spoken
+
+
+def _match_category(fragment: str, board: dict) -> Optional[dict]:
+    """Fuzzy-resolve a spoken category fragment to a board category (or None).
+
+    Matches against ALL categories, including cleaned-out ones — "what's left
+    in pop culture" deserves "nothing" when it is empty, not "no such category".
+    """
+    query = _plain(fragment)
+    query = re.sub(r"\b(the|category|please|rex|now|again|still)\b", " ", query)
+    query = " ".join(query.split())
+    if not query:
+        return None
+    threshold = int(getattr(config, "JEOPARDY_SELECTION_FUZZY_THRESHOLD", 0.58) * 100)
+    best, best_score = None, 0
+    for category in board.get("categories") or []:
+        name = _plain(category.get("name") or "")
+        score = max(
+            fuzz.ratio(query, name),
+            fuzz.partial_ratio(query, name),
+            fuzz.token_set_ratio(query, name),
+        )
+        if score > best_score:
+            best_score = score
+            best = category
+    return best if best is not None and best_score >= threshold else None
+
+
+def category_board_query(text: str, board: dict) -> Optional[tuple[Optional[dict], str]]:
+    """Parse "what's left in <category>?" shapes.
+
+    Returns None when this is not a category question; otherwise
+    (matched_category_or_None, spoken_fragment) — a matched question with an
+    unrecognized category still returns, so the caller can degrade to the full
+    board instead of grading the question as a pick or an answer.
+    """
+    if _mentioned_any_value(text) is not None:
+        return None    # a value in play is the availability lane's job (or a pick)
+    spoken = _spoken(text)
+    if not spoken:
+        return None
+    for pattern in _CATEGORY_QUERY_RES:
+        match = pattern.search(spoken)
+        if match:
+            fragment = match.group("cat").strip()
+            return (_match_category(fragment, board), fragment)
+    return None
+
+
+def value_availability_query(text: str, board: dict) -> Optional[dict]:
+    """Parse "is the $400 still there (in history)?" shapes.
+
+    Returns None when this is not an availability question; otherwise a dict:
+    {"value": int, "category": matched category or None,
+     "open_in": [category names where that value is still live]}.
+    MUST be checked before parse_selection — the value-wins rule would
+    otherwise treat the question as a pick and consume the square.
+    """
+    value = _mentioned_any_value(text)
+    if value is None:
+        return None
+    spoken = _digitize_values(_spoken(text))
+    if not any(pattern.search(spoken) for pattern in _VALUE_AVAIL_RES):
+        return None
+    category = None
+    in_match = re.search(rf"\b{_IN_PREP}\s+(?P<cat>.+)$", spoken)
+    if in_match:
+        fragment = re.sub(r"\b\d{2,4}\b", " ", in_match.group("cat"))
+        category = _match_category(fragment, board)
+    if category is None:
+        # "is HISTORY for 400 still open" — the category leads the value.
+        lead = re.search(r"\bis\s+(?:the\s+)?(?P<cat>.+?)\s+for\s+\d{2,4}\b", spoken)
+        if lead:
+            category = _match_category(lead.group("cat"), board)
+    open_in = [
+        str(category_row.get("name") or "")
+        for category_row in board.get("categories") or []
+        if value in (category_row.get("clues") or {})
+    ]
+    return {"value": int(value), "category": category, "open_in": open_in}
+
+
+def is_score_request(text: str) -> bool:
+    spoken = _spoken(text)
+    return bool(spoken) and any(p.search(spoken) for p in _SCORE_REQUEST_RES)
+
+
+def is_turn_request(text: str) -> bool:
+    spoken = _spoken(text)
+    return bool(spoken) and any(p.search(spoken) for p in _TURN_REQUEST_RES)
+
+
+def mentions_value(text: str) -> bool:
+    """Public wrapper: does the utterance carry a dollar value (digits or words)?"""
+    return _mentioned_any_value(text) is not None
+
+
+def looks_like_question(text: str) -> bool:
+    """Cheap interrogative check for the LLM fallback gate."""
+    if (text or "").strip().endswith("?"):
+        return True
+    spoken = _spoken(text)
+    return bool(re.match(
+        r"^(?:hey\s+rex\s+|rex\s+|ok(?:ay)?\s+|so\s+|um+\s+|uh+\s+)*"
+        r"(?:what|whats|which|who|whos|whose|where|when|why|how|is|are|am|was|were|"
+        r"do|does|did|can|could|will|would|should|have|has)\b",
+        spoken,
+    ))
+
+
 def is_clue_repeat_request(text: str) -> bool:
     """True for "say that again" shapes — a request to re-hear, not an answer."""
     spoken = _spoken(text)

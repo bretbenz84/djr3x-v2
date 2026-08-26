@@ -254,6 +254,228 @@ class CategoriesReminderCadenceTest(unittest.TestCase):
         self.assertIn("SCIENCE", games._jeopardy_board_text())
 
 
+class BoardQuestionLanesTest(unittest.TestCase):
+    """Mid-game board questions (owner ask 2026-08-25): category-specific
+    remaining values, value availability, scores, and whose turn — answered
+    without consuming a square or grading the question as a wrong answer."""
+
+    def _board(self):
+        return {
+            "categories": [
+                {"name": "POP CULTURE", "clues": {600: {}, 1000: {}}},
+                {"name": "STATE ABBREV.", "clues": {200: {}, 400: {}}},
+                {"name": "HISTORY", "clues": {}},
+            ],
+            "remaining": 4,
+        }
+
+    def test_category_query_variations(self):
+        board = self._board()
+        for text in [
+            "what's left in pop culture",
+            "What is left in pop culture?",
+            "what's still open in pop culture",
+            "what squares are free in pop culture",
+            "what squares are left in pop culture",
+            "what values are left in pop culture",
+            "what dollar amounts are left in pop culture",
+            "what do we have left in pop culture",
+            "how much is left in pop culture",
+            "how many are left in pop culture",
+            "is there anything left in pop culture",
+            "what's remaining in pop culture",
+            "what does pop culture have left",
+            "what does pop culture still have",
+        ]:
+            result = jeopardy.category_board_query(text, board)
+            self.assertIsNotNone(result, text)
+            category, _fragment = result
+            self.assertIsNotNone(category, text)
+            self.assertEqual(category["name"], "POP CULTURE", text)
+
+    def test_cleaned_out_category_still_matches(self):
+        # An empty category answers "nothing left", not "no such category".
+        result = jeopardy.category_board_query("what's left in history", self._board())
+        category, _fragment = result
+        self.assertEqual(category["name"], "HISTORY")
+        self.assertEqual(category["clues"], {})
+
+    def test_unknown_category_returns_the_fragment(self):
+        result = jeopardy.category_board_query("what's left in wibble wobble", self._board())
+        self.assertIsNotNone(result)
+        category, fragment = result
+        self.assertIsNone(category)
+        self.assertIn("wibble", fragment)
+
+    def test_picks_are_not_category_queries(self):
+        for text in [
+            "pop culture for six hundred",
+            "I'll take pop culture for 600",
+            "what is the McRib",
+            "give me history",
+        ]:
+            self.assertIsNone(jeopardy.category_board_query(text, self._board()), text)
+
+    def test_value_availability_variations(self):
+        board = self._board()
+        for text in [
+            "is the 400 still there in state abbrev",
+            "is the $400 still available in state abbrev?",
+            "is 400 still open in state abbrev",
+            "is the four hundred still there in state abbrev",
+            "do you still have the 400 in state abbrev",
+            "is there still a 400 in state abbrev",
+            "is there a 400 left in state abbrev",
+            "is state abbrev for 400 still available",
+        ]:
+            result = jeopardy.value_availability_query(text, board)
+            self.assertIsNotNone(result, text)
+            self.assertEqual(result["value"], 400, text)
+            self.assertIsNotNone(result["category"], text)
+            self.assertEqual(result["category"]["name"], "STATE ABBREV.", text)
+
+    def test_value_availability_without_category_lists_where(self):
+        result = jeopardy.value_availability_query("is the 1000 still up", self._board())
+        self.assertIsNotNone(result)
+        self.assertIsNone(result["category"])
+        self.assertEqual(result["open_in"], ["POP CULTURE"])
+
+    def test_picks_are_not_availability_questions(self):
+        for text in [
+            "pop culture for 400",
+            "I'll take the 400 in state abbrev",
+            "give me state abbrev for four hundred",
+            "400",
+        ]:
+            self.assertIsNone(jeopardy.value_availability_query(text, self._board()), text)
+
+    def test_score_and_turn_requests(self):
+        for text in [
+            "what's the score",
+            "what are the scores?",
+            "who's winning",
+            "score check",
+            "how much do I have",
+            "what am I at",
+        ]:
+            self.assertTrue(jeopardy.is_score_request(text), text)
+        for text in ["whose turn is it", "who's up", "whose pick is it", "is it my turn"]:
+            self.assertTrue(jeopardy.is_turn_request(text), text)
+
+    def test_question_shape_gate(self):
+        for text in ["what else is on the board?", "can we see the scores", "Pop culture?"]:
+            self.assertTrue(jeopardy.looks_like_question(text), text)
+        for text in ["pop culture for 600", "the McRib", "I'll take history"]:
+            self.assertFalse(jeopardy.looks_like_question(text), text)
+
+
+class BoardQuestionHandlerTest(unittest.TestCase):
+    """The games.py wiring: questions answered in both phases, squares never
+    consumed, no deductions, and the LLM fallback gated correctly."""
+
+    def _board(self):
+        return {
+            "categories": [
+                {"name": "POP CULTURE", "clues": {600: {"clue": "c", "answer": "a"},
+                                                  1000: {"clue": "c", "answer": "a"}}},
+                {"name": "HISTORY", "clues": {400: {"clue": "c", "answer": "a"}}},
+            ],
+            "remaining": 3,
+        }
+
+    def setUp(self):
+        games._active_game = "jeopardy"
+        games._game_state = {
+            "phase": "selecting",
+            "players": [{"name": "Bret", "score": 200}, {"name": "PJ", "score": -400}],
+            "current_player_idx": 0,
+            "board": self._board(),
+        }
+
+    def tearDown(self):
+        games._game_state = {}
+        games._active_game = None
+
+    def test_category_question_answers_without_consuming(self):
+        resp, done = games._jeopardy_handle_selection("what's left in pop culture", None)
+        self.assertFalse(done)
+        self.assertIn("$600", resp)
+        self.assertIn("$1000", resp)
+        self.assertEqual(games._game_state["board"]["remaining"], 3,
+                         "a question must never consume a square")
+
+    def test_availability_question_does_not_pick_the_square(self):
+        resp, done = games._jeopardy_handle_selection(
+            "is the 400 still there in history", None
+        )
+        self.assertFalse(done)
+        self.assertIn("still on the board", resp.lower())
+        self.assertIn(400, games._game_state["board"]["categories"][1]["clues"],
+                      "the availability question must not consume HISTORY $400")
+
+    def test_gone_square_reported_gone(self):
+        del games._game_state["board"]["categories"][1]["clues"][400]
+        resp, _done = games._jeopardy_handle_selection(
+            "is the 400 still there in history", None
+        )
+        self.assertIn("gone", resp.lower())
+
+    def test_score_question_answered_in_selecting_phase(self):
+        resp, _done = games._jeopardy_handle_selection("what's the score", None)
+        self.assertIn("Bret: $200", resp)
+        self.assertIn("negative $400", resp)
+
+    def test_meta_question_during_a_clue_costs_nothing_and_rereads(self):
+        games._game_state["phase"] = "awaiting_answer"
+        games._game_state["current_clue"] = {
+            "category": "POP CULTURE", "value": 600, "effective_value": 600,
+            "clue": "This clue", "answer": "zzz-not-a-match",
+        }
+        with mock.patch.object(games, "_body_beat"), \
+             mock.patch.object(games, "_jeopardy_queue_clip"), \
+             mock.patch.object(games, "_jeopardy_cancel_timeout"), \
+             mock.patch.object(games, "_jeopardy_llm_judge", return_value=False):
+            resp, done = games._jeopardy_handle_answer("what's left in history", None)
+        self.assertFalse(done)
+        self.assertIn("$400", resp)
+        self.assertIn("This clue", resp)     # the live clue is re-read
+        self.assertEqual(games._game_state["players"][0]["score"], 200,
+                         "a board question must never cost points")
+
+    def test_llm_fallback_gets_the_board_context(self):
+        with mock.patch.object(games, "_rex_respond", return_value="LLM says hi") as rex:
+            resp, done = games._jeopardy_handle_selection(
+                "which category do you think is easiest?", None
+            )
+        self.assertFalse(done)
+        self.assertEqual(resp, "LLM says hi")
+        context = rex.call_args.args[0]
+        self.assertIn("POP CULTURE", context)
+        self.assertIn("Bret", context)
+
+    def test_llm_fallback_never_swallows_a_value_mention(self):
+        # A mangled pick with a value keeps the deterministic retry error.
+        with mock.patch.object(games, "_rex_respond") as rex:
+            resp, _done = games._jeopardy_handle_selection(
+                "can I do the 300 one?", None
+            )
+        rex.assert_not_called()
+        self.assertIn("$300", resp)
+
+    def test_llm_fallback_kill_switch(self):
+        with mock.patch.object(config, "JEOPARDY_BOARD_QA_LLM_FALLBACK_ENABLED", False,
+                               create=True), \
+             mock.patch.object(games, "_rex_respond") as rex:
+            games._jeopardy_handle_selection("which category is easiest?", None)
+        rex.assert_not_called()
+
+    def test_non_question_gibberish_keeps_the_canned_error(self):
+        with mock.patch.object(games, "_rex_respond") as rex:
+            resp, _done = games._jeopardy_handle_selection("banana banana", None)
+        rex.assert_not_called()
+        self.assertIn("dollar value", resp)
+
+
 class BoardRepeatRequestTest(unittest.TestCase):
     """The categories are announced once when a round loads. A voice-only player
     who missed them must be able to ask for them back — the old selection parser

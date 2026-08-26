@@ -1362,5 +1362,41 @@ class LegacyMemoryWriteGateTest(unittest.TestCase):
             self.assertIsNone(reason, text)
 
 
+class GameStopIntentTest(unittest.TestCase):
+    """Natural stop phrasings must end an active game (field 2026-08-25 19:04:
+    "Let's stop playing this game." and "Stop playing. No more games." both
+    fell through to "pick a dollar value too" and the game played on). The
+    shapes are start-anchored so a Jeopardy answer can never match."""
+
+    def test_natural_stop_phrasings_escape_the_game(self):
+        for text in [
+            "Let's stop playing this game.",
+            "Stop playing. No more games.",
+            "No more games.",
+            "Can we stop playing?",
+            "Okay, let's end the game.",
+            "Rex, quit the game.",
+            "I'm done playing.",
+            "We're done with this game.",
+            "please stop playing jeopardy",
+        ]:
+            match = interaction._game_escape_command(text)
+            self.assertIsNotNone(match, text)
+            self.assertEqual(match.command_key, "stop_game", text)
+
+    def test_answers_and_moves_do_not_stop_the_game(self):
+        for text in [
+            "What is the endgame?",
+            "Who is Kenny Loggins?",   # ("playing with the boys" adjacent
+            "what is stop motion",
+            "pop culture for 400",
+            "skip",                    # skip = pass the question, not an escape
+            "I give up",               # a PASS, graded by the game
+        ]:
+            match = interaction._game_escape_command(text)
+            if match is not None:
+                self.assertNotEqual(match.command_key, "stop_game", text)
+
+
 if __name__ == "__main__":
     unittest.main()
