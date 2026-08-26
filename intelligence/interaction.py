@@ -20362,21 +20362,29 @@ def _handle_router_impersonation(
         return resolution.line
 
     if resolution.kind == "capture":
+        parts = list(resolution.parts or ())
         _pending_impersonation_capture = {
             "person_id": resolution.person_id,
             "name": resolution.name,
             "expected_text": resolution.line,
+            # Short parts captured back-to-back, concatenated at the end
+            # (owner call 2026-08-26: a long line can't be held in memory).
+            "parts_remaining": parts[1:] if parts else [],
+            "takes": [],
+            "take_texts": [],
             "is_self": resolution.is_self,
             "asked_at": time.monotonic(),
         }
         _log.info(
-            "[impersonation] opened capture slot person_id=%s name=%r",
-            resolution.person_id, resolution.name,
+            "[impersonation] opened capture slot person_id=%s name=%r parts=%d",
+            resolution.person_id, resolution.name, max(1, len(parts)),
         )
         # Speak the FRAMED ask ("repeat after me: <phrase>") — the bare phrase gave
         # the guest no clue what to do (field 2026-07-23). expected_text stays the
         # phrase alone so the recitation match compares against the right words.
-        prompt = impersonation.capture_prompt(resolution.name, resolution.line)
+        prompt = impersonation.capture_prompt(
+            resolution.name, resolution.line, total_parts=max(1, len(parts)),
+        )
         _speak_blocking(prompt, emotion="curious", pre_beat_ms=100, log_text=False)
         return prompt
 
@@ -20534,20 +20542,26 @@ def _handle_impersonation_capture(
 
     # VOICED length, not buffer length: capture segments ride in padded buffers,
     # so a ~1.5s utterance can measure 5s (that is exactly how "impersonate me"
-    # passed the old 4s check).
-    min_secs = float(
-        getattr(
-            config,
-            "IMPERSONATION_CAPTURE_MIN_VOICED_SECS",
-            getattr(config, "IMPERSONATION_CAPTURE_MIN_SECS", 4.0),
+    # passed the old 4s check). Multi-part sets use the shorter per-part floor —
+    # each part is one easy sentence.
+    multi_part = ctx.get("parts_remaining") is not None
+    if multi_part:
+        min_secs = float(getattr(config, "IMPERSONATION_CAPTURE_PART_MIN_VOICED_SECS", 2.0))
+    else:
+        min_secs = float(
+            getattr(
+                config,
+                "IMPERSONATION_CAPTURE_MIN_VOICED_SECS",
+                getattr(config, "IMPERSONATION_CAPTURE_MIN_SECS", 4.0),
+            )
         )
-    )
     if audio_array is None or _voiced_duration_secs(audio_array) < min_secs:
         ctx["asked_at"] = time.monotonic()
         first = _first_name_or(ctx.get("name"), "hey")
+        line = str(ctx.get("expected_text") or "")
+        again = f" Once more: {line}" if line else ""
         return (
-            f"{first}, that was a blink — give me one more full sentence so I have "
-            "something to work with.",
+            f"{first}, that was a blink — nice and clear this time.{again}",
             False,
         )
 
@@ -20599,7 +20613,21 @@ def _handle_impersonation_capture(
             False,
         )
 
-    ref = impersonation.save_person_capture(expected_id, audio_array, text)
+    # Bank this take. More parts to go → ask for the next short line; the last
+    # part triggers the concatenated save (owner call 2026-08-26: short lines
+    # people can actually hold, joined into one ~12-15s reference).
+    takes = ctx.setdefault("takes", [])
+    take_texts = ctx.setdefault("take_texts", [])
+    takes.append(audio_array)
+    take_texts.append(text)
+    remaining = ctx.get("parts_remaining") or []
+    if remaining:
+        ctx["expected_text"] = remaining.pop(0)
+        ctx["asked_at"] = time.monotonic()
+        ctx.pop("recite_retry_done", None)    # fresh nudge budget per part
+        return (f"Got it. Next one: {ctx['expected_text']}", False)
+
+    ref = impersonation.save_person_capture_parts(expected_id, takes, take_texts)
     if ref is None:
         ctx["asked_at"] = time.monotonic()
         return ("My voice scanner hiccupped — run that line by me one more time?", False)
@@ -20607,7 +20635,10 @@ def _handle_impersonation_capture(
     name = ctx.get("name") or ("my mystery guest" if expected_id is None else "you")
     is_self = bool(ctx.get("is_self"))
     _pending_impersonation_capture = None
-    _log.info("[impersonation] captured reference for person_id=%s — performing", expected_id)
+    _log.info(
+        "[impersonation] captured reference for person_id=%s (%d part[s]) — performing",
+        expected_id, len(takes),
+    )
     parody = impersonation.perform(ref, name, expected_id, is_self=is_self)
     return (parody, True)
 

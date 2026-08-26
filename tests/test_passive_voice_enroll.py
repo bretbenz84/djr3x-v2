@@ -252,6 +252,70 @@ class CaptureRecitationGuardsTest(unittest.TestCase):
         self.assertTrue(ctx.get("recite_retry_done"))
 
 
+class MultiPartCaptureTest(unittest.TestCase):
+    """Short repeat-after-me parts, concatenated into one ref (owner call
+    2026-08-26: the two-sentence Mary line was too long for PJ to hold)."""
+
+    _PARTS = [
+        "Mary had a little lamb, its fleece was white as snow.",
+        "And everywhere that Mary went, the lamb was sure to go.",
+        "It followed her to school one day, and made the children laugh and play.",
+    ]
+
+    def setUp(self):
+        import time
+        I._pending_impersonation_capture = {
+            "person_id": 7, "name": "PJ", "is_self": False,
+            "expected_text": self._PARTS[0],
+            "parts_remaining": list(self._PARTS[1:]),
+            "takes": [], "take_texts": [],
+            "asked_at": time.monotonic(),
+        }
+
+    def tearDown(self):
+        I._pending_impersonation_capture = None
+
+    def _say(self, text, secs=3.5, **kw):
+        with mock.patch.object(I, "_known_person_visible_recently", return_value=False):
+            return I._handle_impersonation_capture(text, _voiced(secs), 7, 7, 0.9, **kw)
+
+    def test_parts_flow_collects_then_concatenates(self):
+        from features import impersonation
+        line, spoken = self._say(self._PARTS[0])
+        self.assertFalse(spoken)
+        self.assertIn(self._PARTS[1], line, "the next short line is dictated")
+        line, spoken = self._say(self._PARTS[1])
+        self.assertIn(self._PARTS[2], line)
+        with mock.patch.object(impersonation, "save_person_capture",
+                               return_value=mock.MagicMock()) as save, \
+             mock.patch.object(impersonation, "perform", return_value="Uncanny."):
+            line, spoken = self._say(self._PARTS[2])
+        self.assertTrue(spoken)
+        save.assert_called_once()
+        joined_audio = save.call_args.args[1]
+        joined_text = save.call_args.args[2]
+        # Three trimmed ~3.5s takes plus gaps: comfortably over 9s of audio.
+        self.assertGreater(len(joined_audio), 16000 * 9)
+        for part_text in self._PARTS:
+            self.assertIn(part_text.split(",")[0], joined_text)
+        self.assertIsNone(I._pending_impersonation_capture)
+
+    def test_short_part_reasks_that_part(self):
+        line, spoken = self._say(self._PARTS[0], secs=0.8)
+        self.assertFalse(spoken)
+        self.assertIn("blink", line)
+        ctx = I._pending_impersonation_capture
+        self.assertEqual(ctx["expected_text"], self._PARTS[0], "same part re-asked")
+        self.assertEqual(len(ctx["takes"]), 0)
+
+    def test_recite_nudge_budget_resets_per_part(self):
+        self._say(self._PARTS[0])
+        # Off-script on part 2: nudged once even though part 1 went fine.
+        line, _spoken = self._say("totally different sentence about my day at work")
+        self.assertIn("the line itself", line)
+        self.assertTrue(I._pending_impersonation_capture.get("recite_retry_done"))
+
+
 class RefTrimTest(unittest.TestCase):
     def test_trim_strips_pads_and_keeps_speech(self):
         from features import impersonation

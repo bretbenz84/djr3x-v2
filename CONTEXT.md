@@ -2644,7 +2644,14 @@ surfaced five distinct failures; each is fixed at its own layer:
   (`IMPERSONATION_CAPTURE_MIN_VOICED_SECS` 6.0); a repeated impersonation
   REQUEST is never a take; an off-script take from the right person gets one
   nudge back to the line; `impersonation._trim_silence` strips pad/room-tone
-  before a ref is saved; capture lines lengthened to ~15s spoken. (3)
+  before a ref is saved. Capture asks are MULTI-PART (owner: even the
+  two-sentence Mary line was impossible to hold in memory): the slot dictates
+  3 short sentences one at a time (`IMPERSONATION_CAPTURE_LINE_SETS`,
+  `Resolution.parts`), banks each take, and
+  `impersonation.save_person_capture_parts` trims + concatenates audio and
+  transcripts into ONE ~12-15s ref; per-part floor
+  `IMPERSONATION_CAPTURE_PART_MIN_VOICED_SECS` (2.0), recite-nudge budget
+  resets per part. (3)
   "Impersonate ME" retargets to the solo visible face when the voice guess
   disagrees (PJ asked, attribution said Bret, Bret's ref performed). Cleanup
   done in place: Bret's junk ref deleted (backups + forensic clone tests in

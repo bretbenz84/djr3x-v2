@@ -222,6 +222,34 @@ def save_person_capture(
     return local_tts.voice_ref_from_files(wav_path, txt_path, label)
 
 
+def save_person_capture_parts(
+    person_id: Optional[int],
+    takes: "list[np.ndarray]",
+    transcripts: "list[str]",
+) -> Optional[local_tts.VoiceRef]:
+    """Concatenate several short repeat-after-me takes into ONE reference.
+
+    Owner call 2026-08-26: one long line is impossible to repeat from memory,
+    so the capture asks for short parts back-to-back. Each take is trimmed of
+    its padded room tone, the parts are joined with a small natural gap, and
+    the joined audio + joined transcript become the person's single ref set."""
+    takes = [t for t in (takes or []) if isinstance(t, np.ndarray) and t.size]
+    if not takes:
+        return None
+    sr = int(getattr(config, "AUDIO_SAMPLE_RATE", 16000))
+    gap = np.zeros(int(0.3 * sr), dtype=np.float32)
+    pieces: "list[np.ndarray]" = []
+    for i, take in enumerate(takes):
+        if i:
+            pieces.append(gap)
+        pieces.append(_trim_silence(np.asarray(take, dtype=np.float32).reshape(-1), sr))
+    joined = np.concatenate(pieces)
+    transcript = " ".join(
+        " ".join(str(t or "").split()) for t in (transcripts or []) if str(t or "").strip()
+    )
+    return save_person_capture(person_id, joined, transcript)
+
+
 # ── Lines ─────────────────────────────────────────────────────────────────────
 
 def _pick(lines, fallback: str) -> str:
@@ -254,15 +282,29 @@ def _pick_cycling(lines, fallback: str, state_name: str, config_key: str) -> str
     return _pick(lines, fallback)
 
 
+_DEFAULT_CAPTURE_SET = [
+    "Mary had a little lamb, its fleece was white as snow.",
+    "And everywhere that Mary went, the lamb was sure to go.",
+    "It followed her to school one day, and made the children laugh and play.",
+]
+
+
+def capture_line_set() -> list[str]:
+    """One set of SHORT repeat-after-me parts (owner call 2026-08-26: a long
+    line is impossible to hold in memory — PJ couldn't repeat the two-sentence
+    Mary line). The takes are concatenated into one reference afterwards."""
+    sets = getattr(config, "IMPERSONATION_CAPTURE_LINE_SETS", None) or []
+    chosen = _pick(sets, _DEFAULT_CAPTURE_SET)
+    parts = [str(p).strip() for p in (chosen or []) if str(p).strip()]
+    return parts or list(_DEFAULT_CAPTURE_SET)
+
+
 def capture_line() -> str:
-    return _pick(
-        getattr(config, "IMPERSONATION_CAPTURE_LINES", []),
-        "Mary had a little lamb, its fleece was white as snow. "
-        "And everywhere that Mary went, the lamb was sure to go.",
-    )
+    """Legacy single-string view of a capture set (the joined parts)."""
+    return " ".join(capture_line_set())
 
 
-def capture_prompt(name: object, line: str) -> str:
+def capture_prompt(name: object, line: str, total_parts: int = 1) -> str:
     """The SPOKEN capture ask: instruction + phrase. Field 2026-07-23: Rex spoke
     the bare phrase ("An apple a day...") with zero framing, so the guest had no
     idea she was supposed to repeat it and the capture slot silently expired.
@@ -270,6 +312,11 @@ def capture_prompt(name: object, line: str) -> str:
     """
     first = str(name or "").strip().split(" ")[0] if name else ""
     who = f"{first}, " if first else ""
+    if total_parts > 1:
+        return (
+            f"Okay {who}I need a voice sample — {total_parts} quick lines, "
+            f"one at a time. Repeat after me: {line}"
+        )
     return (
         f"Okay {who}I need a voice sample — repeat after me, nice and clear: {line}"
     )
@@ -315,6 +362,7 @@ class Resolution:
     name: str = ""
     is_self: bool = False
     line: str = ""                              # capture prompt or refusal line
+    parts: tuple = ()                           # capture: the full short-line set
 
 
 def _is_self(target: str) -> bool:
@@ -347,16 +395,18 @@ def resolve_target(
     if _is_self(target):
         name = speaker_name or "you"
         if speaker_person_id is None:
+            parts = tuple(capture_line_set())
             return Resolution(
                 "capture", person_id=None, name="", is_self=True,
-                line=capture_line(),
+                line=parts[0], parts=parts,
             )
         ref = person_ref(speaker_person_id)
         if ref is not None:
             return Resolution("perform", ref=ref, person_id=speaker_person_id, name=name, is_self=True)
+        parts = tuple(capture_line_set())
         return Resolution(
             "capture", person_id=speaker_person_id, name=name, is_self=True,
-            line=capture_line(),
+            line=parts[0], parts=parts,
         )
 
     # A named target. Known people take precedence over famous clips.
@@ -373,7 +423,10 @@ def resolve_target(
         if ref is not None:
             return Resolution("perform", ref=ref, person_id=pid, name=name)
         # Known but never captured — offer to capture (they may be in the room).
-        return Resolution("capture", person_id=pid, name=name, line=capture_line())
+        parts = tuple(capture_line_set())
+        return Resolution(
+            "capture", person_id=pid, name=name, line=parts[0], parts=parts,
+        )
 
     # Famous-clip fallback.
     famous = find_famous_ref(target)

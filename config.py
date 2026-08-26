@@ -1865,9 +1865,10 @@ IMPERSONATION_CAPTURE_MIN_SECS = 4.0          # legacy raw-buffer floor (unused 
 # Minimum VOICED seconds in a capture take — measured on speech frames, not
 # buffer length: padded segments made a ~1.5s "impersonate me" measure 5.18s
 # and become Bret's clone ref (field 2026-08-26, owner played the file back).
-# The capture lines run ~15s spoken; 6s voiced rejects half-hearted takes
-# while tolerating an ASR-truncated but real recitation.
+# MIN_VOICED applies to a single-take (legacy) capture; PART_MIN_VOICED to each
+# short part of a multi-part set (parts are one sentence, ~3-5s spoken).
 IMPERSONATION_CAPTURE_MIN_VOICED_SECS = 6.0
+IMPERSONATION_CAPTURE_PART_MIN_VOICED_SECS = 2.0
 # A capture take that voice-matches a DIFFERENT enrolled person at/above this bar
 # — and that person has actually been around the camera — gets ONE solo-retake
 # ask before being saved as the target's durable voice ref (field 2026-08-25:
@@ -1922,22 +1923,28 @@ LOCAL_TTS_TRIM_WINDOW_MS = 20.0
 LOCAL_TTS_TRIM_PADDING_MS = 120.0             # breath kept on each trimmed edge
 # Lines Rex asks the person to repeat (fixed, so the reference transcript is known
 # exactly). Each is ~2 short sentences — enough audio to condition the clone.
-# Longer is better: the cloner's fidelity tracks the reference (field
-# 2026-08-26 — Rex's clean 19.5s studio ref clones faithfully; the old ~8s
-# far-field people captures cloned as "generic people", per the owner's ear).
-# ~15s of speech per line, varied cadence, no tongue-twisters.
-IMPERSONATION_CAPTURE_LINES = [
-    "Mary had a little lamb, its fleece was white as snow. "
-    "And everywhere that Mary went, the lamb was sure to go. "
-    "It followed her to school one day, which was against the rules. "
-    "It made the children laugh and play, to see a lamb at school.",
-    "Twinkle, twinkle, little star, how I wonder what you are. "
-    "Up above the world so high, like a diamond in the sky. "
-    "When the blazing sun is gone, when he nothing shines upon, "
-    "then you show your little light, twinkle, twinkle, all the night.",
-    "An apple a day keeps the doctor away, and a penny saved is a penny earned. "
-    "The early bird catches the worm, but the second mouse gets the cheese. "
-    "Slow and steady wins the race, and practice makes perfect every time.",
+# Longer refs clone better (field 2026-08-26 — Rex's clean 19.5s studio ref
+# clones faithfully; ~8s far-field people captures cloned as "generic people"),
+# but a long line is impossible to repeat from memory (PJ couldn't hold the
+# two-sentence Mary line). So: SETS of short parts, captured back-to-back —
+# each part one easy sentence, the takes concatenated (with their transcripts)
+# into ONE reference of ~12-15s total speech.
+IMPERSONATION_CAPTURE_LINE_SETS = [
+    [
+        "Mary had a little lamb, its fleece was white as snow.",
+        "And everywhere that Mary went, the lamb was sure to go.",
+        "It followed her to school one day, and made the children laugh and play.",
+    ],
+    [
+        "Twinkle, twinkle, little star, how I wonder what you are.",
+        "Up above the world so high, like a diamond in the sky.",
+        "When the blazing sun is gone, you show your little light all night.",
+    ],
+    [
+        "An apple a day keeps the doctor away.",
+        "A penny saved is a penny earned, and the early bird catches the worm.",
+        "Slow and steady wins the race, and practice makes perfect every time.",
+    ],
 ]
 # Rex-voice setup/stall lines spoken (in HIS voice) before the impersonation. Also
 # covers the one-time model-load latency, the way the web-search stall line does.
