@@ -2677,6 +2677,54 @@ surfaced five distinct failures; each is fixed at its own layer:
   (`tools/test_voice_id.py --enroll "PJ Thomas" --replace`). Tests:
   `tests/test_voiceless_face_wins.py` (min-length),
   `tests/test_impersonation.py::CaptureConsumerTest` (foreign-voice retake).
+- **Thinking-gap speech recovery (2026-08-26, owner request).** People speak a
+  thought, pause past the 0.65s endpoint, then say more — and the second line
+  landed in a structural dead zone: from endpoint to end-of-reply the
+  interaction loop is BLOCKED inside `_handle_speech_segment` (transcribe →
+  route → LLM stream → `_await_streamed_speech` through full playback), live
+  VAD never runs, and the post-TTS handoff then stamped the capture floor at
+  playback end, walling the buffered words off forever. The mic itself never
+  stopped recording (30s rolling buffer) — nothing ever *looked*. Two
+  recoveries, both off the (already-blocked) reply path so a silent gap costs
+  ~one batched Silero pass (~tens of ms) per streamed reply:
+  **Phase 1 — pre-voice merge** (`_reply_gap_speech_onset` /
+  `_GapSpeechDetected` / `_merge_gap_speech`): at the first streamed sentence
+  — before any TTS is fetched or queued — scan the gap span
+  (`_gap_watch_started_at`, armed at each mic turn's capture end); if the
+  person spoke, unwind out of the stream (same shape as ToolCallRequested;
+  the generic stream-error catch explicitly re-raises it), wait out their
+  line like a normal turn, transcribe, guard (non-speech vocalization,
+  own-echo, empty), log it as its own human turn, and regenerate ONCE — the
+  lean call gets the new line as the current turn with line 1 in the
+  transcript; the merged `text` feeds memory/audit. A dry merge (false
+  trigger/unusable audio) regenerates the original unchanged: latency, never
+  silence. The person's clock restarts when THEY stop talking, so the redo
+  reads as listening, not lag.
+  **Phase 2 — post-reply catch-up** (`_maybe_catch_up_gap_speech`, run at
+  loop resume where the post-question retro scan lives; that scan wins and
+  consumes the watch when both are armed): one-shot sweep of the whole blind
+  span. Playback geometry from `_gap_first_audio_at` (stamped by the queue's
+  on-item-start) + `echo_cancel.last_playback_ended_at()`: the pre-playback
+  thinking gap is clean on every machine; the under-playback span is used
+  ONLY with hardware AEC and must pass anti-residual bars (≥1.0s duration —
+  also filters backchannels, RMS dominance over the span's median floor,
+  playback span not near-continuously voiced — that shape IS Rex's own
+  reply); no-AEC machines keep only a clean pre-playback head. A finished
+  utterance is sliced (pads clamped so they never leak into no-AEC playback)
+  and dispatched through the NORMAL `_handle_speech_segment` pipeline —
+  speaker ID, own-echo rejection, trust guards, routing all apply — so Rex
+  addresses the missed line right after his reply. Speech still in progress
+  becomes a recovered onset for the live loop (with `_gap_recovery_floor_at`,
+  a game-barge-style one-shot floor override, so capture reaches behind the
+  playback-end floor); if the freshest speech hasn't cleared the voiced bar
+  yet, everything stale is dropped and live VAD takes the floor. Watch is
+  disarmed on interrupt-flush, sleep, start/stop; a `stream.flush()` mid-span
+  degrades to "recovers less", never to wrong audio (time-mapping anchors on
+  the returned array length). Kill switches: `GAP_SPEECH_RECOVERY_ENABLED`
+  (master), `GAP_MERGE_ENABLED`, `GAP_CATCHUP_ENABLED`; knobs `GAP_SPEECH_*`
+  / `GAP_MERGE_*` / `GAP_CATCHUP_*`. Telemetry: `[gap_speech]` lines +
+  `gap_merge_*` / `gap_catchup_*` in the `[capture]` session summary. Tests:
+  `tests/test_gap_speech.py` (48).
 
 ## Likely Future Work
 

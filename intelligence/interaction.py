@@ -476,6 +476,24 @@ _barge_yield_onset_at: float = 0.0
 # preserves the pre-interrupt floor for the segment being captured. 0 = inactive.
 _game_barge_floor_at: float = 0.0
 
+# ── Thinking-gap speech recovery state (see GAP_SPEECH_* in config) ───────────
+# Monotonic time the current/most recent mic turn's capture ENDED — i.e. the
+# start of the span the blocked loop goes blind for (LLM generation + playback).
+# Armed right before _handle_speech_segment on the mic paths; 0 = disarmed.
+# Advanced by a phase-1 merge (its capture consumed the buffer through then) and
+# consumed one-shot by the phase-2 catch-up scan when the loop resumes. Never
+# armed for GUI/text turns (no mic audio to recover).
+_gap_watch_started_at: float = 0.0
+# First speech-queue playback start after arming (stamped by _note_rex_spoke_item
+# on the queue worker; single float store, GIL-atomic). Bounds the CLEAN
+# pre-playback thinking gap on no-AEC machines. 0 = nothing played yet.
+_gap_first_audio_at: float = 0.0
+# One-shot capture-floor override for a catch-up utterance still in progress when
+# the phase-2 scan runs: its onset sits BEHIND the playback-end capture floor
+# (in the thinking gap or, with hardware AEC, under playback), so the normal
+# floor would clip its front exactly like the game-barge case above. 0 = inactive.
+_gap_recovery_floor_at: float = 0.0
+
 # When True, a post-TTS cleanup flush already happened and the next detected
 # speech onset should simply clear this marker. Question handoffs usually leave
 # this False so a fast human answer is not deleted.
@@ -3198,6 +3216,12 @@ def _note_rex_spoke(text: Optional[str]) -> None:
 
 
 def _note_rex_spoke_item(item=None) -> None:
+    # First audio of the turn bounds the CLEAN thinking gap for the gap-speech
+    # recovery scans (see _gap_watch_started_at). Stamped for every queue item —
+    # speech or clip — because any playback poisons a no-AEC buffer span.
+    global _gap_first_audio_at
+    if _gap_watch_started_at > 0.0 and _gap_first_audio_at <= 0.0:
+        _gap_first_audio_at = time.monotonic()
     _note_rex_spoke(getattr(item, "text", None))
 
 
@@ -3920,6 +3944,7 @@ def _clear_listening_state_for_sleep() -> None:
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
     _post_question_retro_scan_at = 0.0
+    _disarm_gap_watch()
 
 
 def _run_sleep_animation() -> None:
@@ -14050,6 +14075,11 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
         # clip are hardware-AEC'd clean; anchor on the pre-interrupt floor so
         # they stay in the capture (see _game_barge_floor_at).
         floor_at = _game_barge_floor_at
+    if 0.0 < _gap_recovery_floor_at < floor_at:
+        # A gap catch-up recovered an utterance whose onset predates the
+        # playback-end floor (thinking gap / under-playback with AEC) — reach
+        # the capture back to it (see _gap_recovery_floor_at).
+        floor_at = _gap_recovery_floor_at
     # FAST-REPLY WIDENING (field 2026-08-06 00:10, "I know, am I right?" heard as
     # "Am I right?"): when VAD fires shortly after the capture floor, the human
     # almost certainly started talking the moment Rex went quiet — but the software
@@ -14159,6 +14189,420 @@ def _maybe_recover_post_question_answer() -> Optional[float]:
         "window (span=%.2fs, voiced_frames=%d)", span_secs, voiced,
     )
     return scan_start
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thinking-gap speech recovery (GAP_SPEECH_* in config)
+#
+# From the turn's endpoint until well after the reply finishes, this loop is
+# blocked inside _handle_speech_segment and live VAD is dead — a second line
+# spoken there ("...oh, and one more thing") sits clean in the rolling buffer
+# and used to be erased when the post-TTS handoff stamped the capture floor.
+# Phase 1 (_reply_gap_speech_onset / _merge_gap_speech) catches it at the
+# moment the reply's first sentence exists — before any TTS — and regenerates
+# with both lines. Phase 2 (_maybe_catch_up_gap_speech) sweeps the whole blind
+# span when the loop resumes and dispatches what phase 1 couldn't see.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _GapSpeechDetected(Exception):
+    """Raised out of the streaming reply path — before any TTS is fetched or
+    queued — when the person spoke during the generation gap. Unwinds like
+    ToolCallRequested: the reply call site catches it, captures the second
+    line, and regenerates ONCE with both lines as the turn."""
+
+    def __init__(self, onset_at: float, armed_at: float) -> None:
+        super().__init__(f"user speech in reply gap (onset={onset_at:.2f})")
+        self.onset_at = float(onset_at)
+        self.armed_at = float(armed_at)
+
+
+def _gap_recovery_on(flag_name: str) -> bool:
+    if _text_only_mode or bool(getattr(config, "NO_AUDIO_MODE", False)):
+        return False
+    if not bool(getattr(config, "GAP_SPEECH_RECOVERY_ENABLED", True)):
+        return False
+    return bool(getattr(config, flag_name, True))
+
+
+def _arm_gap_watch() -> None:
+    """Mark 'the mic turn's capture ended here' — the start of the span the
+    blocked loop goes blind for. Called right before _handle_speech_segment on
+    the mic paths only (text turns have no buffer audio to recover)."""
+    global _gap_watch_started_at, _gap_first_audio_at
+    _gap_watch_started_at = time.monotonic()
+    _gap_first_audio_at = 0.0
+
+
+def _disarm_gap_watch() -> None:
+    global _gap_watch_started_at, _gap_first_audio_at, _gap_recovery_floor_at
+    _gap_watch_started_at = 0.0
+    _gap_first_audio_at = 0.0
+    _gap_recovery_floor_at = 0.0
+
+
+def _gap_span_audio(span_start: float, now: float) -> tuple[np.ndarray, float]:
+    """Rolling-buffer audio covering [span_start, now], plus the ACTUAL absolute
+    start time of the returned array. The buffer may hold less than asked (it
+    was flushed, or the span scrolled past 30s) — a flush can only REMOVE
+    audio, so time-mapping the shorter array stays correct and the scan simply
+    recovers less. Empty array when nothing is available."""
+    span_secs = now - span_start
+    if span_secs <= 0.0:
+        return np.zeros(0, dtype=np.float32), now
+    try:
+        audio = stream.get_audio_chunk(span_secs)
+    except Exception as exc:
+        _log.debug("[gap_speech] span read failed: %s", exc)
+        return np.zeros(0, dtype=np.float32), now
+    if audio is None or len(audio) == 0:
+        return np.zeros(0, dtype=np.float32), now
+    return audio, now - (len(audio) / float(config.AUDIO_SAMPLE_RATE))
+
+
+def _gap_voiced_runs(audio: np.ndarray, actual_start: float) -> list[tuple[float, float]]:
+    """One batched Silero pass over a buffered span → ABSOLUTE-time voiced runs,
+    with runs separated by sub-endpoint pauses joined into one utterance.
+    get_speech_segments resets the streaming VAD context itself, so live
+    detection restarts fresh afterwards (same hygiene as the retro scan)."""
+    if len(audio) == 0:
+        return []
+    try:
+        segs = vad.get_speech_segments(audio)
+    except Exception as exc:
+        _log.debug("[gap_speech] VAD span scan failed: %s", exc)
+        return []
+    join_gap = float(getattr(config, "GAP_SPEECH_JOIN_GAP_SECS", 1.2))
+    runs: list[tuple[float, float]] = []
+    for rel_start, rel_end in segs:
+        start_abs = actual_start + float(rel_start)
+        end_abs = actual_start + float(rel_end)
+        if runs and (start_abs - runs[-1][1]) <= join_gap:
+            runs[-1] = (runs[-1][0], end_abs)
+        else:
+            runs.append((start_abs, end_abs))
+    return runs
+
+
+def _reply_gap_speech_onset() -> Optional[float]:
+    """Phase-1 check, run once per streamed reply at the moment the first
+    sentence exists (nothing spoken or fetched yet): did the person keep
+    talking during the generation gap? Returns the absolute speech onset, or
+    None. Conservative by design — a false positive abandons a drafted reply
+    and regenerates (~2-4s of real latency), so anything untrustworthy returns
+    None and the phase-2 catch-up is the backstop."""
+    armed = _gap_watch_started_at
+    if armed <= 0.0 or not _gap_recovery_on("GAP_MERGE_ENABLED"):
+        return None
+    now = time.monotonic()
+    span = now - armed
+    min_span = float(getattr(config, "GAP_MERGE_MIN_SPAN_SECS", 0.40))
+    if span < min_span or span > float(getattr(config, "GAP_MERGE_MAX_SPAN_SECS", 12.0)):
+        return None
+    # Playback poisons the span on a no-AEC machine and smears it everywhere
+    # else. The reply's own audio hasn't been queued yet, but acks/effects can
+    # land here: if audio is sounding right now, skip entirely; if something
+    # finished inside the span, trust only what came after it (+echo decay).
+    scan_start = armed
+    try:
+        if echo_cancel.is_suppressed() or output_gate.is_busy():
+            return None
+        ended = float(echo_cancel.last_playback_ended_at() or 0.0)
+        if ended > scan_start:
+            scan_start = ended + float(
+                getattr(config, "GAP_SPEECH_POST_PLAYBACK_SKIP_SECS", 0.25)
+            )
+    except Exception:
+        return None
+    if (now - scan_start) < min_span:
+        return None
+    audio, actual_start = _gap_span_audio(scan_start, now)
+    runs = _gap_voiced_runs(audio, actual_start)
+    voiced = sum(end - start for start, end in runs)
+    if voiced < float(getattr(config, "GAP_SPEECH_MIN_VOICED_SECS", 0.35)):
+        return None
+    onset = runs[0][0]
+    _log.info(
+        "[gap_speech] user spoke during the reply gap (%.2fs voiced, onset %.2fs "
+        "into a %.2fs gap) — yielding the drafted reply to merge",
+        voiced, onset - armed, span,
+    )
+    return onset
+
+
+def _merge_gap_speech(onset_at: float, armed_at: float) -> Optional[str]:
+    """Capture + transcribe the second line found by _reply_gap_speech_onset,
+    waiting out the person like a normal turn (they may still be talking) so
+    the regenerated reply answers their COMPLETE thought. Returns the cleaned
+    transcript, or None when the audio turned out unusable — the caller then
+    regenerates the original reply unchanged, so a false positive costs
+    latency, never silence."""
+    global _listen_capture_floor_at
+    # The previous capture consumed the buffer through the watermark — never
+    # let merge preroll reach back past it and re-swallow the line-1 tail.
+    if armed_at > _listen_capture_floor_at:
+        _listen_capture_floor_at = armed_at
+    try:
+        vad.reset_state()
+    except Exception:
+        pass
+    audio_seg = _accumulate_speech(onset_at)
+    # Whatever happens next, the buffer through now has been examined; the
+    # phase-2 scan after the (regenerated) reply covers only fresh audio.
+    _arm_gap_watch()
+    if audio_seg is None or len(audio_seg) == 0:
+        _capture_dropped("gap_merge_capture_empty")
+        return None
+    try:
+        line2 = str(transcription.transcribe(audio_seg) or "").strip()
+    except Exception as exc:
+        _log.warning("[gap_speech] merge transcription failed: %s", exc)
+        _capture_dropped("gap_merge_transcribe_failed")
+        return None
+    if not line2:
+        _capture_dropped("gap_merge_transcript_empty")
+        return None
+    if _is_non_speech_vocalization(line2):
+        _capture_dropped("gap_merge_non_speech", text=repr(line2))
+        return None
+    if _looks_like_own_echo(line2):
+        _capture_dropped("gap_merge_own_echo", text=repr(line2))
+        return None
+    _capture_outcome("gap_merge_captured")
+    _log.info("[gap_speech] merged gap line into the turn: %r", line2)
+    return line2
+
+
+def _gap_span_median_rms(
+    audio: np.ndarray, actual_start: float, b_start: float, b_end: float
+) -> float:
+    """Median 100ms-frame RMS across the playback span — the residual+room
+    floor a genuine near-field interjection must acoustically dominate."""
+    sr = float(config.AUDIO_SAMPLE_RATE)
+    i0 = max(0, int((b_start - actual_start) * sr))
+    i1 = min(len(audio), int((b_end - actual_start) * sr))
+    frame = max(1, int(0.1 * sr))
+    seg = audio[i0:i1]
+    n = (len(seg) // frame) * frame
+    if n < frame:
+        return 0.0
+    frames = seg[:n].reshape(-1, frame)
+    rms = np.sqrt(np.mean(np.square(frames), axis=1))
+    return float(np.median(rms))
+
+
+def _gap_catchup_candidates(
+    runs: list[tuple[float, float]],
+    *,
+    armed: float,
+    now: float,
+    played: bool,
+    aec_on: bool,
+    b_start: float,
+    b_end: float,
+    audio: np.ndarray,
+    actual_start: float,
+) -> list[tuple[float, float, float]]:
+    """Filter a blind span's voiced runs down to plausible HUMAN utterances.
+
+    Clean regions (pre-playback thinking gap, post-reply seam) need only the
+    base voiced minimum. Runs touching the playback span are dropped outright
+    without hardware AEC (the buffer holds Rex at full volume there — a clean
+    pre-playback head is kept when substantial), and with AEC must clear the
+    anti-residual bars: minimum duration, RMS dominance over the span's median
+    level, and a not-continuously-voiced playback span (that shape IS Rex's own
+    reply). Returns (onset, end, slice_cap) triples, clamped to usable audio."""
+    min_voiced = float(getattr(config, "GAP_SPEECH_MIN_VOICED_SECS", 0.35))
+    post_skip = float(getattr(config, "GAP_SPEECH_POST_PLAYBACK_SKIP_SECS", 0.25))
+    sr = float(config.AUDIO_SAMPLE_RATE)
+    # Each candidate carries a SLICE CAP: the latest absolute time its capture
+    # may extend to. On a no-AEC machine a pre-playback utterance must not have
+    # its trailing pad reach into Rex-at-full-volume (one leaked syllable can
+    # seed the transcript), so its cap stops at the playback edge.
+    out: list[tuple[float, float, float]] = []
+    if not played:
+        return [(s, e, now) for s, e in runs if (e - s) >= min_voiced]
+
+    b_dur = max(0.0, b_end - b_start)
+    b_frac = 0.0
+    if b_dur > 0.0:
+        b_voiced = sum(max(0.0, min(e, b_end) - max(s, b_start)) for s, e in runs)
+        b_frac = b_voiced / b_dur
+    b_floor_rms = _gap_span_median_rms(audio, actual_start, b_start, b_end) if aec_on else 0.0
+
+    for s, e in runs:
+        overlap = max(0.0, min(e, b_end) - max(s, b_start))
+        if overlap <= 0.0:
+            if s >= b_end:
+                # Post-reply seam — trim Rex's decaying room echo at its start.
+                s = max(s, b_end + post_skip)
+                if (e - s) >= min_voiced:
+                    out.append((s, e, now))
+            else:
+                # Pre-playback thinking gap — clean on every machine, but the
+                # slice must not pad past the playback edge without AEC.
+                if (e - s) >= min_voiced:
+                    out.append((s, e, now if aec_on else max(s, b_start - 0.05)))
+            continue
+        if not aec_on:
+            # Only a clean pre-playback head is usable; the rest is Rex at
+            # full volume in the raw buffer.
+            head_end = b_start - 0.05
+            if (head_end - s) >= min_voiced:
+                out.append((s, head_end, head_end))
+            continue
+        # Hardware AEC: the run overlaps Rex's own playback — residual bars.
+        if b_frac > float(getattr(config, "GAP_CATCHUP_PLAYBACK_MAX_VOICED_FRACTION", 0.8)):
+            continue
+        if (e - s) < float(getattr(config, "GAP_CATCHUP_PLAYBACK_MIN_SPEECH_SECS", 1.0)):
+            continue
+        if b_floor_rms > 0.0:
+            i0 = max(0, int((s - actual_start) * sr))
+            i1 = min(len(audio), int((e - actual_start) * sr))
+            seg = audio[i0:i1]
+            if len(seg) == 0:
+                continue
+            seg_rms = float(np.sqrt(np.mean(np.square(seg))))
+            ratio = float(getattr(config, "GAP_CATCHUP_PLAYBACK_RMS_RATIO", 1.8))
+            if seg_rms < ratio * b_floor_rms:
+                continue
+        out.append((s, e, now))
+    return out
+
+
+def _maybe_catch_up_gap_speech() -> Optional[tuple[str, Optional[float]]]:
+    """Phase-2 one-shot catch-up when the loop resumes listening after a turn.
+
+    Scans the span the loop was blind for (endpoint → now). A FINISHED missed
+    utterance is sliced out of the buffer and dispatched through the normal
+    turn pipeline — speaker ID, own-echo rejection, non-speech and trust guards
+    all apply — so Rex addresses it immediately instead of the person repeating
+    themselves; returns ("handled", None) and the caller continues its loop.
+    Speech still in progress is handed to the live path as a recovered onset
+    instead (("live", onset)) so there is exactly one capture. None = nothing
+    to recover. The watch is consumed whatever the outcome."""
+    global _gap_recovery_floor_at, _gap_watch_started_at, _last_speech_at
+    armed = _gap_watch_started_at
+    if armed <= 0.0:
+        return None
+    first_audio = _gap_first_audio_at
+    _disarm_gap_watch()
+    if not _gap_recovery_on("GAP_CATCHUP_ENABLED"):
+        return None
+    now = time.monotonic()
+    if (now - armed) > float(getattr(config, "GAP_CATCHUP_MAX_SPAN_SECS", 25.0)):
+        return None
+    try:
+        aec_on = hardware_aec.is_active()
+    except Exception:
+        aec_on = False
+    play_end = 0.0
+    try:
+        play_end = float(echo_cancel.last_playback_ended_at() or 0.0)
+    except Exception:
+        play_end = 0.0
+    audio, actual_start = _gap_span_audio(armed, now)
+    if len(audio) == 0:
+        return None
+    runs = _gap_voiced_runs(audio, actual_start)
+    if not runs:
+        return None
+
+    # Playback geometry of the blind span. first_audio (queue-item start) opens
+    # the playback region; a stamped real end closes it, else assume it runs to
+    # now. Playback with no queue stamp (a direct effect) collapses the clean
+    # gap conservatively — better to recover nothing than transcribe Rex.
+    played = (first_audio > 0.0) or (play_end > armed)
+    if played:
+        b_start = first_audio if first_audio > 0.0 else armed
+        b_end = play_end if play_end >= b_start else now
+    else:
+        b_start = b_end = 0.0
+
+    candidates = _gap_catchup_candidates(
+        runs,
+        armed=armed,
+        now=now,
+        played=played,
+        aec_on=aec_on,
+        b_start=b_start,
+        b_end=b_end,
+        audio=audio,
+        actual_start=actual_start,
+    )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0])
+    pad = float(getattr(config, "GAP_SPEECH_SLICE_PAD_SECS", 0.25))
+
+    # Someone is talking RIGHT NOW — the last RAW voiced run reaches the span
+    # end (raw, not candidate: a fresh line 0.2s in hasn't cleared the voiced
+    # minimum yet, but it still owns the floor).
+    if runs and (now - runs[-1][1]) <= 0.5:
+        onset_last, end_last, _cap_last = candidates[-1]
+        if abs(end_last - runs[-1][1]) <= 1e-6:
+            # The in-progress speech IS a valid candidate: hand the live loop
+            # its onset so the normal accumulate/endpoint path captures it
+            # once, reaching back behind the playback-end capture floor.
+            if len(candidates) > 1:
+                _capture_dropped(
+                    "gap_catchup_superseded", dropped=len(candidates) - 1,
+                    why="person talking again — freshest utterance wins",
+                )
+            _gap_recovery_floor_at = max(armed, onset_last - pad)
+            _capture_outcome("gap_catchup_live_onset")
+            _log.info(
+                "[gap_speech] catch-up: speech in progress from the blind span "
+                "(onset %.2fs ago) — handing to live capture", now - onset_last,
+            )
+            return ("live", onset_last)
+        # Fresh speech that isn't (yet) a candidate: let this tick's live VAD
+        # take it as a normal turn rather than replying over the person.
+        _capture_dropped(
+            "gap_catchup_superseded", dropped=len(candidates),
+            why="person talking again — freshest utterance wins",
+        )
+        return None
+
+    # Finished utterance(s): dispatch the EARLIEST (it went unheard longest);
+    # anything later is logged, and fresh speech re-enters normally.
+    onset, seg_end, slice_cap = candidates[0]
+    if len(candidates) > 1:
+        _capture_dropped(
+            "gap_catchup_extra_cluster", dropped=len(candidates) - 1,
+        )
+    slice_start = max(actual_start, armed, onset - pad)
+    slice_end = min(now, slice_cap, seg_end + pad)
+    sr = float(config.AUDIO_SAMPLE_RATE)
+    i0 = max(0, int((slice_start - actual_start) * sr))
+    i1 = min(len(audio), int((slice_end - actual_start) * sr))
+    slice_audio = audio[i0:i1]
+    if len(slice_audio) < int(0.30 * sr):
+        return None
+    _capture_outcome("gap_catchup_captured")
+    _log.info(
+        "[gap_speech] catch-up: recovered a %.2fs utterance the loop was blind "
+        "for (spoken %.1fs ago, %s playback) — dispatching as a turn",
+        slice_end - slice_start, now - onset,
+        "under" if (played and onset >= b_start and onset < b_end) else "outside",
+    )
+    # Cover only FRESH audio from here (not the already-classified remainder of
+    # this span — re-scanning it after the dispatched turn's reply would
+    # misclassify the old playback region as a clean gap).
+    _gap_watch_started_at = now
+    _last_speech_at = time.monotonic()
+    _begin_user_turn()
+    try:
+        _handle_speech_segment(slice_audio)
+    except Exception:
+        # Same containment as the live path: a handler bug costs one turn,
+        # never the listening loop.
+        _log.exception(
+            "[gap_speech] catch-up turn handler crashed — dropping this turn, "
+            "listening loop continues"
+        )
+    finally:
+        _end_user_turn()
+    return ("handled", None)
 
 
 # Eager-endpoint handoff: the transcript decoded by a successful motion probe,
@@ -15251,6 +15695,7 @@ def _stream_llm_response(
     person_id: Optional[int],
     answered_question: Optional[dict] = None,
     turn_start: Optional[float] = None,
+    gap_check_enabled: bool = False,
 ) -> str:
     """Collect the full LLM response, then speak it in a single TTS call.
 
@@ -15479,6 +15924,7 @@ def _stream_llm_response(
                     # generation while chunk 1 plays.
                     two_chunk=not _full_streaming,
                     lean_turn_directive=lean_callback_directive,
+                    gap_check_enabled=gap_check_enabled,
                 )
             except _tr.ToolCallRequested as tc:
                 spoken = _execute_tool_routed_action(tc.action, tc.tool_args, text, person_id)
@@ -15897,6 +16343,7 @@ def _stream_and_speak_sentences(
     filler_stop: threading.Event,
     two_chunk: bool = False,
     lean_turn_directive: str = "",
+    gap_check_enabled: bool = False,
 ) -> str:
     """Stream the LLM reply and speak it sentence-by-sentence.
 
@@ -15981,6 +16428,16 @@ def _stream_and_speak_sentences(
         thread.start()
 
     def _consume(raw_sentence: str) -> None:
+        # Thinking-gap check — the last moment before this reply becomes real
+        # (nothing spoken, no TTS fetched). If the person kept talking during
+        # the generation gap, abandon the draft and let the call site merge
+        # their line and regenerate (see _GapSpeechDetected). One batched VAD
+        # pass over the gap span (~tens of ms) is the only cost on the TTFS
+        # path when nobody spoke.
+        if state["first"] and gap_check_enabled:
+            gap_onset = _reply_gap_speech_onset()
+            if gap_onset is not None:
+                raise _GapSpeechDetected(gap_onset, _gap_watch_started_at)
         prepared = _prepare_stream_sentence(raw_sentence, frame, comedy_mode)
         if not prepared:
             return
@@ -16143,9 +16600,12 @@ def _stream_and_speak_sentences(
         # Tool-router cutover: the model chose a LIVE tool instead of prose.
         # Nothing has been spoken (the stream raises only when no content was
         # yielded) — unwind to _stream_llm_response, which dispatches the
-        # action's existing executor.
+        # action's existing executor. _GapSpeechDetected unwinds the same way
+        # (the person spoke during the generation gap; the call site merges
+        # their line and regenerates) — swallowing it here would let the
+        # partial-text fallback below speak the abandoned draft.
         from intelligence import tool_router as _tr
-        if isinstance(exc, _tr.ToolCallRequested):
+        if isinstance(exc, (_tr.ToolCallRequested, _GapSpeechDetected)):
             filler_stop.set()
             raise
         _log.error("[interaction] streaming LLM error: %s", exc)
@@ -29676,12 +30136,48 @@ def _handle_speech_segment(
                         text=text,
                         dialogue_decision=dialogue_decision,
                     )
-                    response_text = _stream_llm_response(
-                        text,
-                        person_id,
-                        answered_question=answered_question,
-                        turn_start=turn_start,
+                    # Thinking-gap merge (phase 1): the reply path checks the
+                    # mic buffer right before its first sentence becomes audible
+                    # and unwinds here if the person kept talking. Their line is
+                    # captured, logged as its own human turn, and the reply is
+                    # regenerated ONCE seeing both lines (the lean transcript
+                    # carries line 1; the merged `text` feeds memory/audit).
+                    # A dry merge (false trigger / unusable audio) regenerates
+                    # the original unchanged — latency, never silence.
+                    llm_turn_text = text
+                    gap_check = (
+                        not text_input
+                        and _gap_watch_started_at > 0.0
+                        and _gap_recovery_on("GAP_MERGE_ENABLED")
                     )
+                    for _gap_attempt in range(2):
+                        try:
+                            response_text = _stream_llm_response(
+                                llm_turn_text,
+                                person_id,
+                                answered_question=answered_question,
+                                turn_start=turn_start,
+                                gap_check_enabled=gap_check and _gap_attempt == 0,
+                            )
+                            break
+                        except _GapSpeechDetected as gap:
+                            line2 = _merge_gap_speech(gap.onset_at, gap.armed_at)
+                            if line2:
+                                merge_label = person_name or "user"
+                                try:
+                                    conv_memory.add_to_transcript(merge_label, line2)
+                                    conv_log.log_heard(person_name, line2)
+                                    print(f"[HEARD] {merge_label}: {line2}", flush=True)
+                                except Exception as exc:
+                                    _log.debug("[gap_speech] merge logging failed: %s", exc)
+                                try:
+                                    _note_user_speech_for_engagement()
+                                except Exception:
+                                    pass
+                                text = f"{text} {line2}"
+                                # The lean brain reads line 1 from the session
+                                # transcript; the merged line is the current turn.
+                                llm_turn_text = line2
                     used_agenda_llm = True
                     final_executed_path = _consume_tool_routed_path() or "llm.stream"
 
@@ -29936,7 +30432,7 @@ def submit_text(
 
 def _loop() -> None:
     global _last_speech_at, _listen_resume_at, _post_tts_flush_needed, _barge_yield_onset_at
-    global _game_barge_floor_at
+    global _game_barge_floor_at, _gap_recovery_floor_at
 
     idle_timeout = config.CONVERSATION_IDLE_TIMEOUT_SECS
     _last_speech_at = time.monotonic()
@@ -30119,6 +30615,9 @@ def _loop() -> None:
                     continue
 
                 _last_speech_at = time.monotonic()
+                # Same gap-speech arming as the ACTIVE path — an idle-activated
+                # turn's reply blinds the loop identically.
+                _arm_gap_watch()
                 try:
                     _handle_speech_segment(
                         audio_segment, from_idle_activation=True,
@@ -30282,6 +30781,21 @@ def _loop() -> None:
         # dead window before this first live read is in the buffer but would
         # never trigger live VAD — look back for it before polling live chunks.
         retro_speech_start = _maybe_recover_post_question_answer()
+        if retro_speech_start is not None:
+            # The post-question scan claimed the seam; the gap catch-up must not
+            # re-find the same words after that turn completes.
+            _disarm_gap_watch()
+        else:
+            # Thinking-gap catch-up (phase 2): sweep the span this loop was
+            # blind for (generation + playback) for a line the person spoke
+            # that phase 1 couldn't see. A finished utterance was dispatched
+            # as a full turn inside the call; one still in progress becomes a
+            # recovered onset for the normal capture below.
+            gap_catch = _maybe_catch_up_gap_speech()
+            if gap_catch is not None:
+                if gap_catch[0] == "handled":
+                    continue
+                retro_speech_start = gap_catch[1]
 
         if retro_speech_start is None:
             # Read a small audio chunk and run VAD
@@ -30405,6 +30919,8 @@ def _loop() -> None:
                 stream.flush()
                 _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
                 _post_tts_flush_needed = True
+                # The flush emptied the span the gap watch pointed at.
+                _disarm_gap_watch()
                 _end_user_turn()
                 continue
 
@@ -30429,6 +30945,10 @@ def _loop() -> None:
 
             _capture_outcome("captured")
             _last_speech_at = time.monotonic()
+            # This capture consumed the buffer through now; the handler blocks
+            # the loop from here on, so everything after this instant is the
+            # gap-speech recovery's territory (see _gap_watch_started_at).
+            _arm_gap_watch()
             try:
                 _handle_speech_segment(audio_segment, eager_transcript=eager_text)
             except Exception:
@@ -30445,6 +30965,7 @@ def _loop() -> None:
                 )
         finally:
             _game_barge_floor_at = 0.0    # one-shot — never outlive its segment
+            _gap_recovery_floor_at = 0.0  # one-shot — never outlive its segment
             _restore_dj_volume(_dj_restore_volume)
             _end_user_turn()
 
@@ -30488,6 +31009,7 @@ def start(*, text_only: bool = False) -> None:
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
     _post_question_retro_scan_at = 0.0
+    _disarm_gap_watch()
     _awaiting_followup_event = None
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
@@ -30596,6 +31118,7 @@ def stop() -> None:
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
     _post_question_retro_scan_at = 0.0
+    _disarm_gap_watch()
     _session_person_turn_counts.clear()
     _session_warmth_signals.clear()
     _recently_banned_topics.clear()

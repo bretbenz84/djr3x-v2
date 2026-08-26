@@ -5153,6 +5153,73 @@ POST_QUESTION_RETRO_SCAN_WINDOW_SECS = 2.5   # scan only if the loop resumed wit
 POST_QUESTION_RETRO_SCAN_SKIP_SECS = 0.15    # exclude Rex's decaying room echo at the span start
 POST_QUESTION_RETRO_SCAN_MIN_VOICED_FRAMES = 3  # ~96ms of voiced audio required to count as speech
 
+# ── Thinking-gap speech recovery ───────────────────────────────────────────────
+# After a turn's endpoint fires, the interaction loop is BLOCKED inside the
+# handler (transcribe → identity → route → LLM stream → full playback), so live
+# VAD is dead from the person's last word until well after Rex's reply ends. A
+# second line spoken in that window ("...oh, and one more thing") lands in the
+# 30s rolling buffer, clean, and was then made permanently unreachable when the
+# post-TTS handoff stamped the capture floor at playback end. Two recoveries:
+#
+# GAP MERGE (phase 1): at the moment the reply's FIRST sentence exists — before
+# any TTS is fetched or queued — scan the buffered span since the turn's capture
+# ended. If the person spoke, abandon the drafted reply, wait out their line
+# like a normal turn, transcribe it, and regenerate ONCE with both lines as the
+# turn. Perceived latency is fine: the person's clock restarts when THEY stop
+# talking, and a robot that waits because you kept talking reads as listening.
+# Cost only when triggered (one extra lean call; the abandoned reply never
+# reached ElevenLabs). The scan itself is one batched Silero pass over ~2-5s of
+# audio (~tens of ms) — the only cost paid on every streamed reply.
+#
+# GAP CATCH-UP (phase 2): when the loop resumes listening after the reply, run a
+# ONE-SHOT scan over the whole span it was blind for. The pre-playback thinking
+# gap is clean audio on every machine; the during-playback span is scannable
+# ONLY with hardware AEC (dev Macs hold Rex at full volume there — physics, not
+# a knob). A finished utterance found there is sliced out of the buffer and
+# dispatched through the NORMAL turn pipeline (speaker ID, own-echo rejection,
+# non-speech guards, routing all apply), so Rex addresses the missed line right
+# after his reply instead of the person repeating themselves. Speech still in
+# progress at scan time is handed to the live loop as a recovered onset instead
+# (single capture, no double-dispatch).
+GAP_SPEECH_RECOVERY_ENABLED = _env_bool("GAP_SPEECH_RECOVERY_ENABLED", True)
+GAP_MERGE_ENABLED = True             # phase 1: pre-voice merge + regenerate
+GAP_CATCHUP_ENABLED = True           # phase 2: post-reply catch-up scan
+# Minimum total voiced audio in a scanned span to count as the person speaking.
+# Below this, breaths / chair creaks / TV blips stay ignored. A phase-1 false
+# positive is the expensive miss (it abandons a drafted reply and regenerates,
+# ~2-4s), so this errs conservative rather than hair-trigger.
+GAP_SPEECH_MIN_VOICED_SECS = 0.35
+# Phase-1 scan sanity bounds. A span shorter than the min can't hold a real
+# second line; longer than the max means something unusual held the reply path
+# (web search, wedged API) and the buffer story is too stale to trust — skip the
+# check and let phase 2 sort it out.
+GAP_MERGE_MIN_SPAN_SECS = 0.40
+GAP_MERGE_MAX_SPAN_SECS = 12.0
+# Phase-2 scan span cap — must stay under AUDIO_BUFFER_SECONDS (30) or the span
+# start has already scrolled out of the rolling buffer.
+GAP_CATCHUP_MAX_SPAN_SECS = 25.0
+# Voiced runs separated by less than this are ONE utterance (a breath pause, not
+# two statements). Matches the endpointing scale (SILENCE_TIMEOUT_SECS + slop).
+GAP_SPEECH_JOIN_GAP_SECS = 1.2
+# Padding added around a sliced catch-up utterance so soft onsets/tails survive.
+GAP_SPEECH_SLICE_PAD_SECS = 0.25
+# After ANY playback ended inside a scan span (ack chirp, sound effect), exclude
+# this much extra for room-echo decay before trusting VAD hits (no-AEC machines
+# additionally exclude the playback span itself — see the phase helpers).
+GAP_SPEECH_POST_PLAYBACK_SKIP_SECS = 0.25
+# During-playback (hardware AEC only) catch-up bars. Rex's own −17 dB residual
+# can cross the VAD and even transcribe verbatim (field 2026-07-23), so a hit
+# under playback must look like a HUMAN interjection, not Rex's continuous line:
+# each candidate must be ≥ the min duration (filters "uh-huh" backchannels — a
+# human DJ wouldn't stop the show for those either), must acoustically DOMINATE
+# the span (RMS ratio vs the span's median level, i.e. the residual+room floor),
+# and the playback span must not be near-continuously voiced (that shape IS
+# Rex's own reply; nothing separable to recover). Transcript-level own-echo
+# rejection in the turn pipeline remains the final gate.
+GAP_CATCHUP_PLAYBACK_MIN_SPEECH_SECS = 1.0
+GAP_CATCHUP_PLAYBACK_RMS_RATIO = 1.8
+GAP_CATCHUP_PLAYBACK_MAX_VOICED_FRACTION = 0.8
+
 # ── Hardware-AEC boundary overrides (ReSpeaker Lite only) ──────────────────────
 # These apply ONLY when audio/hardware_aec.is_active() is True — i.e. the ReSpeaker
 # Lite is the live mic AND speaker, so its XU316 already cancels Rex's voice from
