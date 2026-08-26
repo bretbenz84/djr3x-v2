@@ -163,7 +163,9 @@ class VoiceSampleCaptureTest(unittest.TestCase):
     def setUp(self):
         I._pending_voice_sample_capture = None
         I._voice_sample_requested_pids.clear()
-        self._audio = np.zeros(32000, dtype=np.float32)
+        # VOICED audio (the min-length guard measures speech frames, not buffer).
+        t = np.arange(40000, dtype=np.float32) / 16000.0
+        self._audio = (0.1 * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32)
 
     def tearDown(self):
         I._pending_voice_sample_capture = None

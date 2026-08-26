@@ -9369,6 +9369,35 @@ def _audio_duration_secs(audio_array: Optional[np.ndarray]) -> float:
     return float(len(audio_array)) / rate
 
 
+def _voiced_duration_secs(audio_array: Optional[np.ndarray]) -> float:
+    """Seconds of actual SPEECH in the segment, not buffer length.
+
+    Capture segments carry pre-roll and padding, so a ~1.5s utterance can ride
+    in a 5s buffer — that is how "impersonate me" (5.18s of buffer) sailed past
+    the 4s minimum and became Bret's voice-clone ref (field 2026-08-26, owner
+    played the file back). Frames are counted voiced against an
+    amplitude-relative floor so room tone never counts."""
+    if not isinstance(audio_array, np.ndarray) or len(audio_array) <= 0:
+        return 0.0
+    try:
+        rate = float(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
+    except Exception:
+        rate = 16000.0
+    if rate <= 0:
+        return 0.0
+    frame = max(1, int(0.03 * rate))
+    usable = (len(audio_array) // frame) * frame
+    if usable <= 0:
+        return 0.0
+    frames = np.abs(audio_array[:usable].astype(np.float32)).reshape(-1, frame)
+    rms = np.sqrt(np.mean(frames * frames, axis=1))
+    peak = float(rms.max()) if rms.size else 0.0
+    if peak <= 0.0:
+        return 0.0
+    floor = max(0.004, 0.1 * peak)
+    return float(int((rms >= floor).sum()) * frame / rate)
+
+
 # A transcript made ENTIRELY of laughter tokens. Whisper/Qwen render a laugh as runs of
 # ha/he/ah plus the odd "lol"; anything with real words in it is a normal turn and must
 # not qualify (a laugh followed by speech is speech the embedder CAN score).
@@ -12102,6 +12131,113 @@ def _intro_capture_window_open() -> bool:
     return _intro_voice_capture_fresh(_pending_intro_voice_capture)
 
 
+# ── Passive voiceprint growth (owner spec 2026-08-26) ────────────────────────
+# "New people shouldn't have to sit and read lines to get a good voice ID. The
+# voice ID needs to build up naturally": when exactly one known face is on
+# camera, nobody else has been seen or heard for a while, and the turn's voice
+# matches nobody's prints well, that speech IS the visible person's — enroll it
+# silently. Also grows thin prints (PJ had 1 row while Bret had 5, and the thin
+# side loses every cross-match) until PASSIVE_VOICE_PRINT_TARGET rows exist.
+# The phantom-twin lessons (2026-07-05..08-23) stay encoded as guards: never
+# enroll speech that confidently matches a DIFFERENT person, never from short
+# clips, capped per session, spaced out, and every enrollment logs its numbers.
+
+_passive_enroll_last_at: dict[int, float] = {}
+_passive_enroll_session_counts: dict[int, int] = {}
+_recent_attributed_speaker_times: dict[int, float] = {}
+
+
+def _maybe_passive_voice_enroll(
+    text: str,
+    audio_array: Optional[np.ndarray],
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    speaker_score: float,
+) -> None:
+    """Silently grow the voiceprint of the solo visible person. Never speaks."""
+    now = time.monotonic()
+    pid = _safe_int(person_id)
+    if pid is not None:
+        _recent_attributed_speaker_times[pid] = now
+    if not bool(getattr(config, "PASSIVE_VOICE_ENROLL_ENABLED", True)):
+        return
+    if audio_array is None:
+        return
+    # A pending capture flow owns this audio — never double-consume it.
+    if _pending_voice_sample_capture is not None or _pending_impersonation_capture is not None:
+        return
+    if _voiced_duration_secs(audio_array) < float(getattr(config, "VOICE_SAMPLE_MIN_SECS", 2.0)):
+        return
+    if len((text or "").split()) < int(getattr(config, "VOICE_SAMPLE_MIN_WORDS", 4)):
+        return
+
+    solo_pid, solo_name = _single_visible_person_identity()
+    if solo_pid is None:
+        return
+    if _has_unknown_visible_person() or _other_known_visible_recently(solo_pid):
+        return
+    # Nobody else talking lately: an off-camera housemate is the classic way a
+    # wrong voice lands on the visible face (the whole Jeopardy table fails
+    # this check, which is the point — passive growth is a 1:1 behavior).
+    window = float(getattr(config, "PASSIVE_VOICE_ENROLL_SOLO_WINDOW_SECS", 90.0))
+    for other_pid, spoke_at in _recent_attributed_speaker_times.items():
+        if other_pid != solo_pid and (now - spoke_at) <= window:
+            return
+
+    try:
+        n_prints = int(speaker_id.comparable_print_count(solo_pid))
+    except Exception:
+        return
+    target = int(getattr(config, "PASSIVE_VOICE_PRINT_TARGET", 4))
+    if n_prints >= target:
+        return
+    if _passive_enroll_session_counts.get(solo_pid, 0) >= int(
+        getattr(config, "PASSIVE_VOICE_ENROLL_MAX_PER_SESSION", 3)
+    ):
+        return
+    spacing = float(getattr(config, "PASSIVE_VOICE_ENROLL_MIN_SPACING_SECS", 90.0))
+    if now - _passive_enroll_last_at.get(solo_pid, 0.0) < spacing:
+        return
+
+    score = float(speaker_score or 0.0)
+    rb = _safe_int(raw_best_id)
+    if rb is not None and rb != solo_pid:
+        # The voice points at SOMEONE ELSE. For a voiceless person a cross-match
+        # is expected (their speech can only land on a neighbor — the PJ/Bret
+        # twin band runs 0.55-0.80), so the face is trusted up to the confident
+        # bar. Once they have prints of their own, a foreign match this strong
+        # means an off-camera speaker — stand down at a lower bar.
+        bar = (
+            float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.75))
+            if n_prints == 0
+            else float(getattr(config, "PASSIVE_VOICE_ENROLL_LOW_BAR", 0.60))
+        )
+        if score >= bar:
+            return
+    elif rb == solo_pid and score >= float(
+        getattr(config, "PASSIVE_VOICE_ENROLL_REDUNDANT_BAR", 0.80)
+    ):
+        return    # already well-modeled; a near-duplicate row adds nothing
+
+    ok = _safe_enroll_voice(
+        solo_pid,
+        audio_array,
+        transcript_text=text,
+        source="passive",
+        confirmed=False,
+    )
+    if ok:
+        _passive_enroll_last_at[solo_pid] = now
+        _passive_enroll_session_counts[solo_pid] = (
+            _passive_enroll_session_counts.get(solo_pid, 0) + 1
+        )
+        _log.info(
+            "[passive_enroll] grew voiceprint for %s (person_id=%s): prints %d→%d "
+            "(turn scored best=%s at %.2f)",
+            solo_name or "?", solo_pid, n_prints, n_prints + 1, rb, score,
+        )
+
+
 def _maybe_request_voice_sample(person_id, name) -> None:
     """Arm a voice-sample ask for a KNOWN visible face with no voice print.
 
@@ -12186,10 +12322,11 @@ def _handle_voice_sample_capture(
     # A sample this short makes a print too weak to separate close voices —
     # field 2026-08-25: PJ enrolled from a ~1s "Hey Rex" and spent the whole
     # Jeopardy game being read as Bret. Re-ask for a full sentence instead;
-    # the capture window machinery already handles the retry.
+    # the capture window machinery already handles the retry. VOICED length,
+    # not buffer length — padded segments defeat a raw-duration check.
     min_secs = float(getattr(config, "VOICE_SAMPLE_MIN_SECS", 2.0))
     min_words = int(getattr(config, "VOICE_SAMPLE_MIN_WORDS", 4))
-    duration = _audio_duration_secs(audio_array)
+    duration = _voiced_duration_secs(audio_array)
     words = len((text or "").split())
     if duration < min_secs or words < min_words:
         ctx["asked_at"] = time.monotonic()
@@ -19101,6 +19238,7 @@ def _end_session(*, include_consolidation: bool = True) -> None:
         _close_onboarding("session reset")
         _recent_memory_candidates.clear()
         _clear_anonymous_speaker_slots()
+        _passive_enroll_session_counts.clear()
         _idle_outro_spoken = False
         _lean_memory_mused_this_session = False
         _lean_mood_shared_this_session = False
@@ -20198,6 +20336,25 @@ def _handle_router_impersonation(
         _speak_blocking(ask, emotion="curious", pre_beat_ms=100, log_text=False)
         return ask
 
+    # "Impersonate ME" rides the SPEAKER attribution, and a voice cross-match
+    # between close voices points it at the wrong person entirely — PJ asks,
+    # the voice guess says Bret, Bret's ref performs (owner report 2026-08-26).
+    # When exactly one known face is on camera and nobody unknown is visible,
+    # the face IS the "me": prefer it over the voice guess.
+    if impersonation.is_self_target(target):
+        face_pid, face_name = _single_visible_person_identity()
+        if (
+            face_pid is not None
+            and face_pid != _safe_int(person_id)
+            and not _has_unknown_visible_person()
+        ):
+            _log.info(
+                "[impersonation] 'me' retargeted to the visible face person_id=%s "
+                "(voice attribution said %s)",
+                face_pid, person_id,
+            )
+            person_id, person_name = face_pid, (face_name or person_name)
+
     resolution = impersonation.resolve_target(target, person_id, person_name)
 
     if resolution.kind == "refuse":
@@ -20297,6 +20454,15 @@ def _handle_impersonation_target_prompt(text: str) -> Optional[tuple[str, bool]]
     return (spoken, True)
 
 
+# The impersonation REQUEST showing up as the capture take — "impersonate me"
+# repeated while the slot was open became Bret's stored clone ref (field
+# 2026-08-26, owner played the file back).
+_IMPERSONATION_REQUEST_ECHO_RE = re.compile(
+    r"\b(?:impersonate|impersonation|impression|imitate|imitation|mimic)\b",
+    re.IGNORECASE,
+)
+
+
 def _handle_impersonation_capture(
     text: str,
     audio_array: Optional[np.ndarray],
@@ -20326,6 +20492,20 @@ def _handle_impersonation_capture(
         _pending_impersonation_capture = None
         return ("No worries — no impression today.", False)
 
+    # The REQUEST repeated is not the recitation. "Impersonate me" said again
+    # while the slot was open used to be captured as the clip itself — Bret's
+    # stored clone ref was literally the words "impersonate me" (field
+    # 2026-08-26: owner played the file back). Never a valid take.
+    if _IMPERSONATION_REQUEST_ECHO_RE.search(text or ""):
+        ctx["asked_at"] = time.monotonic()
+        first = _first_name_or(ctx.get("name"), "hey")
+        line = str(ctx.get("expected_text") or "the line I gave you")
+        return (
+            f"{first}, I need the line itself, not the request. "
+            f"Repeat after me: {line}",
+            False,
+        )
+
     # RECITATION MATCH: the turn's transcript closely matches the exact phrase Rex
     # asked the target to repeat. Whoever is speaking IS performing the capture —
     # identity attribution must not veto it (field 2026-07-23: the guest's reply was
@@ -20352,13 +20532,35 @@ def _handle_impersonation_capture(
         if expected_id is None and person_id is not None:
             return None
 
-    min_secs = float(getattr(config, "IMPERSONATION_CAPTURE_MIN_SECS", 4.0))
-    if audio_array is None or _audio_duration_secs(audio_array) < min_secs:
+    # VOICED length, not buffer length: capture segments ride in padded buffers,
+    # so a ~1.5s utterance can measure 5s (that is exactly how "impersonate me"
+    # passed the old 4s check).
+    min_secs = float(
+        getattr(
+            config,
+            "IMPERSONATION_CAPTURE_MIN_VOICED_SECS",
+            getattr(config, "IMPERSONATION_CAPTURE_MIN_SECS", 4.0),
+        )
+    )
+    if audio_array is None or _voiced_duration_secs(audio_array) < min_secs:
         ctx["asked_at"] = time.monotonic()
         first = _first_name_or(ctx.get("name"), "hey")
         return (
             f"{first}, that was a blink — give me one more full sentence so I have "
             "something to work with.",
+            False,
+        )
+
+    # The recitation IS the material (owner spec 2026-08-26): the right person
+    # saying something unrelated gets one nudge back to the line before an
+    # off-script take is accepted (ASR can mangle the rhyme — never loop).
+    if not recites and expected_norm and not ctx.get("recite_retry_done"):
+        ctx["recite_retry_done"] = True
+        ctx["asked_at"] = time.monotonic()
+        first = _first_name_or(ctx.get("name"), "hey")
+        return (
+            f"{first}, give me the line itself — repeat after me: "
+            f"{ctx.get('expected_text')}",
             False,
         )
 
@@ -26974,6 +27176,15 @@ def _handle_speech_segment(
                 _session_exchange_count += 1
                 _register_rex_utterance(relationship_response)
                 return
+
+        # Passive voiceprint growth: a pure side effect on every attributed turn
+        # (it also maintains the who-spoke-recently ledger its own guards use).
+        try:
+            _maybe_passive_voice_enroll(
+                text, audio_array, person_id, raw_best_id, speaker_score
+            )
+        except Exception as exc:
+            _log.debug("[passive_enroll] skipped: %s", exc)
 
         intro_voice_response = _handle_intro_voice_capture(
             text,

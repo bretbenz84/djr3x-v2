@@ -681,7 +681,10 @@ class CaptureConsumerTest(unittest.TestCase):
         self.itn._pending_impersonation_capture = None
 
     def _good_audio(self):
-        return np.zeros(int(16000 * 5), dtype=np.float32)   # 5s ≥ min
+        # VOICED audio, not just a long buffer: the capture guard now measures
+        # speech frames (padded silence is how "impersonate me" became a ref).
+        t = np.arange(int(16000 * 8), dtype=np.float32) / 16000.0
+        return (0.1 * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32)
 
     def test_no_slot_falls_through(self):
         self.assertIsNone(

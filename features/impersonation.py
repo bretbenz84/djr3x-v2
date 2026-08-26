@@ -132,6 +132,34 @@ def find_famous_ref(name: str) -> Optional[local_tts.VoiceRef]:
     )
 
 
+def _trim_silence(arr: np.ndarray, sr: int) -> np.ndarray:
+    """Strip sub-threshold head/tail from a capture before it becomes a ref.
+
+    Capture segments ride in padded buffers: seconds of room tone (and Rex's
+    own −17 dB AEC residual) bracket the take, and the cloner treats all of it
+    as "this is what the voice sounds like". Keeps a small margin each side;
+    returns the array unchanged when nothing voiced is found."""
+    if arr.size == 0:
+        return arr
+    frame = max(1, int(0.03 * sr))
+    usable = (arr.size // frame) * frame
+    if usable <= 0:
+        return arr
+    frames = np.abs(arr[:usable].astype(np.float32)).reshape(-1, frame)
+    rms = np.sqrt(np.mean(frames * frames, axis=1))
+    peak = float(rms.max()) if rms.size else 0.0
+    if peak <= 0.0:
+        return arr
+    floor = max(0.004, 0.1 * peak)
+    voiced = np.flatnonzero(rms >= floor)
+    if voiced.size == 0:
+        return arr
+    margin = int(0.15 * sr)
+    start = max(0, int(voiced[0]) * frame - margin)
+    end = min(arr.size, (int(voiced[-1]) + 1) * frame + margin)
+    return arr[start:end]
+
+
 def _pad_tail(arr: np.ndarray, sr: int) -> np.ndarray:
     """Ensure the clip ends with at least IMPERSONATION_CAPTURE_END_PAD_SECS of
     silence, so the clone isn't clipped on the final phoneme. Measures the trailing
@@ -176,6 +204,7 @@ def save_person_capture(
     try:
         import soundfile as sf
         arr = np.asarray(audio_array, dtype=np.float32).reshape(-1)
+        arr = _trim_silence(arr, sr)
         arr = _pad_tail(arr, sr)
         sf.write(str(wav_path), arr, sr, subtype="PCM_16")
         txt_path.write_text(ref_text, encoding="utf-8")
@@ -291,6 +320,11 @@ class Resolution:
 def _is_self(target: str) -> bool:
     t = (target or "").strip().lower()
     return t in _SELF_WORDS or t == ""
+
+
+def is_self_target(target: str) -> bool:
+    """Public wrapper: does this target mean the current speaker ("me")?"""
+    return _is_self(target)
 
 
 def resolve_target(

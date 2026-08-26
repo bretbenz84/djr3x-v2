@@ -2620,6 +2620,39 @@ surfaced five distinct failures; each is fixed at its own layer:
   (matcher → hedge-residual promote → LLM judge) used by the live board and
   Final. Stop-guard resume lines cover the new phases. Tests:
   `tests/test_jeopardy_rounds.py` (32).
+- **Passive voiceprint growth + impersonation-capture rework (owner spec
+  2026-08-26).** Forensics first: Bret's stored clone ref was LITERALLY the
+  words "impersonate me" (5.18s buffer, ~1.5s speech — the padded segment
+  defeated the 4s minimum, and a repeated request while the slot was open
+  became the take); PJ's "Mary" ref was verified PJ by the owner's ear yet
+  embeds 0.795 vs Bret (true acoustic twins through this mic chain — JT's ref
+  scores Bret only 0.371, so no systematic capture bias); a controlled clone
+  test (same sentence from JT/PJ/rex refs) proved the cloner tracks its ref —
+  three mutually distinct outputs (cosines 0.04-0.18) — but people-ref
+  fidelity is weak (~0.35-0.43 self-similarity): quality tracks the REF
+  (rex = 19.5s clean 44.1kHz studio; people = ~8s padded far-field 16kHz).
+  Changes: (1) `interaction._maybe_passive_voice_enroll` — no line-reading:
+  when exactly one known face is visible, nobody unknown, nobody else
+  seen/heard within `PASSIVE_VOICE_ENROLL_SOLO_WINDOW_SECS`, and the turn has
+  ≥2s VOICED audio / ≥4 words, the turn silently becomes a voiceprint for the
+  visible person — voiceless people enroll despite cross-matches up to the
+  0.75 confident bar (twin band is 0.55-0.80), thin prints grow to
+  `PASSIVE_VOICE_PRINT_TARGET` (4) while foreign <0.60 and self <0.80;
+  session cap 3, spacing 90s, logs `[passive_enroll]`. (2) Capture guards:
+  `_voiced_duration_secs` (speech frames, not buffer length) now backs BOTH
+  the voice-sample and impersonation minimums
+  (`IMPERSONATION_CAPTURE_MIN_VOICED_SECS` 6.0); a repeated impersonation
+  REQUEST is never a take; an off-script take from the right person gets one
+  nudge back to the line; `impersonation._trim_silence` strips pad/room-tone
+  before a ref is saved; capture lines lengthened to ~15s spoken. (3)
+  "Impersonate ME" retargets to the solo visible face when the voice guess
+  disagrees (PJ asked, attribution said Bret, Bret's ref performed). Cleanup
+  done in place: Bret's junk ref deleted (backups + forensic clone tests in
+  `assets/voices/backups/`), PJ's print rebuilt from the verified clip
+  (people.db person 7, 1 fresh ECAPA row). Remaining known gap: PJ↔Bret
+  genuinely overlap at the embedding level; depth (passive growth) is the
+  mitigation, pair-aware margins the possible next step. Tests:
+  `tests/test_passive_voice_enroll.py` (28).
 - **PJ's voiceprint AND impersonation ref were junk/contaminated.** His print
   enrolled from a ~1s "Hey Rex." (worthless under ECAPA short-turn behavior →
   the whole game heard PJ as "Bret Benziger" or unknown_voice_N), and his
