@@ -1398,5 +1398,58 @@ class GameStopIntentTest(unittest.TestCase):
                 self.assertNotEqual(match.command_key, "stop_game", text)
 
 
+class GameStopConfirmationGuardTest(unittest.TestCase):
+    """A stop attempt asks are-you-sure instead of executing; the guard helper
+    routes replies to games.resolve_stop_confirmation."""
+
+    def _stop_match(self):
+        return command_parser.CommandMatch("stop_game", "active_game_stop", {})
+
+    def test_stop_attempt_returns_the_question(self):
+        from features import games
+        with mock.patch.object(games, "resolve_stop_confirmation", return_value=None), \
+             mock.patch.object(games, "request_stop_confirmation",
+                               return_value="But we're having so much fun…") as req:
+            line = interaction._game_stop_confirmation_response(
+                "stop the game", 1, self._stop_match()
+            )
+        self.assertEqual(line, "But we're having so much fun…")
+        req.assert_called_once()
+
+    def test_affirmative_reply_returns_the_closing_line(self):
+        from features import games
+        with mock.patch.object(games, "resolve_stop_confirmation",
+                               return_value=("stop", "Final scores: …")):
+            line = interaction._game_stop_confirmation_response("yes", 1, None)
+        self.assertEqual(line, "Final scores: …")
+
+    def test_pass_resolution_falls_through(self):
+        from features import games
+        with mock.patch.object(games, "resolve_stop_confirmation",
+                               return_value=("pass", None)):
+            self.assertIsNone(
+                interaction._game_stop_confirmation_response("what is orbit", 1, None)
+            )
+
+    def test_kill_switch_restores_instant_stop(self):
+        import config as config_mod
+        from features import games
+        with mock.patch.object(config_mod, "GAME_STOP_CONFIRM_ENABLED", False,
+                               create=True), \
+             mock.patch.object(games, "request_stop_confirmation") as req:
+            line = interaction._game_stop_confirmation_response(
+                "stop the game", 1, self._stop_match()
+            )
+        self.assertIsNone(line)
+        req.assert_not_called()
+
+    def test_non_stop_turn_with_nothing_pending_is_untouched(self):
+        from features import games
+        with mock.patch.object(games, "resolve_stop_confirmation", return_value=None):
+            self.assertIsNone(
+                interaction._game_stop_confirmation_response("what is orbit", 1, None)
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

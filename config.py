@@ -8779,8 +8779,17 @@ JEOPARDY_ANSWER_TIMEOUT_SECS = 12.0
 JEOPARDY_AUDIO_OUTPUT_SAMPLE_RATE = 44100
 JEOPARDY_AUDIO_MUSIC_GAIN = 0.22
 JEOPARDY_AUDIO_STINGER_GAIN = 0.75
-JEOPARDY_THEME_MAX_SECS = 6.0
+# The thinking-theme bed under the answer window. The clip on disk is ~31s;
+# playback truncates it here. Matched to JEOPARDY_ANSWER_TIMEOUT_SECS (owner
+# note 2026-08-25: at 6s the music died halfway through the window) so the
+# music runs right up to the time's-up beeper; a player answering sooner
+# barges it out mid-note, which is the show's own rhythm.
+JEOPARDY_THEME_MAX_SECS = 12.0
 JEOPARDY_PLAY_THINKING_THEME = True
+# The Daily Double sting is queued AHEAD of the announcement + clue, and the
+# full clip runs 12.6s — a quarter-minute of nothing before anyone hears the
+# category. The opening bars carry the moment; cap it.
+JEOPARDY_DAILY_DOUBLE_MAX_SECS = 6.0
 # When the answer timer expires while a player is mid-utterance (or their
 # just-finished utterance is still transcribing), the timeout re-arms for this
 # grace instead of stealing the turn — the answer in the pipe grades normally
@@ -8833,6 +8842,15 @@ JEOPARDY_CATEGORIES_REMINDER_EVERY = 3
 # gets one LLM look with the real remaining board + scores in context, in the
 # selecting phase only; a live clue keeps strict deterministic grading.
 JEOPARDY_BOARD_QA_LLM_FALLBACK_ENABLED = True
+# Stop-confirmation guard (owner ask 2026-08-25): "stop playing" mid-game gets
+# "But we're having so much fun, are you sure you want to end the game?" and
+# only an affirmative reply (or repeating the stop demand) actually ends it. A
+# clear "no" resumes — in Jeopardy the live clue is re-read with a fresh clock
+# (the answer timer is frozen while the ask is pending). Any other reply drops
+# the ask and is handled as a normal game turn. Applies to the mid-game stop
+# lanes; "shut down" / sleep are never gated.
+GAME_STOP_CONFIRM_ENABLED = True
+GAME_STOP_CONFIRM_WINDOW_SECS = 45.0
 
 # I Spy: on the physical droid, Rex LOOKS AROUND the room (left → center → right,
 # a frame captured at each pose under a directed-gaze hold) before picking the

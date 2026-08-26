@@ -608,8 +608,13 @@ class _SpeechQueue:
                     except Exception as exc:
                         logger.debug("speech_queue: jeopardy resample skipped: %s", exc)
 
-                if path_obj.name == "jeopardy-theme.mp3":
-                    max_secs = float(getattr(config, "JEOPARDY_THEME_MAX_SECS", 0.0) or 0.0)
+                clip_caps = {
+                    "jeopardy-theme.mp3": "JEOPARDY_THEME_MAX_SECS",
+                    "jeopardy-daily-double.mp3": "JEOPARDY_DAILY_DOUBLE_MAX_SECS",
+                }
+                cap_key = clip_caps.get(path_obj.name)
+                if cap_key:
+                    max_secs = float(getattr(config, cap_key, 0.0) or 0.0)
                     if max_secs > 0:
                         audio = audio[: int(max_secs * samplerate)]
 

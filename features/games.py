@@ -2672,6 +2672,121 @@ def stop_game(person_id: Optional[int] = None) -> str:
     return response
 
 
+# ── Stop-confirmation guard (owner ask 2026-08-25) ───────────────────────────
+# "Stop playing" mid-game gets an are-you-sure before the board evaporates —
+# an ASR mishear or one grumpy player should not end everyone's game on the
+# spot. The pending ask lives in _game_state (dies with the game), is one-shot,
+# and expires after GAME_STOP_CONFIRM_WINDOW_SECS.
+
+_STOP_CONFIRM_QUESTION = (
+    "But we're having so much fun, are you sure you want to end the game?"
+)
+
+
+def _stop_confirm_verdict(text: str) -> str:
+    """'yes' / 'no' / 'other' for the reply to the are-you-sure ask.
+
+    Anything that is neither a clear yes nor a clear no — including a player
+    just carrying on with the game — is 'other': the ask is dropped and the
+    utterance is handled as a normal game turn.
+    """
+    plain = " ".join(
+        re.sub(r"[^a-z0-9\s]", " ", (text or "").lower().replace("'", "")).split()
+    )
+    if not plain:
+        return "other"
+    leadin = r"(?:um+ |uh+ |well |ok(?:ay)? |oh |hmm+ )*"
+    if re.match(
+        rf"^{leadin}"
+        r"(?:yes|yeah|yep|yup|sure|absolutely|definitely|positive|affirmative|"
+        r"correct|of course|i ?am sure|im sure|we ?are sure|were sure|"
+        r"end it|stop it|kill it|do it|please do|go ahead)\b",
+        plain,
+    ):
+        return "yes"
+    if re.match(
+        rf"^{leadin}"
+        r"(?:no|nope|nah|never ?mind|just kidding|kidding|keep playing|"
+        r"keep going|lets keep|continue|carry on|dont|do not|not yet|"
+        r"not really|we ?are good|were good|im good|i ?am good|stay)\b",
+        plain,
+    ):
+        return "no"
+    return "other"
+
+
+def _stop_confirm_resume_line() -> str:
+    """Rex's line when the table votes to keep playing."""
+    if _active_game == "jeopardy":
+        clue = _game_state.get("current_clue")
+        try:
+            player = _jeopardy_current_player()
+        except Exception:
+            player = {"name": "Player"}
+        if _game_state.get("phase") == "awaiting_answer" and clue:
+            return _jeopardy_repeat_clue_reply(
+                dict(clue), player, prefix="That's the spirit — back to it. "
+            )
+        if _game_state.get("phase") == "selecting":
+            return (
+                f"That's the spirit. {player['name']}, "
+                "pick a category and dollar value."
+            )
+    return "That's the spirit. Back to the game — where were we?"
+
+
+def request_stop_confirmation() -> Optional[str]:
+    """Arm the are-you-sure guard for the active game; returns the question.
+
+    None when no game is running (nothing to guard). For Jeopardy a live
+    answer clock is frozen — "Time's up" firing over the are-you-sure
+    exchange would steal the very turn it paused.
+    """
+    with _lock:
+        if _active_game is None:
+            return None
+        _game_state["stop_confirm_at"] = time.monotonic()
+        if _active_game == "jeopardy":
+            _jeopardy_cancel_timeout()
+    _log.info("[games] stop attempt — asking for confirmation")
+    return _STOP_CONFIRM_QUESTION
+
+
+def resolve_stop_confirmation(
+    text: str,
+    person_id: Optional[int] = None,
+    *,
+    stop_shaped: bool = False,
+) -> Optional[tuple[str, Optional[str]]]:
+    """Resolve the reply to a pending are-you-sure ask.
+
+    Returns None when nothing (fresh) is pending. Otherwise:
+      ("stop",   closing_line) — affirmative (or the stop was demanded again):
+                                 the game is stopped here.
+      ("resume", resume_line)  — a clear no: back to the game.
+      ("pass",   None)         — neither: the ask is dropped and the caller
+                                 should handle the utterance as a normal turn.
+    The pending ask is one-shot: consumed whatever the outcome.
+    """
+    with _lock:
+        game = _active_game
+        asked_at = float(_game_state.get("stop_confirm_at") or 0.0)
+        _game_state.pop("stop_confirm_at", None)
+    if game is None or asked_at <= 0.0:
+        return None
+    window = float(getattr(config, "GAME_STOP_CONFIRM_WINDOW_SECS", 45.0))
+    if (time.monotonic() - asked_at) > window:
+        return None    # the moment passed; this turn is a normal move
+    verdict = _stop_confirm_verdict(text)
+    if stop_shaped or verdict == "yes":
+        _log.info("[games] stop confirmed — ending %s", game)
+        return ("stop", stop_game(person_id))
+    if verdict == "no":
+        _log.info("[games] stop declined — resuming %s", game)
+        return ("resume", _stop_confirm_resume_line())
+    return ("pass", None)
+
+
 def stop_game_fast(person_id: Optional[int] = None) -> str:
     """End the current game without an LLM-generated closing line."""
     global _active_game

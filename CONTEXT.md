@@ -2560,6 +2560,31 @@ surfaced five distinct failures; each is fixed at its own layer:
   Tests: `tests/test_jeopardy_answers.py::BoardQuestionLanesTest` /
   `BoardQuestionHandlerTest`,
   `tests/test_regex_routing_guards.py::GameStopIntentTest`.
+- **Stop-confirmation guard (owner ask, same session).** "Stop playing"
+  mid-game now asks "But we're having so much fun, are you sure you want to
+  end the game?" and only an affirmative (or repeating the stop demand)
+  actually ends it. `games.request_stop_confirmation()` arms a one-shot
+  `stop_confirm_at` in `_game_state` and FREEZES a live Jeopardy answer clock
+  (a "Time's up" over the exchange would steal the paused turn);
+  `games.resolve_stop_confirmation(text, pid, stop_shaped=)` returns
+  ("stop", closing_line) / ("resume", line — a live clue is re-read with a
+  fresh window, selecting re-prompts the picker) / ("pass", None — any other
+  reply drops the ask and grades normally). Wired via
+  `interaction._game_stop_confirmation_response` at BOTH mid-game claim sites
+  (the pair that drifted before), path label `game.stop_confirmation`.
+  "Shut down"/sleep escapes are never gated. Kill switch
+  `GAME_STOP_CONFIRM_ENABLED`, TTL `GAME_STOP_CONFIRM_WINDOW_SECS` (45).
+  Tests: `tests/test_jeopardy_answers.py::StopConfirmationTest`,
+  `tests/test_regex_routing_guards.py::GameStopConfirmationGuardTest`.
+- **Theme/Daily-Double clip caps (owner questions, same session).** The
+  thinking theme died at 6s of the 12s answer window: the clip on disk is
+  ~31s and playback truncates at `JEOPARDY_THEME_MAX_SECS` — raised to 12.0
+  to match `JEOPARDY_ANSWER_TIMEOUT_SECS` so the music runs to the beeper.
+  The Daily Double sting (queued AHEAD of the announcement) is 12.6s on disk
+  — new `JEOPARDY_DAILY_DOUBLE_MAX_SECS` (6.0) caps it via the same
+  speech_queue clip-cap table. DD squares themselves: predetermined at board
+  build (real air-date positions from the dataset; if the sampled six
+  categories carry none, one random higher-value square is marked).
 - **PJ's voiceprint AND impersonation ref were junk/contaminated.** His print
   enrolled from a ~1s "Hey Rex." (worthless under ECAPA short-turn behavior →
   the whole game heard PJ as "Bret Benziger" or unknown_voice_N), and his

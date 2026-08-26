@@ -1308,6 +1308,43 @@ _GAME_STOP_INTENT_RE = re.compile(
 )
 
 
+def _game_stop_confirmation_response(
+    text: str,
+    person_id: Optional[int],
+    game_escape: Optional[command_parser.CommandMatch],
+) -> Optional[str]:
+    """The spoken line when this turn belongs to the stop-confirmation guard.
+
+    Owner ask 2026-08-25: ending a game gets an are-you-sure ("But we're
+    having so much fun…") and only an affirmative reply actually stops it.
+    Returns None to continue normal routing. Both ends live here: a fresh
+    stop attempt arms the guard and returns the question; the reply to a
+    pending guard either stops the game (affirmative — games.py returns the
+    closing line), resumes it (a clear no), or falls through (anything else:
+    the pending ask is dropped and the utterance is graded normally).
+    """
+    if not bool(getattr(config, "GAME_STOP_CONFIRM_ENABLED", True)):
+        return None
+    try:
+        from features import games as games_mod
+    except Exception:
+        return None
+    stop_shaped = bool(
+        game_escape is not None and game_escape.command_key == "stop_game"
+    )
+    resolution = games_mod.resolve_stop_confirmation(
+        text, person_id, stop_shaped=stop_shaped
+    )
+    if resolution is not None:
+        kind, line = resolution
+        if kind in ("stop", "resume") and line:
+            return line
+        return None    # "pass": ask dropped, handle the turn normally
+    if stop_shaped:
+        return games_mod.request_stop_confirmation()
+    return None
+
+
 def _game_escape_command(text: str) -> Optional[command_parser.CommandMatch]:
     """The escape command an in-game utterance carries, or None to grade it."""
     try:
@@ -27800,11 +27837,22 @@ def _handle_speech_segment(
                 # near-copy of the later site's and had drifted (see
                 # _game_escape_command).
                 game_escape = _game_escape_command(text)
-                if game_escape is None:
-                    game_response = games_mod.handle_input(text, person_id, audio_array)
+                stop_guard_response = _game_stop_confirmation_response(
+                    text, person_id, game_escape
+                )
+                if game_escape is None or stop_guard_response is not None:
+                    game_response = (
+                        stop_guard_response
+                        if stop_guard_response is not None
+                        else games_mod.handle_input(text, person_id, audio_array)
+                    )
                     completed = _speak_blocking(game_response)
                     response_text = game_response
-                    final_executed_path = "game.active_turn.early"
+                    final_executed_path = (
+                        "game.stop_confirmation"
+                        if stop_guard_response is not None
+                        else "game.active_turn.early"
+                    )
                     suppress_memory_learning = True
                     if completed:
                         games_mod.on_response_spoken()
@@ -29113,9 +29161,16 @@ def _handle_speech_segment(
                     # Same decision as the early claim above, from the same helper —
                     # these two blocks are the pair that drifted.
                     game_escape = _game_escape_command(text)
+                    stop_guard_response = _game_stop_confirmation_response(
+                        text, person_id, game_escape
+                    )
                     match = game_escape
-                    if game_escape is None:
-                        response_text = games_mod.handle_input(text, person_id, audio_array)
+                    if game_escape is None or stop_guard_response is not None:
+                        response_text = (
+                            stop_guard_response
+                            if stop_guard_response is not None
+                            else games_mod.handle_input(text, person_id, audio_array)
+                        )
                         completed = _speak_blocking(response_text)
                         _router_audit_note_result(
                             router_audit,
@@ -29130,7 +29185,11 @@ def _handle_speech_segment(
                         used_agenda_llm = True
                         handled_active_game_turn = True
                         suppress_memory_learning = True
-                        final_executed_path = "game.active_turn"
+                        final_executed_path = (
+                            "game.stop_confirmation"
+                            if stop_guard_response is not None
+                            else "game.active_turn"
+                        )
                         match = None
             except Exception as exc:
                 _log.debug("active game routing failed: %s", exc)

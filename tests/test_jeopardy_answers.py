@@ -476,6 +476,102 @@ class BoardQuestionHandlerTest(unittest.TestCase):
         self.assertIn("dollar value", resp)
 
 
+class StopConfirmationTest(unittest.TestCase):
+    """The are-you-sure guard (owner ask 2026-08-25): a stop attempt asks "But
+    we're having so much fun…" and only an affirmative actually ends the game."""
+
+    def setUp(self):
+        games._active_game = "jeopardy"
+        games._game_state = {
+            "phase": "awaiting_answer",
+            "current_clue": {"category": "SPACE", "value": 400, "effective_value": 400,
+                             "clue": "The live clue", "answer": "orbit"},
+            "players": [{"name": "Bret", "score": 0}],
+            "current_player_idx": 0,
+            "board": {"remaining": 3, "categories": [{"name": "SPACE", "clues": {200: {}}}]},
+        }
+
+    def tearDown(self):
+        games._game_state = {}
+        games._active_game = None
+
+    def test_request_arms_and_freezes_the_answer_clock(self):
+        with mock.patch.object(games, "_jeopardy_cancel_timeout") as cancel:
+            question = games.request_stop_confirmation()
+        self.assertIn("having so much fun", question)
+        self.assertIn("stop_confirm_at", games._game_state)
+        cancel.assert_called_once()
+
+    def test_no_active_game_returns_none(self):
+        games._active_game = None
+        self.assertIsNone(games.request_stop_confirmation())
+
+    def test_affirmative_stops_the_game(self):
+        games._game_state["stop_confirm_at"] = games.time.monotonic()
+        with mock.patch.object(games, "stop_game", return_value="Fine. Scores: ...") as stop:
+            result = games.resolve_stop_confirmation("yes, I'm sure", 1)
+        kind, line = result
+        self.assertEqual(kind, "stop")
+        self.assertEqual(line, "Fine. Scores: ...")
+        stop.assert_called_once_with(1)
+
+    def test_affirmative_variations(self):
+        for text in [
+            "yes", "Yeah.", "yep", "sure", "absolutely", "I'm sure",
+            "okay yes", "end it", "do it", "go ahead",
+        ]:
+            self.assertEqual(games._stop_confirm_verdict(text), "yes", text)
+
+    def test_negative_variations_resume(self):
+        for text in [
+            "no", "Nope.", "nah", "never mind", "just kidding",
+            "keep playing", "let's keep going", "no, continue",
+        ]:
+            self.assertEqual(games._stop_confirm_verdict(text), "no", text)
+
+    def test_decline_rereads_the_live_clue(self):
+        games._game_state["stop_confirm_at"] = games.time.monotonic()
+        result = games.resolve_stop_confirmation("no way, keep playing", None)
+        kind, line = result
+        self.assertEqual(kind, "resume")
+        self.assertIn("The live clue", line)
+        self.assertTrue(games._game_state["awaiting_prompt_delivery"],
+                        "the answer window restarts after the re-read")
+
+    def test_decline_in_selecting_phase_reprompts_the_picker(self):
+        games._game_state["phase"] = "selecting"
+        games._game_state.pop("current_clue")
+        games._game_state["stop_confirm_at"] = games.time.monotonic()
+        kind, line = games.resolve_stop_confirmation("nope", None)
+        self.assertEqual(kind, "resume")
+        self.assertIn("Bret", line)
+        self.assertIn("pick a category", line)
+
+    def test_unrelated_reply_drops_the_ask_and_passes_through(self):
+        games._game_state["stop_confirm_at"] = games.time.monotonic()
+        kind, line = games.resolve_stop_confirmation("what is orbit", None)
+        self.assertEqual(kind, "pass")
+        self.assertIsNone(line)
+        self.assertNotIn("stop_confirm_at", games._game_state)
+
+    def test_repeated_stop_demand_counts_as_affirmative(self):
+        games._game_state["stop_confirm_at"] = games.time.monotonic()
+        with mock.patch.object(games, "stop_game", return_value="Done.") as stop:
+            kind, _line = games.resolve_stop_confirmation(
+                "stop the game", None, stop_shaped=True
+            )
+        self.assertEqual(kind, "stop")
+        stop.assert_called_once()
+
+    def test_expired_ask_is_ignored(self):
+        games._game_state["stop_confirm_at"] = games.time.monotonic() - 10_000.0
+        self.assertIsNone(games.resolve_stop_confirmation("yes", None))
+        self.assertNotIn("stop_confirm_at", games._game_state)
+
+    def test_nothing_pending_returns_none(self):
+        self.assertIsNone(games.resolve_stop_confirmation("yes", None))
+
+
 class BoardRepeatRequestTest(unittest.TestCase):
     """The categories are announced once when a round loads. A voice-only player
     who missed them must be able to ask for them back — the old selection parser
