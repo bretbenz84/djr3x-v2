@@ -3961,9 +3961,18 @@ VOICE_SAMPLE_REQUEST_WINDOW_SECS = 45.0
 # Minimum size for an enrollable voice sample. A two-word "Hey Rex" (~1s) makes
 # a print too weak to separate close voices — field 2026-08-25: PJ enrolled from
 # one, and every answer he gave during Jeopardy was attributed to Bret. Shorter
-# samples get one more ask for a full sentence instead of enrolling.
+# samples get another ask instead of enrolling.
 VOICE_SAMPLE_MIN_SECS = 2.0
 VOICE_SAMPLE_MIN_WORDS = 4
+# The voice-ID ask DICTATES a line (owner call 2026-08-26): "give me a line"
+# left PJ guessing and he offered "Hey Rex" — people freeze on an open-ended
+# ask. One easy sentence, ~4-5s spoken, comfortably past the floors above.
+# Any full sentence still enrolls — the dictated line is a crutch, not a rule.
+VOICE_SAMPLE_LINES = [
+    "The quick brown fox jumps over the lazy dog down by the riverbank.",
+    "I'm hanging out with Rex, the loudest droid in the whole galaxy.",
+    "Blue skies, green hills, and a golden sun over the desert dunes.",
+]
 # Passive voiceprint growth (owner spec 2026-08-26): nobody reads lines — when
 # exactly one KNOWN face is on camera, nobody unknown is visible, nobody else
 # has been seen or heard for SOLO_WINDOW, and the turn is long enough, the

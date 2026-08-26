@@ -268,6 +268,44 @@ class VoiceSampleCaptureTest(unittest.TestCase):
         self.assertIsNotNone(resp)
         self.assertFalse(enroll.called)
 
+    def test_short_sample_pushback_dictates_a_line(self):
+        # "Give me a line" froze PJ into "Hey Rex" — the pushback must tell the
+        # person exactly what to say (owner call 2026-08-26).
+        ctx = self._asked_ctx()
+        ctx["expected_text"] = "The quick brown fox jumps over the lazy dog."
+        I._pending_voice_sample_capture = ctx
+        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
+             mock.patch.object(I, "_safe_enroll_voice", return_value=True):
+            resp = I._handle_voice_sample_capture(
+                "Hey Rex.", np.zeros(16000, dtype=np.float32), None, None, 0.0
+            )
+        self.assertIn("Repeat after me", resp)
+        self.assertIn("quick brown fox", resp)
+
+    def test_pushback_without_a_stored_line_picks_one(self):
+        I._pending_voice_sample_capture = self._asked_ctx()   # no expected_text
+        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
+             mock.patch.object(I, "_safe_enroll_voice", return_value=True):
+            resp = I._handle_voice_sample_capture(
+                "Hey Rex.", np.zeros(16000, dtype=np.float32), None, None, 0.0
+            )
+        self.assertIn("Repeat after me", resp)
+        self.assertEqual(
+            I._pending_voice_sample_capture.get("expected_text"),
+            resp.split("Repeat after me: ", 1)[1],
+            "the dictated line is stored so the next pushback repeats the SAME line",
+        )
+
+    def test_dictated_lines_never_trip_the_decline_detector(self):
+        # The decline regex drops the request on "no|not now|wait|..." — a
+        # dictated line echoed back must never read as a refusal.
+        import re as _re
+        decline = _re.compile(
+            r"\b(no|nope|not now|not right now|later|wait|hold on|can'?t|cannot)\b"
+        )
+        for line in getattr(config, "VOICE_SAMPLE_LINES", []):
+            self.assertIsNone(decline.search(line.lower()), line)
+
 
 if __name__ == "__main__":
     unittest.main()
