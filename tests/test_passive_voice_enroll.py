@@ -231,7 +231,7 @@ class CaptureRecitationGuardsTest(unittest.TestCase):
         )
         line, spoken = r
         self.assertFalse(spoken)
-        self.assertIn("blink", line)
+        self.assertIn("Once more", line)
         self.assertIsNotNone(I._pending_impersonation_capture)
 
     def test_off_script_take_gets_one_nudge_back_to_the_line(self):
@@ -303,7 +303,7 @@ class MultiPartCaptureTest(unittest.TestCase):
     def test_short_part_reasks_that_part(self):
         line, spoken = self._say(self._PARTS[0], secs=0.8)
         self.assertFalse(spoken)
-        self.assertIn("blink", line)
+        self.assertIn("Once more", line)
         ctx = I._pending_impersonation_capture
         self.assertEqual(ctx["expected_text"], self._PARTS[0], "same part re-asked")
         self.assertEqual(len(ctx["takes"]), 0)

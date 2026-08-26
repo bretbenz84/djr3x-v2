@@ -3966,12 +3966,14 @@ VOICE_SAMPLE_MIN_SECS = 2.0
 VOICE_SAMPLE_MIN_WORDS = 4
 # The voice-ID ask DICTATES a line (owner call 2026-08-26): "give me a line"
 # left PJ guessing and he offered "Hey Rex" — people freeze on an open-ended
-# ask. One easy sentence, ~4-5s spoken, comfortably past the floors above.
-# Any full sentence still enrolls — the dictated line is a crutch, not a rule.
-VOICE_SAMPLE_LINES = [
-    "The quick brown fox jumps over the lazy dog down by the riverbank.",
-    "I'm hanging out with Rex, the loudest droid in the whole galaxy.",
-    "Blue skies, green hills, and a golden sun over the desert dunes.",
+# ask. The line carries the person's OWN NAME ({name}) — a sentence about
+# yourself is the easiest thing to repeat verbatim on first hearing (the
+# pangram flunked that test). Short, natural, ~3-4s spoken, past the floors
+# above. Any full sentence still enrolls — the line is a crutch, not a rule.
+VOICE_SAMPLE_LINE_TEMPLATES = [
+    "My name is {name}, and this is what my voice sounds like.",
+    "Hey Rex, it's {name} — remember my voice, not just my face.",
+    "This is {name}, talking to the loudest droid in the galaxy.",
 ]
 # Passive voiceprint growth (owner spec 2026-08-26): nobody reads lines — when
 # exactly one KNOWN face is on camera, nobody unknown is visible, nobody else

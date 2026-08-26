@@ -12238,15 +12238,21 @@ def _maybe_passive_voice_enroll(
         )
 
 
-def _voice_sample_line() -> str:
+def _voice_sample_line(name: Optional[str] = None) -> str:
     """One dictated sentence for the voice-ID ask. An open-ended "give me a
     line" froze PJ into a two-word "Hey Rex" (field 2026-08-25); a concrete
-    repeat-after-me line gets a usable sample on the first try."""
-    lines = list(getattr(config, "VOICE_SAMPLE_LINES", None) or [])
-    if not lines:
-        return "The quick brown fox jumps over the lazy dog down by the riverbank."
+    repeat-after-me line gets a usable sample on the first try. The line
+    carries the person's own name — the easiest thing to repeat verbatim."""
+    templates = list(getattr(config, "VOICE_SAMPLE_LINE_TEMPLATES", None) or [])
+    if not templates:
+        templates = ["My name is {name}, and this is what my voice sounds like."]
     import random as _random
-    return str(_random.choice(lines))
+    template = str(_random.choice(templates))
+    first = _first_name_or(name, "a friend of Rex")
+    try:
+        return template.format(name=first)
+    except Exception:
+        return f"My name is {first}, and this is what my voice sounds like."
 
 
 def _maybe_request_voice_sample(person_id, name) -> None:
@@ -12342,7 +12348,7 @@ def _handle_voice_sample_capture(
     if duration < min_secs or words < min_words:
         ctx["asked_at"] = time.monotonic()
         first = _first_name_or(target_name, "there")
-        line = str(ctx.get("expected_text") or "") or _voice_sample_line()
+        line = str(ctx.get("expected_text") or "") or _voice_sample_line(target_name)
         ctx["expected_text"] = line
         _log.info(
             "[voice_sample] sample too short to enroll (%.1fs, %d words) — re-asking %s",
@@ -12351,8 +12357,8 @@ def _handle_voice_sample_capture(
         # Push back WITH instructions — a short reply means the open ask didn't
         # land, so dictate the sentence (owner call 2026-08-26).
         return (
-            f"{first}, that was a blink — I need a full sentence to tell your "
-            f"voice apart. Repeat after me: {line}"
+            f"I need a whole sentence to learn your voice, {first}. "
+            f"Repeat after me: {line}"
         )
 
     ok = _safe_enroll_voice(
@@ -12365,7 +12371,7 @@ def _handle_voice_sample_capture(
     first = _first_name_or(target_name, "there")
     if not ok:
         ctx["asked_at"] = time.monotonic()
-        line = str(ctx.get("expected_text") or "") or _voice_sample_line()
+        line = str(ctx.get("expected_text") or "") or _voice_sample_line(target_name)
         ctx["expected_text"] = line
         return (
             f"{first}, static ate that one. Once more, nice and clear: {line}"
@@ -20575,9 +20581,9 @@ def _handle_impersonation_capture(
         ctx["asked_at"] = time.monotonic()
         first = _first_name_or(ctx.get("name"), "hey")
         line = str(ctx.get("expected_text") or "")
-        again = f" Once more: {line}" if line else ""
+        again = f" Once more: {line}" if line else " Give me the whole line this time."
         return (
-            f"{first}, that was a blink — nice and clear this time.{again}",
+            f"Didn't quite catch that, {first}.{again}",
             False,
         )
 
@@ -29772,7 +29778,7 @@ def _handle_speech_segment(
             # as Bret for the whole Jeopardy game. A concrete sentence to
             # repeat gets a usable sample on the first try; any full sentence
             # still enrolls (the line is a crutch, not a rule).
-            vs_line = _voice_sample_line()
+            vs_line = _voice_sample_line(pending_vs.get("name"))
             pending_vs["expected_text"] = vs_line
             ask_text = (
                 f"Oh, and {vs_first} — my eyes know you, but my ears don't yet. "
