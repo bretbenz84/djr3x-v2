@@ -1487,6 +1487,14 @@ def _jeopardy_board_text() -> str:
         return ""
 
 
+def _jeopardy_speak_category(name: Optional[str]) -> str:
+    try:
+        from features import jeopardy as jeopardy_bank
+        return jeopardy_bank.speak_category(name or "")
+    except Exception:
+        return str(name or "")
+
+
 def _jeopardy_repeat_clue_reply(clue: dict, player: dict, prefix: str = "") -> str:
     """Re-read the live clue and restart the answer window, scoring nothing."""
     _game_state["phase"] = "awaiting_answer"
@@ -1494,7 +1502,8 @@ def _jeopardy_repeat_clue_reply(clue: dict, player: dict, prefix: str = "") -> s
     if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
         _game_state["pending_after_response_clip"] = "theme"
     return (
-        f"{prefix}{player['name']}, {clue.get('category')} for ${clue.get('value')}. "
+        f"{prefix}{player['name']}, "
+        f"{_jeopardy_speak_category(clue.get('category'))} for ${clue.get('value')}. "
         f"Clue: {clue.get('clue')}."
     )
 
@@ -1527,7 +1536,7 @@ def _jeopardy_offer_rebound() -> Optional[dict]:
 def _jeopardy_rebound_prompt(prefix: str, next_player: dict, clue: dict) -> str:
     return (
         f"{prefix}{next_player['name']}'s turn. "
-        f"{clue.get('category')} for ${clue.get('value')}. "
+        f"{_jeopardy_speak_category(clue.get('category'))} for ${clue.get('value')}. "
         f"Clue: {clue.get('clue')}."
     )
 
@@ -1566,12 +1575,25 @@ def _jeopardy_finish_missed_clue(
     )
 
 
-def _jeopardy_schedule_post_timeout_rebound(done_event: threading.Event) -> None:
+def _jeopardy_schedule_post_timeout_rebound(
+    done_event: threading.Event,
+    rebound_at: float = 0.0,
+) -> None:
     """Start the rebound timer/theme after a timeout prompt finishes speaking."""
     def _wait_then_start() -> None:
         try:
             if not done_event.wait(timeout=45.0):
                 return
+            with _lock:
+                # A grace answer superseded this announcement (its queued line was
+                # dropped, or it was graded mid-play): the graded response owns
+                # the flow now, and arming the next answer timer from here would
+                # start it while that response is still being spoken.
+                current = _game_state.get("timeout_rebound")
+                if rebound_at and (
+                    current is None or float(current.get("at") or 0.0) != rebound_at
+                ):
+                    return
             on_response_spoken()
             after_audio = consume_pending_audio_after_response()
             if not after_audio:
@@ -1677,10 +1699,24 @@ def _jeopardy_complete_round_or_finish(
     return _jeopardy_finish_line(prefix), True
 
 
+def _jeopardy_answer_in_flight() -> bool:
+    """True when a player is speaking right now, or a just-finished utterance is
+    still being processed — an answer is in the pipe and the timer must not
+    steal the turn out from under it (field 2026-08-25: "Floral" was spoken as
+    the time's-up beeper fired, the rebound had already advanced the turn, and
+    the $1000 went to the wrong player)."""
+    try:
+        from awareness.situation import assessor
+        return bool(assessor.is_user_speaking() or assessor.is_interaction_busy())
+    except Exception:
+        return False
+
+
 def _jeopardy_timeout_fired(token: str) -> None:
     line = ""
     queue_timesup = True
     schedule_rebound = False
+    rebound_at = 0.0
     with _lock:
         if _active_game != "jeopardy":
             return
@@ -1691,13 +1727,33 @@ def _jeopardy_timeout_fired(token: str) -> None:
         clue = dict(_game_state.get("current_clue") or {})
         if not clue:
             return
+        if _jeopardy_answer_in_flight():
+            # Give the in-flight utterance a beat to land: it will cancel this
+            # timer when it grades. Re-arm with the SAME token so a stale defer
+            # can never outlive a legitimate re-arm.
+            grace = float(getattr(config, "JEOPARDY_TIMEOUT_SPEECH_GRACE_SECS", 2.5))
+            timer = threading.Timer(grace, _jeopardy_timeout_fired, args=(token,))
+            timer.daemon = True
+            _game_state["answer_timer"] = timer
+            timer.start()
+            _log.info("[jeopardy] answer timeout deferred %.1fs — player speech in flight", grace)
+            return
         _game_state.pop("answer_timer", None)
         _game_state.pop("answer_timer_token", None)
         correct_response = _jeopardy_correct_response_text(clue)
+        timed_out_idx = int(_game_state.get("current_player_idx", 0))
         next_player = _jeopardy_offer_rebound()
         if next_player:
             line = _jeopardy_rebound_prompt("Time's up. ", next_player, clue)
             schedule_rebound = True
+            # Until the rebound announcement finishes, an incoming answer belongs
+            # to the player whose time just ran out — they were mid-thought at
+            # the beeper, not the player who has not even heard the re-read yet.
+            rebound_at = time.monotonic()
+            _game_state["timeout_rebound"] = {
+                "from_idx": timed_out_idx,
+                "at": rebound_at,
+            }
         else:
             done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
             line, game_done = _jeopardy_finish_missed_clue(
@@ -1724,7 +1780,7 @@ def _jeopardy_timeout_fired(token: str) -> None:
             tag="jeopardy:timeout",
         )
         if schedule_rebound:
-            _jeopardy_schedule_post_timeout_rebound(done_event)
+            _jeopardy_schedule_post_timeout_rebound(done_event, rebound_at=rebound_at)
     except Exception as exc:
         _log.debug("[jeopardy] timeout speech failed: %s", exc)
 
@@ -1736,6 +1792,9 @@ def _jeopardy_arm_timeout() -> None:
         return
     if not _game_state.pop("awaiting_prompt_delivery", False):
         return
+    # The rebound announcement is fully out — from here an answer is the rebound
+    # player's, not a late grace answer from whoever timed out.
+    _game_state.pop("timeout_rebound", None)
     timeout = float(getattr(config, "JEOPARDY_ANSWER_TIMEOUT_SECS", 14.0))
     if timeout <= 0:
         return
@@ -1879,7 +1938,8 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
         if daily else ""
     )
     return (
-        f"{daily_line}{player['name']}, {clue.get('category')} for ${clue.get('value')}. "
+        f"{daily_line}{player['name']}, "
+        f"{jeopardy_bank.speak_category(clue.get('category') or '')} for ${clue.get('value')}. "
         f"Clue: {clue.get('clue')}.",
         False,
     )
@@ -1899,6 +1959,27 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         return ("I lost the clue state. Pick another square before I blame a power converter.", False)
 
     players = _game_state.get("players") or [{"name": "Player", "score": 0}]
+    # TIMEOUT-REBOUND GRACE: this answer landed after the time's-up beeper but
+    # before Rex finished announcing whose turn it is next. That is the timed-out
+    # player getting their answer out a beat late — not the rebound player, who
+    # has not even heard the clue re-read (field 2026-08-25: "What is Nike" and
+    # "Floral" both scored for the WRONG player this way). Grade it for the
+    # player whose time ran out, and drop the now-moot rebound announcement.
+    grace = _game_state.get("timeout_rebound")
+    if grace is not None and _game_state.get("awaiting_prompt_delivery"):
+        _game_state.pop("timeout_rebound", None)
+        from_idx = int(grace.get("from_idx", 0)) % len(players)
+        _game_state["current_player_idx"] = from_idx
+        try:
+            from audio import speech_queue
+            dropped = speech_queue.drop_by_tag("jeopardy:timeout")
+        except Exception:
+            dropped = 0
+        _log.info(
+            "[jeopardy] grace answer during rebound announce — grading for %s "
+            "(dropped %d queued timeout line[s])",
+            players[from_idx].get("name"), dropped,
+        )
     idx = int(_game_state.get("current_player_idx", 0)) % len(players)
     player = players[idx]
     answer = clue.get("answer", "unknown")

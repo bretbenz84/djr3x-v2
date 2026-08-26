@@ -2707,6 +2707,23 @@ def _step_inner(snapshot: dict, profile) -> None:
         _reset("neck_hits", "far_hits")
         return
 
+    # An active parlor game means the players are seated around him and long
+    # think-silences are normal — "nobody on camera" mid-round is a seating fact,
+    # not a search cue. The social lanes below read that stillness as a reason to
+    # go looking: radar-orient chased a rear return and turned the base away from
+    # the Jeopardy players, and idle wander shuffled him between clues (field
+    # 2026-08-25 18:55-18:56). The flinch reflex and an explicit come-here (both
+    # above) still run; everything social waits for the game to end.
+    if _flag("MOTION_HOLD_DURING_GAMES", True):
+        try:
+            from features import games as games_mod
+            if games_mod.is_active():
+                _reset("neck_hits", "far_hits")
+                _clear_idle_wander("game active")
+                return
+        except Exception:
+            pass
+
     # A room the owner has told him not to drive in (carpet, or just their house
     # rules). Persisted per place, so it re-arms every time he recognizes the room —
     # unlike the traction detector, which has to grind through a couple of failed

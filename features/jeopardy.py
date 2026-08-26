@@ -269,6 +269,51 @@ def format_board(board: dict) -> str:
     return "; ".join(bits)
 
 
+# The J! archive abbreviates category names ("COMBINED STATE ABBREV.") and the
+# TTS reads the raw token as a word ("abreev" — field 2026-08-25: the players
+# couldn't tell what the category was for several rounds). Expanded for SPEECH
+# only; the board/GUI and the selection matcher keep the raw dataset name.
+# Keys are matched against the lowercased token with any trailing "." removed —
+# only tokens that are unambiguous abbreviations belong here (no "lit", no
+# "pres": those collide with real words the dataset also uses).
+_CATEGORY_SPEECH_EXPANSIONS = {
+    "abbrev": "abbreviations",
+    "abbrevs": "abbreviations",
+    "anniv": "anniversary",
+    "categ": "categories",
+    "dept": "department",
+    "depts": "departments",
+    "geog": "geography",
+    "govt": "government",
+    "intl": "international",
+    "misc": "miscellaneous",
+    "natl": "national",
+    "vocab": "vocabulary",
+}
+
+
+def speak_category(name: str) -> str:
+    """Speech-friendly form of a category name; the raw name stays everywhere else.
+
+    Expands known dataset abbreviations and drops a trailing period so the TTS
+    does not read "ABBREV.." as a word plus two stops.
+    """
+    tokens = (name or "").split()
+    out: list[str] = []
+    for token in tokens:
+        bare = token.rstrip(".").lower()
+        expansion = _CATEGORY_SPEECH_EXPANSIONS.get(bare)
+        if expansion is None:
+            out.append(token)
+        elif token.isupper():
+            out.append(expansion.upper())
+        elif token[:1].isupper():
+            out.append(expansion.capitalize())
+        else:
+            out.append(expansion)
+    return " ".join(out).rstrip(".") or (name or "")
+
+
 def format_categories(
     board: dict,
     *,
@@ -276,7 +321,7 @@ def format_categories(
     separator: str = ", ",
 ) -> str:
     return separator.join(
-        str(category.get("name") or "Potpourri")
+        speak_category(str(category.get("name") or "Potpourri"))
         for category in board.get("categories") or []
         if not remaining_only or (category.get("clues") or {})
     )
@@ -297,11 +342,11 @@ def format_board_readout(board: dict) -> str:
         return ""
 
     if len({tuple(values) for _name, values in entries}) == 1:
-        names = ". ".join(name for name, _values in entries)
+        names = ". ".join(speak_category(name) for name, _values in entries)
         values_text = ", ".join(f"${value}" for value in entries[0][1])
         return f"{names}. Each one still has {values_text}"
     return ". ".join(
-        f"{name} for {', '.join(f'${value}' for value in values)}"
+        f"{speak_category(name)} for {', '.join(f'${value}' for value in values)}"
         for name, values in entries
     )
 

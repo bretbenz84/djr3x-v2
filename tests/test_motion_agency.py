@@ -2772,6 +2772,70 @@ class WanderDuringConversationTest(unittest.TestCase):
         MA.cancel_requested_come("test cleanup")
 
 
+class GameHoldTest(unittest.TestCase):
+    """An active parlor game holds the base still (field 2026-08-25: radar
+    orient + idle wander turned Rex almost fully away from the Jeopardy players
+    mid-game). Social lanes are gated; the earlier lanes (flinch, come-here)
+    are above the gate and unaffected."""
+
+    def _state(self):
+        MA.cancel_requested_come("test reset")
+        MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
+                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         object_step=None, object_step_at=0.0,
+                         first_step_at=0.0, startup_approach_done=True,
+                         startup_hits=0, last_turn_at=0.0, last_approach_at=0.0,
+                         last_flinch_at=0.0, user_motion_at=0.0,
+                         realign_pending_seq=None, traction_fails=0,
+                         no_traction_until=0.0, hold_at=None)
+
+    def _step(self, game_active: bool, wander: mock.MagicMock,
+              orient: mock.MagicMock) -> None:
+        ws = mock.patch(
+            "world_state.world_state.get",
+            side_effect=lambda key: (
+                {"face_tracking": {"locked": False, "visible": False},
+                 "servo_positions": {"neck": 5472}}
+                if key == "self_state" else {}),
+        )
+        with mock.patch.object(MA.motion_controller, "available", return_value=True), \
+                mock.patch.object(MA.motion, "state", return_value="idle"), \
+                mock.patch.object(MA.motion, "telemetry", return_value=None), \
+                mock.patch("intelligence.battery_awareness.battery_critical",
+                           return_value=False), \
+                mock.patch("features.games.is_active", return_value=game_active), \
+                mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", True,
+                                  create=True), \
+                mock.patch.object(MA, "_maybe_idle_wander", wander), \
+                mock.patch.object(MA, "_maybe_radar_orient", orient), ws:
+            MA.step(_snapshot(visible=False), _profile())
+        MA.cancel_requested_come("test cleanup")
+
+    def test_active_game_holds_the_social_lanes(self):
+        self._state()
+        wander = mock.MagicMock(return_value=False)
+        orient = mock.MagicMock(return_value=False)
+        self._step(True, wander, orient)
+        wander.assert_not_called()
+        orient.assert_not_called()
+
+    def test_no_game_leaves_the_lanes_live(self):
+        self._state()
+        wander = mock.MagicMock(return_value=False)
+        orient = mock.MagicMock(return_value=False)
+        self._step(False, wander, orient)
+        orient.assert_called_once()
+
+    def test_kill_switch_restores_motion_during_games(self):
+        self._state()
+        wander = mock.MagicMock(return_value=False)
+        orient = mock.MagicMock(return_value=False)
+        with mock.patch.object(config, "MOTION_HOLD_DURING_GAMES", False,
+                               create=True):
+            self._step(True, wander, orient)
+        orient.assert_called_once()
+
+
 class ComfortRealignTest(unittest.TestCase):
     """Comfort realign (owner 2026-08-19): a neck parked past the comfort
     fraction for a sustained stretch turns the body under the head, even with

@@ -156,5 +156,40 @@ class FastReplyWideningTests(unittest.TestCase):
         self.assertLessEqual(secs, float(config.AUDIO_BUFFER_SECONDS))
 
 
+class GameBargeFloorOverrideTests(unittest.TestCase):
+    """A Jeopardy clip (thinking theme) cut mid-utterance restamps the capture
+    floor at the CLIP's end via its queue done-callback — inside the utterance —
+    so everything the player said under the theme was clipped out ("What is a
+    moon" → "As a moon", field 2026-08-25). The interrupt path records the
+    pre-interrupt floor in _game_barge_floor_at; capture anchors there instead."""
+
+    def _window(self, speech_start: float, finished: float, floor: float,
+                barge_floor: float) -> float:
+        with mock.patch.object(I, "_listen_capture_floor_at", floor), \
+             mock.patch.object(I, "_game_barge_floor_at", barge_floor), \
+             mock.patch.object(I, "_speech_preroll_secs", return_value=0.45):
+            return I._speech_capture_secs(speech_start, finished_mono=finished)
+
+    def test_override_reaches_back_under_the_interrupted_clip(self):
+        # Clue TTS ended at 1000 (floor); theme played 1001-1003 and was cut by
+        # the player's speech (onset 1002, mid-theme). The theme's done-callback
+        # restamped the floor at 1003 — AFTER the onset. The override (1000)
+        # must win so the words under the theme survive.
+        secs = self._window(speech_start=1002.0, finished=1004.0,
+                            floor=1003.0, barge_floor=1000.0)
+        self.assertAlmostEqual(1004.0 - secs, 1000.0, places=2)
+
+    def test_inactive_override_changes_nothing(self):
+        secs = self._window(speech_start=1002.0, finished=1004.0,
+                            floor=1003.0, barge_floor=0.0)
+        self.assertAlmostEqual(1004.0 - secs, 1003.0, places=2)
+
+    def test_stale_override_above_the_floor_is_ignored(self):
+        # The override only ever LOWERS the floor; a leftover above it is inert.
+        secs = self._window(speech_start=1005.0, finished=1007.0,
+                            floor=1000.0, barge_floor=1003.0)
+        self.assertAlmostEqual(secs, 2.0 + 0.45, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

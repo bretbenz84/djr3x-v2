@@ -239,6 +239,33 @@ class VoiceSampleCaptureTest(unittest.TestCase):
         self.assertIsNone(resp)
         self.assertIsNone(I._pending_voice_sample_capture)
 
+    def test_too_short_a_sample_reasks_instead_of_enrolling(self):
+        # Field 2026-08-25: PJ enrolled from a ~1s "Hey Rex." and spent the whole
+        # Jeopardy game being read as Bret. A blink of a sample re-asks for a
+        # full sentence; the window stays open for the retry.
+        I._pending_voice_sample_capture = self._asked_ctx()
+        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
+             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
+            resp = I._handle_voice_sample_capture(
+                "Hey Rex.", np.zeros(16000, dtype=np.float32), None, None, 0.0
+            )
+        self.assertIsNotNone(resp)
+        self.assertIn("sentence", resp)
+        self.assertFalse(enroll.called)
+        self.assertIsNotNone(I._pending_voice_sample_capture)
+
+    def test_short_transcript_reasks_even_with_long_audio(self):
+        # Duration alone can lie (leading room tone) — a two-word transcript is
+        # not enough signal either way.
+        I._pending_voice_sample_capture = self._asked_ctx()
+        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
+             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
+            resp = I._handle_voice_sample_capture(
+                "Hey Rex.", np.zeros(64000, dtype=np.float32), None, None, 0.0
+            )
+        self.assertIsNotNone(resp)
+        self.assertFalse(enroll.called)
+
 
 if __name__ == "__main__":
     unittest.main()

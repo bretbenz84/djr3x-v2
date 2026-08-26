@@ -821,6 +821,82 @@ class CaptureConsumerTest(unittest.TestCase):
         perf.assert_called_once()
         self.assertIsNone(self.itn._pending_impersonation_capture)
 
+    def test_foreign_voice_on_the_take_asks_for_a_solo_retake(self):
+        # Field 2026-08-25: PJ's capture take voice-scored Bret 0.784 (Bret was
+        # in the room) and "PJ's" impression came out sounding like Bret. A take
+        # that strongly matches a DIFFERENT enrolled, recently-visible person
+        # gets one solo-retake ask before becoming the durable ref.
+        import time
+        from features import impersonation
+        phrase = "Mary had a little lamb, the fleece was white as snow."
+        self.itn._pending_impersonation_capture = {
+            "person_id": 7, "name": "PJ", "is_self": True,
+            "expected_text": phrase, "asked_at": time.monotonic(),
+        }
+        with mock.patch.object(self.itn, "_known_person_visible_recently",
+                               return_value=True), \
+             mock.patch.object(impersonation, "save_person_capture") as save:
+            r = self.itn._handle_impersonation_capture(
+                phrase, self._good_audio(),
+                person_id=7, raw_best_id=1, speaker_score=0.784,
+            )
+        line, spoken = r
+        self.assertFalse(spoken)
+        self.assertIn("just you", line)
+        save.assert_not_called()
+        ctx = self.itn._pending_impersonation_capture
+        self.assertIsNotNone(ctx, "slot stays open for the retake")
+        self.assertTrue(ctx.get("foreign_retry_done"))
+
+    def test_second_take_saves_even_if_it_still_cross_matches(self):
+        # Two genuinely close voices can cross-match this high forever — the
+        # retake must not loop.
+        import time
+        from features import impersonation
+        phrase = "Mary had a little lamb, the fleece was white as snow."
+        self.itn._pending_impersonation_capture = {
+            "person_id": 7, "name": "PJ", "is_self": True,
+            "expected_text": phrase, "asked_at": time.monotonic(),
+            "foreign_retry_done": True,
+        }
+        fake_ref = local_tts.VoiceRef("/x.wav", "t", "person:7")
+        with mock.patch.object(self.itn, "_known_person_visible_recently",
+                               return_value=True), \
+             mock.patch.object(impersonation, "save_person_capture",
+                               return_value=fake_ref) as save, \
+             mock.patch.object(impersonation, "perform", return_value="Chill."):
+            r = self.itn._handle_impersonation_capture(
+                phrase, self._good_audio(),
+                person_id=7, raw_best_id=1, speaker_score=0.784,
+            )
+        _line, spoken = r
+        self.assertTrue(spoken)
+        save.assert_called_once()
+
+    def test_offcamera_cross_match_does_not_block_the_take(self):
+        # The 2026-07-23 junk-twin shape: the cross-matched print belongs to a
+        # phantom nobody has seen — the capture must go through first time.
+        import time
+        from features import impersonation
+        phrase = "Mary had a little lamb, the fleece was white as snow."
+        self.itn._pending_impersonation_capture = {
+            "person_id": 7, "name": "PJ", "is_self": True,
+            "expected_text": phrase, "asked_at": time.monotonic(),
+        }
+        fake_ref = local_tts.VoiceRef("/x.wav", "t", "person:7")
+        with mock.patch.object(self.itn, "_known_person_visible_recently",
+                               return_value=False), \
+             mock.patch.object(impersonation, "save_person_capture",
+                               return_value=fake_ref) as save, \
+             mock.patch.object(impersonation, "perform", return_value="Chill."):
+            r = self.itn._handle_impersonation_capture(
+                phrase, self._good_audio(),
+                person_id=7, raw_best_id=1, speaker_score=0.784,
+            )
+        _line, spoken = r
+        self.assertTrue(spoken)
+        save.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

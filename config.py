@@ -1862,6 +1862,14 @@ IMPERSONATION_ENABLED = _env_bool("IMPERSONATION_ENABLED", True)
 
 # Live-capture tuning for the "impersonate me" flow.
 IMPERSONATION_CAPTURE_MIN_SECS = 4.0          # reject a too-short reference clip
+# A capture take that voice-matches a DIFFERENT enrolled person at/above this bar
+# — and that person has actually been around the camera — gets ONE solo-retake
+# ask before being saved as the target's durable voice ref (field 2026-08-25:
+# PJ's ref take scored Bret 0.784 and the clone sounded like Bret). The second
+# take always saves: genuinely close voices cross-match this high forever. The
+# visibility requirement keeps junk-twin cross-matches (2026-07-23) from
+# blocking a capture — a phantom print is never on camera.
+IMPERSONATION_CAPTURE_FOREIGN_VOICE_BAR = 0.75
 IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0     # pending capture slot expiry
 # A turn whose transcript matches the requested phrase at least this closely IS the
 # recitation, whoever the voice system says is talking — misattribution must not
@@ -3927,6 +3935,12 @@ VOICELESS_FACE_WINS_ENABLED = True
 # Once per person per session; window mirrors the intro voice capture.
 VOICE_SAMPLE_REQUEST_ENABLED = True
 VOICE_SAMPLE_REQUEST_WINDOW_SECS = 45.0
+# Minimum size for an enrollable voice sample. A two-word "Hey Rex" (~1s) makes
+# a print too weak to separate close voices — field 2026-08-25: PJ enrolled from
+# one, and every answer he gave during Jeopardy was attributed to Bret. Shorter
+# samples get one more ask for a full sentence instead of enrolling.
+VOICE_SAMPLE_MIN_SECS = 2.0
+VOICE_SAMPLE_MIN_WORDS = 4
 
 # Off-screen "who was that?" claim verification: when the answer names an EXISTING
 # person who already has voice prints, the held clip must score at least this
@@ -8757,6 +8771,24 @@ JEOPARDY_AUDIO_MUSIC_GAIN = 0.22
 JEOPARDY_AUDIO_STINGER_GAIN = 0.75
 JEOPARDY_THEME_MAX_SECS = 6.0
 JEOPARDY_PLAY_THINKING_THEME = True
+# When the answer timer expires while a player is mid-utterance (or their
+# just-finished utterance is still transcribing), the timeout re-arms for this
+# grace instead of stealing the turn — the answer in the pipe grades normally
+# (field 2026-08-25: "Floral" was spoken at the beeper, the rebound had already
+# advanced the turn, and the $1000 went to the wrong player).
+JEOPARDY_TIMEOUT_SPEECH_GRACE_SECS = 2.5
+# On the robot (hardware AEC), a player answer that barges in over a Jeopardy
+# clip (the thinking theme) keeps its true VAD onset instead of restarting the
+# capture at the interrupt — the words spoken under the clip are in the rolling
+# buffer, AEC'd clean, and dropping them front-clipped answers ("What is a moon"
+# → "As a moon", field 2026-08-25). Software-suppression machines (dev Mac)
+# always restart at the interrupt regardless of this flag.
+GAME_BARGE_KEEP_ONSET_ENABLED = True
+# Hold the drive base still while a parlor game is active: the social motion
+# lanes (radar orient, comfort realign, idle wander) read seated-and-quiet
+# players as a reason to go looking, and turned Rex away from the Jeopardy
+# board mid-round (field 2026-08-25). Flinch and explicit come-here still run.
+MOTION_HOLD_DURING_GAMES = True
 # LLM fallback judge (2026-07-07): answers arrive via SPEECH, so a RIGHT answer
 # can reach the deterministic matcher phonetically mangled ("day cart" for
 # Descartes) or phrased in a way fuzzy matching can't score. When the

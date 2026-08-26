@@ -2466,6 +2466,68 @@ minimal (owner: only what's feasible and easy):
   / `_WHY_LIMIT` (6). Grep `[decision_ledger]` in a session log to see what he
   had on record when asked. Tests: `tests/test_decision_ledger.py` (20).
 
+### Jeopardy live-game batch — five fixes from one session log (2026-08-25)
+
+Session `logs/djr3x-2026-08-25-18-41-13.log` (Bret + PJ playing Jeopardy)
+surfaced five distinct failures; each is fixed at its own layer:
+
+- **Theme front-clipped answers.** With `JEOPARDY_PLAY_THINKING_THEME` on, the
+  theme starts right after the clue — exactly when a fast player answers. The
+  game-audio barge-in path stopped the theme but RESET `speech_start` to now
+  and the theme's queue done-callback restamped the capture floor at the
+  theme's end, so words spoken under it were discarded ("What is a moon" →
+  HEARD "As a moon"; "hydrogen and helium" → "Lithium" — the tail of *helium*).
+  On hardware AEC the buffer under the theme is clean (instrumental residual
+  can't transcribe): the interrupt now keeps the VAD onset and pins the floor
+  via the one-shot `interaction._game_barge_floor_at`, honored in
+  `_speech_capture_secs`. Software-suppression machines keep the old reset.
+  Kill switch `GAME_BARGE_KEEP_ONSET_ENABLED`. Tests:
+  `tests/test_front_clip_fast_reply.py::GameBargeFloorOverrideTests`.
+- **Timeout stole the turn mid-answer (twice).** The 12s answer timer fired
+  while the player was speaking ("Floral" at the very second of the beeper);
+  the rebound advanced `current_player_idx`, so the in-flight answer graded
+  for the NEXT contestant ("$1000 to Bret", "$400 to Bret" off "What is
+  Nike"). Two guards in `features/games.py`: `_jeopardy_timeout_fired` defers
+  (`JEOPARDY_TIMEOUT_SPEECH_GRACE_SECS`, same token re-arm) while
+  `situation.assessor` reports speech/turn in flight; and a timeout rebound
+  records `timeout_rebound` — an answer that lands while the rebound
+  announcement is still being delivered (`awaiting_prompt_delivery`) is graded
+  for the timed-out player, the queued announcement is dropped by tag, and
+  the post-timeout waiter thread stands down via the `rebound_at` token.
+  Grace closes when `_jeopardy_arm_timeout` pops the delivery flag. Tests:
+  `tests/test_jeopardy_answers.py::TimeoutGraceTest`.
+- **Base wandered/turned away mid-game.** `motion_agency` social lanes (radar
+  orient, comfort realign, idle wander) read seated players + think-silence as
+  "nobody here, go look": radar orient chased a rear return (+57°), realign
+  turned +45° under a parked neck. New gate in `_step_inner` holds ALL social
+  lanes while `features.games.is_active()` (`MOTION_HOLD_DURING_GAMES`); the
+  flinch reflex and explicit come-here still run. Tests:
+  `tests/test_motion_agency.py::GameHoldTest`.
+- **"COMBINED STATE ABBREV." read as "abreev".** `jeopardy.speak_category`
+  expands a conservative map of unambiguous dataset abbreviations
+  (ABBREV./MISC./GOVT./NATL./…) and drops the trailing period — SPEECH ONLY:
+  the GUI board, `snapshot()`, and the selection fuzzy-matcher keep raw names.
+  Applied in `format_categories`, `format_board_readout`, and the games.py
+  clue/rebound/repeat announce sites. Ambiguous tokens (LIT, PRES) stay raw on
+  purpose. Tests: `tests/test_jeopardy_answers.py::SpeakCategoryTest`.
+- **PJ's voiceprint AND impersonation ref were junk/contaminated.** His print
+  enrolled from a ~1s "Hey Rex." (worthless under ECAPA short-turn behavior →
+  the whole game heard PJ as "Bret Benziger" or unknown_voice_N), and his
+  impersonation ref (`assets/voices/people/7.wav`, "Mary had a little lamb")
+  voice-scored **Bret 0.784** at capture — the "PJ" clone sounded like Bret.
+  Guards: voice-sample enrollment now requires `VOICE_SAMPLE_MIN_SECS` /
+  `VOICE_SAMPLE_MIN_WORDS` (re-asks for a full sentence; the ask itself now
+  says "full sentence"), and an impersonation capture take that voice-matches
+  a DIFFERENT enrolled, recently-VISIBLE person ≥
+  `IMPERSONATION_CAPTURE_FOREIGN_VOICE_BAR` (0.75) gets ONE solo-retake ask
+  (visibility requirement keeps the 2026-07-23 junk-twin capture shape
+  working; the second take always saves). OWNER ACTIONS still owed: delete
+  `assets/voices/people/7.{wav,txt,json}` and re-capture PJ's impersonation
+  ref; re-enroll PJ's voiceprint with a long solo line
+  (`tools/test_voice_id.py --enroll "PJ Thomas" --replace`). Tests:
+  `tests/test_voiceless_face_wins.py` (min-length),
+  `tests/test_impersonation.py::CaptureConsumerTest` (foreign-voice retake).
+
 ## Likely Future Work
 
 - **OPEN (instrumented, awaiting data): do sound effects mute the mic mid-reply?** The

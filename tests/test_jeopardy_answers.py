@@ -359,5 +359,164 @@ class ClueRepeatRequestTest(unittest.TestCase):
             self.assertFalse(jeopardy.is_clue_repeat_request(text), text)
 
 
+class SpeakCategoryTest(unittest.TestCase):
+    """Dataset category abbreviations are expanded for SPEECH only — the TTS read
+    "COMBINED STATE ABBREV." as "abreev" and the players couldn't tell what the
+    category was (field 2026-08-25). The raw name stays on the board/GUI and in
+    the selection matcher."""
+
+    def test_abbrev_expanded(self):
+        self.assertEqual(
+            jeopardy.speak_category("COMBINED STATE ABBREV."),
+            "COMBINED STATE ABBREVIATIONS",
+        )
+
+    def test_case_follows_the_original_token(self):
+        self.assertEqual(jeopardy.speak_category("Misc. Facts"), "Miscellaneous Facts")
+
+    def test_plain_names_untouched(self):
+        for name in ["VAMPIRE DIARIES", "POP CULTURE", "WE MAKE THAT"]:
+            self.assertEqual(jeopardy.speak_category(name), name)
+
+    def test_trailing_period_dropped_even_without_expansion(self):
+        # "JUMPING JUPITER!." style double stops read badly; the sentence the
+        # name lands in supplies its own period.
+        self.assertEqual(jeopardy.speak_category("ODD FACTS."), "ODD FACTS")
+
+    def test_real_words_not_falsely_expanded(self):
+        # "lit"/"pres" style tokens are real words in other categories — only the
+        # unambiguous map entries expand.
+        self.assertEqual(jeopardy.speak_category("GETTING LIT"), "GETTING LIT")
+
+    def test_format_categories_speaks_expanded_names(self):
+        board = {
+            "categories": [
+                {"name": "STATE ABBREV.", "clues": {200: {}}},
+                {"name": "HISTORY", "clues": {400: {}}},
+            ],
+        }
+        text = jeopardy.format_categories(board)
+        self.assertIn("ABBREVIATIONS", text)
+        self.assertNotIn("ABBREV.", text)
+
+    def test_board_readout_speaks_expanded_names(self):
+        board = {
+            "categories": [
+                {"name": "STATE ABBREV.", "clues": {200: {}, 400: {}}},
+            ],
+        }
+        self.assertIn("ABBREVIATIONS", jeopardy.format_board_readout(board))
+
+
+class TimeoutGraceTest(unittest.TestCase):
+    """The answer-timer race (field 2026-08-25, twice in one game): a player
+    speaks their answer right at the time's-up beeper, the rebound has already
+    advanced the turn, and the points go to the NEXT contestant.
+
+    Two guards: (1) a timer that fires while player speech is in flight defers
+    instead of stealing the turn; (2) an answer that lands before the rebound
+    announcement finishes is graded for the player whose time ran out."""
+
+    _CLUE = {
+        "category": "SPACE", "value": 1000, "effective_value": 1000,
+        "clue": "Think of a bouquet: Florida + Oregon + Alabama",
+        "answer": "floral",
+    }
+
+    def setUp(self):
+        games._active_game = "jeopardy"
+        games._game_state = {
+            "phase": "awaiting_answer",
+            "current_clue": dict(self._CLUE),
+            "players": [
+                {"name": "PJ", "score": 0},
+                {"name": "Bret", "score": 0},
+            ],
+            "current_player_idx": 0,
+            "current_clue_attempts": [0],
+            "board": {
+                "remaining": 2,
+                "categories": [{"name": "SPACE", "clues": {200: {}}}],
+            },
+            # State exactly as _jeopardy_timeout_fired leaves it after offering
+            # the rebound to Bret (idx 1), announcement still being spoken.
+            "awaiting_prompt_delivery": True,
+            "timeout_rebound": {"from_idx": 0, "at": 123.0},
+        }
+        games._game_state["current_player_idx"] = 1
+
+    def tearDown(self):
+        games._game_state = {}
+        games._active_game = None
+
+    def _handle(self, text):
+        with mock.patch.object(games, "_body_beat"), \
+             mock.patch.object(games, "_jeopardy_queue_clip"), \
+             mock.patch.object(games, "_jeopardy_cancel_timeout"), \
+             mock.patch.object(games, "_jeopardy_llm_judge", return_value=False), \
+             mock.patch("audio.speech_queue.drop_by_tag", return_value=1):
+            return games._jeopardy_handle_answer(text, None)
+
+    def test_grace_answer_scores_the_timed_out_player(self):
+        resp, done = self._handle("floral")
+        self.assertFalse(done)
+        self.assertEqual(games._game_state["players"][0]["score"], 1000,
+                         "PJ (timed out mid-answer) gets the points")
+        self.assertEqual(games._game_state["players"][1]["score"], 0,
+                         "Bret (rebound target) must NOT be credited")
+        self.assertNotIn("timeout_rebound", games._game_state)
+
+    def test_grace_wrong_answer_deducts_from_the_timed_out_player(self):
+        resp, done = self._handle("what is a garden")
+        self.assertFalse(done)
+        self.assertEqual(games._game_state["players"][0]["score"], -1000)
+        self.assertEqual(games._game_state["players"][1]["score"], 0)
+        # The clue rebounds onward to Bret, who has not attempted it.
+        self.assertIn("Bret", resp)
+
+    def test_after_the_announcement_the_rebound_player_owns_answers(self):
+        # _jeopardy_arm_timeout pops both flags once the announcement finishes.
+        games._game_state.pop("awaiting_prompt_delivery")
+        games._game_state.pop("timeout_rebound")
+        self._handle("floral")
+        self.assertEqual(games._game_state["players"][1]["score"], 1000,
+                         "Bret answered after the full announcement — his points")
+        self.assertEqual(games._game_state["players"][0]["score"], 0)
+
+    def test_arm_timeout_closes_the_grace_window(self):
+        with mock.patch.object(config, "JEOPARDY_ANSWER_TIMEOUT_SECS", 0):
+            games._jeopardy_arm_timeout()
+        self.assertNotIn("timeout_rebound", games._game_state)
+
+    def test_timer_defers_while_an_answer_is_in_flight(self):
+        games._game_state["answer_timer_token"] = "tok"
+        started = []
+        with mock.patch.object(games, "_jeopardy_answer_in_flight", return_value=True), \
+             mock.patch.object(games.threading, "Timer") as timer_cls:
+            timer_cls.return_value.start = lambda: started.append(True)
+            games._jeopardy_timeout_fired("tok")
+        self.assertTrue(started, "a grace re-arm timer must be started")
+        # The turn was NOT stolen: same player, clue still live.
+        self.assertEqual(games._game_state["current_player_idx"], 1)
+        self.assertTrue(games._game_state.get("current_clue"))
+        self.assertEqual(games._game_state.get("answer_timer_token"), "tok")
+
+    def test_timer_fires_normally_when_nobody_is_speaking(self):
+        games._game_state["answer_timer_token"] = "tok"
+        games._game_state["current_player_idx"] = 0
+        games._game_state["current_clue_attempts"] = []
+        with mock.patch.object(games, "_jeopardy_answer_in_flight", return_value=False), \
+             mock.patch.object(games, "_body_beat"), \
+             mock.patch.object(games, "_jeopardy_queue_clip"), \
+             mock.patch.object(games, "_jeopardy_schedule_post_timeout_rebound"), \
+             mock.patch("audio.speech_queue.enqueue") as enq:
+            enq.return_value = mock.MagicMock()
+            games._jeopardy_timeout_fired("tok")
+        # Rebound offered to the other player, grace window recorded.
+        self.assertEqual(games._game_state["current_player_idx"], 1)
+        self.assertIn("timeout_rebound", games._game_state)
+        self.assertEqual(games._game_state["timeout_rebound"]["from_idx"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

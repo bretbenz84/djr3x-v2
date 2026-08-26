@@ -467,6 +467,15 @@ _post_question_retro_scan_at: float = 0.0
 # the next detected speech onset. 0 = nothing pending. See _barge_recovered_speech_start.
 _barge_yield_onset_at: float = 0.0
 
+# One-shot capture-floor override for a game clip cut mid-utterance (hardware AEC
+# only). The player's words spoken UNDER the Jeopardy thinking theme are in the
+# rolling buffer, hardware-AEC'd clean — but stopping the clip fires its queue
+# done-callback, which restamps _listen_capture_floor_at at the clip's end and
+# clips everything the player said under it out of the capture (field 2026-08-25:
+# "What is a moon" → HEARD "As a moon", "hydrogen and helium" → "Lithium"). This
+# preserves the pre-interrupt floor for the segment being captured. 0 = inactive.
+_game_barge_floor_at: float = 0.0
+
 # When True, a post-TTS cleanup flush already happened and the next detected
 # speech onset should simply clear this marker. Question handoffs usually leave
 # this False so a fast human answer is not deleted.
@@ -12119,6 +12128,26 @@ def _handle_voice_sample_capture(
         )
         return None
 
+    # A sample this short makes a print too weak to separate close voices —
+    # field 2026-08-25: PJ enrolled from a ~1s "Hey Rex" and spent the whole
+    # Jeopardy game being read as Bret. Re-ask for a full sentence instead;
+    # the capture window machinery already handles the retry.
+    min_secs = float(getattr(config, "VOICE_SAMPLE_MIN_SECS", 2.0))
+    min_words = int(getattr(config, "VOICE_SAMPLE_MIN_WORDS", 4))
+    duration = _audio_duration_secs(audio_array)
+    words = len((text or "").split())
+    if duration < min_secs or words < min_words:
+        ctx["asked_at"] = time.monotonic()
+        first = _first_name_or(target_name, "there")
+        _log.info(
+            "[voice_sample] sample too short to enroll (%.1fs, %d words) — re-asking %s",
+            duration, words, target_name,
+        )
+        return (
+            f"{first}, that was a blink — give me a whole sentence, any sentence, "
+            f"so my ears actually learn you."
+        )
+
     ok = _safe_enroll_voice(
         target_id,
         audio_array,
@@ -13800,6 +13829,13 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
     preroll = _speech_preroll_secs()
     start_at = float(speech_start_mono) - preroll
     clamped_to_floor = False
+    floor_at = _listen_capture_floor_at
+    if 0.0 < _game_barge_floor_at < floor_at:
+        # A game clip was cut mid-utterance and its done-callback restamped the
+        # floor at the clip's end — INSIDE this utterance. The words under the
+        # clip are hardware-AEC'd clean; anchor on the pre-interrupt floor so
+        # they stay in the capture (see _game_barge_floor_at).
+        floor_at = _game_barge_floor_at
     # FAST-REPLY WIDENING (field 2026-08-06 00:10, "I know, am I right?" heard as
     # "Am I right?"): when VAD fires shortly after the capture floor, the human
     # almost certainly started talking the moment Rex went quiet — but the software
@@ -13811,13 +13847,13 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
     near = float(getattr(config, "CAPTURE_FROM_FLOOR_NEAR_SECS", 2.0) or 0.0)
     if (
         near > 0.0
-        and _listen_capture_floor_at > 0.0
-        and 0.0 <= (float(speech_start_mono) - _listen_capture_floor_at) <= near
+        and floor_at > 0.0
+        and 0.0 <= (float(speech_start_mono) - floor_at) <= near
     ):
-        start_at = _listen_capture_floor_at
+        start_at = floor_at
         clamped_to_floor = True
-    elif _listen_capture_floor_at > 0.0 and _listen_capture_floor_at > start_at:
-        start_at = _listen_capture_floor_at
+    elif floor_at > 0.0 and floor_at > start_at:
+        start_at = floor_at
         clamped_to_floor = True
     duration = max(0.0, finished - start_at)
     # A post-TTS handoff that lands AFTER this utterance began pushes the floor past
@@ -13828,8 +13864,8 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
             "capture_window_collapsed" if clamped_to_floor else "capture_window_empty",
             window=f"{duration:.2f}s",
             floor_after_speech_start=(
-                f"{_listen_capture_floor_at - float(speech_start_mono):+.2f}s"
-                if _listen_capture_floor_at > 0.0 else "n/a"
+                f"{floor_at - float(speech_start_mono):+.2f}s"
+                if floor_at > 0.0 else "n/a"
             ),
             preroll=f"{preroll:.2f}s",
             speech_len=f"{finished - float(speech_start_mono):.2f}s",
@@ -20268,6 +20304,41 @@ def _handle_impersonation_capture(
         return (
             f"{first}, that was a blink — give me one more full sentence so I have "
             "something to work with.",
+            False,
+        )
+
+    # The recitation-match rule above deliberately ignores identity ("whoever is
+    # speaking IS performing the capture") — but the take becomes the target's
+    # DURABLE voice ref, and a helpful housemate reciting the line poisons the
+    # clone (field 2026-08-25: PJ's ref was captured from a take whose voice
+    # scored Bret 0.784, and "PJ's" impression came out sounding like Bret).
+    # When the clip strongly voice-matches a DIFFERENT enrolled person who is
+    # actually around the camera, re-ask once for a solo take; the second take
+    # is accepted regardless, because two genuinely close voices can cross-match
+    # this high forever. The visibility requirement keeps the 2026-07-23 shape
+    # working: a junk voiceprint TWIN also cross-matches high, but a phantom is
+    # never on camera — that capture still goes through first time.
+    foreign_bar = float(getattr(config, "IMPERSONATION_CAPTURE_FOREIGN_VOICE_BAR", 0.75))
+    rb = _safe_int(raw_best_id)
+    if (
+        expected_id is not None
+        and rb is not None
+        and rb != expected_id
+        and float(speaker_score or 0.0) >= foreign_bar
+        and _known_person_visible_recently(rb)
+        and not ctx.get("foreign_retry_done")
+    ):
+        ctx["foreign_retry_done"] = True
+        ctx["asked_at"] = time.monotonic()
+        first = _first_name_or(ctx.get("name"), "hey")
+        _log.info(
+            "[impersonation] capture voice-matches person %s at %.2f (target %s) — "
+            "asking for a solo retake",
+            rb, float(speaker_score or 0.0), expected_id,
+        )
+        return (
+            f"{first}, my ears say someone else's voice got on that take — "
+            "give me the line one more time, just you.",
             False,
         )
 
@@ -29361,9 +29432,12 @@ def _handle_speech_segment(
             and _known_person_visible_recently(pending_vs.get("person_id"))
         ):
             vs_first = _first_name_or(pending_vs.get("name"), "friend")
+            # Ask for a FULL sentence: a two-word reply ("Hey Rex") enrolls a
+            # print too weak to tell close voices apart (field 2026-08-25: PJ's
+            # 1s sample left him reading as Bret for the whole Jeopardy game).
             ask_text = (
                 f"Oh, and {vs_first} — my eyes know you, but my ears don't yet. "
-                f"Give me a line so I can learn your voice."
+                f"Give me a full sentence so I can learn your voice."
             )
             try:
                 _speak_blocking(ask_text)
@@ -29517,6 +29591,7 @@ def submit_text(
 
 def _loop() -> None:
     global _last_speech_at, _listen_resume_at, _post_tts_flush_needed, _barge_yield_onset_at
+    global _game_barge_floor_at
 
     idle_timeout = config.CONVERSATION_IDLE_TIMEOUT_SECS
     _last_speech_at = time.monotonic()
@@ -29913,6 +29988,7 @@ def _loop() -> None:
         # Rex's own voice which Whisper concatenates onto the user's utterance.
         if speech_queue.is_speaking() or output_gate.is_busy():
             if _is_interruptible_game_audio_path(direct_audio_path):
+                game_barge_onset = speech_start
                 _interrupted.set()
                 try:
                     import sounddevice as sd
@@ -29926,7 +30002,26 @@ def _loop() -> None:
                 except Exception:
                     pass
                 _interrupted.clear()
-                speech_start = time.monotonic()
+                if hardware_aec.is_active() and bool(
+                    getattr(config, "GAME_BARGE_KEEP_ONSET_ENABLED", True)
+                ):
+                    # The words spoken UNDER the clip are already in the rolling
+                    # buffer, hardware-AEC'd clean (the theme is instrumental —
+                    # its residual cannot transcribe). Resetting the onset to now
+                    # is what turned "What is a moon" into "As a moon" (field
+                    # 2026-08-25 18:56): keep the VAD onset, and pin the capture
+                    # floor to its pre-interrupt value so this clip's own
+                    # done-callback restamp (anchored at the clip's end, INSIDE
+                    # this utterance) can't clamp the reach-back.
+                    _game_barge_floor_at = (
+                        _listen_capture_floor_at
+                        or max(0.0, game_barge_onset - _speech_preroll_secs())
+                    )
+                    speech_start = game_barge_onset
+                else:
+                    # Software suppression: the buffer under the clip holds the
+                    # clip at full volume — capture must start after the stop.
+                    speech_start = time.monotonic()
                 _last_speech_at = speech_start
                 _log.info(
                     "[interaction] interrupted game audio for player speech: %s",
@@ -30004,6 +30099,7 @@ def _loop() -> None:
                     "this turn, listening loop continues"
                 )
         finally:
+            _game_barge_floor_at = 0.0    # one-shot — never outlive its segment
             _restore_dj_volume(_dj_restore_volume)
             _end_user_turn()
 
