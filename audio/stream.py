@@ -60,6 +60,13 @@ _last_callback_at: float = 0.0
 _running: bool = False
 _last_reopen_at: float = 0.0
 _reopen_count: int = 0
+# Consecutive reopen attempts that ended in a WEDGE signature (worker stuck
+# inside CoreAudio past its budget, or the lock still held by an earlier stuck
+# worker). Distinct from a plain reopen failure (device unplugged, enumerating):
+# those can recover in-process, a wedge streak cannot — field 2026-08-25 19:08:
+# 11 straight wedged attempts, 64s of deafness before the time-based escalation
+# fired. Any non-wedged outcome resets the streak.
+_wedged_reopen_streak: int = 0
 # time.monotonic() of the last callback BEFORE the current outage, or 0.0 when
 # the stream is healthy. Drives the fatal-escalation clock below.
 _down_since: float = 0.0
@@ -165,7 +172,9 @@ def _open_stream() -> bool:
 
 def start() -> None:
     """Open the microphone and begin filling the rolling buffer."""
-    global _aec_channel, _running, _input_gain
+    global _aec_channel, _running, _input_gain, _wedged_reopen_streak
+
+    _wedged_reopen_streak = 0
 
     ch_cfg = int(getattr(config, "AUDIO_AEC_INPUT_CHANNEL", -1))
     _aec_channel = ch_cfg if ch_cfg >= 0 else None
@@ -263,7 +272,7 @@ def _reopen(reason: str) -> bool:
     An abandoned worker keeps _stream_lock, so later attempts fail fast on the
     bounded acquire instead of piling up threads behind it.
     """
-    global _reopen_count, _last_reopen_at
+    global _reopen_count, _last_reopen_at, _wedged_reopen_streak
 
     if not _running:
         return False
@@ -313,17 +322,20 @@ def _reopen(reason: str) -> bool:
     worker.join(timeout=budget)
 
     if worker.is_alive():
+        _wedged_reopen_streak += 1
         _log.error(
             "[stream_watchdog] reopen wedged inside CoreAudio (>%.0fs) — abandoning that "
             "thread. The watchdog stays up and keeps retrying.", budget,
         )
         return False
     if outcome.get("lock_wedged"):
+        _wedged_reopen_streak += 1
         _log.error(
             "[stream_watchdog] stream lock still held by an earlier wedged reopen — "
             "the device has not come back yet."
         )
         return False
+    _wedged_reopen_streak = 0
     if outcome.get("error") is not None:
         _log.error("[stream_watchdog] reopen raised: %s", outcome["error"])
         return False
@@ -389,12 +401,13 @@ def _escalate_dead_mic(down_secs: float) -> None:
 
 
 def _watchdog_loop() -> None:
-    global _down_since
+    global _down_since, _wedged_reopen_streak
 
     interval = max(0.05, float(getattr(config, "AUDIO_STALL_CHECK_INTERVAL_SECS", 0.5)))
     timeout = max(0.2, float(getattr(config, "AUDIO_STALL_TIMEOUT_SECS", 1.5)))
     min_spacing = max(0.0, float(getattr(config, "AUDIO_STALL_REOPEN_MIN_SPACING_SECS", 3.0)))
     fatal_after = float(getattr(config, "AUDIO_STALL_FATAL_SECS", 60.0))
+    fatal_streak = int(getattr(config, "AUDIO_STALL_FATAL_WEDGED_REOPENS", 4))
 
     while not _watchdog_stop.wait(interval):
         if not _running:
@@ -410,12 +423,22 @@ def _watchdog_loop() -> None:
                     now - _down_since,
                 )
                 _down_since = 0.0
+                _wedged_reopen_streak = 0
             continue  # healthy: callbacks are flowing
         if _down_since <= 0.0:
             _down_since = last
         # A device that has ignored every reopen for this long is not coming back
         # on its own — bail out to the supervisor rather than run on deaf.
         if fatal_after > 0.0 and (now - _down_since) >= fatal_after:
+            _escalate_dead_mic(now - _down_since)
+            break
+        # Fast path: reopens that WEDGE (stick inside CoreAudio, or find the lock
+        # still held by a stuck predecessor) are categorically unrecoverable in
+        # this process — waiting out the full time budget just extends the
+        # deafness (field 2026-08-25 19:08: 11 straight wedges, 64s of nothing
+        # before the clock fired). A plain reopen failure — device unplugged,
+        # still enumerating — resets the streak and keeps the patient clock.
+        if fatal_streak > 0 and _wedged_reopen_streak >= fatal_streak:
             _escalate_dead_mic(now - _down_since)
             break
         if now - _last_reopen_at < min_spacing:

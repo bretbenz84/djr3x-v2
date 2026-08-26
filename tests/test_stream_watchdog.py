@@ -46,6 +46,7 @@ class StreamWatchdogTest(unittest.TestCase):
                 "AUDIO_STALL_FATAL_SECS",
                 "AUDIO_STALL_FATAL_RESTART_ENABLED",
                 "AUDIO_STALL_FATAL_EXIT_GRACE_SECS",
+                "AUDIO_STALL_FATAL_WEDGED_REOPENS",
             )
         }
         self._real_open = stream._open_stream
@@ -54,6 +55,7 @@ class StreamWatchdogTest(unittest.TestCase):
         stream._last_callback_at = 0.0
         stream._last_reopen_at = 0.0
         stream._reopen_count = 0
+        stream._wedged_reopen_streak = 0
         stream._down_since = 0.0
         stream._stream = None
         with stream._buf_lock:
@@ -65,6 +67,7 @@ class StreamWatchdogTest(unittest.TestCase):
         stream._stop_watchdog()
         stream._open_stream = self._real_open
         stream._down_since = 0.0
+        stream._wedged_reopen_streak = 0
         stream._stream = None
         with stream._buf_lock:
             stream._buf.clear()
@@ -257,6 +260,80 @@ class StreamWatchdogTest(unittest.TestCase):
         with mock.patch.object(stream.os, "_exit") as hard_exit:
             stream._escalate_dead_mic(120.0)
         hard_exit.assert_not_called()
+
+    def test_wedge_streak_escalates_without_waiting_out_the_clock(self):
+        """Reopens that WEDGE are categorically unrecoverable in-process.
+
+        Field 2026-08-25 19:08: 11 straight wedged attempts, 64 seconds of
+        deafness before the time-based clock fired — the room got "a minute of
+        nothingness" and 'shut down' was ignored. A short streak of wedge
+        signatures escalates immediately instead.
+        """
+        config.AUDIO_STALL_WATCHDOG_ENABLED = True
+        config.AUDIO_STALL_CHECK_INTERVAL_SECS = 0.02
+        config.AUDIO_STALL_TIMEOUT_SECS = 0.05
+        config.AUDIO_STALL_REOPEN_MIN_SPACING_SECS = 0.0
+        config.AUDIO_STALL_REOPEN_TIMEOUT_SECS = 0.05
+        config.AUDIO_STALL_FATAL_SECS = 60.0        # the patient clock never fires here
+        config.AUDIO_STALL_FATAL_WEDGED_REOPENS = 2
+
+        released = threading.Event()
+
+        def wedged_open():
+            released.wait(5.0)      # stands in for a hung CoreAudio call
+            return True
+
+        stream._open_stream = wedged_open
+        stream._stream = _DummyStream()
+        stream._running = True
+        stream._last_callback_at = time.monotonic() - 5.0
+
+        escalated = []
+        with mock.patch.object(stream, "_escalate_dead_mic", escalated.append):
+            stream._start_watchdog()
+            try:
+                deadline = time.monotonic() + 3.0
+                while not escalated and time.monotonic() < deadline:
+                    time.sleep(0.02)
+            finally:
+                stream._running = False
+                stream._stop_watchdog()
+                released.set()
+                time.sleep(0.05)
+
+        self.assertTrue(escalated, "a wedge streak must escalate without the 60s wait")
+        self.assertGreaterEqual(stream._wedged_reopen_streak, 2)
+
+    def test_plain_reopen_failures_keep_the_patient_clock(self):
+        """A mic that is unplugged (open returns False, no hang) may come back —
+        the fast path must NOT fire for it; only the time-based clock applies."""
+        config.AUDIO_STALL_WATCHDOG_ENABLED = True
+        config.AUDIO_STALL_CHECK_INTERVAL_SECS = 0.02
+        config.AUDIO_STALL_TIMEOUT_SECS = 0.05
+        config.AUDIO_STALL_REOPEN_MIN_SPACING_SECS = 0.0
+        config.AUDIO_STALL_REOPEN_TIMEOUT_SECS = 0.5
+        config.AUDIO_STALL_FATAL_SECS = 0.0          # patient clock off for this test
+        config.AUDIO_STALL_FATAL_WEDGED_REOPENS = 2
+
+        stream._open_stream = lambda: False           # fails fast, never wedges
+        stream._stream = _DummyStream()
+        stream._running = True
+        stream._last_callback_at = time.monotonic() - 5.0
+
+        escalated = []
+        with mock.patch.object(stream, "_escalate_dead_mic", escalated.append):
+            stream._start_watchdog()
+            try:
+                deadline = time.monotonic() + 1.5
+                while stream._reopen_count < 3 and time.monotonic() < deadline:
+                    time.sleep(0.02)
+            finally:
+                stream._running = False
+                stream._stop_watchdog()
+
+        self.assertGreaterEqual(stream._reopen_count, 3, "reopens kept retrying")
+        self.assertFalse(escalated, "plain failures must not trip the wedge fast path")
+        self.assertEqual(stream._wedged_reopen_streak, 0)
 
     def test_recovery_clears_the_outage_clock(self):
         config.AUDIO_STALL_WATCHDOG_ENABLED = True

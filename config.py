@@ -4018,6 +4018,16 @@ AUDIO_STALL_REOPEN_TIMEOUT_SECS = 5.0
 # alive while ignoring the room. 0 disables the escalation.
 AUDIO_STALL_FATAL_SECS = 60.0
 AUDIO_STALL_FATAL_RESTART_ENABLED = True
+# Fast path to the same escalation: this many CONSECUTIVE reopen attempts ending
+# in a WEDGE signature (worker stuck inside CoreAudio past its budget, or the
+# stream lock still held by a stuck predecessor) escalates immediately — a wedge
+# streak is categorically unrecoverable in-process, and waiting out the full
+# AUDIO_STALL_FATAL_SECS just extends the deafness (field 2026-08-25 19:08: 11
+# straight wedges, ~64s of silence before the time clock fired; this cuts it to
+# ~25s). A plain reopen failure — mic unplugged, device enumerating — resets the
+# streak and keeps the patient clock, so a replugged mic still recovers in
+# place. 0 disables the fast path.
+AUDIO_STALL_FATAL_WEDGED_REOPENS = 4
 # Grace for the clean shutdown before a hard exit. The graceful path plays the
 # power-down clip through the SAME wedged device, so it can hang too.
 AUDIO_STALL_FATAL_EXIT_GRACE_SECS = 20.0
@@ -8807,6 +8817,14 @@ JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS = 120  # longer turns aren't answer attempts
 # The once-per-round board announcement (all six categories on a fresh board) is
 # unaffected either way.
 JEOPARDY_READ_CATEGORIES_WITH_GUI = False
+# Voice-only reminder fatigue curve (owner call 2026-08-25: repeating the list
+# every turn is great early game, tiresome once everyone knows the board). The
+# first FULL_READS scoring turns read the remaining categories every time; after
+# that only every EVERY-th scoring turn does (EVERY <= 0: never again that
+# round). Resets each round, and an explicit "what are the categories?" is
+# always answered in full regardless.
+JEOPARDY_CATEGORIES_REMINDER_FULL_READS = 4
+JEOPARDY_CATEGORIES_REMINDER_EVERY = 3
 
 # I Spy: on the physical droid, Rex LOOKS AROUND the room (left → center → right,
 # a frame captured at each pose under a directed-gaze hold) before picking the

@@ -2510,6 +2510,32 @@ surfaced five distinct failures; each is fixed at its own layer:
   Applied in `format_categories`, `format_board_readout`, and the games.py
   clue/rebound/repeat announce sites. Ambiguous tokens (LIT, PRES) stay raw on
   purpose. Tests: `tests/test_jeopardy_answers.py::SpeakCategoryTest`.
+- **Category reminder fatigue curve (owner call, same session).** The per-turn
+  "Remaining categories: …" read-back is great early game, tiresome once
+  everyone knows the board. `_jeopardy_categories_reminder` now counts scoring
+  turns (`categories_reminder_reads`, reset each round by
+  `_jeopardy_load_round`): the first `JEOPARDY_CATEGORIES_REMINDER_FULL_READS`
+  (4) speak every time, then only every
+  `JEOPARDY_CATEGORIES_REMINDER_EVERY`-th (3; ≤0 = never again that round).
+  The GUI mute path does not consume reads, and an explicit "what are the
+  categories?" is always answered in full via `_jeopardy_board_text`. Tests:
+  `tests/test_jeopardy_answers.py::CategoriesReminderCadenceTest`.
+- **The 19:08 "crash": a CoreAudio device wedge, and a 64s escalation.** At
+  19:07:58 the theme barge-in `sd.stop()` landed while two `motion_turning`
+  sound effects were in flight (the base was wandering mid-game — now
+  prevented by the motion hold above); CoreAudio wedged, mic callbacks died,
+  and the output gate sat held by 'sound-effects' for 34s+. The feffb8c
+  supervisor-restart escalation DID fire — but only after
+  `AUDIO_STALL_FATAL_SECS` (60s) across 11 reopen attempts that ALL wedged:
+  that was the felt "minute of nothingness" where even "shut down" was
+  ignored. New fast path: `stream._wedged_reopen_streak` counts CONSECUTIVE
+  reopen attempts ending in a wedge signature (worker stuck past its budget,
+  or lock still held by a stuck predecessor);
+  `AUDIO_STALL_FATAL_WEDGED_REOPENS` (4) such attempts escalate immediately
+  (~25s). A plain reopen failure (mic unplugged, enumerating) resets the
+  streak and keeps the patient clock, so a replugged mic still recovers
+  in-process. Tests: `tests/test_stream_watchdog.py` (wedge-streak +
+  plain-failure cases).
 - **PJ's voiceprint AND impersonation ref were junk/contaminated.** His print
   enrolled from a ~1s "Hey Rex." (worthless under ECAPA short-turn behavior →
   the whole game heard PJ as "Bret Benziger" or unknown_voice_N), and his

@@ -198,6 +198,62 @@ class GuiCategoriesReminderTest(unittest.TestCase):
             self.assertIn("SCIENCE", games._jeopardy_categories_reminder())
 
 
+class CategoriesReminderCadenceTest(unittest.TestCase):
+    """Voice-only fatigue curve (owner call 2026-08-25): the per-turn category
+    read-back is great early game and tiresome once everyone knows the board.
+    First FULL_READS scoring turns read it every time, then every EVERY-th."""
+
+    def setUp(self):
+        games._game_state = {
+            "board": {
+                "categories": [
+                    {"name": "SCIENCE", "clues": {200: {}}},
+                    {"name": "HISTORY", "clues": {400: {}}},
+                ],
+                "remaining": 2,
+            },
+        }
+        self._patches = [
+            mock.patch.object(config, "GUI_ENABLED", False, create=True),
+            mock.patch.object(config, "JEOPARDY_CATEGORIES_REMINDER_FULL_READS", 2, create=True),
+            mock.patch.object(config, "JEOPARDY_CATEGORIES_REMINDER_EVERY", 3, create=True),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        games._game_state = {}
+
+    def test_full_reads_then_periodic(self):
+        # FULL_READS=2, EVERY=3: reads 1-2 speak; then only every 3rd after.
+        spoken = [bool(games._jeopardy_categories_reminder()) for _ in range(8)]
+        self.assertEqual(spoken, [True, True, False, False, True, False, False, True])
+
+    def test_new_round_resets_the_curve(self):
+        for _ in range(3):
+            games._jeopardy_categories_reminder()
+        self.assertFalse(games._jeopardy_categories_reminder())
+        # _jeopardy_load_round zeroes the counter with each fresh board.
+        games._game_state["categories_reminder_reads"] = 0
+        self.assertTrue(games._jeopardy_categories_reminder())
+
+    def test_every_zero_means_never_again_this_round(self):
+        with mock.patch.object(config, "JEOPARDY_CATEGORIES_REMINDER_EVERY", 0, create=True):
+            results = [bool(games._jeopardy_categories_reminder()) for _ in range(6)]
+        self.assertEqual(results, [True, True, False, False, False, False])
+
+    def test_gui_mute_does_not_consume_reads(self):
+        with mock.patch.object(config, "GUI_ENABLED", True, create=True):
+            self.assertEqual(games._jeopardy_categories_reminder(), "")
+        self.assertNotIn("categories_reminder_reads", games._game_state)
+
+    def test_explicit_board_request_ignores_the_curve(self):
+        games._game_state["categories_reminder_reads"] = 99
+        self.assertIn("SCIENCE", games._jeopardy_board_text())
+
+
 class BoardRepeatRequestTest(unittest.TestCase):
     """The categories are announced once when a round loads. A voice-only player
     who missed them must be able to ask for them back — the old selection parser

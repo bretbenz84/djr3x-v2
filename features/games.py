@@ -1456,6 +1456,20 @@ def _jeopardy_categories_reminder() -> str:
         getattr(config, "JEOPARDY_READ_CATEGORIES_WITH_GUI", False)
     ):
         return ""
+    # Voice-only fatigue curve (owner call 2026-08-25: great early game, tiresome
+    # once everyone knows the board): the first FULL_READS scoring turns repeat
+    # the list every time, then only every EVERY-th turn. The counter resets each
+    # round (a fresh board is announced in full anyway), and an explicit "what
+    # are the categories?" bypasses this entirely via _jeopardy_board_text.
+    reads = int(_game_state.get("categories_reminder_reads", 0) or 0)
+    _game_state["categories_reminder_reads"] = reads + 1
+    full_reads = int(getattr(config, "JEOPARDY_CATEGORIES_REMINDER_FULL_READS", 4))
+    every = int(getattr(config, "JEOPARDY_CATEGORIES_REMINDER_EVERY", 3))
+    if reads >= full_reads:
+        if every <= 0:
+            return ""
+        if (reads - full_reads + 1) % every != 0:
+            return ""
     board = _game_state.get("board") or {}
     try:
         from features import jeopardy as jeopardy_bank
@@ -1642,6 +1656,8 @@ def _jeopardy_load_round(
         "board_values": _jeopardy_board_values(board),
         "last_category": None,
         "jeopardy_round": round_no,
+        # Fresh board, fresh memories: the reminder fatigue curve starts over.
+        "categories_reminder_reads": 0,
     }
     if current_player_idx is not None:
         update["current_player_idx"] = current_player_idx
