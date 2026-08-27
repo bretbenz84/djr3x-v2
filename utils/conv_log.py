@@ -128,6 +128,12 @@ def log_heard(speaker: str | None, text: str) -> None:
     """Log a transcribed utterance. speaker is a name or None for unknown."""
     label = speaker.strip() if speaker and speaker.strip() else "Unknown"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # A human turn between two identical Rex lines proves they are two real
+    # answers, not the enqueue-then-blocking-return double-write log_rex's
+    # window guards against. Field 2026-08-26: Jeopardy re-asked "Pick a dollar
+    # value too..." twice more at 20:19:34 and 20:19:45 — both audible, both
+    # erased from the transcript, which read as Rex ignoring the player.
+    clear_dedupe_state()
     _write(f"{ts} | HEARD | {label}: {text}")
     _mirror_to_gui(label if label != "Unknown" else "Unknown speaker", text, "user")
 
@@ -226,7 +232,8 @@ def log_system(text: str) -> None:
 
 
 def clear_dedupe_state() -> None:
-    """Test/debug hook."""
+    """Forget the last Rex line for dedupe purposes. Called by log_heard (a human
+    turn separates two identical Rex lines into two real events) and by tests."""
     global _last_rex_norm, _last_rex_at
     with _lock:
         _last_rex_norm = ""

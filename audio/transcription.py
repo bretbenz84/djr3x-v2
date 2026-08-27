@@ -231,7 +231,9 @@ def _impossible_speaking_rate(text: str, duration_secs: float) -> bool:
     return False
 
 
-def _qwen_transcribe(audio_array: np.ndarray) -> "tuple[str, float | None]":
+def _qwen_transcribe(
+    audio_array: np.ndarray, *, use_context: bool = True,
+) -> "tuple[str, float | None]":
     """Decode with Qwen3-ASR, returning (text, mean per-token logprob).
 
     The public mlx_audio generate() discards logprobs, so this walks the
@@ -247,7 +249,7 @@ def _qwen_transcribe(audio_array: np.ndarray) -> "tuple[str, float | None]":
     max_tokens = int(getattr(config, "QWEN_ASR_MAX_TOKENS", 256))
     # MLX_LOCK: same shared-Metal-runtime rule as mlx_whisper below — concurrent
     # evaluation with the local TTS engine is a fatal native crash.
-    context = _asr_context_prompt()
+    context = _asr_context_prompt() if use_context else None
     with MLX_LOCK:
         for token, logprobs in model.stream_generate(
             audio_array,
@@ -571,14 +573,44 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
 
     if _qwen_backend_selected() and _qwen_ready() and not _QWEN_LOAD_FAILED:
         try:
+            duration = len(audio_array) / float(
+                getattr(config, "AUDIO_SAMPLE_RATE", 16000))
             raw, avg_logprob = _qwen_transcribe(audio_array)
             raw = raw.strip()
-            if raw and _context_echo_hallucination(raw):
+            poisoned = bool(raw) and (
+                _context_echo_hallucination(raw)
+                or _impossible_speaking_rate(raw, duration)
+            )
+            if poisoned:
                 raw = ""
-            if raw and _impossible_speaking_rate(
-                raw, len(audio_array) / float(getattr(config, "AUDIO_SAMPLE_RATE", 16000))
-            ):
-                raw = ""
+                # The BIAS is what broke this decode — the model completed the
+                # prompt instead of transcribing — so the audio deserves one
+                # unbiased look before the turn is thrown away. Without it, a
+                # rejected decode silently costs the whole utterance: field
+                # 2026-08-26, a Jeopardy run lost 10 of 59 turns this way, every
+                # one of them next to a regurgitation rejection, because the
+                # clue Rex had just read was the prompt.
+                if bool(getattr(config, "ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO", True)):
+                    try:
+                        retry, retry_logprob = _qwen_transcribe(
+                            audio_array, use_context=False)
+                        retry = retry.strip()
+                    except Exception as exc:
+                        logger.debug("[transcription] unbiased retry failed: %s", exc)
+                        retry, retry_logprob = "", None
+                    if retry and not _context_echo_hallucination(retry) and not (
+                        _impossible_speaking_rate(retry, duration)
+                    ):
+                        logger.info(
+                            "[transcription] unbiased retry recovered a rejected "
+                            "decode: %r", retry[:80],
+                        )
+                        raw, avg_logprob = retry, retry_logprob
+                    else:
+                        logger.info(
+                            "[transcription] unbiased retry decoded nothing usable "
+                            "— segment stays dropped",
+                        )
             backend = "qwen3_asr"
             local_decoded_ok = True
         except Exception as exc:

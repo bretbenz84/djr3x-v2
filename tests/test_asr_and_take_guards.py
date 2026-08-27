@@ -73,6 +73,60 @@ class ContextPromptRegurgitationTests(unittest.TestCase):
         self.assertEqual(transcription._last_context_prompt, prompt)
 
 
+class UnbiasedRetryTests(unittest.TestCase):
+    """A rejected regurgitation used to cost the WHOLE turn: the segment was
+    dropped as "local decoded silence" and nothing reached the pipeline. The
+    bias is what broke the decode, so the audio gets one unbiased look first
+    (field 2026-08-26: a Jeopardy run where every multi-second decode stall sat
+    beside a regurgitation rejection)."""
+
+    PREAMBLE = ("This audio is one side of a live spoken conversation. "
+                "Names and places that may occur: Bret, Lake Folsom.")
+
+    def setUp(self):
+        transcription._last_context_prompt = None
+        self.addCleanup(setattr, transcription, "_last_context_prompt", None)
+        self.audio = np.zeros(int(16000 * 2.0), dtype=np.float32)
+
+    def _transcribe(self, decodes):
+        """decodes: list of (text, logprob) returned by successive _qwen_transcribe calls."""
+        calls = []
+
+        def _fake(audio_array, *, use_context=True):
+            calls.append(use_context)
+            return decodes[len(calls) - 1]
+
+        with mock.patch.object(transcription, "_qwen_backend_selected", return_value=True), \
+             mock.patch.object(transcription, "_qwen_ready", return_value=True), \
+             mock.patch.object(transcription, "_QWEN_LOAD_FAILED", False, create=True), \
+             mock.patch.object(transcription, "_qwen_transcribe", side_effect=_fake), \
+             mock.patch.object(transcription, "_MLX_AVAILABLE", False, create=True):
+            result = transcription.transcribe(self.audio)
+        return str(result), calls
+
+    def test_a_rejected_decode_is_retried_without_the_prompt(self):
+        text, calls = self._transcribe([(self.PREAMBLE, 0.0), ("Who is Fidel Castro?", -0.1)])
+        self.assertEqual(text, "Who is Fidel Castro?")
+        self.assertEqual(calls, [True, False], "second decode must drop the bias")
+
+    def test_a_clean_decode_never_pays_for_a_retry(self):
+        text, calls = self._transcribe([("Who is Fidel Castro?", -0.1)])
+        self.assertEqual(text, "Who is Fidel Castro?")
+        self.assertEqual(calls, [True])
+
+    def test_a_retry_that_also_regurgitates_stays_dropped(self):
+        text, calls = self._transcribe([(self.PREAMBLE, 0.0), (self.PREAMBLE, 0.0)])
+        self.assertEqual(text, "")
+        self.assertEqual(calls, [True, False])
+
+    def test_the_retry_is_switchable(self):
+        with mock.patch.object(config, "ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO",
+                               False, create=True):
+            text, calls = self._transcribe([(self.PREAMBLE, 0.0)])
+        self.assertEqual(text, "")
+        self.assertEqual(calls, [True])
+
+
 class ImpersonateInflectionTests(unittest.TestCase):
     """20:25:22 — "Impersonate Barack Obama" decoded as "Impersonates Barack
     Obama", matched no pattern, and the imperative was answered as small talk."""

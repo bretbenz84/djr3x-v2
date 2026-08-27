@@ -1335,11 +1335,14 @@ venv/bin/python main.py
   re-litigates an accept). Validated at scale on the real clue bank: 2000/2000
   "what is X" self-matches, 0/1500 false accepts on random wrong pairs; live-API
   judge spot-check 5/5. Tests: `tests/test_jeopardy_answers.py`.
-  With the GUI up, the per-turn spoken "Remaining categories: …" reminder is
-  SKIPPED (`_jeopardy_categories_reminder` returns "" under `GUI_ENABLED` — the
-  JeopardyPanel shows the live board; the read-out was tiresome); voice-only play
-  keeps it, `JEOPARDY_READ_CATEGORIES_WITH_GUI=True` restores it with the GUI, and
-  the once-per-round fresh-board announcement is unchanged.
+  The per-turn spoken "Remaining categories: …" reminder follows the same
+  fatigue curve in BOTH modes (full for the first
+  `JEOPARDY_CATEGORIES_REMINDER_FULL_READS` scoring turns, then every
+  `..._EVERY`-th). The old blanket GUI mute is now opt-in only
+  (`JEOPARDY_READ_CATEGORIES_WITH_GUI=False`, for a table sitting at the
+  screen) — as a default it silently killed the read-out for players sitting
+  around the ROBOT, and the 2026-08-26 game spoke none at all. The
+  once-per-round fresh-board announcement is unchanged.
 
 - I Spy look-around (2026-07-07): Rex physically SCANS THE ROOM before picking the
   secret object (`games._ispy_scan_room`: left → center → right via

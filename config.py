@@ -2360,6 +2360,15 @@ QWEN_ASR_CONTEXT_VOCAB = (
     "Bret", "Rex", "DJ R3X", "Lake Folsom", "Folsom", "Sacramento", "Exudica Royale",
 )
 QWEN_ASR_CONTEXT_REX_LINES = 2     # how many of Rex's recent lines to include
+# When a Qwen3-ASR decode is rejected as context regurgitation (or as an
+# impossible speaking rate, the same failure seen from the other side), decode
+# the SAME audio once more with no biasing prompt before giving up. The bias is
+# what broke the decode, so an unbiased pass is the natural second chance —
+# without it the whole turn is silently dropped as "local decoded silence".
+# Field 2026-08-26: a Jeopardy run lost 10 of 59 turns exactly this way, each
+# one beside a regurgitation rejection, because the long entity-dense clue Rex
+# had just read WAS the prompt. Costs one extra decode only on a rejection.
+ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO = _env_bool("ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO", True)
 # Hard cap on the context prompt. Decode prefill is LINEAR in prompt length —
 # measured 2026-08-02 (A/B, 3 clips x 4 reps): 0ch=0.60s, 154ch=0.69s,
 # 363ch=0.78s (~0.5ms/char) with identical transcripts. 400 (was 600) bounds
@@ -5017,6 +5026,19 @@ OWN_ECHO_SEAM_SIMILARITY = 0.65
 # backstop — and 0.85 is the known-good fallback.
 SILENCE_TIMEOUT_SECS = 0.65
 
+# Endpointing while a Jeopardy clue is live, for the case where a player says
+# "What is..." then pauses to think before the name. SHIPPED OFF (equal to
+# SILENCE_TIMEOUT_SECS): the 2026-08-26 postmortem chased that run's clipped
+# answers here and the log refuted it — the bare "What is?" came from the gap
+# catch-up, not the live endpointer, and two long answers WITH internal "um"
+# pauses survived 0.65 s intact in the same run. Raising it costs ~0.6 s on
+# EVERY game turn (against a 12 s answer clock), so it should be earned, not
+# assumed. If a game still shows tail-clipped answers, 1.25 is the smallest
+# value that clears a normal "What is... <name>" beat — and the new
+# "[capture] jeopardy answer window" log line reports the real capture window
+# per turn, which is the evidence this knob was missing.
+JEOPARDY_ANSWER_SILENCE_TIMEOUT_SECS = 0.65
+
 # Eager endpointing for explicit motion commands. At MOTION_EAGER_ENDPOINT_SILENCE_SECS
 # of silence (well before SILENCE_TIMEOUT_SECS) a background probe transcribes the
 # segment-so-far; if it decodes to a COMPLETE drive command ("turn left", "back up two
@@ -5031,6 +5053,13 @@ SILENCE_TIMEOUT_SECS = 0.65
 MOTION_EAGER_ENDPOINT_ENABLED = _env_bool("MOTION_EAGER_ENDPOINT_ENABLED", True)
 MOTION_EAGER_ENDPOINT_SILENCE_SECS = 0.35
 MOTION_EAGER_ENDPOINT_REQUIRE_AEC = True
+# Off during parlor games: an answer, a board pick or a wager is never a drive
+# command, so every probe is a wasted full Qwen decode — and it takes MLX_LOCK
+# ahead of the turn's real transcription. Field 2026-08-26: ~65 probe decodes
+# across one Jeopardy run, ZERO matches, and turn decodes serialized behind
+# them for up to 8 s. (MOTION_HOLD_DURING_GAMES already parks the base, so the
+# "stop" safety path this probe accelerates is not in play.)
+MOTION_EAGER_ENDPOINT_DURING_GAMES = False
 
 # Minimum seconds of accumulated audio before silence can end a recording.
 # Prevents single-word transcriptions when the person is still talking.
@@ -5098,6 +5127,7 @@ POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.12
 # marked repeats in one run; the capture telemetry saw captured=6 / dropped=0).
 # False restores the old release-at-end-of-turn behavior.
 AEC_RELEASE_ON_QUEUE_DRAIN = _env_bool("AEC_RELEASE_ON_QUEUE_DRAIN", True)
+
 
 # Let question-answer capture reach slightly before the handoff, but only into
 # the typical silent pad at the end of TTS. 250ms can include Rex's final word.
@@ -8893,6 +8923,16 @@ TRIVIA_ROUND_LENGTH = 5
 # Jeopardy verbal game tuning. Keep the answer timeout longer than the thinking
 # theme bed so players still have room if they wait until the music fades.
 JEOPARDY_FUZZY_THRESHOLD = 0.78
+# Extra points a SHORT SINGLE-WORD expected answer demands on the lexical lanes.
+# Two short names are almost always within a few edits of each other, so the bar
+# that rescues a mangled multi-word answer waves through the wrong one:
+# kansas/arkansas 85.7, nixon/dixon 80.0, poland/holland partial 83.3,
+# peppermint/spearmint partial 87.5 — all measured against this matcher while
+# auditing the 2026-08-26 run, all credited as correct. None of them is a logged
+# field event; this is a hardening, not an incident fix.
+# Safe to tighten: a right answer that falls under the bar still gets the strict
+# LLM judge, which an ACCEPT never sees. 0 restores the flat threshold.
+JEOPARDY_SHORT_ANSWER_FUZZY_BUMP = 8
 JEOPARDY_SELECTION_FUZZY_THRESHOLD = 0.58
 JEOPARDY_MAX_PLAYERS = 4
 JEOPARDY_ANSWER_TIMEOUT_SECS = 12.0
@@ -8932,14 +8972,34 @@ JEOPARDY_FINAL_THINK_MAX_SECS = 30.0    # the clip is 30.5s
 # transitions, the finish, and "what's the score?" always read it in full.
 JEOPARDY_SCOREBOARD_EVERY = 4
 # Once per round, when this many squares (or fewer) remain, Rex mentions that
-# "next round" deals a fresh board. 0 disables the offer.
+# "next round" deals a fresh board. 0 disables THIS trigger; the offer is fully
+# off only when JEOPARDY_ROUND_JUMP_OFFER_AFTER_CLUES is 0 as well.
 JEOPARDY_ROUND_JUMP_OFFER_REMAINING = 15
+# ...or once this many squares have been played, whichever comes first. A slow
+# table never clears half a board: the 2026-08-26 game got through 11 squares in
+# 17 minutes and the owner had to say "new board" himself. 0 disables.
+JEOPARDY_ROUND_JUMP_OFFER_AFTER_CLUES = 6
+# How many players get the clue AFTER the one who picked and missed it. Real
+# Jeopardy has no rebound at all; 1 gives the table a single second chance
+# without reading the same clue to four people in a row (field 2026-08-26: one
+# $100 stadium clue was read aloud four times over 2m14s while the table waited).
+# 0 disables rebounds; a value >= JEOPARDY_MAX_PLAYERS restores lap-the-table.
+JEOPARDY_MAX_REBOUNDS = 1
 # When the answer timer expires while a player is mid-utterance (or their
 # just-finished utterance is still transcribing), the timeout re-arms for this
 # grace instead of stealing the turn — the answer in the pipe grades normally
 # (field 2026-08-25: "Floral" was spoken at the beeper, the rebound had already
 # advanced the turn, and the $1000 went to the wrong player).
 JEOPARDY_TIMEOUT_SPEECH_GRACE_SECS = 2.5
+# Hard ceiling on the TOTAL of those deferrals. The grace above re-arms itself
+# while speech is in flight, and in a full room it never stops: field 2026-08-26
+# 20:20:42-20:21:13 logged thirteen back-to-back deferrals — 31 s past a 12 s
+# clock — because five people talking over a barking dog kept the "user is
+# speaking / interaction busy" probe true continuously. Past
+# JEOPARDY_ANSWER_TIMEOUT_SECS + this, the clue times out regardless. NOTE: 0
+# does NOT restore the old unbounded behavior — it removes the grace entirely
+# (the deadline collapses onto the plain timeout). Raise it to loosen.
+JEOPARDY_TIMEOUT_MAX_DEFER_SECS = 10.0
 # On the robot (hardware AEC), a player answer that barges in over a Jeopardy
 # clip (the thinking theme) keeps its true VAD onset instead of restarting the
 # capture at the interrupt — the words spoken under the clip are in the rolling
@@ -8962,6 +9022,31 @@ MOTION_HOLD_DURING_GAMES = True
 # Fail-safe: any error keeps the deterministic "wrong".
 JEOPARDY_LLM_JUDGE_ENABLED = True
 JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS = 120  # longer turns aren't answer attempts
+# Score NOTHING for a turn that was not an answer attempt: a bare question stem
+# ("What is?" — the endpointer closed on a thinking pause), a turn past
+# JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS, or one the rescue judge rules "none"
+# (talking to a person or a pet, complaining about the game, side conversation).
+# Rex stays silent and the answer clock keeps running. Field 2026-08-26: every
+# utterance heard during a live clue was graded, so the table was fined for
+# talking — PJ calling the dog ("Come here, Toby. Come here, baby.") took $400
+# off Bret, and a complaint about the game took $100 off T'Joy.
+JEOPARDY_IGNORE_NON_ANSWERS = True
+# A wrong answer only DEDUCTS from the current player when it could plausibly be
+# theirs: the speaker is unresolved (the common case at this room's voice-ID
+# scores) or resolves to them. A confidently-identified OTHER contestant is the
+# room helping out — this table plays that way, and a correct answer from a
+# helper still scores for whoever's turn it is. Asymmetric on purpose: it can
+# only prevent an unfair charge, never hand out money. Field 2026-08-26: PJ
+# calling the dog mid-clue took $400 off Bret. False restores flat turn-based
+# scoring.
+JEOPARDY_ONLY_CHARGE_THE_ANSWERER = True
+# How many judge-ruled non-answers in a row a single clue absorbs before it is
+# settled as a no-answer. The deterministic ignore lanes leave the live answer
+# clock running, but the judge lane re-arms a fresh one — so without a cap a
+# room that keeps chatting walks the deadline forward indefinitely, which is the
+# complaint the 2026-08-26 table actually voiced ("it should have timed out").
+# 0 disables the cap.
+JEOPARDY_IGNORE_STREAK_CAP = 4
 # With the GUI up, the JeopardyPanel shows the live board, so the per-turn spoken
 # "Remaining categories: ..." reminder is skipped — Rex just prompts for the next
 # square (owner call 2026-07-07: the read-out is tiresome when the board is on
@@ -8969,7 +9054,15 @@ JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS = 120  # longer turns aren't answer attempts
 # the read-out even with the GUI (e.g. players sitting away from the screen).
 # The once-per-round board announcement (all six categories on a fresh board) is
 # unaffected either way.
-JEOPARDY_READ_CATEGORIES_WITH_GUI = False
+# Was False from 2026-07-07 to stop the reminder repeating on EVERY turn with
+# the panel on screen. The FULL_READS/EVERY fatigue curve below (2026-08-25)
+# now does that job in both modes, and the blanket GUI mute was killing the
+# reminder outright for players sitting around the ROBOT rather than the laptop:
+# the 2026-08-26 20:11 game (a manual `main.py --gui --jeopardy`) spoke ZERO
+# category read-outs across twelve scoring turns, while the 2026-08-25 game — a
+# supervisor launch, which is headless — read them normally.
+# Set False to mute it again for a screen-facing table.
+JEOPARDY_READ_CATEGORIES_WITH_GUI = True
 # Voice-only reminder fatigue curve (owner call 2026-08-25: repeating the list
 # every turn is great early game, tiresome once everyone knows the board). The
 # first FULL_READS scoring turns read the remaining categories every time; after

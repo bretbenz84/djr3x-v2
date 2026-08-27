@@ -1351,6 +1351,33 @@ def _jeopardy_voice_check_prompt(player: dict, *, prefix: str = "") -> str:
     )
 
 
+def _jeopardy_confident_other_speaker(person_id: Optional[int]) -> Optional[dict]:
+    """The registered player who spoke, when it is demonstrably NOT the player
+    whose turn it is. None when the speaker is unresolved, is the current
+    player, or is not on the roster.
+
+    Used to decide whose money is on the line, and ONLY in the losing
+    direction — see _jeopardy_handle_answer.
+    """
+    if person_id is None:
+        return None
+    players = _game_state.get("players") or []
+    if len(players) < 2:
+        return None
+    idx = int(_game_state.get("current_player_idx", 0)) % len(players)
+    for i, player in enumerate(players):
+        pid = (player or {}).get("person_id")
+        if pid is None:
+            continue
+        try:
+            if int(pid) != int(person_id):
+                continue
+        except (TypeError, ValueError):
+            continue
+        return None if i == idx else dict(player)
+    return None
+
+
 def _jeopardy_current_player() -> dict:
     players = _game_state.get("players") or [{"name": "Player", "score": 0}]
     idx = int(_game_state.get("current_player_idx", 0)) % len(players)
@@ -1367,6 +1394,7 @@ def _jeopardy_advance_player() -> dict:
 def _jeopardy_cancel_timeout() -> None:
     timer = _game_state.pop("answer_timer", None)
     _game_state.pop("answer_timer_token", None)
+    _game_state.pop("answer_timer_deadline", None)
     _game_state.pop("awaiting_prompt_delivery", None)
     if timer is not None:
         try:
@@ -1376,16 +1404,28 @@ def _jeopardy_cancel_timeout() -> None:
 
 
 def _jeopardy_maybe_offer_round_jump() -> str:
-    """Once per round, when the board is half-cleared, mention the jump.
+    """Once per round, mention the jump — at half a board OR after N clues.
 
     Owner note 2026-08-25: a full round is 30 clues and the table quit
     mid-round-one — they never knew fresh categories were a sentence away.
+    The remaining-based trigger alone could not reach them: a real table spends
+    1-2 minutes per square, so 15-remaining is 20+ minutes away. Field
+    2026-08-26: 11 squares in 17 minutes, offer never fired, and the owner had
+    to say "new board" himself.
     """
+    if _game_state.get("jump_offered"):
+        return ""
     threshold = int(getattr(config, "JEOPARDY_ROUND_JUMP_OFFER_REMAINING", 15))
-    if threshold <= 0 or _game_state.get("jump_offered"):
+    after_clues = int(getattr(config, "JEOPARDY_ROUND_JUMP_OFFER_AFTER_CLUES", 6))
+    if threshold <= 0 and after_clues <= 0:
         return ""
     remaining = int((_game_state.get("board") or {}).get("remaining", 0) or 0)
-    if remaining <= 0 or remaining > threshold:
+    if remaining <= 0:
+        return ""
+    played = max(0, int(_game_state.get("board_size", 0) or 0) - remaining)
+    by_remaining = threshold > 0 and remaining <= threshold
+    by_played = after_clues > 0 and played >= after_clues
+    if not (by_remaining or by_played):
         return ""
     _game_state["jump_offered"] = True
     current_round = int(_game_state.get("jeopardy_round", 1) or 1)
@@ -1442,21 +1482,35 @@ def _jeopardy_correct_response_text(clue: dict) -> str:
     return f'Correct response was: "{response}"'
 
 
-def _jeopardy_llm_judge(user_text: str, expected_answer: str, clue: dict) -> bool:
-    """LLM fallback judge for answers the deterministic matcher rejected.
+# The judge answers two questions in ONE call — "is this right?" and "was this
+# even an answer?" — so the ignore gate costs no extra round-trip. The verdict
+# is stashed here for _jeopardy_grade to read back; tests that patch
+# _jeopardy_llm_judge leave it empty, which reads as "no opinion".
+_LAST_JUDGE_VERDICT: dict = {"key": None, "verdict": ""}
+
+
+def _jeopardy_llm_verdict(user_text: str, expected_answer: str, clue: dict) -> str:
+    """"correct" | "wrong" | "not_an_answer" | "" (no opinion).
 
     Player answers arrive via SPEECH: a RIGHT answer can reach the matcher
     phonetically mangled ("day cart" for Descartes, "shack" for Shaq) or phrased
     in a way lexical fuzzy matching can't score. This gives the borderline miss
-    ONE strict yes/no look before the value is deducted. It can only rescue a
-    wrong verdict — the deterministic matcher's accepts are never re-litigated —
-    and any error fails safe to "wrong"."""
+    ONE strict look before the value is deducted. It can only rescue a wrong
+    verdict — the deterministic matcher's accepts are never re-litigated — and
+    any error fails safe to "wrong".
+
+    "not_an_answer" is the third road (owner report 2026-08-26): the room talks
+    over a live clue, and every one of those turns used to be a deduction — PJ
+    calling the dog ("Come here, Toby") cost Bret $400.
+    """
+    _LAST_JUDGE_VERDICT["key"] = None
+    _LAST_JUDGE_VERDICT["verdict"] = ""
     if not bool(getattr(config, "JEOPARDY_LLM_JUDGE_ENABLED", True)):
-        return False
+        return ""
     guess = (user_text or "").strip()
     max_chars = int(getattr(config, "JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS", 120))
     if not guess or len(guess) > max_chars:
-        return False
+        return ""
     try:
         raw = _quick_call(
             "You are a strict Jeopardy judge. The player's answer was transcribed "
@@ -1466,35 +1520,62 @@ def _jeopardy_llm_judge(user_text: str, expected_answer: str, clue: dict) -> boo
             f"(category: {(clue or {}).get('category', '')})\n"
             f"Correct answer: \"{expected_answer}\"\n"
             f"Player said: \"{guess}\"\n"
-            "Does the player's response identify the SAME answer — the same "
-            "person, place, or thing — allowing phonetic/transcription mangling, "
-            "filler words, and question phrasing? A different answer, a broader "
-            "category, or missing a required part of a multi-part answer is WRONG. "
-            "Reply with ONLY one word: yes or no.",
+            "Reply with ONLY one word:\n"
+            "yes — the response identifies the SAME answer (same person, place or "
+            "thing), allowing phonetic/transcription mangling, filler words and "
+            "question phrasing.\n"
+            "no — they attempted an answer and it is a different answer, a broader "
+            "category, or missing a required part of a multi-part answer.\n"
+            "none — they were not answering the clue at all: talking to someone "
+            "else in the room or to a pet, complaining about the game, or "
+            "carrying on a side conversation.",
             temperature=0,
             max_tokens=3,
         ).strip().lower()
     except Exception as exc:
         _log.debug("[jeopardy] LLM judge failed: %s", exc)
-        return False
-    verdict = raw.startswith("yes")
-    if verdict:
+        return ""
+    if raw.startswith("yes"):
+        verdict = "correct"
         _log.info(
             "[jeopardy] LLM judge rescued answer %r for expected %r",
             guess, expected_answer,
         )
+    elif raw.startswith("none"):
+        verdict = "not_an_answer"
+        _log.info("[jeopardy] LLM judge: %r was not an answer attempt", guess)
+    else:
+        verdict = "wrong"
+    _LAST_JUDGE_VERDICT["key"] = (guess, str(expected_answer or ""))
+    _LAST_JUDGE_VERDICT["verdict"] = verdict
     return verdict
 
 
+def _jeopardy_llm_judge(user_text: str, expected_answer: str, clue: dict) -> bool:
+    """Strict rescue judge: True only when the LLM says the answer is correct."""
+    return _jeopardy_llm_verdict(user_text, expected_answer, clue) == "correct"
+
+
 def _jeopardy_categories_reminder() -> str:
-    # With the GUI up, the JeopardyPanel already shows the live board — reading
-    # the remaining categories aloud EVERY turn is just dead air (owner call
-    # 2026-07-07). Voice-only play keeps the spoken reminder, since the board
-    # exists nowhere else. JEOPARDY_READ_CATEGORIES_WITH_GUI=True restores the
-    # read-out even with the GUI (e.g. players sitting away from the screen).
+    # The fatigue curve below (not a blanket mute) is what keeps the reminder
+    # from being tiresome — it runs in BOTH modes. The old GUI mute is now
+    # opt-in only (JEOPARDY_READ_CATEGORIES_WITH_GUI=False), for a table that is
+    # actually looking at the JeopardyPanel: as a default it silently killed the
+    # read-out for players sitting around the ROBOT, and the 2026-08-26 game
+    # (a manual `main.py --gui --jeopardy`) spoke none at all.
     if bool(getattr(config, "GUI_ENABLED", False)) and not bool(
         getattr(config, "JEOPARDY_READ_CATEGORIES_WITH_GUI", False)
     ):
+        # Never suppress SILENTLY. The 2026-08-26 run spoke no reminder at all
+        # and the log could not say which branch was responsible — this mute,
+        # the fatigue curve, or an empty board — which is exactly the kind of
+        # question a postmortem should not have to guess at.
+        if not _game_state.get("categories_reminder_muted_logged"):
+            _game_state["categories_reminder_muted_logged"] = True
+            _log.info(
+                "[jeopardy] spoken category reminder muted for this round "
+                "(GUI_ENABLED and JEOPARDY_READ_CATEGORIES_WITH_GUI is False)"
+            )
         return ""
     # Voice-only fatigue curve (owner call 2026-08-25: great early game, tiresome
     # once everyone knows the board): the first FULL_READS scoring turns repeat
@@ -1521,6 +1602,7 @@ def _jeopardy_categories_reminder() -> str:
     except Exception:
         categories = ""
     if not categories:
+        _log.info("[jeopardy] category reminder empty — no categories left to read")
         return ""
     return f"Remaining categories: {categories}. "
 
@@ -1625,7 +1707,11 @@ def _jeopardy_board_question_llm(text: str, person_id: Optional[int]) -> Optiona
         return None
     if jeopardy_bank.mentions_value(text):
         return None
-    if not jeopardy_bank.looks_like_question(text):
+    # The STRICT gate, not looks_like_question: this lane hands the text to a
+    # free-form persona generation with no pattern-matching backstop, so a bare
+    # auxiliary opener with no question mark (the classic clipped-ASR fragment)
+    # must not reach it.
+    if not jeopardy_bank.looks_like_board_question(text):
         return None
     board_text = _jeopardy_board_text()
     players = _game_state.get("players") or []
@@ -1645,6 +1731,37 @@ def _jeopardy_board_question_llm(text: str, person_id: Optional[int]) -> Optiona
     )
     response = _rex_respond(context, person_id)
     return response or None
+
+
+def _jeopardy_table_talk_aside(text: str, person_id: Optional[int]) -> Optional[str]:
+    """One in-character line for a side remark that is not a pick or a question.
+
+    Field 2026-08-26 20:25:06: "Hey, take her points away. She cheated." was
+    answered "Pick a dollar value too, before my game-show circuits start
+    smoking", which reads as Rex not listening. Shares the board-QA kill switch
+    — both are the same "let the LLM handle what the parser can't" lane.
+    """
+    if not bool(getattr(config, "JEOPARDY_BOARD_QA_LLM_FALLBACK_ENABLED", True)):
+        return None
+    try:
+        from features import jeopardy as jeopardy_bank
+        named_category = bool(jeopardy_bank.selection_category_hint(
+            text, _game_state.get("board") or {}))
+        if not jeopardy_bank.is_table_chatter(text, named_category):
+            return None
+        player = _jeopardy_current_player()
+        aside = _rex_respond(
+            f'[GAME: Jeopardy — TABLE TALK] Mid-game a player said: "{text}". '
+            "That is table talk, not a pick and not a question about the board. "
+            "React in ONE short line, in character, then tell "
+            f"{player['name']} to pick a category and dollar value. "
+            "Never change anyone's score.",
+            person_id,
+        )
+        return aside or None
+    except Exception as exc:
+        _log.debug("[jeopardy] table-talk aside failed: %s", exc)
+        return None
 
 
 def _jeopardy_repeat_clue_reply(clue: dict, player: dict, prefix: str = "") -> str:
@@ -1670,6 +1787,15 @@ def _jeopardy_offer_rebound() -> Optional[dict]:
     attempted = set(int(i) for i in (_game_state.get("current_clue_attempts") or []))
     attempted.add(current_idx)
     _game_state["current_clue_attempts"] = sorted(attempted)
+
+    # One second chance around the table, then the answer is revealed and the
+    # board moves on. The same clue read to four people in a row, each with its
+    # own 12 s clock and thinking theme, is what made the 2026-08-26 game feel
+    # stuck ("every time it's my turn, it's from a category I would have never
+    # chosen").
+    max_rebounds = max(0, int(getattr(config, "JEOPARDY_MAX_REBOUNDS", 1)))
+    if len(attempted) > max_rebounds:
+        return None
 
     for offset in range(1, len(players)):
         next_idx = (current_idx + offset) % len(players)
@@ -1704,6 +1830,7 @@ def _jeopardy_finish_missed_clue(
 ) -> tuple[str, bool]:
     _game_state.pop("current_clue", None)
     _game_state.pop("current_clue_attempts", None)
+    _game_state.pop("ignored_turns", None)
     _game_state["phase"] = "selecting"
 
     if done:
@@ -1797,6 +1924,9 @@ def _jeopardy_load_round(
         "players": players,
         "board": board,
         "board_values": _jeopardy_board_values(board),
+        # How big the board STARTED, so the jump offer can trigger on clues
+        # played (wall-clock progress) as well as squares remaining.
+        "board_size": int(board.get("remaining", 0) or 0),
         "last_category": None,
         "jeopardy_round": round_no,
         # Fresh board, fresh memories: the fatigue curves and the once-per-round
@@ -2116,17 +2246,38 @@ def _jeopardy_timeout_fired(token: str) -> None:
         clue = dict(_game_state.get("current_clue") or {})
         if not clue:
             return
-        if _jeopardy_answer_in_flight():
+        # A deferral is a courtesy to ONE in-flight answer, not an open-ended
+        # hold. `deadline` is the absolute ceiling set when the clock was armed;
+        # past it the clue times out even if the room is still talking. Field
+        # 2026-08-26 20:20:42-20:21:13: thirteen back-to-back deferrals, 31 s
+        # past a 12 s clock, because a five-person room with a barking dog kept
+        # is_user_speaking()/is_interaction_busy() true forever — the table's
+        # verdict was "it should have timed out".
+        deadline = float(_game_state.get("answer_timer_deadline") or 0.0)
+        if _jeopardy_answer_in_flight() and (deadline <= 0.0 or time.monotonic() < deadline):
             # Give the in-flight utterance a beat to land: it will cancel this
             # timer when it grades. Re-arm with the SAME token so a stale defer
             # can never outlive a legitimate re-arm.
             grace = float(getattr(config, "JEOPARDY_TIMEOUT_SPEECH_GRACE_SECS", 2.5))
+            if deadline > 0.0:
+                grace = min(grace, max(0.25, deadline - time.monotonic()))
             timer = threading.Timer(grace, _jeopardy_timeout_fired, args=(token,))
             timer.daemon = True
             _game_state["answer_timer"] = timer
             timer.start()
-            _log.info("[jeopardy] answer timeout deferred %.1fs — player speech in flight", grace)
+            _log.info(
+                "[jeopardy] answer timeout deferred %.1fs — player speech in flight "
+                "(%.1fs left before the hard ceiling)",
+                grace, max(0.0, deadline - time.monotonic()) if deadline > 0.0 else -1.0,
+            )
             return
+        if _jeopardy_answer_in_flight():
+            _log.info(
+                "[jeopardy] answer timeout FIRING through in-flight speech — hit the "
+                "%.1fs deferral ceiling",
+                float(getattr(config, "JEOPARDY_TIMEOUT_MAX_DEFER_SECS", 10.0)),
+            )
+        _game_state.pop("answer_timer_deadline", None)
         _game_state.pop("answer_timer", None)
         _game_state.pop("answer_timer_token", None)
         correct_response = _jeopardy_correct_response_text(clue)
@@ -2193,6 +2344,10 @@ def _jeopardy_arm_timeout() -> None:
     timer.daemon = True
     _game_state["answer_timer_token"] = token
     _game_state["answer_timer"] = timer
+    # Absolute ceiling for the whole clock INCLUDING speech-in-flight deferrals.
+    _game_state["answer_timer_deadline"] = time.monotonic() + timeout + max(
+        0.0, float(getattr(config, "JEOPARDY_TIMEOUT_MAX_DEFER_SECS", 10.0))
+    )
     timer.start()
 
 
@@ -2334,6 +2489,9 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
         fallback = _jeopardy_board_question_llm(text, person_id)
         if fallback is not None:
             return (fallback, False)
+        aside = _jeopardy_table_talk_aside(text, person_id)
+        if aside is not None:
+            return (aside, False)
         return (error, False)
 
     player = _jeopardy_current_player()
@@ -2478,6 +2636,49 @@ def _jeopardy_grade(text: str, clue: dict) -> tuple[bool, bool]:
     return correct, passed
 
 
+def _jeopardy_last_judge_said_not_an_answer(text: str, expected_answer: str) -> bool:
+    """True when the judge call _jeopardy_grade just made ruled "not an answer"."""
+    key = ((text or "").strip(), str(expected_answer or ""))
+    return (
+        _LAST_JUDGE_VERDICT.get("key") == key
+        and _LAST_JUDGE_VERDICT.get("verdict") == "not_an_answer"
+    )
+
+
+def _jeopardy_ignore_non_answer(text: str, clue: dict) -> Optional[str]:
+    """Reason to score NOTHING for this utterance, or None to grade it.
+
+    Deterministic lanes only — the LLM's "none" verdict is read back after the
+    grading ladder has already paid for its one call.
+    """
+    if not bool(getattr(config, "JEOPARDY_IGNORE_NON_ANSWERS", True)):
+        return None
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception:
+        return None
+    if jeopardy_bank.is_bare_question_stem(text):
+        # A truncated answer, not a guess: the player got "What is" out and the
+        # endpointer closed on their thinking pause. Say nothing and let the
+        # rest of the sentence arrive as the next segment (field 2026-08-26
+        # 20:13:45 — a bare "What is?" was graded as a miss and the real answer
+        # then landed on the rebound player).
+        return "bare question stem"
+    if jeopardy_bank.is_too_long_for_an_answer(text):
+        # Past the length any Jeopardy response reaches. The rescue judge
+        # already refused to rule on these; the miss simply stood (field
+        # 2026-08-26 20:21:13 — a 230-character complaint about the game cost
+        # T'Joy $100).
+        return "too long to be an answer"
+    names = [str((p or {}).get("name") or "") for p in (_game_state.get("players") or [])]
+    reason = jeopardy_bank.is_addressed_elsewhere(text, names)
+    # Guarded by is_correct: a clue's answer really can be a player's name, and
+    # a right answer must never be swallowed by a chatter pattern.
+    if reason and not jeopardy_bank.is_correct(text, str(clue.get("answer") or "")):
+        return reason
+    return None
+
+
 def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, bool]:
     try:
         from features import jeopardy as jeopardy_bank
@@ -2485,11 +2686,22 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         _log.error("[jeopardy] answer helper import failed: %s", exc)
         jeopardy_bank = None
 
-    _jeopardy_cancel_timeout()
     clue = dict(_game_state.get("current_clue") or {})
     if not clue:
+        _jeopardy_cancel_timeout()
         _game_state["phase"] = "selecting"
         return ("I lost the clue state. Pick another square before I blame a power converter.", False)
+
+    # Not every noise in the room is a response. Checked BEFORE the clock is
+    # cancelled so an ignored turn leaves the live timer running untouched —
+    # the square stays open, nobody is charged, and Rex says nothing rather
+    # than talking over a side conversation.
+    ignore_reason = _jeopardy_ignore_non_answer(text, clue)
+    if ignore_reason is not None:
+        _log.info("[jeopardy] ignoring %r — %s (clock still running)", text, ignore_reason)
+        return ("", False)
+
+    _jeopardy_cancel_timeout()
 
     players = _game_state.get("players") or [{"name": "Player", "score": 0}]
     # TIMEOUT-REBOUND GRACE: this answer landed after the time's-up beeper but
@@ -2525,6 +2737,40 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         return (_jeopardy_repeat_clue_reply(clue, player, prefix="Once more. "), False)
 
     correct, passed = _jeopardy_grade(text, clue)
+
+    # The judge's third verdict, from the call _jeopardy_grade just made: the
+    # player was not answering at all. Re-arm the window and stay silent — the
+    # deterministic lanes above cannot spot "Come here, Toby" said to a dog.
+    if (
+        not correct
+        and not passed
+        and bool(getattr(config, "JEOPARDY_IGNORE_NON_ANSWERS", True))
+        and _jeopardy_last_judge_said_not_an_answer(text, answer)
+    ):
+        # Unlike the deterministic lanes above (which leave the LIVE timer
+        # running), this branch re-arms a fresh clock — so a room that keeps
+        # talking could walk the deadline forward forever, which is the exact
+        # complaint the table voiced. Cap the streak and settle the square.
+        ignored = int(_game_state.get("ignored_turns", 0) or 0) + 1
+        _game_state["ignored_turns"] = ignored
+        cap = int(getattr(config, "JEOPARDY_IGNORE_STREAK_CAP", 4))
+        if cap <= 0 or ignored < cap:
+            _log.info(
+                "[jeopardy] ignoring %r — judge says it was not an answer (%d/%d)",
+                text, ignored, cap,
+            )
+            _game_state["phase"] = "awaiting_answer"
+            # Re-arming the window would otherwise re-open the timeout-rebound
+            # grace (field 2026-08-25) — nobody timed out here, so close it.
+            _game_state.pop("timeout_rebound", None)
+            _game_state["awaiting_prompt_delivery"] = True
+            return ("", False)
+        _log.info(
+            "[jeopardy] %d non-answers in a row on this clue — settling it as a "
+            "no-answer instead of holding the square open", ignored,
+        )
+        _game_state.pop("ignored_turns", None)
+        passed = True    # falls into the no-answer branch below
 
     # "What are the categories?" / "what's left in pop culture?" / "what's the
     # score?" asked a beat late — questions, not wrong answers. Checked only
@@ -2569,6 +2815,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         player["score"] = int(player.get("score", 0)) + value
         _game_state.pop("current_clue", None)
         _game_state.pop("current_clue_attempts", None)
+        _game_state.pop("ignored_turns", None)
         _jeopardy_queue_clip("right")
         flourish = random.choice([
             "Correct. The organics survive another clue.",
@@ -2587,7 +2834,40 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
             False,
         )
 
+    # WHOSE money is on the line. A wrong answer only COSTS the current player
+    # when it could plausibly be theirs — the speaker is unresolved (the common
+    # case) or resolves to them. A confident OTHER contestant shouting a guess
+    # is the room helping out, and this table plays that way: a right answer
+    # from a helper still counts, a wrong one is not billed to whoever's turn it
+    # happens to be (field 2026-08-26: PJ calling the dog took $400 off Bret).
+    # Credits are deliberately unchanged — asymmetric on purpose.
     _body_beat("offended_recoil")
+    helper = (
+        _jeopardy_confident_other_speaker(person_id)
+        if bool(getattr(config, "JEOPARDY_ONLY_CHARGE_THE_ANSWERER", True))
+        else None
+    )
+    if helper is not None:
+        _log.info(
+            "[jeopardy] wrong answer came from %s, not %s — no deduction",
+            helper.get("name"), player.get("name"),
+        )
+        _jeopardy_queue_clip("wrong")
+        heckle = random.choice([
+            f"{helper['name']}, that's not your square, and it wasn't right either.",
+            f"Wrong, {helper['name']} — and it's not even your turn. No charge.",
+            f"Rejected, {helper['name']}. {player['name']} keeps the money.",
+        ])
+        # The square stays with its owner: nobody was charged, so nothing was
+        # spent. Rebounding here would let a heckler take the current player's
+        # square for free AND burn their single JEOPARDY_MAX_REBOUNDS chance.
+        # _jeopardy_repeat_clue_reply re-arms phase + awaiting_prompt_delivery,
+        # so on_response_spoken() restarts the clock through the normal path.
+        return (
+            _jeopardy_repeat_clue_reply(clue, player, prefix=f"{heckle} "),
+            False,
+        )
+
     player["score"] = int(player.get("score", 0)) - value
     _jeopardy_queue_clip("wrong")
     roast = random.choice([
@@ -2608,7 +2888,10 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         )
 
     return _jeopardy_finish_missed_clue(
-        f"{roast} ",
+        # Name the deduction here too. This is the arm a Daily Double ALWAYS
+        # takes (no rebound), and the wager was otherwise never spoken aloud —
+        # field 2026-08-26 20:26:19: a $200 DD loss announced only the new total.
+        f"{roast} ${value} off {player['name']}. ",
         correct_response,
         done=done,
         players=players,
@@ -3249,6 +3532,70 @@ def is_active() -> bool:
     """Return True if a game is currently running."""
     with _lock:
         return _active_game is not None
+
+
+def active_roster_person_ids() -> frozenset:
+    """person_ids of the people registered as players in the active game.
+
+    A game roster is a standing declaration that these people are in the room
+    and are EXPECTED to speak — most of them from off camera. Identity
+    resolution uses it to stop the one visible face from absorbing everyone
+    else's turns (field 2026-08-26: PJ was the only recognized face on camera
+    and was credited with Bret's, Jeremy's and T'Joy's answers for the whole
+    first round).
+    """
+    with _lock:
+        players = list(_game_state.get("players") or []) if _active_game else []
+    ids = set()
+    for player in players:
+        try:
+            pid = player.get("person_id")
+        except AttributeError:
+            continue
+        if pid is not None:
+            try:
+                ids.add(int(pid))
+            except (TypeError, ValueError):
+                continue
+    return frozenset(ids)
+
+
+def active_game_current_player_id() -> "Optional[int]":
+    """person_id of the player whose turn it is in a running multi-player game.
+
+    A declared turn order is a real prior: picks and answers come from the
+    current player far more often than from anyone else. Used ONLY to break an
+    acoustic near-tie between two registered players — never to override a
+    voice match that has a clear margin.
+    """
+    with _lock:
+        if not _active_game:
+            return None
+        players = list(_game_state.get("players") or [])
+        phase = _game_state.get("phase")
+        idx = int(_game_state.get("current_player_idx", 0) or 0)
+    if len(players) < 2 or phase in ("final_wager", "final_answer"):
+        # Final Jeopardy runs off final_queue, not current_player_idx — a stale
+        # index here would name the wrong player.
+        return None
+    try:
+        pid = (players[idx % len(players)] or {}).get("person_id")
+        return int(pid) if pid is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def jeopardy_answer_window_open() -> bool:
+    """True while a Jeopardy clue is live and Rex is waiting on a response.
+
+    Deliberately cheap (no board copy — see snapshot()): the endpointing loop
+    calls this once per turn to decide how long a thinking pause may run before
+    the segment is closed.
+    """
+    with _lock:
+        return _active_game == "jeopardy" and _game_state.get("phase") in (
+            "awaiting_answer", "final_answer",
+        )
 
 
 def suppresses_conversation_interruptions() -> bool:

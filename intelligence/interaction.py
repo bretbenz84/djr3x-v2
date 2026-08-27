@@ -2306,6 +2306,96 @@ def _ecapa_genuine_band(speaker_score: float, floor: float) -> bool:
     return float(speaker_score or 0.0) >= float(floor)
 
 
+def _active_game_roster_ids() -> frozenset:
+    """person_ids registered as players in the active game (empty when none).
+
+    A roster is a standing "these people are in the room and will speak"
+    declaration — the one signal that tells identity resolution the visible
+    face is not the only plausible speaker.
+    """
+    try:
+        from features import games as games_mod
+        return games_mod.active_roster_person_ids()
+    except Exception as exc:
+        _log.debug("game roster lookup failed: %s", exc)
+        return frozenset()
+
+
+def _active_game_current_player_id() -> Optional[int]:
+    """person_id whose turn it is in the active game, or None."""
+    try:
+        from features import games as games_mod
+        return _safe_int(games_mod.active_game_current_player_id())
+    except Exception as exc:
+        _log.debug("game current-player lookup failed: %s", exc)
+        return None
+
+
+def _game_roster_ambiguity_accept(
+    raw_best_id: Optional[int],
+    speaker_score: float,
+    known_floor: float,
+) -> bool:
+    """True when a thin-margin match should still be accepted because every
+    close candidate is a registered player in the live game.
+
+    Requires the top candidate AND every candidate within the ambiguity margin
+    of it to be on the roster — an outside voice anywhere in the contention
+    band falls back to the normal guard, so a real stranger cannot ride in.
+    """
+    pid = _safe_int(raw_best_id)
+    if pid is None or float(speaker_score or 0.0) < float(known_floor):
+        return False
+    roster = _active_game_roster_ids()
+    if len(roster) < 2 or pid not in roster:
+        return False
+    ranked = list(_last_scan_ranked or [])
+    if not ranked:
+        return False
+    try:
+        margin = float(speaker_id.required_ambiguity_margin(ranked))
+        top_sim = float(ranked[0][2])
+    except Exception as exc:
+        _log.debug("roster ambiguity relief: unreadable scoreboard: %s", exc)
+        return False
+    for row in ranked:
+        try:
+            candidate_id = _safe_int(row[0])
+            candidate_sim = float(row[2])
+        except Exception:
+            return False
+        if candidate_id == pid:
+            continue
+        if (top_sim - candidate_sim) >= margin:
+            break            # ranked desc: everything past here is clear of the band
+        if candidate_id not in roster:
+            return False     # a non-player is in contention — keep the strict guard
+    return True
+
+
+def _game_roster_tied_candidate(person_id: Optional[int]) -> Optional[tuple]:
+    """The scoreboard row for `person_id` when it sits inside the ambiguity band
+    of the top candidate, else None. Used only to break a roster near-tie."""
+    pid = _safe_int(person_id)
+    if pid is None:
+        return None
+    ranked = list(_last_scan_ranked or [])
+    if len(ranked) < 2:
+        return None
+    try:
+        margin = float(speaker_id.required_ambiguity_margin(ranked))
+        top_sim = float(ranked[0][2])
+    except Exception:
+        return None
+    for row in ranked:
+        try:
+            if _safe_int(row[0]) == pid and (top_sim - float(row[2])) < margin:
+                return row
+        except Exception:
+            return None
+    return None
+
+
 def _voice_primary_face_decision(
     *,
     person_id: Optional[int],
@@ -2324,6 +2414,7 @@ def _voice_primary_face_decision(
     non_speech_vocalization: bool = False,
     ws_voiceless: bool = False,
     raw_best_recently_visible: bool = False,
+    roster_ids: frozenset = frozenset(),
 ) -> str:
     """Voice-primary attribution decision when exactly one known face (``ws_pid``)
     is visible. Pure (no side effects) so it is directly unit-testable.
@@ -2352,6 +2443,11 @@ def _voice_primary_face_decision(
       ``voice_weak_face_wins``    voice marginally matched someone else while a known
                                   face is visible and the camera does not contradict it
                                   — the present face anchors identity, no refresh
+      ``voice_over_face_roster``  same shape, but the person the voice pointed at is a
+                                  REGISTERED PLAYER in the active game — the roster says
+                                  they are here and expected to speak off camera, so the
+                                  voice wins. Attribute, never touch the print (the score
+                                  is still marginal)
       ``voiceless_face_wins``     the visible known face has NO voice print under the
                                   active embedder, so ANY match — even a confident one —
                                   is a nearest-neighbor artifact of their own speech;
@@ -2414,6 +2510,12 @@ def _voice_primary_face_decision(
             # doesn't contradict it; never refreshes the print, since folding laughter
             # into a speech voiceprint would corrupt it.
             return "voice_agrees_no_refresh"
+        if ws in (roster_ids or frozenset()):
+            # Mid-game: the visible face IS a registered player and the voice
+            # leans their way. Stopping the board to ask "who's speaking?" is
+            # worse than a marginal attribution, and the roster is independent
+            # evidence they are here. Attribute, never touch the print.
+            return "voice_agrees_no_refresh"
         return "challenge_identity"           # marginal + no credibility: never assume the face
     if pid is not None:
         # Accepted voice match points at someone OTHER than the visible known face.
@@ -2452,6 +2554,20 @@ def _voice_primary_face_decision(
         # then the face may not absorb the voice: leave it off-screen unknown.
         if visual_mouth_still:
             return "off_screen_unknown"
+        # GAME ROSTER OVERRIDE. "The one visible known face anchors identity"
+        # is a 1:1 conversation rule: it assumes anyone the voice points at is
+        # probably absent, so a marginal cross-match must be a print artifact.
+        # A game roster inverts that assumption — those people declared
+        # themselves present, take turns, and mostly sit OFF camera. Field
+        # 2026-08-26 20:12-20:15: PJ was the only recognized face in frame, and
+        # marginal matches on Jeremy (0.654, 0.657), T'Joy (0.688, 0.607) and
+        # Bret (0.676) were each overruled in PJ's favour, so PJ was logged as
+        # the speaker for four different people's answers in a row.
+        # No print refresh and no confident-voice note: the score is still
+        # marginal, it just now points at a plausible speaker instead of an
+        # implausible one.
+        if pid in (roster_ids or frozenset()):
+            return "voice_over_face_roster"
         return "voice_weak_face_wins"
     # person_id is None — the voice was uninformative (below the known floor or
     # ambiguous). Corroborate, don't override.
@@ -14114,6 +14230,21 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
             preroll=f"{preroll:.2f}s",
             speech_len=f"{finished - float(speech_start_mono):.2f}s",
         )
+    elif _jeopardy_answer_window_open():
+        # The front-clip question ("Rex clipped our answers") cannot be settled
+        # from the run log today: nothing records how far back a capture
+        # actually reached, so a truncated transcript is indistinguishable from
+        # a bad decode. Log the window on game turns, where players routinely
+        # answer over the tail of the clue and the reach-back is what decides
+        # whether their opening words survive.
+        _log.info(
+            "[capture] jeopardy answer window — captured %.2fs "
+            "(preroll %.2fs, floor %+.2fs vs speech start%s, speech %.2fs)",
+            duration, preroll,
+            (floor_at - float(speech_start_mono)) if floor_at > 0.0 else 0.0,
+            ", CLAMPED to floor" if clamped_to_floor else "",
+            finished - float(speech_start_mono),
+        )
     return min(duration, float(config.AUDIO_BUFFER_SECONDS))
 
 
@@ -14257,6 +14388,22 @@ def _gap_span_audio(span_start: float, now: float) -> tuple[np.ndarray, float]:
     if audio is None or len(audio) == 0:
         return np.zeros(0, dtype=np.float32), now
     return audio, now - (len(audio) / float(config.AUDIO_SAMPLE_RATE))
+
+
+def _jeopardy_answer_window_open() -> bool:
+    """True while a Jeopardy clue is live and a response is expected.
+
+    Used by the endpointing hold (JEOPARDY_ANSWER_SILENCE_TIMEOUT_SECS) and by
+    the capture-window logging — the two places where a game answer's shape
+    ("What is ... uh ... Toys R Us", spoken over the clue's tail) differs from
+    ordinary conversation.
+    """
+    try:
+        from features import games as games_mod
+        return games_mod.jeopardy_answer_window_open()
+    except Exception as exc:
+        _log.debug("jeopardy answer-window probe failed: %s", exc)
+        return False
 
 
 def _gap_voiced_runs(audio: np.ndarray, actual_start: float) -> list[tuple[float, float]]:
@@ -14567,8 +14714,18 @@ def _maybe_catch_up_gap_speech() -> Optional[tuple[str, Optional[float]]]:
     # anything later is logged, and fresh speech re-enters normally.
     onset, seg_end, slice_cap = candidates[0]
     if len(candidates) > 1:
+        # WHAT was dropped, not just how many. Without this the log cannot tell
+        # the second half of an answer from a separate remark seconds later, so
+        # a field report ("it clipped our answers") can neither be confirmed nor
+        # ruled out here (2026-08-26 postmortem: four of these, and the question
+        # of whether any was a split answer was unanswerable from the log).
         _capture_dropped(
             "gap_catchup_extra_cluster", dropped=len(candidates) - 1,
+            why="; ".join(
+                f"onset {now - c[0]:.1f}s ago, {c[1] - c[0]:.2f}s long, "
+                f"{c[0] - seg_end:.2f}s after the dispatched cluster"
+                for c in candidates[1:]
+            ),
         )
     slice_start = max(actual_start, armed, onset - pad)
     slice_end = min(now, slice_cap, seg_end + pad)
@@ -14627,6 +14784,20 @@ def _eager_motion_endpoint_enabled() -> bool:
         return False
     if not motion_controller.available():
         return False
+    if not bool(getattr(config, "MOTION_EAGER_ENDPOINT_DURING_GAMES", False)):
+        try:
+            from features import games as games_mod
+            # A game turn is never a drive command, and the probe's decode takes
+            # MLX_LOCK ahead of the turn's REAL transcription. Field 2026-08-26:
+            # ~65 probe decodes across one Jeopardy run, zero matches, and the
+            # turn's own decode queued behind them for up to 8 s.
+            # The stop-while-moving safety cut still runs: MOTION_HOLD_DURING_GAMES
+            # parks only the SOCIAL lanes — the flinch reflex and an explicit
+            # come-here still drive — so a moving base keeps eager endpointing.
+            if games_mod.is_active() and not motion_controller.is_moving():
+                return False
+        except Exception as exc:
+            _log.debug("eager-endpoint game probe failed: %s", exc)
     if bool(getattr(config, "MOTION_EAGER_ENDPOINT_REQUIRE_AEC", True)):
         # Endpointing behavior is tuned per-platform: robot only (hardware AEC
         # present); dev-Mac sessions keep stock segmentation.
@@ -14705,6 +14876,18 @@ def _accumulate_speech(
     """
     global _eager_endpoint_transcript
     silence_timeout = config.SILENCE_TIMEOUT_SECS
+    # A live Jeopardy clue buys a longer thinking pause — see the config note.
+    # Deliberately NOT gated on raw_vad: an answer barged in over the thinking
+    # theme is exactly the turn that needs the extra hold.
+    try:
+        from features import games as _games_mod
+        if _games_mod.jeopardy_answer_window_open():
+            silence_timeout = max(
+                silence_timeout,
+                float(getattr(config, "JEOPARDY_ANSWER_SILENCE_TIMEOUT_SECS", silence_timeout)),
+            )
+    except Exception as exc:
+        _log.debug("jeopardy endpointing probe failed: %s", exc)
     silence_elapsed = 0.0
     # Eager motion endpointing: only on the real conversation paths (ACTIVE,
     # normal VAD) — never the during-DJ command ear or the sleep-wake scan.
@@ -26131,6 +26314,19 @@ def _handle_speech_segment(
             and speaker_score >= soft_threshold
             and _recent_engaged is not None
             and raw_best_id == _recent_engaged.get("person_id")
+            # Stickiness encodes 1:1 continuity — "the engaged person is the only
+            # likely speaker". A declared multi-player roster falsifies that:
+            # mark_engagement() runs on EVERY identified segment, so mid-game
+            # "the engaged person" is merely whoever was credited last, and
+            # accepting a sub-margin score on that basis is a self-reinforcing
+            # ratchet. Fall through to the roster tier, which weighs the whole
+            # scoreboard (field 2026-08-26 20:30:47: Bret 0.786 vs PJ 0.748 on
+            # PJ's turn, PJ's face on camera, credited to Bret because Bret had
+            # been credited on the three turns before).
+            and not (
+                speaker_margin < known_margin
+                and len(_active_game_roster_ids()) >= 2
+            )
         ):
             # Legacy session-sticky continuity for the engaged person (no margin needed —
             # face/engagement context backs it).
@@ -26141,6 +26337,40 @@ def _handle_speech_segment(
                 "[interaction] voice soft-accept under session stickiness — "
                 "person_id=%s name=%r score=%.3f (hard=%.2f, soft=%.2f)",
                 person_id, person_name, speaker_score, hard_threshold, soft_threshold,
+            )
+        elif _game_roster_ambiguity_accept(raw_best_id, speaker_score, known_floor):
+            # ROSTER AMBIGUITY RELIEF. The margin guard exists to stop an
+            # UNENROLLED stranger being named as the nearest enrolled print. In a
+            # declared multi-player game that premise is false: the contenders are
+            # registered contestants who announced themselves into the room, so a
+            # thin gap between two of them is two known people who sound alike —
+            # not evidence of a stranger. Rejecting it minted unknown_voice_N for
+            # a contestant mid-answer (field 2026-08-26 20:22:08: PJ at 0.783,
+            # over the confident bar, lost to Bret at 0.758 by a 0.025 gap and
+            # became "unknown_voice_2").
+            person_id = raw_best_id
+            person_name = raw_best_name
+            identity_resolution_override = "game_roster_ambiguity"
+            # Tie-break INSIDE the ambiguity band only: if the player whose turn
+            # it is sits within the margin of the top candidate, the declared
+            # turn order is a better prior than a sub-margin acoustic edge —
+            # otherwise whoever was credited last keeps winning near-ties and
+            # the ratchet never lets go (2026-08-26 postmortem).
+            turn_pid = _active_game_current_player_id()
+            tied = _game_roster_tied_candidate(turn_pid)
+            if tied is not None and _safe_int(turn_pid) != _safe_int(person_id):
+                _log.info(
+                    "[interaction] roster near-tie broken toward the current "
+                    "player — %s/%r over %s/%r (%.3f vs %.3f)",
+                    turn_pid, tied[1], person_id, person_name,
+                    tied[2], speaker_score,
+                )
+                person_id, person_name = _safe_int(turn_pid), tied[1]
+            _log.info(
+                "[interaction] voice accepted on the game roster despite a thin "
+                "margin — person_id=%s name=%r score=%.3f margin=%.3f "
+                "(needed %.2f; every close candidate is a registered player)",
+                person_id, person_name, speaker_score, speaker_margin, known_margin,
             )
         # else: person_id stays None — truly unknown voice.
 
@@ -26379,6 +26609,7 @@ def _handle_speech_segment(
                 non_speech_vocalization=_is_non_speech_vocalization(text),
                 ws_voiceless=_ws_voiceless,
                 raw_best_recently_visible=_known_person_visible_recently(person_id),
+                roster_ids=_active_game_roster_ids(),
             )
             if decision == "voice_agrees":
                 _note_confident_voice(person_id, speaker_score)
@@ -26449,6 +26680,17 @@ def _handle_speech_segment(
                     ws_name, voice_lost_pid, voice_lost_name, speaker_score,
                 )
                 _maybe_request_voice_sample(ws_pid, ws_name)
+            elif decision == "voice_over_face_roster":
+                # A registered player in the live game — the roster is why the
+                # marginal off-camera match beats the one face in frame. No
+                # _note_confident_voice and no print refresh: the score has not
+                # improved, only its plausibility.
+                identity_resolution_override = "voice_over_face_roster"
+                _log.info(
+                    "[interaction] person resolution: game roster keeps the off-camera "
+                    "voice — person_id=%s name=%r score=%.3f (visible ws_pid=%s not credited)",
+                    person_id, person_name, speaker_score, ws_pid,
+                )
             elif decision == "voice_weak_face_wins":
                 # A marginal (<confident) voice match pointed at someone OTHER than
                 # the visible known face, and the camera did not contradict the face

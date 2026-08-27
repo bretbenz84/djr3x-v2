@@ -40,7 +40,47 @@ _VALUE_WORDS: list[tuple[str, int]] = [
     ("three hundred", 300),
     ("two hundred", 200),
     ("one hundred", 100),
+    # The article form. Absent, "stadiums for A hundred" parsed as no value at
+    # all and Rex answered "pick a dollar value too" — four times in a row,
+    # field 2026-08-26 20:17-20:19. "a thousand" was already here; "a hundred"
+    # never was, which is why "two hundred" worked and "a hundred" did not.
+    ("a hundred", 100),
 ]
+
+# Spoken-value shapes the phrase table cannot carry: the article ("for a
+# hundred"), a bare multiplier ("state nicknames, hundred"), and a digit the
+# ASR left un-multiplied ("for 5 hundred", "for 12 hundred"). Folded to plain
+# digits so the digit lane picks them up. Ordered longest-first: the compound
+# phrases in _VALUE_WORDS are matched BEFORE this runs, so "one thousand two
+# hundred" is already resolved and never reaches the multiplier fold.
+_VALUE_SMALL_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "a": 1, "an": 1,
+}
+_VALUE_MULTIPLIER_RE = re.compile(
+    r"\b(?:(?P<num>\d{1,2}|" + "|".join(sorted(_VALUE_SMALL_WORDS, key=len, reverse=True))
+    + r")\s+)?(?P<mult>hundred|thousand)\b"
+)
+
+
+def _fold_spoken_multipliers(plain: str) -> str:
+    """"a hundred" / "5 hundred" / bare "hundred" -> "100" (etc.)."""
+    def _sub(match: re.Match) -> str:
+        raw = match.group("num")
+        if raw is None:
+            count = 1
+        elif raw.isdigit():
+            count = int(raw)
+        else:
+            count = _VALUE_SMALL_WORDS.get(raw, 0)
+        if count <= 0:
+            return match.group(0)
+        return str(count * (100 if match.group("mult") == "hundred" else 1000))
+
+    return _VALUE_MULTIPLIER_RE.sub(_sub, plain)
 
 _PLAYER_FILLER_RE = re.compile(
     r"\b("
@@ -89,6 +129,18 @@ _PLACE_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Weak thing-signals: they outrank a bare pronoun in the clue, but lose to the
+# strong THING/PLACE vocabulary and to an answer that is plainly a proper name.
+# "...he abolished all political parties in Italy except this one" -> the answer
+# ("Fascist") is a party and the "he" is Mussolini, not the answer. Without this
+# tier the stray pronoun won and Rex read out "Who is Fascist?" (field
+# 2026-08-26 20:16:51). Deliberately NOT solved by dropping the pronouns from
+# _PERSON_CONTEXT_RE — that flips real person clues (Superman, Moses, Isabella).
+_WEAK_THING_CONTEXT_RE = re.compile(
+    r"\b(political\s+part(?:y|ies)|holiday|observance|festival|ceremony)\b",
+    re.IGNORECASE,
+)
+
 _THING_CONTEXT_RE = re.compile(
     r"\b("
     r"school|college|university|company|corporation|brand|team|movie|film|"
@@ -117,7 +169,15 @@ def _to_int(value: object, default: int = 0) -> int:
 
 
 def _clean_category(category: str) -> str:
-    cleaned = " ".join((category or "").strip().split())
+    # Dataset categories carry TSV-escaped decorative quotes — the literal row
+    # is `\\"POT"POURRI`. Nothing downstream wants them: _plain() turns every
+    # non-alphanumeric into a SPACE, so the quotes split one token into two and
+    # cost the fuzzy matcher real points ("popery" scores 60 against
+    # "potpourri" but only 54.5 against "pot pourri", under the 58 gate), and
+    # the raw name is what Rex reads aloud and what the error message lists
+    # (field 2026-08-26: 'Try one of these: ... backslash-quote POT quote
+    # POURRI'). Apostrophes stay — they are part of the word ("'80s TV").
+    cleaned = " ".join(re.sub(r'[\\"\u201c\u201d]', "", category or "").split())
     return cleaned or "Potpourri"
 
 
@@ -298,7 +358,12 @@ def speak_category(name: str) -> str:
     Expands known dataset abbreviations and drops a trailing period so the TTS
     does not read "ABBREV.." as a word plus two stops.
     """
-    tokens = (name or "").split()
+    # Dataset categories carry decorative quoting ('"POT"POURRI', '\'80s TV').
+    # Quote marks are silent on the page and noise in TTS, so strip the stray
+    # ones (a leading apostrophe on a decade stays — it is part of the word).
+    # Underscores are the dataset's spell-it-out marker ("S_A_T"): as spaces
+    # the TTS reads the letters instead of the glued token.
+    tokens = re.sub(r'["\u201c\u201d]', "", name or "").replace("_", " ").split()
     out: list[str] = []
     for token in tokens:
         bare = token.rstrip(".").lower()
@@ -443,6 +508,14 @@ def _extract_value(text: str, valid_values: list[int]) -> Optional[int]:
     for phrase, value in _VALUE_WORDS:
         if value in valid_values and re.search(rf"\b{re.escape(phrase)}\b", plain):
             return value
+    # Last: fold the multiplier shapes the phrase table cannot spell out and
+    # re-run the digit lane over the result ("for 5 hundred", bare "hundred").
+    folded = _fold_spoken_multipliers(plain)
+    if folded != plain:
+        for match in re.finditer(r"\b(\d{2,4})\b", folded):
+            value = int(match.group(1))
+            if value in valid_values:
+                return value
     return None
 
 
@@ -454,11 +527,16 @@ def _mentioned_any_value(text: str) -> Optional[int]:
     for phrase, value in _VALUE_WORDS:
         if re.search(rf"\b{re.escape(phrase)}\b", plain):
             return value
+    folded = _fold_spoken_multipliers(plain)
+    if folded != plain:
+        match = re.search(r"\b(\d{2,4})\b", folded)
+        if match:
+            return int(match.group(1))
     return None
 
 
 def _selection_query(text: str) -> str:
-    query = _plain(text)
+    query = _fold_spoken_multipliers(_plain(text))
     query = re.sub(r"\b\d{2,4}\b", " ", query)
     for phrase, _value in _VALUE_WORDS:
         query = re.sub(rf"\b{re.escape(phrase)}\b", " ", query)
@@ -491,7 +569,19 @@ def parse_selection(text: str, board: dict, last_category: Optional[str] = None)
 
     query = _selection_query(text)
     if not query and last_category:
-        query = _plain(last_category)
+        # Only reuse the last category when it STILL has this value open. It is
+        # the category just PLAYED, so its square at this value is usually gone
+        # — and then the fallback query can never match (the loop below skips
+        # any category that lacks the value), so a player who named no category
+        # at all was answered "I found $100, but not that category" (field
+        # 2026-08-26 20:19:08). With no usable fallback the honest message below
+        # asks which category, and the value is not thrown away.
+        if any(
+            str(candidate.get("name") or "") == str(last_category)
+            and value in (candidate.get("clues") or {})
+            for candidate in categories
+        ):
+            query = _plain(last_category)
     if "same category" in _plain(text) and last_category:
         query = _plain(last_category)
 
@@ -518,7 +608,12 @@ def parse_selection(text: str, board: dict, last_category: Optional[str] = None)
             if value in (category.get("clues") or {})
         ]
         if available:
-            return None, f"I found ${value}, but not that category. Try one of these: {', '.join(available[:6])}."
+            listed = ", ".join(speak_category(name) for name in available[:6])
+            if not query:
+                # They named a value and no category at all — do not accuse them
+                # of naming a category that does not exist.
+                return None, f"${value} it is. Which category? {listed}."
+            return None, f"I found ${value}, but not that category. Try one of these: {listed}."
         return None, f"${value} is already gone. The board is not a vending machine, sadly."
 
     category = categories[best_idx]
@@ -825,14 +920,35 @@ def is_correct(user_answer: str, expected_answer: str) -> bool:
             expected_digits = re.sub(r"[^0-9]", "", expected)
             if spoken and expected_digits and spoken == expected_digits:
                 return True
-        if fuzz.ratio(user, expected) >= threshold:
+        # Short single-token answers all sit within a few edits of each other, so
+        # the same 78 bar that rescues a mangled multi-word answer over-accepts
+        # them. NOT a field incident — measured against this matcher on
+        # 2026-08-26 while auditing the run: kansas/arkansas 85.7,
+        # nixon/dixon 80.0, poland/holland partial 83.3, peppermint/spearmint
+        # partial 87.5, every one of them credited as correct. Scale the bar for
+        # that shape only; a multi-word expected answer ("boys are us" for "toys
+        # r us", 80.0) is untouched. Tightening is the SAFE direction here: a
+        # rejected-but-right answer still gets the strict LLM judge, which an
+        # accept never sees.
+        short_answer = " " not in expected and max(len(user), len(expected)) <= 10
+        bump = int(getattr(config, "JEOPARDY_SHORT_ANSWER_FUZZY_BUMP", 8)) if short_answer else 0
+        if fuzz.ratio(user, expected) >= threshold + bump:
             return True
         # Guarded substring match: a user answer this short ("ed", "an") matches
         # inside almost any longer expected string, so require some substance.
+        # It must also be a genuinely SHORTER FORM — fewer words than the
+        # expected answer ("Kennedy" for "John F. Kennedy"). partial_ratio slides
+        # a window, so between two single-word answers it degenerates into a much
+        # looser ratio and accepts near-neighbours outright: "peppermint" scores
+        # 87.5 partial against "spearmint" (plain ratio 73.7, correctly under the
+        # bar). Measured 2026-08-26 against this matcher — not a logged field
+        # event. A one-word guess at a one-word answer has to clear the real
+        # threshold above, which the short-answer bump raises.
         if (
             not _requires_all_parts(candidate)
             and len(expected) >= 5
             and len(user) >= 4
+            and len(user.split()) < len(expected.split())
             and fuzz.partial_ratio(user, expected) >= threshold + 5
         ):
             return True
@@ -885,7 +1001,11 @@ def _response_prefix(answer: str, clue: str = "", category: str = "") -> str:
         return "What are" if plural else "What is"
     if _PLACE_CONTEXT_RE.search(context):
         return "Where are" if plural else "Where is"
-    if _PERSON_CONTEXT_RE.search(context) or _looks_like_person_answer(answer):
+    if _looks_like_person_answer(answer):
+        return "Who are" if plural else "Who is"
+    if _WEAK_THING_CONTEXT_RE.search(context):
+        return "What are" if plural else "What is"
+    if _PERSON_CONTEXT_RE.search(context):
         return "Who are" if plural else "Who is"
     return "What are" if plural else "What is"
 
@@ -1302,6 +1422,129 @@ def looks_like_question(text: str) -> bool:
         r"do|does|did|can|could|will|would|should|have|has)\b",
         spoken,
     ))
+
+
+# ── "That was not an answer" (owner report 2026-08-26) ───────────────────────
+# Every utterance heard while a clue is live was scored, so the table lost money
+# for talking: a complaint about the game ("this is rigged... it should have
+# timed out"), a side conversation ("like a family style game, I always wanted
+# to play that with my kids"), and PJ calling the DOG ("Come here, Toby. Come
+# here, baby.") each took a deduction. These predicates let the answer handler
+# stay silent and leave the clock running instead of grading the room.
+
+# A clipped answer: the player got the question stem out, paused to think, and
+# the 0.65 s endpointer closed the segment. "What is?" is never a real response.
+_BARE_QUESTION_STEM_RE = re.compile(
+    r"^(?:um+|uh+|er+|well|okay|ok|so|oh|hmm+|hey|rex)?[\s,]*"
+    r"(?:what|who|whom|whose|where|when|which|how)"
+    r"(?:\s+(?:is|are|was|were|s|re))?"
+    r"(?:\s+(?:a|an|the|it|this|that))?\s*$"
+)
+
+
+def is_bare_question_stem(text: str) -> bool:
+    """True for a lone "What is?" / "Who was the" — a truncated answer, not a guess."""
+    spoken = _plain(text)
+    return bool(spoken) and bool(_BARE_QUESTION_STEM_RE.match(spoken))
+
+
+def is_too_long_for_an_answer(text: str) -> bool:
+    """True for a turn far past any plausible Jeopardy response.
+
+    Shares JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS with the rescue judge, whose
+    comment already says "longer turns aren't answer attempts" — the judge just
+    declined to rule and let the miss stand, which is how a 230-character
+    complaint cost $100.
+    """
+    guess = (text or "").strip()
+    if not guess:
+        return False
+    max_chars = int(getattr(config, "JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS", 120))
+    return max_chars > 0 and len(guess) > max_chars
+
+
+def looks_like_board_question(text: str) -> bool:
+    """Stricter gate for the free-form LLM lane.
+
+    looks_like_question is deliberately loose because the deterministic lanes
+    pattern-match afterwards. The LLM lane has no such backstop, so a bare
+    auxiliary opener with no question mark — the classic clipped-ASR shape —
+    must not reach it, or Rex improvises a game-show quip about a clue nobody
+    asked about (field 2026-08-26 20:26:35: the leftover Daily Double answer
+    "Is Minneapolis." was answered "That clue's barely a clue, even for
+    Jeopardy").
+    """
+    if (text or "").strip().endswith("?"):
+        return True
+    spoken = _spoken(text)
+    if re.match(
+        r"^(?:hey\s+rex\s+|rex\s+|ok(?:ay)?\s+|so\s+|um+\s+|uh+\s+)*"
+        r"(?:what|whats|which|who|whos|whose|where|when|why|how)\b",
+        spoken,
+    ):
+        return True
+    # Aux-initial with no question mark: only when it is long enough to be a
+    # real ask ("can we see the scores") rather than a two-word fragment.
+    return looks_like_question(text) and len(spoken.split()) >= 4
+
+
+def is_table_chatter(text: str, named_a_category: bool) -> bool:
+    """True for a side remark that is neither a pick nor a question.
+
+    Field 2026-08-26 20:25:06: "Hey, take her points away. She cheated." was
+    answered "Pick a dollar value too", which reads as Rex not listening. A
+    SHORT fragment is more likely a half-heard pick and keeps the canned retry,
+    which at least lists what is actually available.
+    """
+    if named_a_category:
+        return False
+    if _mentioned_any_value(text) is not None:
+        return False        # a value in play is a pick attempt, however mangled
+    if looks_like_question(text):
+        return False        # questions belong to the board-question lanes
+    return len((text or "").split()) >= 4
+
+
+# Speech aimed at a person, a pet, or the game itself. Both field cases sit
+# under the length bar and are not question stems, so without these they rest
+# entirely on the LLM judge: PJ calling the dog ("Come here, Toby. Come here,
+# baby.") took $400 off Bret, and a bare "Bret." took $400 off Jeremy.
+_PET_OR_ASIDE_RES = [
+    re.compile(r"\bcome\s+(?:here|on)\b"),
+    re.compile(r"\b(?:good|bad)\s+(?:boy|girl|dog|kitty|puppy)\b"),
+    re.compile(r"^(?:sit|stay|heel|drop\s+it|leave\s+it)\b"),
+]
+_GAME_META_RES = [
+    re.compile(r"\b(?:this|it|that)s?\s+(?:is\s+)?(?:rigged|broken|buggy|stupid|unfair|cheating)\b"),
+    re.compile(r"\b(?:she|he|they|you)\s+cheated\b"),
+    re.compile(r"\btake\s+(?:her|his|their|the)\s+(?:points|money|dollars)\b"),
+    re.compile(r"\bshould(?:\s+have|ve)?\s+(?:have\s+)?timed\s+out\b"),
+    re.compile(r"\bnobody\s+likes\s+this\s+board\b"),
+    re.compile(r"\b(?:dont|do\s+not)\s+play\s+me\b"),
+]
+
+
+def is_addressed_elsewhere(text: str, player_names: Optional[list] = None) -> Optional[str]:
+    """A short reason when the turn was aimed at a person, a pet, or the game
+    itself — never at the clue. None when it might be an answer.
+
+    The CALLER must still confirm the text is not the right answer: a clue's
+    answer really can be a player's name.
+    """
+    spoken = _spoken(text)
+    if not spoken:
+        return None
+    for pattern in _PET_OR_ASIDE_RES:
+        if pattern.search(spoken):
+            return "addressed to someone else"
+    for pattern in _GAME_META_RES:
+        if pattern.search(spoken):
+            return "game meta-chatter"
+    plain = _plain(text)
+    for name in player_names or []:
+        if plain and plain == _plain(str(name)):
+            return "addressed a player by name"
+    return None
 
 
 def is_clue_repeat_request(text: str) -> bool:

@@ -337,3 +337,29 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # Velocity feedforward: duty per m/s of commanded speed (droid-measured plant
 # gain ~640). Only touch alongside a bench retune (firmware/tools/motion_bench.py).
 # MOTION_WHEEL_KFF = 640
+
+# ── Parlor games (Jeopardy) ──────────────────────────────────────────────────
+
+# Speak "Remaining categories: …" even with the dashboard up. On by default:
+# players sitting around the ROBOT cannot see the laptop board. The read-out
+# follows a fatigue curve either way (four full reads, then every third turn),
+# so this is not the "stop repeating it" knob. Set False for a table that is
+# actually looking at the screen.
+# JEOPARDY_READ_CATEGORIES_WITH_GUI = True
+
+# How many players get a missed clue AFTER the one who picked it. 1 = a single
+# second chance around the table. 0 = no rebound at all (real Jeopardy rules).
+# 3+ = the old lap-the-table behavior, which reads one clue to four people in a
+# row.
+# JEOPARDY_MAX_REBOUNDS = 1
+
+# Score nothing for a turn that was not an answer attempt — a bare "What is?",
+# a turn far past any real answer's length, someone calling the dog, or a
+# complaint about the game. Rex stays quiet and the answer clock keeps running.
+# JEOPARDY_IGNORE_NON_ANSWERS = True
+
+# Only charge the current player for a wrong answer when it could plausibly be
+# theirs (the speaker is unresolved, or resolves to them). A confidently
+# recognized OTHER contestant shouting a guess is the room helping out, and
+# their miss costs nobody. Correct answers still score for whoever's turn it is.
+# JEOPARDY_ONLY_CHARGE_THE_ANSWERER = True

@@ -188,14 +188,18 @@ class GuiCategoriesReminderTest(unittest.TestCase):
         self.assertIn("SCIENCE", reminder)
         self.assertIn("HISTORY", reminder)
 
-    def test_gui_skips_the_readout(self):
+    def test_gui_default_now_speaks_the_reminder(self):
+        # The blanket GUI mute silently killed the reminder for players sitting
+        # around the robot instead of the laptop (field 2026-08-26: zero
+        # read-outs across twelve scoring turns). The fatigue curve, not a
+        # blanket mute, is what keeps it from being tiresome.
         with mock.patch.object(config, "GUI_ENABLED", True, create=True):
-            self.assertEqual(games._jeopardy_categories_reminder(), "")
-
-    def test_override_restores_readout_with_gui(self):
-        with mock.patch.object(config, "GUI_ENABLED", True, create=True), \
-             mock.patch.object(config, "JEOPARDY_READ_CATEGORIES_WITH_GUI", True, create=True):
             self.assertIn("SCIENCE", games._jeopardy_categories_reminder())
+
+    def test_gui_mute_opt_out_skips_the_readout(self):
+        with mock.patch.object(config, "GUI_ENABLED", True, create=True), \
+             mock.patch.object(config, "JEOPARDY_READ_CATEGORIES_WITH_GUI", False, create=True):
+            self.assertEqual(games._jeopardy_categories_reminder(), "")
 
 
 class CategoriesReminderCadenceTest(unittest.TestCase):
@@ -244,10 +248,20 @@ class CategoriesReminderCadenceTest(unittest.TestCase):
             results = [bool(games._jeopardy_categories_reminder()) for _ in range(6)]
         self.assertEqual(results, [True, True, False, False, False, False])
 
-    def test_gui_mute_does_not_consume_reads(self):
-        with mock.patch.object(config, "GUI_ENABLED", True, create=True):
+    def test_gui_mute_opt_out_does_not_consume_reads(self):
+        with mock.patch.object(config, "GUI_ENABLED", True, create=True), \
+             mock.patch.object(config, "JEOPARDY_READ_CATEGORIES_WITH_GUI", False, create=True):
             self.assertEqual(games._jeopardy_categories_reminder(), "")
         self.assertNotIn("categories_reminder_reads", games._game_state)
+
+    def test_the_curve_is_the_same_with_the_gui_up(self):
+        results = []
+        with mock.patch.object(config, "GUI_ENABLED", True, create=True), \
+             mock.patch.object(config, "JEOPARDY_CATEGORIES_REMINDER_FULL_READS", 2, create=True), \
+             mock.patch.object(config, "JEOPARDY_CATEGORIES_REMINDER_EVERY", 3, create=True):
+            for _ in range(6):
+                results.append(bool(games._jeopardy_categories_reminder()))
+        self.assertEqual(results, [True, True, False, False, True, False])
 
     def test_explicit_board_request_ignores_the_curve(self):
         games._game_state["categories_reminder_reads"] = 99
