@@ -54,6 +54,36 @@ _FILLER_UTTERANCES = {
 # was enrolled with the speaker's own face and voice, which then OUTSCORED the
 # real person on their own speech every session after.
 _BACKCHANNEL_TOKENS = _FILLER_UTTERANCES | {"he", "ho", "hah", "heh", "hmmm"}
+# Profanity and slurs are never a person's name. Live incident 2026-08-26
+# 20:10:44: the Jeopardy roster prompt heard "Jeremy, Bret, J T. Ah, fuck. Never
+# mind. We don't know about that." and the trailing fragment became person id 10
+# named "Fuck" — the sentence-split at line 258 trims the whole rant down to one
+# clean-looking token, and nothing below had an opinion about it. The next night
+# that row drifted up as an unprompted lull musing: "I met someone named Fuck
+# once, which is honestly the most honest introduction this room has ever
+# offered."
+#
+# Matched TOKEN-EXACT against the normalized key, never as a substring, so
+# Cassidy / Bassett / Shitake / Damon / Hellman stay perfectly good names.
+# Deliberately ABSENT: dick, cock, coon, dyke, randy, fanny, willy, peter, gay,
+# johnson, bush. Every one of those is a real given name or surname, and a name
+# this gate rejects is a name Rex can never learn from anyone, ever — an
+# over-broad list costs a real guest their identity permanently, which is a
+# worse bug than the row it would have prevented.
+_PROFANE_NAME_TOKENS = frozenset({
+    "arse", "arsehole", "ass", "asshole", "assholes", "bastard", "bastards",
+    "bitch", "bitches", "bitching", "bollocks", "bugger", "bullshit", "crap",
+    "crappy", "cunt", "cunts", "dammit", "damn", "damnit", "dickhead",
+    "dogshit", "douche", "douchebag", "dumbass", "fuck", "fucked", "fucker",
+    "fuckers", "fuckface", "fuckin", "fucking", "fucks", "goddamn",
+    "goddamned", "hell", "horseshit", "jackass", "motherfucker",
+    "motherfucking", "piss", "pissed", "prick", "retard", "retarded",
+    "retards", "shit", "shite", "shits", "shitty", "slut", "sluts", "twat",
+    "wanker", "whore", "whores",
+    # Slurs. Same token-exact rule; none of these is anybody's name.
+    "chink", "fag", "faggot", "faggots", "fags", "gook", "kike", "nigga",
+    "niggas", "nigger", "niggers", "spic", "tranny", "wetback",
+})
 _BAD_SINGLE_TOKENS = {
     "again",
     "back",
@@ -95,6 +125,36 @@ _BAD_SINGLE_TOKENS = {
     "you",
     "your",
     "whoever",
+    # Found next to the 2026-08-26 "Fuck" mint: "what" and the rest of the
+    # question words only ever lived in _BAD_PHRASE_STARTS, which is consulted
+    # for MULTI-token candidates — so a bare "What" normalized straight through
+    # to a storable name. The room says it constantly (2026-08-27 13:35:17,
+    # "HEARD | Bret Benziger: What?"), and any of these landing in an identity
+    # ask would have minted a person the same way.
+    "anybody",
+    "anyone",
+    "anything",
+    "everything",
+    "how",
+    "huh",
+    "never",
+    "nevermind",
+    "nothing",
+    "quiet",
+    "repeat",
+    "shutdown",
+    "something",
+    "stop",
+    "thanks",
+    "then",
+    "wait",
+    "what",
+    "whatever",
+    "when",
+    "where",
+    "which",
+    "why",
+    "yes",
 }
 _BAD_PHRASE_STARTS = {
     "a",
@@ -266,6 +326,21 @@ def looks_like_initials(value: str) -> bool:
     return 2 <= len(compact) <= 4 and compact.isupper()
 
 
+def contains_profane_token(value: str) -> bool:
+    """True when any word in this fragment is profanity or a slur.
+
+    The same table normalize_person_name() rejects on, exposed so a caller that
+    parses names BEFORE the memory layer ever sees them can drop the fragment
+    instead of putting it in Rex's mouth. Blocking the mint alone was not enough
+    on 2026-08-26: the roster still read the swear out loud — "I need a cleaner
+    voice print for Fuck. before the board starts."
+    """
+    return any(
+        token in _PROFANE_NAME_TOKENS
+        for token in normalized_name_key(value).split()
+    )
+
+
 def normalize_person_name(value: str, *, allow_single: bool = True) -> Optional[str]:
     """Return a storage-ready person name, or None for non-name fragments."""
     text = _clean_candidate(value)
@@ -276,6 +351,8 @@ def normalize_person_name(value: str, *, allow_single: bool = True) -> Optional[
     if not key or key in _FILLER_UTTERANCES:
         return None
     if all(part in _BACKCHANNEL_TOKENS for part in key.split()):
+        return None
+    if any(part in _PROFANE_NAME_TOKENS for part in key.split()):
         return None
 
     raw_tokens = _NAME_TOKEN_RE.findall(text)

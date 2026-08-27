@@ -97,5 +97,42 @@ class ExtractPrimaryPurposeTest(unittest.TestCase):
         self.assertEqual(interaction._extract_primary_purpose("no purpose here"), "")
 
 
+class NoRoastBackhandedJabTest(unittest.TestCase):
+    """Field 2026-08-27 13:37:05 — the contract said "Roast: no roasts or pointed
+    teasing this turn" and the spoken reply was still "You're spared from your own
+    bad timing for another minute." The prompt reached the model; the per-sentence
+    no-roast scrubber is what failed to catch the backhanded-mercy shape."""
+
+    FIELD_JAB = "You're spared from your own bad timing for another minute."
+    FIELD_JAB_CURLY = "You’re spared from your own bad timing for another minute."
+
+    def test_backhanded_mercy_is_a_roast_sentence(self):
+        self.assertTrue(sf._is_roast_sentence(self.FIELD_JAB))
+        self.assertTrue(sf._is_roast_sentence(self.FIELD_JAB_CURLY))
+
+    def test_no_roast_stream_drops_it(self):
+        frame = _frame(allow_roast="none", purpose="closure", allow_question=False)
+        self.assertEqual(sf.govern_stream_sentence(self.FIELD_JAB, frame), "")
+        self.assertEqual(sf.govern_stream_sentence(self.FIELD_JAB_CURLY, frame), "")
+
+    def test_the_warm_beat_beside_it_survives(self):
+        # Do not widen: only the jab goes, the acceptance beat stays.
+        frame = _frame(allow_roast="none", purpose="companionable", allow_question=False)
+        for line in ("Good.", "Stay as long as you want.", "I hear you."):
+            self.assertEqual(sf.govern_stream_sentence(line, frame), line)
+
+    def test_no_roast_contract_names_the_backhanded_shape(self):
+        contract = sf.render_slim_contract(_frame(allow_roast="none"), "")
+        self.assertIn("backhanded", contract.lower())
+        self.assertIn("no roasts", contract.lower())
+
+    def test_normal_and_sharp_tiers_are_untouched(self):
+        # _ROAST_PAT is only consulted at the 'none' tier — a sharp turn keeps it.
+        for level in ("normal", "sharp"):
+            frame = _frame(allow_roast=level, allow_question=False)
+            self.assertEqual(sf.govern_stream_sentence(self.FIELD_JAB, frame),
+                             self.FIELD_JAB)
+
+
 if __name__ == "__main__":
     unittest.main()

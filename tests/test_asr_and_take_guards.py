@@ -85,6 +85,10 @@ class UnbiasedRetryTests(unittest.TestCase):
 
     def setUp(self):
         transcription._last_context_prompt = None
+        # _recent_rex_lines is a module-level deque shared across this file's
+        # cases; a line left in it by another test flips echo-class verdicts.
+        transcription._recent_rex_lines.clear()
+        self.addCleanup(transcription._recent_rex_lines.clear)
         self.addCleanup(setattr, transcription, "_last_context_prompt", None)
         self.audio = np.zeros(int(16000 * 2.0), dtype=np.float32)
 
@@ -125,6 +129,50 @@ class UnbiasedRetryTests(unittest.TestCase):
             text, calls = self._transcribe([(self.PREAMBLE, 0.0)])
         self.assertEqual(text, "")
         self.assertEqual(calls, [True])
+
+    def test_echo_class_rejection_discards_a_low_trust_retry(self):
+        """13:34:09 — the seam decode WAS Rex's ready line, and the unbiased
+        retry read the same residue as a bare 'Okay.' (-0.69). He answered
+        himself: 'Okay what, exactly?'"""
+        text, calls = self._transcribe([(self.PREAMBLE, 0.0), ("Okay.", -0.69)])
+        self.assertEqual(text, "")
+        self.assertEqual(calls, [True, False], "the retry still RUNS — its result is what's dropped")
+
+    def test_echo_class_rejection_discards_a_low_trust_sentence_retry(self):
+        """13:34:17 — a longer fragment is no safer: 'Look me what you got me.'
+        (-0.55) came out of a slice of Rex's own playback and cost a turn."""
+        text, _calls = self._transcribe(
+            [(self.PREAMBLE, 0.0), ("Look me what you got me.", -0.55)])
+        self.assertEqual(text, "")
+
+    def test_impossible_rate_over_rex_words_is_echo_class(self):
+        """The 13:34:07 shape: his line decoded twice over (33 words in 2s),
+        rejected on rate rather than similarity."""
+        rex = ("Ready to go. Statistically, one of us is about to say something "
+               "interesting. I like my odds.")
+        transcription.note_rex_line(rex)
+        text, _calls = self._transcribe([(rex + " " + rex, 0.0), ("Okay.", -0.69)])
+        self.assertEqual(text, "")
+
+    def test_a_non_echo_rejection_still_rescues_a_quiet_line(self):
+        """MUST KEEP WORKING: the far-field SNR here is 13-15 dB and real speech
+        routinely decodes below the trust floor. When the rejected decode was
+        NOT Rex's own words, an untrusted rescue still lands."""
+        overrun = ("we should probably head out before the traffic gets bad "
+                   "because parking downtown is impossible after seven")
+        text, calls = self._transcribe(
+            [(overrun, 0.0), ("Are you still recording that?", -0.9)])
+        self.assertEqual(text, "Are you still recording that?")
+        self.assertEqual(calls, [True, False])
+
+    def test_the_overlap_probe_separates_rex_from_the_room(self):
+        rex = ("Ready to go. Statistically, one of us is about to say something "
+               "interesting. I like my odds.")
+        transcription.note_rex_line(rex)
+        self.assertTrue(transcription._overlaps_recent_rex_speech(rex + " " + rex))
+        self.assertFalse(transcription._overlaps_recent_rex_speech(
+            "There is nothing to run by you, I did not say anything."))
+
 
 
 class ImpersonateInflectionTests(unittest.TestCase):

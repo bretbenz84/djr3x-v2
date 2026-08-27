@@ -57,6 +57,7 @@ class GapConfigTests(unittest.TestCase):
             "GAP_CATCHUP_PLAYBACK_MIN_SPEECH_SECS",
             "GAP_CATCHUP_PLAYBACK_RMS_RATIO",
             "GAP_CATCHUP_PLAYBACK_MAX_VOICED_FRACTION",
+            "GAP_CATCHUP_UNDER_PLAYBACK_REQUIRE_TRUSTED",
         ):
             self.assertTrue(hasattr(config, name), name)
 
@@ -396,6 +397,7 @@ class CatchUpTests(unittest.TestCase):
 
         def _handler(seg, **kwargs):
             handled["audio"] = seg
+            handled["kwargs"] = kwargs
 
         abs_runs = [(self.now - s, self.now - e) for s, e in runs]
         with mock.patch.object(I.time, "monotonic", return_value=self.now), \
@@ -539,6 +541,73 @@ class CatchUpTests(unittest.TestCase):
             result = I._maybe_catch_up_gap_speech()
         self.assertEqual(result, ("handled", None))
         self.assertTrue(end_turn.called)
+
+
+# Append these two methods to the EXISTING class CatchUpTests (4-space indent,
+# after test_aec_continuously_voiced_playback_span_is_ignored). They depend on
+# the _handler edit that records kwargs.
+
+    def test_under_playback_recovery_is_trust_gated(self):
+        # 2026-08-27 13:34:16 — this exact shape (a 1.5s dominant run under
+        # playback) decoded "Look me what you got me." (-0.55) and Rex asked an
+        # empty room "Sorry, one more time?".
+        audio = (np.random.default_rng(7).standard_normal(8 * SR) * 0.005) \
+            .astype(np.float32)
+        i0 = int((8.0 - 4.5) * SR)
+        i1 = int((8.0 - 3.0) * SR)
+        audio[i0:i1] = 0.08
+        result, handled = self._catch_up(
+            armed_ago=8.0, first_audio_ago=6.0, play_end_ago=1.0,
+            runs=[(4.5, 3.0)], aec_on=True, audio=audio)
+        self.assertEqual(result, ("handled", None))
+        self.assertTrue(handled["kwargs"]["require_trusted"])
+
+    def test_clean_gap_recovery_is_not_trust_gated(self):
+        # MUST KEEP WORKING: a line spoken into a silent thinking gap is heard
+        # whatever the decoder thinks of it.
+        result, handled = self._catch_up(armed_ago=8.0, runs=[(6.0, 5.0)])
+        self.assertEqual(result, ("handled", None))
+        self.assertFalse(handled["kwargs"]["require_trusted"])
+
+
+# Append this class before the `if __name__ == "__main__":` guard.
+
+class CatchUpTrustGateTests(unittest.TestCase):
+    """The handler side of the gate. 2026-08-27 13:34:17 — an untrusted decode
+    of a slice cut from under Rex's own playback reached the turn pipeline and
+    was answered with "Sorry, one more time?", which played more audio, which
+    seeded the next residual."""
+
+    def _untrusted(self):
+        return I.transcription.Transcript(
+            "Look me what you got me.", avg_logprob=-0.55,
+            confident=False, backend="qwen3_asr")
+
+    def _run(self, *, require_trusted):
+        with mock.patch.object(I.random, "randint", return_value=0), \
+             mock.patch.object(
+                 I, "_process_audio",
+                 return_value=(self._untrusted(), None, None, 0.0, 0.0, 0.07)), \
+             mock.patch.object(I, "_looks_like_third_party_crosstalk",
+                               return_value=False), \
+             mock.patch.object(I, "_looks_like_own_echo", return_value=True), \
+             mock.patch.object(I, "_log_character_loop_trace"), \
+             mock.patch.object(I, "_new_character_loop_trace") as trace, \
+             mock.patch.object(I, "_speak_blocking", return_value=True) as speak:
+            I._handle_speech_segment(
+                np.ones(16, dtype=np.float32), require_trusted=require_trusted)
+        return trace, speak
+
+    def test_untrusted_under_playback_never_reaches_the_turn(self):
+        trace, speak = self._run(require_trusted=True)
+        trace.assert_not_called()
+        speak.assert_not_called()
+
+    def test_the_same_transcript_is_processed_normally_without_the_flag(self):
+        # The gate must be the ONLY thing that changed: an untrusted transcript
+        # off the live mic path still enters the pipeline as before.
+        trace, _speak = self._run(require_trusted=False)
+        trace.assert_called_once()
 
 
 if __name__ == "__main__":

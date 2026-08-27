@@ -2369,6 +2369,27 @@ QWEN_ASR_CONTEXT_REX_LINES = 2     # how many of Rex's recent lines to include
 # one beside a regurgitation rejection, because the long entity-dense clue Rex
 # had just read WAS the prompt. Costs one extra decode only on a rejection.
 ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO = _env_bool("ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO", True)
+# ...but the retry must never resurrect REX'S OWN voice. Field 2026-08-27
+# 13:34:09: the post-boot seam decoded as his ready line ("Ready to go.
+# Statistically, one of us is about to say something interesting. I like my
+# odds."), the speaking-rate backstop rejected it at 16.6 wps, and the unbiased
+# retry read the same residue as a bare "Okay." (avg_logprob -0.69). Rex
+# answered himself — "Okay what, exactly?" — and kept the loop alive for forty
+# seconds while Bret said "I didn't say anything". Every one of the 11 retries in
+# that run sat behind an echo-class rejection and every one came back a low-trust
+# fragment. So when the rejected decode was Rex's own words, the retry is
+# accepted only if the decoder actually believes it
+# (QWEN_ASR_TRUST_MIN_AVG_LOGPROB). A quiet human line beside a regurgitation —
+# the Jeopardy case above — still comes back, because a real answer decodes
+# trusted; this bar never applies to a non-echo rejection.
+ASR_ECHO_RETRY_REQUIRE_TRUSTED = _env_bool("ASR_ECHO_RETRY_REQUIRE_TRUSTED", True)
+# An "impossible speaking rate" rejection is ECHO-class only when the fabricated
+# words are demonstrably Rex's: the fraction of the decode's content words (4+
+# letters) that also appear in his recent lines / the biasing prompt. Below it
+# the decoder invented something else and the retry keeps its permissive
+# behavior. The 13:34 decode was his line doubled up, so it scores 1.0 — the
+# similarity guard missed it only because doubling halves every ratio.
+ASR_ECHO_CLASS_WORD_OVERLAP = 0.6
 # Hard cap on the context prompt. Decode prefill is LINEAR in prompt length —
 # measured 2026-08-02 (A/B, 3 clips x 4 reps): 0ch=0.60s, 154ch=0.69s,
 # 363ch=0.78s (~0.5ms/char) with identical transcripts. 400 (was 600) bounds
@@ -5249,6 +5270,15 @@ GAP_SPEECH_POST_PLAYBACK_SKIP_SECS = 0.25
 GAP_CATCHUP_PLAYBACK_MIN_SPEECH_SECS = 1.0
 GAP_CATCHUP_PLAYBACK_RMS_RATIO = 1.8
 GAP_CATCHUP_PLAYBACK_MAX_VOICED_FRACTION = 0.8
+# Final bar for a slice cut from UNDER playback: the decode must clear the trust
+# floor. Field 2026-08-27 13:34:16 — a 2.10s slice recovered from under Rex's own
+# ready line cleared all three acoustic bars above, decoded "Look me what you got
+# me." (avg_logprob -0.55), and Rex asked the empty room "Sorry, one more time?",
+# which played more audio, which seeded the next residual. Outside playback the
+# gate does not apply — a quiet real line spoken into a clean gap is still heard
+# and still gets the low-trust reprompt.
+GAP_CATCHUP_UNDER_PLAYBACK_REQUIRE_TRUSTED = _env_bool(
+    "GAP_CATCHUP_UNDER_PLAYBACK_REQUIRE_TRUSTED", True)
 
 # ── Hardware-AEC boundary overrides (ReSpeaker Lite only) ──────────────────────
 # These apply ONLY when audio/hardware_aec.is_active() is True — i.e. the ReSpeaker
@@ -6218,6 +6248,27 @@ ANIMAL_ARRIVAL_CONFIRM_SCANS = _env_int(
     min_value=1,
     max_value=10,
 )
+# The same debounce, harder, while the model cannot decide WHICH companion it is
+# looking at. Field 2026-08-27 13:35:45: RF-DETR floated dog, cat, horse and bird
+# at one furry shape for forty seconds (cat 0.153-0.267, dog 0.166-0.178, once in
+# the SAME scan), scraped "cat" over the bar on two scans in a row, and Rex
+# announced a cat arrival about Bret's DOG. Two scans is enough evidence when the
+# label is uncontested; it is not when a rival companion label was on screen a
+# moment ago.
+ANIMAL_CONTESTED_CONFIRM_SCANS = _env_int(
+    "ANIMAL_CONTESTED_CONFIRM_SCANS",
+    4,
+    min_value=1,
+    max_value=20,
+)
+# How far back a rival companion reading (accepted OR near-miss) still counts as
+# contesting the species. 0 disables the contest bar entirely.
+ANIMAL_SPECIES_CONTEST_WINDOW_SECS = _env_float(
+    "ANIMAL_SPECIES_CONTEST_WINDOW_SECS",
+    60.0,
+    min_value=0.0,
+    max_value=600.0,
+)
 LOCAL_ANIMAL_DETECTION_SPECIES = {
     "bird",
     "cat",
@@ -6498,9 +6549,10 @@ ANIMAL_FURRY_CROSS_SPECIES_REMARK_COOLDOWN_SECS = 180.0
 # last_seen inside the window) has told him about a pet, the furry-arrival remark
 # asks by NAME instead of announcing a "small furry lifeform" (owner note
 # 2026-08-18). memory.facts.get_pets reads the pet facts back whatever key the
-# extractor minted; a species mismatch (detector says cat, he knows a dog) still
-# asks, but says so. Placeholders: {first} owner's first name, {name}, {alt}
-# (second pet, TWO_LINES only), {species} (MISMATCH_LINES only).
+# extractor minted. A pet whose species the DB never pinned down ("Biscuit") can
+# still carry the name; a species the DB CONTRADICTS cannot — see
+# ANIMAL_SPECIES_MISMATCH_ASK_LINES. Placeholders: {first} owner's first name,
+# {name}, {alt} (second pet, TWO_LINES only).
 ANIMAL_PET_NAME_GUESS_ENABLED = True
 ANIMAL_PET_NAME_GUESS_RECENT_SECS = 900.0
 ANIMAL_PET_GUESS_LINES = (
@@ -6515,9 +6567,17 @@ ANIMAL_PET_GUESS_TWO_LINES = (
     "Furry lifeform inbound. {name}? Or {alt}? Help me out, {first}.",
     "Okay — {name} or {alt}? {first}, I can't tell them apart from up here.",
 )
-ANIMAL_PET_GUESS_MISMATCH_LINES = (
-    "{first}, is that {name}? My classifier says {species}, but it's been wrong before.",
-    "Small furry lifeform... {first}, that's {name}, right? Ignore the part of me that said {species}.",
+# The detector's species CONTRADICTS every pet the owner has told him about (it
+# read "cat"; the facts DB has dogs). Field 2026-08-27 13:35:47, on a dog: "Small
+# furry lifeform... Bret, that's Max, right? Ignore the part of me that said cat."
+# — a wrong-species name, plus Rex talking his own sensors down out loud, in one
+# line. Past the edge of what he knows he asks, and does not name. Placeholder:
+# {first} only.
+ANIMAL_SPECIES_MISMATCH_ASK_LINES = (
+    "Furry lifeform on deck. {first}, who is this one?",
+    "Small furry lifeform detected. {first}, introduce us?",
+    "Okay — there's a creature in here. {first}, who am I looking at?",
+    "{first}, a furry someone just walked in. Who've I got?",
 )
 # Unconfirmed guess: light hedge, SECOND person — the guess only fires when the
 # owner was just here, so {first} is the person being spoken TO (field 2026-08-19:
@@ -7411,6 +7471,12 @@ MEMORY_CONSOLIDATION_TIMEOUT_SECS = 12.0
 # When the user gives a closure cue ("that's all", "thanks", "all good"),
 # optional proactive chatter stays quiet this long so the thread can land.
 END_OF_THREAD_GRACE_SECS = 35.0
+
+# A "yeah" that ACCEPTS an invitation Rex extended ("want to sit with me a
+# minute?") is not a closure cue — it hands the next reply the companionable
+# purpose instead. This is how long that one-shot acceptance stays readable by
+# the agenda; it is a same-turn handoff, not a mode, so it is deliberately short.
+COMPANIONABLE_ACCEPT_WINDOW_SECS = 20.0
 
 # Explicit-goodbye exit. When the user says a genuine sign-off ("gotta go", "nice
 # talking", "bye") AND then leaves the camera view, the conversation is over: Rex

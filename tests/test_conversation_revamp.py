@@ -882,5 +882,94 @@ class SubjectPivotTest(unittest.TestCase):
         cs.clear()
 
 
+class StrandedPrepositionCompletionTest(unittest.TestCase):
+    """A stranded preposition whose object is the quantifier heading the clause
+    is finished English (live failure 2026-08-27: "There's nothing to hit you
+    again with." was held four seconds, then answered with "With who?")."""
+
+    def tearDown(self):
+        from intelligence import turn_completion
+
+        turn_completion.clear()
+
+    def test_quantifier_infinitive_phrases_are_complete(self):
+        from intelligence import turn_completion
+        for complete in (
+            "There's nothing to hit you again with.",
+            "There's nothing to run by you.",
+            "I've got nothing to write with.",
+            "There's nothing to worry about.",
+            "I have something to talk to you about.",
+            "There's nowhere to put it.",
+            "There's nothing else to talk about",
+            "is there anything to be scared of",
+        ):
+            with self.subTest(text=complete):
+                self.assertIsNone(
+                    turn_completion.classify(complete), f"falsely held: {complete!r}"
+                )
+
+    def test_real_danglers_still_hold(self):
+        from intelligence import turn_completion
+        # No quantifier head -> "about" really is dangling; and the explicit
+        # ellipsis escape hatch still wins over the new completeness pattern.
+        for fragment in (
+            "I was going to",
+            "I need to talk to you about",
+            "and then I went to the",
+            "well we're currently in",
+            "I have nothing to",
+            "There's nothing to hit you again with...",
+        ):
+            with self.subTest(text=fragment):
+                self.assertIsNotNone(
+                    turn_completion.classify(fragment),
+                    f"falsely released: {fragment!r}",
+                )
+
+    def test_trailing_with_asks_for_a_thing_after_an_instrument_verb(self):
+        from intelligence import turn_completion
+        self.assertEqual(
+            turn_completion.classify("you can hit it with").prompt, "With what?"
+        )
+        # Company still gets the person question it always asked.
+        self.assertEqual(
+            turn_completion.classify("I went to dinner with").prompt, "With who?"
+        )
+
+
+class StrandedPrepositionOverReachTest(unittest.TestCase):
+    """The stranded-preposition escape must not swallow a truncated sentence.
+
+    Review 2026-08-27: the escape's filler gap was unbounded, so any turn that
+    merely CONTAINED a quantifier + infinitive earlier read as finished — and
+    those are exactly the mid-sentence endpointer cuts the hold exists for.
+    """
+
+    def setUp(self):
+        from intelligence import turn_completion
+        self.tc = turn_completion
+
+    def test_a_quantifier_early_in_the_turn_does_not_excuse_a_cut_ending(self):
+        for text in (
+            "I've got nothing to do tonight so I'm going to hang out with",
+            "plenty to do tomorrow but first I have to swing by the shop for",
+            "Anyone to blame here would have to start with",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNotNone(self.tc.classify(text))
+
+    def test_the_real_stranded_forms_are_still_complete(self):
+        for text in (
+            "There's nothing to hit you again with.",
+            "I've got nothing to write with.",
+            "There's nothing to worry about.",
+            "I have something to talk to you about.",
+            "There's nowhere to put it.",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(self.tc.classify(text))
+
+
 if __name__ == "__main__":
     unittest.main()

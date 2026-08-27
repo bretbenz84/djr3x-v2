@@ -70,6 +70,14 @@ def _starts_with_backreference(sentence: str) -> bool:
     return bool(_BACKREFERENCE_START_PAT.match((sentence or "").lstrip(" \"'“”‘’—–-")))
 _ROAST_PAT = re.compile(
     r"\b(pathetic|pitiful|sad excuse|glorified|not-so-mighty|mediocrity|"
+    # Backhanded mercy — the jab that survived a "roasting OFF" frame on
+    # 2026-08-27 13:37:05: Bret accepted an invitation to sit together and got
+    # "You're spared from your own bad timing for another minute." No pattern here
+    # covered the shape ("bad timing" is not "bad decisions"), so the no-roast
+    # scrubber in govern_stream_sentence let it straight through to the speaker.
+    r"spared (?:from|by) (?:your|yourself|you)|saved (?:you )?from yourself|"
+    r"your own (?:bad|poor|terrible|questionable|awful) "
+    r"(?:timing|instincts?|judgment|judgement|choices)|"
     r"blunder|organic thoughts|exhaust ports|can't handle the truth|"
     r"disaster|tragic|lower your standards|pretend i have friends|"
     r"let'?s pretend|life decisions|embarrass yourself|brilliance in basic|"
@@ -353,7 +361,12 @@ def build_frame(
         person_id, plan.target, empathy_mode, affect, sensitivity, user_text,
         effective_warmth=_effective_warmth(person_id),
     )
-    if purpose == "closure":
+    # Field 2026-08-27 13:37:05: the closure frame said "roasting OFF" and the reply
+    # was still "You're spared from your own bad timing for another minute." Accepting
+    # an invitation to sit together is a sincere turn for the same reason a closure is —
+    # needling it is how a warm moment comes out as a brush-off — so it gets the same
+    # hard off, not the roast level the energy/warmth read would otherwise hand it.
+    if purpose in {"closure", "companionable"}:
         roast_level = "none"
 
     reasons = [
@@ -558,7 +571,13 @@ def _slim_roast_rule(frame: SocialFrame) -> str:
             "roast may ride on top, but never deflect a sincere share with a joke"
         )
     return {
-        "none": "no roasts or pointed teasing this turn",
+        # "no roasts" alone was not enough on 2026-08-27 13:37:05 — the model read a
+        # backhanded favour ("you're spared from your own bad timing") as compliance,
+        # because it is phrased as mercy rather than as an insult. Name the shape.
+        "none": (
+            "no roasts, pointed teasing, or backhanded 'you're spared / lucky for "
+            "you / you're welcome' jabs this turn — warmth played straight"
+        ),
         "light": "at most a light, surface-level tap if you roast",
         "normal": (
             "land ONE sharp, specific jab only when you actually have an angle — not "

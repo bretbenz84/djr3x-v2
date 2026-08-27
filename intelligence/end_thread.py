@@ -9,12 +9,15 @@ follow-ups, visual curiosity, and idle chatter back off.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import logging
 import re
 import threading
 import time
 from typing import Optional
 
 import config
+
+_log = logging.getLogger(__name__)
 
 
 # Strong closure cues — explicit goodbyes / "we're done here" signals only.
@@ -43,6 +46,46 @@ _CLOSURE_PAT = re.compile(
 )
 _SHORT_ACK_PAT = re.compile(
     r"^\s*(ok|okay|cool|nice|yeah|yep|alright|right|gotcha|thanks|thank you)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+# An affirmative reply to an invitation Rex just EXTENDED is acceptance, not a
+# goodbye. Field 2026-08-27 13:36:56 — Rex: "Hey Bret, I'm thinking about you.
+# Want to sit with me a minute?"; Bret: "Yeah."; the short-ack lane below called it
+# "short acknowledgement after Rex prompt", armed the 35s grace, and every lean
+# impulse logged "blocked: end_thread_grace" for the next 47 seconds — an accepted
+# invitation to sit together came out as a crash. The ack word cannot tell the two
+# apart ("yeah" to "so that was the whole story, huh?" IS closure), so the
+# discriminator is the REX LINE being answered, never the ack alone.
+_AFFIRMATIVE_ACK_PAT = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|sure|ok|okay|alright|cool|nice|right|gotcha)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+# Offer-shaped Rex turns. Gated on the line actually being a QUESTION (see
+# _is_invitation) so a plain statement that happens to contain "up for" or
+# "how about" can't fake an invitation out of ordinary banter.
+_INVITATION_PAT = re.compile(
+    r"(?:\bdo you want\b|\bwould you (?:like|care|mind)\b|"
+    r"\bwant (?:to|me to|a|some|you to)\b|\bwanna\b|\bcare to\b|"
+    r"\bup for\b|\bfeel like\b|\bmind if i\b|"
+    r"\b(?:shall|should|can|could|may) (?:i|we)\b)",
+    re.IGNORECASE,
+)
+# The "stay with me" family reads as an invitation even without a question mark
+# ("Stick around, I'm not done"), so it bypasses the question gate.
+_PRESENCE_INVITE_PAT = re.compile(
+    r"\b(?:sit (?:with|by|next to) me|come sit|stick around|"
+    r"stay (?:a|for a|another) (?:minute|bit|while|sec|second)|"
+    r"hang (?:out|with me)|keep me company|join me)\b",
+    re.IGNORECASE,
+)
+# ...and the offers that ARE goodbyes. "Should I let you get back to it?" and
+# "Let's leave it there" are offer-shaped too, and a "yeah" to those genuinely ends
+# the thread — so they VETO the invitation read instead of suppressing closure.
+_RELEASE_OFFER_PAT = re.compile(
+    r"\b(?:let you (?:go|get back|be)|leave you (?:to it|alone)|"
+    r"get out of your (?:hair|way)|call it (?:a day|a night|here|there|quits)|"
+    r"wrap (?:this|it) up|sign off|shut up|be quiet|stop talking|"
+    r"leave it there|moving on|go to sleep)\b",
     re.IGNORECASE,
 )
 # Genuine sign-offs — "I'm leaving / signing off" cues, a deliberately narrower
@@ -102,6 +145,11 @@ class EndThreadState:
 _lock = threading.Lock()
 _state: Optional[EndThreadState] = None
 _last_assistant_had_question: bool = False
+_last_assistant_text: str = ""
+# Monotonic time an affirmative reply accepted a Rex invitation. Read ONCE by the
+# agenda (consume_invitation_acceptance) so a stale flag can never make a later
+# turn read as an acceptance.
+_invitation_accepted_at: Optional[float] = None
 # Monotonic time of the last explicit verbal farewell, and the latch set once that
 # farewell is followed by the person leaving the camera view. While the latch is
 # live, Rex treats the conversation as fully closed — no proactive re-engagement —
@@ -112,20 +160,24 @@ _conversation_closed_at: Optional[float] = None
 
 def clear() -> None:
     global _state, _last_assistant_had_question, _farewell_at, _conversation_closed_at
+    global _last_assistant_text, _invitation_accepted_at
     with _lock:
         _state = None
         _last_assistant_had_question = False
+        _last_assistant_text = ""
+        _invitation_accepted_at = None
         _farewell_at = None
         _conversation_closed_at = None
 
 
 def note_assistant_turn(text: str) -> None:
-    global _last_assistant_had_question
+    global _last_assistant_had_question, _last_assistant_text
     cleaned = (text or "").strip()
     if not cleaned:
         return
     with _lock:
         _last_assistant_had_question = "?" in cleaned
+        _last_assistant_text = cleaned
 
 
 def note_user_turn(
@@ -134,16 +186,27 @@ def note_user_turn(
     *,
     answered_question: Optional[dict] = None,
 ) -> Optional[dict]:
-    del person_id  # reserved for future per-person pacing
+    global _invitation_accepted_at
     cleaned = (text or "").strip()
     if not cleaned:
         return None
+
+    # An acceptance belongs to the turn that armed it. The agenda only consumes it
+    # on turns that reach build_turn_plan, and plenty of turns return before that
+    # (the face-reveal ask, the off-camera identify ask, repair/game/router acks) —
+    # so an unread flag must not colour the NEXT turn, where a real "never mind"
+    # has to be free to close the thread. _closure_reason re-arms it below when
+    # this turn is genuinely an acceptance.
+    with _lock:
+        _invitation_accepted_at = None
 
     if _starts_new_thread(cleaned):
         clear()
         return None
 
-    reason = _closure_reason(cleaned, answered_question=answered_question)
+    reason = _closure_reason(
+        cleaned, answered_question=answered_question, person_id=person_id
+    )
     if not reason:
         # A real new user turn means the old grace period has done its job.
         if len(re.findall(r"[A-Za-z']+", cleaned)) >= 4:
@@ -271,8 +334,26 @@ def build_directive() -> str:
     )
 
 
+def consume_invitation_acceptance() -> bool:
+    """True exactly once, for the turn in which an affirmative reply accepted an
+    invitation Rex extended. One-shot AND time-boxed: the agenda reads it to give
+    THIS turn the companionable purpose, and neither a missed read nor a late one
+    can make a later turn behave as if it were the acceptance."""
+    global _invitation_accepted_at
+    with _lock:
+        at = _invitation_accepted_at
+        _invitation_accepted_at = None
+    if at is None:
+        return False
+    return (time.monotonic() - at) <= _companionable_secs()
+
+
 def _grace_secs() -> float:
     return max(5.0, float(getattr(config, "END_OF_THREAD_GRACE_SECS", 35.0)))
+
+
+def _companionable_secs() -> float:
+    return max(1.0, float(getattr(config, "COMPANIONABLE_ACCEPT_WINDOW_SECS", 20.0)))
 
 
 def _farewell_window_secs() -> float:
@@ -287,14 +368,87 @@ def _starts_new_thread(text: str) -> bool:
     return "?" in text or bool(_QUESTION_START.search(text)) or bool(_SWITCH_PAT.search(text))
 
 
-def _closure_reason(text: str, *, answered_question: Optional[dict]) -> str:
+def _closure_reason(
+    text: str,
+    *,
+    answered_question: Optional[dict],
+    person_id: Optional[int] = None,
+) -> str:
     if _THANKS_FOR_ASKING_PAT.search(text):
         return ""
     if _CLOSURE_PAT.search(text):
         return "explicit closure cue"
     if _SHORT_ACK_PAT.match(text):
+        # The invitation check runs INSIDE the short-ack lane and after the explicit
+        # closure cues, so it can only ever soften the weakest closure signal — an
+        # actual goodbye still closes even when Rex's last line was an invitation.
+        # Wrapped: a bad frame or a regex surprise must never take down the turn.
+        try:
+            if _AFFIRMATIVE_ACK_PAT.match(text):
+                rex_text = _rex_turn_being_answered(answered_question, person_id)
+                if _is_invitation(rex_text):
+                    _note_invitation_accepted(text, rex_text)
+                    return ""
+        except Exception as exc:
+            _log.debug("end-of-thread invitation check failed: %s", exc)
         with _lock:
             last_was_question = _last_assistant_had_question
         if answered_question or last_was_question:
             return "short acknowledgement after Rex prompt"
     return ""
+
+
+def _is_invitation(rex_text: str) -> bool:
+    """True when this Rex line asked them to stay / do something WITH him, rather
+    than winding the thread down. An offer that is itself a goodbye ("should I let
+    you get back to it?") is vetoed first, because a yes to THAT really does end
+    the conversation."""
+    cleaned = (rex_text or "").strip()
+    if not cleaned:
+        return False
+    if _RELEASE_OFFER_PAT.search(cleaned):
+        return False
+    if _PRESENCE_INVITE_PAT.search(cleaned):
+        return True
+    return "?" in cleaned and bool(_INVITATION_PAT.search(cleaned))
+
+
+def _rex_turn_being_answered(
+    answered_question: Optional[dict],
+    person_id: Optional[int],
+) -> str:
+    """The Rex line this ack is replying to, from whichever layer actually has it.
+
+    answered_question carries it verbatim on the live reply path (interaction
+    synthesizes it from the dialogue-act frame). The frame itself is the fallback
+    that matters: the PROACTIVE lanes speak through consciousness.note_rex_utterance,
+    which registers a frame but never calls note_assistant_turn — and that is exactly
+    the path the "want to sit with me a minute?" check-in took on 2026-08-27.
+    _last_assistant_text is the last resort for plain reply-path turns."""
+    if isinstance(answered_question, dict):
+        text = str(answered_question.get("question_text") or "").strip()
+        if text:
+            return text
+    try:
+        from intelligence import dialogue_act
+        frame = dialogue_act.active_frame(person_id=person_id)
+        if frame is not None:
+            text = (getattr(frame, "text", "") or "").strip()
+            if text:
+                return text
+    except Exception:
+        pass
+    with _lock:
+        return _last_assistant_text
+
+
+def _note_invitation_accepted(ack_text: str, rex_text: str) -> None:
+    global _invitation_accepted_at
+    with _lock:
+        _invitation_accepted_at = time.monotonic()
+    _log.info(
+        "[end_thread] invitation accepted — closure suppressed ack=%r rex=%r",
+        ack_text,
+        rex_text[:80],
+    )
+

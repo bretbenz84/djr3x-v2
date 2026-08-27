@@ -541,20 +541,53 @@ _animal_confirm_streak: dict[str, int] = {}
 def _confirm_persistent_animals(animals: list[dict]) -> list[dict]:
     """Keep only animals seen in ANIMAL_ARRIVAL_CONFIRM_SCANS consecutive scans. A real
     pet stays detected; a single-scan/oscillating misdetection never confirms (and so
-    can't fire an arrival or churn the governor)."""
+    can't fire an arrival or churn the governor).
+
+    Field 2026-08-27 13:35:45: two consecutive scans was the whole bar, and two was
+    what a flickering read produced — RF-DETR had floated dog, cat, horse and bird at
+    the same furry shape for forty seconds, scraped "cat" over the line at 13:35:43
+    and 13:35:45, and Rex announced a cat arrival about Bret's dog. The streak was
+    blind to that: it counted scans and never asked whether the SPECIES was in
+    dispute. While a rival companion label is fresh the bar is
+    ANIMAL_CONTESTED_CONFIRM_SCANS instead — the same evidence, held longer."""
     need = int(getattr(config, "ANIMAL_ARRIVAL_CONFIRM_SCANS", 1))
-    if need <= 1:
+    contested_need = max(need, int(getattr(config, "ANIMAL_CONTESTED_CONFIRM_SCANS", need)))
+    if need <= 1 and contested_need <= 1:
         return animals
     seen = {str(a.get("species") or "").strip().lower() for a in animals if a.get("species")}
     for sp in list(_animal_confirm_streak):
         if sp not in seen:
-            del _animal_confirm_streak[sp]  # missed this scan → streak broken
+            # Decay, don't reset. One dropped scan is flicker, not departure — the
+            # floor-level wide-angle loses a real pet constantly — and a hard reset
+            # makes the raised contested bar unreachable for a 2-of-3 detector, so
+            # a genuinely present pet would never enter world_state at all.
+            _animal_confirm_streak[sp] -= 1
+            if _animal_confirm_streak[sp] <= 0:
+                del _animal_confirm_streak[sp]
     for sp in seen:
-        _animal_confirm_streak[sp] = _animal_confirm_streak.get(sp, 0) + 1
-    return [
-        a for a in animals
-        if _animal_confirm_streak.get(str(a.get("species") or "").strip().lower(), 0) >= need
-    ]
+        # Capped: without it a long-present pet banks an unbounded streak and
+        # re-confirms instantly after any real absence.
+        _animal_confirm_streak[sp] = min(
+            _animal_confirm_streak.get(sp, 0) + 1, contested_need
+        )
+    kept: list[dict] = []
+    for a in animals:
+        sp = str(a.get("species") or "").strip().lower()
+        streak = _animal_confirm_streak.get(sp, 0)
+        try:
+            rival = local_animal_detector.contested_by(sp)
+        except Exception:
+            rival = None
+        want = contested_need if rival else need
+        if streak >= want:
+            kept.append(a)
+        elif rival and streak >= need:
+            _log.info(
+                "animal held back: %s confirmed %d/%d scans — a recent %s reading "
+                "contests the species",
+                sp, streak, want, rival,
+            )
+    return kept
 
 
 # Labels that overlap a person's body zone because the person is ON/AT them, not

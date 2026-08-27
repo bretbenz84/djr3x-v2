@@ -14735,12 +14735,13 @@ def _maybe_catch_up_gap_speech() -> Optional[tuple[str, Optional[float]]]:
     slice_audio = audio[i0:i1]
     if len(slice_audio) < int(0.30 * sr):
         return None
+    under_playback = bool(played and b_start <= onset < b_end)
     _capture_outcome("gap_catchup_captured")
     _log.info(
         "[gap_speech] catch-up: recovered a %.2fs utterance the loop was blind "
         "for (spoken %.1fs ago, %s playback) — dispatching as a turn",
         slice_end - slice_start, now - onset,
-        "under" if (played and onset >= b_start and onset < b_end) else "outside",
+        "under" if under_playback else "outside",
     )
     # Cover only FRESH audio from here (not the already-classified remainder of
     # this span — re-scanning it after the dispatched turn's reply would
@@ -14749,7 +14750,17 @@ def _maybe_catch_up_gap_speech() -> Optional[tuple[str, Optional[float]]]:
     _last_speech_at = time.monotonic()
     _begin_user_turn()
     try:
-        _handle_speech_segment(slice_audio)
+        # Under Rex's own playback the AEC residual is the ONLY other thing in
+        # this slice, so the decoder has to believe what it read before this
+        # becomes a turn. Field 2026-08-27 13:34:16: a 2.10s slice recovered from
+        # under his ready line decoded "Look me what you got me." (-0.55) and Rex
+        # asked an empty room "Sorry, one more time?" — which played more audio,
+        # which seeded the next residual.
+        _handle_speech_segment(
+            slice_audio,
+            require_trusted=under_playback and bool(getattr(
+                config, "GAP_CATCHUP_UNDER_PLAYBACK_REQUIRE_TRUSTED", True)),
+        )
     except Exception:
         # Same containment as the live path: a handler bug costs one turn,
         # never the listening loop.
@@ -24283,10 +24294,57 @@ def _generate_repair_response(person_id: Optional[int], text: str, repair: dict)
     # ASR / comprehension miss with NO corrected words supplied: the human is telling us
     # we got it wrong but hasn't re-said it, so save face with a quick circuit-glitch joke
     # and invite them to repeat (varied) instead of 'owning it and moving on'.
-    if kind in {"misheard", "misunderstood"} and not repair_moves.correction_has_content(
+    # The human says there were NO words — Rex answered his own echo. Stand down from a
+    # fixed pool rather than the LLM: a generated line can still slip a question in, and
+    # any question is another ask to repeat. Field 2026-08-27 13:34: "I didn't say
+    # anything." got "Run that by me one more time?", whose denial got "Hit me with it
+    # again and I'll get it right." Arming the low-trust cooldown too keeps the OTHER
+    # ask-to-repeat lane quiet through the same window — the loop alternated between them.
+    if kind == "phantom_audio":
+        response = repair_moves.phantom_audio_response()
+        try:
+            repair_moves.clear_ask_to_repeat_strikes()
+            _arm_low_trust_reprompt_cooldown()
+        except Exception as exc:
+            _log.debug("phantom stand-down bookkeeping failed: %s", exc)
+        _log.info(
+            "[repair] phantom audio stand-down — no ask-to-repeat, subject closed: %r",
+            text,
+        )
+    elif kind in {"misheard", "misunderstood"} and not repair_moves.correction_has_content(
         repair.get("correction")
     ):
-        response = repair_moves.misheard_recovery_response()
+        # Rex asked three times in 75 seconds on 2026-08-27 and each ask produced the
+        # next denial to ask about. Past the cap, stand down instead — then reset the
+        # count so a genuine mishear later in the conversation still gets a fresh ask.
+        try:
+            _capped = repair_moves.ask_to_repeat_exhausted()
+        except Exception as exc:
+            _log.debug("ask-to-repeat cap check failed: %s", exc)
+            _capped = False
+        if _capped:
+            # NOT the phantom pool: this branch is reached from the misheard lane,
+            # where the human really did speak. Claiming they said nothing would be
+            # a fresh insult on top of the repeats.
+            response = repair_moves.ask_cap_stand_down_response()
+            try:
+                repair_moves.clear_ask_to_repeat_strikes()
+                _arm_low_trust_reprompt_cooldown()
+            except Exception as exc:
+                _log.debug("ask-to-repeat cap bookkeeping failed: %s", exc)
+            _log.info(
+                "[repair] ask-to-repeat cap reached (%d in a row) — standing down "
+                "instead of asking for a %s repeat: %r",
+                repair_moves.ASK_TO_REPEAT_STRIKE_CAP,
+                kind,
+                text,
+            )
+        else:
+            response = repair_moves.misheard_recovery_response()
+            try:
+                repair_moves.note_ask_to_repeat()
+            except Exception as exc:
+                _log.debug("ask-to-repeat strike bookkeeping failed: %s", exc)
     else:
         prompt = repair_moves.build_prompt(repair)
         try:
@@ -25924,6 +25982,17 @@ def _should_reprompt_low_trust(text: str, *, trusted: bool, text_input: bool) ->
         return False
     if not bool(getattr(config, "LOW_TRUST_REPROMPT_ENABLED", True)):
         return False
+    # After a phantom-audio stand-down ("I didn't say anything"), the next garbled
+    # fragment from the room is most likely Rex's own echo again, or the human's
+    # exasperated denial — asking them to repeat it re-opens the loop the stand-down
+    # just closed. Same once the shared ask-to-repeat cap is spent: field 2026-08-27,
+    # three "say that again" moves in 75 seconds, split across this lane and the
+    # misheard repair lane, each one manufacturing the next denial.
+    try:
+        if repair_moves.phantom_recent() or repair_moves.ask_to_repeat_exhausted():
+            return False
+    except Exception:
+        pass
     words = re.findall(r"[A-Za-z0-9']+", text or "")
     if len(words) < int(getattr(config, "LOW_TRUST_REPROMPT_MIN_WORDS", 3)):
         return False
@@ -25965,8 +26034,13 @@ def _handle_speech_segment(
     speaker_score_override: float = 0.0,
     text_input: bool = False,
     eager_transcript: Optional[str] = None,
+    require_trusted: bool = False,
 ) -> None:
-    """Full processing pipeline for one detected speech segment in ACTIVE state."""
+    """Full processing pipeline for one detected speech segment in ACTIVE state.
+
+    require_trusted: drop the turn when the decode falls below the trust floor.
+    Set only by the gap-speech catch-up for a slice cut from under Rex's own
+    playback — see that call site."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
@@ -26084,6 +26158,22 @@ def _handle_speech_segment(
                     state_module.set_state(State.IDLE)
                 except Exception:
                     pass
+            return
+
+        if require_trusted and not transcript_trusted:
+            # Only the gap-speech catch-up sets this, and only for a slice cut
+            # from under Rex's own playback: a decode the model does not believe,
+            # pulled out of audio whose loudest content is his own voice, is
+            # residual — not a person. Answering it is self-sustaining (field
+            # 2026-08-27 13:34: "Okay what, exactly?" then "Sorry, one more
+            # time?" then another recovery, all of it Rex talking to Rex).
+            _capture_outcome("gap_catchup_untrusted_under_playback")
+            _log.info(
+                "[gap_speech] dropped an untrusted recovery from under Rex's own "
+                "playback (residual, not a person): %r", str(text),
+            )
+            final_executed_path = "ignored.untrusted_under_playback"
+            completed = False
             return
 
         character_trace = _new_character_loop_trace(
@@ -26240,6 +26330,13 @@ def _handle_speech_segment(
             )
             _speak_blocking(line, emotion="curious")
             _arm_low_trust_reprompt_cooldown()
+            # Counts toward the SHARED ask-to-repeat cap: on 2026-08-27 this lane fired
+            # once (13:34:17) and the misheard repair lane twice, so a per-lane cap
+            # would have let them alternate and never trip.
+            try:
+                repair_moves.note_ask_to_repeat()
+            except Exception as exc:
+                _log.debug("ask-to-repeat strike bookkeeping failed: %s", exc)
             try:
                 consciousness.begin_response_wait(10.0)
             except Exception:

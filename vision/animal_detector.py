@@ -400,6 +400,57 @@ def _accept_threshold_for(species: str) -> float:
     return max(base, exotic)
 
 
+# Every animal label the model has floated recently — accepted OR near-miss —
+# stamped with when it last appeared. Field 2026-08-27 13:35:45: the near-miss
+# stream was already the loudest evidence in the log (dog 0.166/0.178, cat
+# 0.153-0.267, horse up to 0.354, bird 0.165, all at the same furry shape inside
+# forty seconds) and it was logged and thrown away, so the arrival gate could not
+# tell "the model is sure" from "the model is shopping".
+_species_candidate_seen: dict[str, float] = {}
+
+
+def _note_species_candidate(species: str) -> None:
+    """Stamp one animal label the model floated this scan. Never raises."""
+    try:
+        key = str(species or "").strip().lower()
+        if key:
+            _species_candidate_seen[key] = time.monotonic()
+    except Exception:
+        pass
+
+
+def contested_by(species) -> Optional[str]:
+    """The other likely-companion label the model floated within
+    ANIMAL_SPECIES_CONTEST_WINDOW_SECS, or None.
+
+    A dog read as a cat is the one confusion that renames the household pet, so
+    only the companion pair counts as a rival. The stray "horse" this room throws
+    every minute is not a contest, it is clutter the exotic threshold already
+    turns away. Never raises: an unknown contest reads as uncontested."""
+    try:
+        window = float(getattr(config, "ANIMAL_SPECIES_CONTEST_WINDOW_SECS", 60.0))
+        if window <= 0:
+            return None
+        key = str(species or "").strip().lower()
+        companions = {
+            str(s).strip().lower()
+            for s in (getattr(config, "LOCAL_ANIMAL_COMPANION_SPECIES", {"dog", "cat"}) or set())
+        }
+        if key not in companions:
+            return None
+        now = time.monotonic()
+        rivals = [
+            (seen_at, other)
+            for other, seen_at in _species_candidate_seen.items()
+            if other != key and other in companions and (now - seen_at) <= window
+        ]
+        if not rivals:
+            return None
+        return max(rivals)[1]
+    except Exception:
+        return None
+
+
 def _records_from_detections(detections, frame_shape, *, now: Optional[float] = None) -> list[dict]:
     timestamp = time.time() if now is None else now
     records: list[dict] = []
@@ -410,6 +461,7 @@ def _records_from_detections(detections, frame_shape, *, now: Optional[float] = 
         if best is None:
             continue
         species, score = best
+        _note_species_candidate(species)
         accept = _accept_threshold_for(species)
         if score < accept:
             # Below acceptance but above the model floor — log it so a near-miss

@@ -20,6 +20,7 @@ from typing import Optional
 from rapidfuzz import fuzz
 
 import config
+from memory.name_validation import contains_profane_token
 
 _log = logging.getLogger(__name__)
 
@@ -483,6 +484,18 @@ def parse_player_names(text: str, speaker_name: Optional[str] = None, limit: int
         plain = _plain(part)
         if plain in _NON_PLAYER_NAME_WORDS:
             continue
+        # Field 2026-08-26 20:10:43 — the roster prompt heard "Jeremy, Bret, J T.
+        # Ah, fuck. Never mind. We don't know about that." and the trailing
+        # fragment became a fourth contestant: Rex asked the room out loud for
+        # "a cleaner voice print for Fuck." and people.db kept the row. The mint
+        # is blocked in memory/name_validation.py now; this stops the name
+        # reaching his mouth at all, off that same shared table.
+        try:
+            if contains_profane_token(part):
+                _log.info("[jeopardy] roster dropped profane fragment: %r", part)
+                continue
+        except Exception as exc:
+            _log.debug("[jeopardy] roster profanity check failed: %s", exc)
         reduced = _PLAYER_FILLER_RE.sub(" ", part)
         name = _display_name(reduced)
         if not name:

@@ -708,14 +708,17 @@ def build_turn_plan(
     except Exception:
         pass
     end_thread_pending = None
+    invitation_accepted = False
     try:
         from intelligence import end_thread
         end_thread_directive = end_thread.build_directive()
         if end_thread_directive:
             lines.append(end_thread_directive)
         end_thread_pending = end_thread.pending_closure()
+        invitation_accepted = end_thread.consume_invitation_acceptance()
     except Exception:
         end_thread_pending = None
+        invitation_accepted = False
     try:
         from intelligence import response_length
         lines.append(
@@ -828,6 +831,23 @@ def build_turn_plan(
             "NOT imply they are repressing or hiding feelings, and do not insist the "
             "mood is worse than they say. A brief, genuine beat is the whole move."
         )
+        return _finish(plan, lines)
+
+    if invitation_accepted:
+        # Field 2026-08-27 13:37:05 — Rex asked "Want to sit with me a minute?",
+        # Bret said "Yeah", and the yes got a jab ("You're spared from your own bad
+        # timing for another minute") followed by 47 seconds of nothing. A yes to an
+        # invitation needs its own purpose: land the yes, then just be there.
+        lines.append(
+            "Primary purpose: they just said YES to the invitation you extended — "
+            "to sit with you, to stay a minute, or to take up whatever you just "
+            "offered. Nothing more is required of them. Give ONE short, warm, "
+            "genuine beat that accepts the yes and settles in ('good', 'stay as "
+            "long as you want'), then stop. No new questions, no topic pivot, and "
+            "do not tease or needle them for saying yes. Companionable quiet after "
+            "this is the point, not a failure."
+        )
+        plan.purpose = "companionable"
         return _finish(plan, lines)
 
     if end_thread_pending:

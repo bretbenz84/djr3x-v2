@@ -2749,6 +2749,12 @@ _animal_confirmed_pet: dict[str, str] = {}
 # mismatch — and then every episode still recorded "I saw a cat", which a later
 # memory musing recycled to Bret's face two turns after he said "Max is a dog".
 _animal_confirmed_species: dict[str, str] = {}
+# Detector labels the arrival remark REFUSED to hang a pet name on, because the
+# owner's own facts contradict them. Field 2026-08-27 13:35:47: he read "cat" at
+# Bret's dog, guessed "Max" anyway, and the episode still went in as "I saw a
+# cat" — the same wrong-species record a memory musing recycled to Bret's face on
+# 2026-08-19. Nothing gets written down under a label the household contradicts.
+_animal_species_contradicted: set[str] = set()
 
 
 def _confirmed_pet_for(species) -> tuple[Optional[str], Optional[str]]:
@@ -2784,12 +2790,16 @@ def _confirmed_pet_for(species) -> tuple[Optional[str], Optional[str]]:
 
 def _animal_display_species(species) -> str:
     """What a record should CALL the animal: the owner-confirmed identity when
-    we have one ("dog named Max"), else the detector's label."""
+    we have one ("dog named Max"), else the detector's label — unless the
+    household's own facts contradict that label, in which case the record says
+    "animal" and stays honest. Field 2026-08-27 13:35:47: the detector read Bret's
+    dog as a "cat" and the episode was filed as a cat sighting anyway."""
     key = (str(species or "creature")).strip().lower()
     name, true_species = _confirmed_pet_for(key)
     if not name:
-        return key
+        return "animal" if key in _animal_species_contradicted else key
     return f"{true_species or key} named {name}"
+
 
 _PET_ANSWER_NEGATIVE_RE = re.compile(r"\b(no|nope|nah|not|isn'?t|ain'?t|wrong)\b")
 _PET_ANSWER_AFFIRMATIVE_RE = re.compile(
@@ -2880,8 +2890,8 @@ def _pet_owner_candidates(window_secs: float) -> list[tuple[int, str]]:
 def _pet_name_guess_line(species: str) -> Optional[str]:
     """"Is that Max?" — the furry-arrival remark, when someone who was just here
     has told Rex about a pet. Owner note 2026-08-18: "small furry lifeform" is
-    dumb when he KNOWS I have a dog named Max. Same-species pets first; a
-    species mismatch still asks (the detector flip-flops dog/cat) but says so.
+    dumb when he KNOWS I have a dog named Max. The name only rides a species the
+    owner's facts do not contradict; a contradicted species asks who it is.
     None when nobody recent has a named pet — the generic pool stays."""
     if not bool(getattr(config, "ANIMAL_PET_NAME_GUESS_ENABLED", True)):
         return None
@@ -2899,19 +2909,59 @@ def _pet_name_guess_line(species: str) -> Optional[str]:
             pets = []
         if not pets:
             continue
-        same = [p for p in pets if p.get("species") == norm]
         furry = getattr(config, "FURRY_COMPANION_ANIMAL_SPECIES", set()) or set()
-        loose = [p for p in pets if p.get("species") in furry or p.get("species") == "pet"]
-        pick = same or loose
-        if not pick:
-            continue
+        same = [p for p in pets if p.get("species") == norm]
+        # A pet the fact extractor never pinned a species to ("Biscuit") disagrees
+        # with nothing, so the detector's label can still carry the name.
+        unsaid = [p for p in pets
+                  if not p.get("species") or p.get("species") == "pet"]
+        # Field 2026-08-27 13:35:47: RF-DETR pushed a DOG through as "cat" on two
+        # marginal scans and Rex said "Small furry lifeform... Bret, that's Max,
+        # right? Ignore the part of me that said cat." — he read a cat, named a
+        # dog, and argued with his own sensors out loud to cover the gap. A species
+        # the owner's facts contradict is not evidence for a name. Ask instead, and
+        # let the human supply it; the ledger rule is honest "not sure" past the
+        # edge, never a disclaimer wrapped around a guess.
+        contradicted = [p for p in pets
+                        if p.get("species") and p.get("species") != "pet"
+                        and p.get("species") != norm and p.get("species") in furry]
         first = (owner or "").strip().split(" ")[0] or "hey"
+        pick = same or unsaid
+        if not pick:
+            if not contradicted:
+                continue
+            _animal_species_contradicted.add(species_key)
+            names = [str(p.get("name")) for p in contradicted]
+            kinds = sorted({str(p.get("species")) for p in contradicted})
+            pool = tuple(getattr(config, "ANIMAL_SPECIES_MISMATCH_ASK_LINES", ()) or ())
+            if not pool:
+                pool = ("{first}, who is this one?",)
+            try:
+                line = random.choice(pool).format(first=first)
+            except Exception:
+                line = f"{first}, who is this one?"
+            _log.info("consciousness: animal remark WITHHELD pet name species=%s "
+                      "owner=%s pets=%s known_species=%s — asking who it is",
+                      species_key, owner, names, kinds)
+            try:
+                from intelligence import decision_ledger
+                decision_ledger.record(
+                    "pet_guess",
+                    f"my detector read a {species_key}, but the only pets {first} has "
+                    f"told me about are {'/'.join(kinds)} "
+                    f"({' and '.join(names[:2])}) — the species didn't match, so I "
+                    f"asked who it was instead of guessing a name",
+                    said=line,
+                    detail={"owner": owner, "pets": names, "species": species_key,
+                            "known_species": kinds},
+                )
+            except Exception:
+                pass
+            return line
         names = [str(p.get("name")) for p in pick]
         fmt = {"first": first, "name": names[0], "alt": (names[1] if len(names) > 1 else ""),
                "species": species_key or "creature"}
-        if not same:
-            pool = getattr(config, "ANIMAL_PET_GUESS_MISMATCH_LINES", ())
-        elif len(names) > 1:
+        if len(names) > 1:
             pool = getattr(config, "ANIMAL_PET_GUESS_TWO_LINES", ())
         else:
             pool = getattr(config, "ANIMAL_PET_GUESS_LINES", ())
@@ -2932,8 +2982,7 @@ def _pet_name_guess_line(species: str) -> Optional[str]:
             decision_ledger.record(
                 "pet_guess",
                 f"I spotted a {species_key} and {first} had been here recently and has "
-                f"told me about {' and '.join(names[:2])}, so I asked if that's who it was"
-                + ("" if same else f" (my detector said {species_key}, which didn't match)"),
+                f"told me about {' and '.join(names[:2])}, so I asked if that's who it was",
                 said=line, detail={"owner": owner, "pets": names, "species": species_key},
             )
         except Exception:

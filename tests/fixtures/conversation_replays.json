@@ -57,5 +57,27 @@
     "utterance": "woodworking and hiking",
     "candidate": "Woodworking, respectable. What got you into it? And where do you do it?",
     "expect": {"allow_question": true, "governed_max_questions": 1}
+  },
+  {
+    "name": "a yes to 'want to sit with me?' is acceptance, never closure",
+    "person_id": 1,
+    "rex_last_line": "Hey Bret, I'm thinking about you. Want to sit with me a minute?",
+    "utterance": "Yeah.",
+    "expect": {"purpose": "companionable", "allow_roast": "none", "allow_question": false, "directive_includes": ["said yes to the invitation", "companionable quiet"]}
+  },
+  {
+    "name": "'yeah' trailing a finished topic still lets the thread end",
+    "person_id": 1,
+    "rex_last_line": "So that was the whole story, huh?",
+    "utterance": "Yeah.",
+    "expect": {"purpose": "closure", "allow_roast": "none", "allow_question": false}
+  },
+  {
+    "name": "a no-roast turn scrubs the backhanded 'you're spared' jab",
+    "person_id": 1,
+    "rex_last_line": "So that was the whole story, huh?",
+    "utterance": "Yeah.",
+    "candidate": "Good. You're spared from your own bad timing for another minute.",
+    "expect": {"governed_includes": ["good"], "governed_excludes": ["spared"]}
   }
 ]

@@ -214,5 +214,50 @@ class EagerProbeDuringGamesTest(unittest.TestCase):
             self.assertTrue(interaction._eager_motion_endpoint_enabled())
 
 
+class RosterNameSanityTest(unittest.TestCase):
+    """A swear in the roster reply is not a contestant.
+
+    Field 2026-08-26 20:10:43 — the roster prompt heard "Jeremy, Bret, J T. Ah,
+    fuck. Never mind. We don't know about that. We got. We we can't all be
+    talking at the same time." Rex answered the room with "I need a cleaner voice
+    print for Fuck. before the board starts." and people.db kept the row.
+    """
+
+    FIELD_UTTERANCE = (
+        "Jeremy, Bret, J T. Ah, fuck. Never mind. We don't know about that. "
+        "We got. We we can't all be talking at the same time."
+    )
+
+    def test_the_swear_never_becomes_a_contestant(self):
+        from features import jeopardy
+
+        names = jeopardy.parse_player_names(self.FIELD_UTTERANCE, limit=4)
+        self.assertFalse(
+            any("fuck" in n.lower() for n in names),
+            f"profane fragment survived the roster parse: {names}",
+        )
+
+    def test_the_real_players_in_that_same_reply_survive(self):
+        from features import jeopardy
+
+        names = jeopardy.parse_player_names(self.FIELD_UTTERANCE, limit=4)
+        self.assertIn("Jeremy", names)
+        self.assertIn("Bret", names)
+
+    def test_an_ordinary_roster_is_untouched(self):
+        from features import jeopardy
+
+        self.assertEqual(
+            jeopardy.parse_player_names("Will, Jen, Daniel, and Bret", limit=4),
+            ["Will", "Jen", "Daniel", "Bret"],
+        )
+
+    def test_a_profane_roster_never_reaches_people_db(self):
+        with mock.patch("memory.people.enroll_person") as enroll:
+            players, _needs_voice = games._jeopardy_prepare_players(["Fuck"])
+        enroll.assert_not_called()
+        self.assertEqual([p.get("person_id") for p in players], [None])
+
+
 if __name__ == "__main__":
     unittest.main()

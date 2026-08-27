@@ -104,5 +104,79 @@ class LenientJsonTest(unittest.TestCase):
         self.assertEqual(result["emotion_detected"], "neutral")
 
 
+class AnimalContestedSpeciesTest(unittest.TestCase):
+    """Field 2026-08-27 13:35:45: RF-DETR floated dog, cat, horse and bird at one
+    furry shape for forty seconds, scraped "cat" over the accept bar on exactly two
+    consecutive scans — the whole persistence requirement — and Rex announced a cat
+    arrival about Bret's dog. A contested companion label needs more."""
+
+    def setUp(self):
+        from vision import scene
+        from vision import animal_detector as ad
+        self.scene = scene
+        self.ad = ad
+        scene._animal_confirm_streak.clear()
+        ad._species_candidate_seen.clear()
+        self.addCleanup(scene._animal_confirm_streak.clear)
+        self.addCleanup(ad._species_candidate_seen.clear)
+
+    def _bars(self):
+        return [
+            mock.patch.object(config, "ANIMAL_ARRIVAL_CONFIRM_SCANS", 2, create=True),
+            mock.patch.object(config, "ANIMAL_CONTESTED_CONFIRM_SCANS", 4, create=True),
+            mock.patch.object(config, "ANIMAL_SPECIES_CONTEST_WINDOW_SECS", 60.0, create=True),
+        ]
+
+    def test_rival_companion_label_raises_the_bar(self):
+        import time
+        self.ad._species_candidate_seen["dog"] = time.monotonic()
+        for p in self._bars():
+            p.start()
+            self.addCleanup(p.stop)
+        for _ in range(3):
+            self.assertEqual(self.scene._confirm_persistent_animals([{"species": "cat"}]), [])
+        out = self.scene._confirm_persistent_animals([{"species": "cat"}])
+        self.assertEqual([a["species"] for a in out], ["cat"])
+
+    def test_uncontested_species_still_confirms_at_the_normal_bar(self):
+        for p in self._bars():
+            p.start()
+            self.addCleanup(p.stop)
+        self.scene._confirm_persistent_animals([{"species": "dog"}])
+        out = self.scene._confirm_persistent_animals([{"species": "dog"}])
+        self.assertEqual([a["species"] for a in out], ["dog"])
+
+    def test_stale_rival_does_not_contest(self):
+        import time
+        self.ad._species_candidate_seen["dog"] = time.monotonic() - 600.0
+        for p in self._bars():
+            p.start()
+            self.addCleanup(p.stop)
+        self.scene._confirm_persistent_animals([{"species": "cat"}])
+        out = self.scene._confirm_persistent_animals([{"species": "cat"}])
+        self.assertEqual([a["species"] for a in out], ["cat"])
+
+    def test_exotic_clutter_label_is_not_a_rival(self):
+        import time
+        self.ad._species_candidate_seen["horse"] = time.monotonic()
+        for p in self._bars():
+            p.start()
+            self.addCleanup(p.stop)
+        self.scene._confirm_persistent_animals([{"species": "cat"}])
+        out = self.scene._confirm_persistent_animals([{"species": "cat"}])
+        self.assertEqual([a["species"] for a in out], ["cat"])
+
+    def test_near_miss_candidate_is_remembered(self):
+        from types import SimpleNamespace
+        det = SimpleNamespace(
+            categories=[SimpleNamespace(category_name="dog", score=0.17)],
+            bounding_box=SimpleNamespace(origin_x=0.0, origin_y=0.0, width=10.0, height=10.0),
+        )
+        self.assertEqual(self.ad._records_from_detections([det], (100, 100, 3)), [])
+        self.assertIn("dog", self.ad._species_candidate_seen)
+        self.assertEqual(self.ad.contested_by("cat"), "dog")
+        self.assertIsNone(self.ad.contested_by("dog"))
+
+
 if __name__ == "__main__":
     unittest.main()

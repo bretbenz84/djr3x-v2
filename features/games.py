@@ -1301,6 +1301,21 @@ def _jeopardy_find_or_create_player(name: str) -> tuple[Optional[int], str]:
         _log.debug("[jeopardy] people memory unavailable: %s", exc)
         return None, _jeopardy_player_display_name(name)
 
+    # The LOOKUP below predates the shared name gate and goes straight to
+    # find_person_by_name, which does not consult it — so a row poisoned before
+    # the gate shipped would be re-attached to a live game forever. Field
+    # 2026-08-26: the roster reply "Jeremy, Bret, J T. Ah, fuck. Never mind."
+    # minted person 10 named "Fuck"; blocking only the CREATE path would still
+    # have handed that row a seat at the next board. Refusing the candidate
+    # outright makes the fix independent of whether the row is ever deleted.
+    try:
+        from memory.name_validation import normalize_person_name
+        if not normalize_person_name(name):
+            _log.info("[jeopardy] refusing non-name player candidate=%r", name)
+            return None, _jeopardy_player_display_name(name)
+    except Exception:
+        pass
+
     candidates = [name]
     candidates.extend(_JEOPARDY_NICKNAME_CANDIDATES.get((name or "").strip().lower(), []))
     for candidate in candidates:

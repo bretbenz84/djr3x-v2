@@ -489,6 +489,11 @@ def find_or_create_person(name: str) -> tuple[Optional[int], bool]:
     """Return (person_id, created). Reuses an existing row when the name is clear."""
     clean = _clean_display_name(name)
     if not clean:
+        # Silent before 2026-08-27: when the shared validator refuses a candidate
+        # this path returned None with nothing in the log, so tracing the "Fuck"
+        # phantom back to the Jeopardy roster meant reading raw ASR lines. The
+        # refusals are the interesting half — say them out loud.
+        _log.info("find_or_create_person refused non-name candidate=%r", name)
         return None, False
 
     match = find_potential_person_match(clean)

@@ -72,7 +72,7 @@ def run_scenario(scenario: dict) -> dict:
     """Run one scenario through the deterministic stack; return the observables."""
     from intelligence import (
         conversation_agenda as ca, social_frame as sf, conversation_steering as cs,
-        comedy_modes, repair_moves, topic_thread,
+        comedy_modes, repair_moves, topic_thread, end_thread,
     )
     _reset_state()
     person_id = scenario.get("person_id")
@@ -82,7 +82,7 @@ def run_scenario(scenario: dict) -> dict:
     rex_last = scenario.get("rex_last_line")
     if rex_last:
         for fn in (comedy_modes.note_spoken_line, repair_moves.note_assistant_turn,
-                   topic_thread.note_assistant_turn):
+                   topic_thread.note_assistant_turn, end_thread.note_assistant_turn):
             try:
                 fn(rex_last)
             except Exception:
@@ -101,6 +101,12 @@ def run_scenario(scenario: dict) -> dict:
                 cs.note_user_turn(person_id, prior)
             except Exception:
                 pass
+        try:
+            # The closure / invitation-acceptance decision is made on the user turn,
+            # BEFORE the agenda builds — replay it in the same order the live path does.
+            end_thread.note_user_turn(utterance, person_id, answered_question=answered)
+        except Exception:
+            pass
         plan = ca.build_turn_plan(utterance, person_id, answered_question=answered)
         frame = sf.build_frame(
             utterance, person_id, answered_question=answered,
@@ -177,6 +183,47 @@ class HarnessSelfTest(unittest.TestCase):
             "candidate": "Neat. So what's your favorite color?",
         })
         self.assertIsNotNone(out["governed_text"])
+
+
+class InvitationAcceptanceLifetimeTest(unittest.TestCase):
+    """An acceptance belongs to the turn that armed it.
+
+    Review 2026-08-27: many turns return before build_turn_plan ever consumes the
+    flag (the face-reveal ask, the off-camera identify ask, repair/game/router
+    acks), so an unread acceptance survived into the NEXT turn and outranked a
+    genuine closure — Rex would settle in exactly when told to wrap up.
+    """
+
+    INVITATION = "Hey Bret, I'm thinking about you. Want to sit with me a minute?"
+
+    def setUp(self):
+        from intelligence import end_thread
+        self.et = end_thread
+        self.et.clear()
+        self.addCleanup(self.et.clear)
+
+    def _accept(self):
+        self.et.note_assistant_turn(self.INVITATION)
+        self.et.note_user_turn(
+            "Yeah.",
+            answered_question={"question_text": self.INVITATION, "answer_text": "Yeah."},
+        )
+
+    def test_the_accepting_turn_can_still_consume_it(self):
+        self._accept()
+        self.assertTrue(self.et.consume_invitation_acceptance())
+
+    def test_an_unconsumed_acceptance_does_not_survive_the_next_turn(self):
+        self._accept()
+        self.et.note_assistant_turn("Cool.")
+        self.et.note_user_turn("Alright, I gotta go.", answered_question=None)
+        self.assertFalse(self.et.consume_invitation_acceptance())
+
+    def test_a_real_goodbye_still_closes_after_an_unconsumed_acceptance(self):
+        self._accept()
+        self.et.note_assistant_turn("Cool.")
+        state = self.et.note_user_turn("Alright, I gotta go.", answered_question=None)
+        self.assertTrue((state or {}).get("closing_pending"))
 
 
 if __name__ == "__main__":

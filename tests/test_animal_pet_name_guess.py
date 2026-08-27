@@ -51,13 +51,15 @@ class GetPetsTest(unittest.TestCase):
 class _GuessCase(unittest.TestCase):
     def setUp(self):
         C._animal_guessed_pet.clear()
+        C._animal_species_contradicted.clear()
         self.addCleanup(C._animal_guessed_pet.clear)
+        self.addCleanup(C._animal_species_contradicted.clear)
         self._patches = [
             mock.patch.object(config, "ANIMAL_PET_NAME_GUESS_ENABLED", True, create=True),
             mock.patch.object(config, "ANIMAL_PET_GUESS_LINES", ("{first}, is that {name}?",), create=True),
             mock.patch.object(config, "ANIMAL_PET_GUESS_TWO_LINES", ("{first}, {name} or {alt}?",), create=True),
-            mock.patch.object(config, "ANIMAL_PET_GUESS_MISMATCH_LINES",
-                              ("{first}, is that {name}? Classifier said {species}.",), create=True),
+            mock.patch.object(config, "ANIMAL_SPECIES_MISMATCH_ASK_LINES",
+                              ("{first}, who is this one?",), create=True),
             mock.patch.object(config, "ANIMAL_PET_RETURN_LINES", ("{name} is back, {first}.",), create=True),
         ]
         for p in self._patches:
@@ -87,9 +89,25 @@ class GuessLineTest(_GuessCase):
         with self._owners((1, "Bret Benziger")), self._pets(table):
             self.assertEqual(C._pet_name_guess_line("dog"), "Bret, Max or Toby?")
 
-    def test_species_mismatch_still_asks_but_says_so(self):
+    def test_species_mismatch_asks_without_naming_a_pet(self):
+        # Field 2026-08-27 13:35:47: detector said cat, the DB says Max is a dog,
+        # and Rex guessed "Max" anyway with "Ignore the part of me that said cat."
         with self._owners((1, "Bret Benziger")), self._pets({1: [{"name": "Max", "species": "dog", "confidence": 0.6}]}):
-            self.assertEqual(C._pet_name_guess_line("cat"), "Bret, is that Max? Classifier said cat.")
+            line = C._pet_name_guess_line("cat")
+        self.assertEqual(line, "Bret, who is this one?")
+        self.assertNotIn("Max", line)
+        self.assertNotIn("cat", line)
+        # No guess stored, so no later return line can call the dog "Max".
+        self.assertNotIn("cat", C._animal_guessed_pet)
+
+    def test_species_mismatch_is_not_recorded_as_that_species(self):
+        with self._owners((1, "Bret Benziger")), self._pets({1: [{"name": "Max", "species": "dog", "confidence": 0.6}]}):
+            C._pet_name_guess_line("cat")
+        self.assertEqual(C._animal_display_species("cat"), "animal")
+
+    def test_species_the_db_never_pinned_down_still_gets_the_name(self):
+        with self._owners((1, "Bret Benziger")), self._pets({1: [{"name": "Biscuit", "species": "pet", "confidence": 0.6}]}):
+            self.assertEqual(C._pet_name_guess_line("cat"), "Bret, is that Biscuit?")
 
     def test_nobody_recent_with_pets_falls_back(self):
         with self._owners((4, "JT")), self._pets({4: []}):
@@ -144,6 +162,41 @@ class OwnerCandidatesTest(unittest.TestCase):
                                       {"id": 5, "name": "Jennifer", "age_secs": 200.0}]):
             self.assertEqual(C._pet_owner_candidates(900.0),
                              [(4, "JT"), (1, "Bret"), (5, "Jennifer")])
+
+
+class SpeciesMismatchNeverDisclaimsTest(_GuessCase):
+    """Field 2026-08-27 13:35:47, on Bret's DOG: "Small furry lifeform... Bret,
+    that's Max, right? Ignore the part of me that said cat." A contradicted
+    species must not carry a name, must not poison the return lines, and must
+    never voice Rex disclaiming his own detector."""
+
+    def test_no_line_ever_disclaims_the_detector(self):
+        pool = tuple(getattr(config, "ANIMAL_SPECIES_MISMATCH_ASK_LINES", ()) or ())
+        self.assertTrue(pool)
+        for line in pool:
+            self.assertNotIn("{name}", line)
+            self.assertNotIn("{species}", line)
+            self.assertNotIn("ignore", line.lower())
+            self.assertNotIn("classifier", line.lower())
+
+    def test_two_contradicted_pets_still_only_ask(self):
+        table = {1: [{"name": "Max", "species": "dog", "confidence": 0.6},
+                     {"name": "Toby", "species": "dog", "confidence": 0.5}]}
+        with self._owners((1, "Bret Benziger")), self._pets(table):
+            line = C._pet_name_guess_line("cat")
+        self.assertEqual(line, "Bret, who is this one?")
+        self.assertNotIn("cat", C._animal_guessed_pet)
+
+    def test_matching_species_is_untouched(self):
+        with self._owners((1, "Bret Benziger")), self._pets({1: [{"name": "Toby", "species": "dog", "confidence": 0.6}]}):
+            self.assertEqual(C._pet_name_guess_line("dog"), "Bret, is that Toby?")
+        self.assertEqual(C._animal_guessed_pet["dog"][1], "Toby")
+        self.assertEqual(C._animal_display_species("dog"), "dog")
+
+    def test_non_furry_pet_still_declines_entirely(self):
+        with self._owners((1, "Bret")), self._pets({1: [{"name": "Nemo", "species": "fish", "confidence": 0.9}]}):
+            self.assertIsNone(C._pet_name_guess_line("cat"))
+        self.assertNotIn("cat", C._animal_species_contradicted)
 
 
 if __name__ == "__main__":

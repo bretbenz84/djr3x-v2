@@ -65,6 +65,28 @@ _COMPLETE_EMBEDDED_PREPOSITION_PAT = re.compile(
     re.IGNORECASE,
 )
 
+# "There's nothing to hit you again with." is finished English: the stranded
+# preposition's object is the quantifier that heads the clause ("nothing ...
+# with"), not a word the speaker still owes us. Live failure 2026-08-27: Bret
+# said exactly that, Rex held the turn for four seconds and then asked "With
+# who?". Trailing "to" is deliberately NOT in the stranded set here — "I have
+# nothing to say to" really is unfinished — and a clause with no quantifier head
+# ("I need to talk to you about") is left alone for the same reason.
+_COMPLETE_QUANTIFIER_INFINITIVE_PAT = re.compile(
+    r"\b(?:nothing|something|anything|everything|nowhere|somewhere|anywhere|"
+    r"nobody|somebody|anybody|no one|someone|anyone|plenty|little)\b"
+    r"(?:\s+(?:else|much|left|more|new|good|better))?"
+    # The filler gap is BOUNDED on purpose. Unbounded, any turn that merely
+    # contained a quantifier + infinitive earlier ("I've got nothing to do
+    # tonight so I'm going to hang out with") read as complete, and Rex answered
+    # a sentence the endpointer had cut in half. The real stranded forms need
+    # one to three filler tokens; the false accepts needed seven to nine.
+    r"\s+to\s+[a-z']+\b(?:\s+[a-z0-9']+){0,3}"
+    r"\s+(?:about|with|for|from|in|on|at|of|by|as|into|onto|like|over|under|"
+    r"through|against|around|toward|towards|without)\s*$",
+    re.IGNORECASE,
+)
+
 _INCOMPLETE_END_WORDS = {
     "about", "and", "because", "but", "for", "from",
     "if", "into", "or", "than", "the", "to",
@@ -134,6 +156,24 @@ _INCOMPLETE_END_PHRASES = (
     "when i",
     "when we",
 )
+
+
+# "With who?" is the right repair for company ("I went to dinner with"), and the
+# wrong one for an instrument. Live failure 2026-08-27: Rex answered "There's
+# nothing to hit you again with." with "With who?". Only these clearly
+# instrumental verbs flip the prompt to "With what?"; every other trailing
+# "with" keeps the person question it has always asked.
+_INSTRUMENT_WITH_VERBS = frozenset({
+    "hit", "hits", "hitting", "write", "writes", "writing", "wrote",
+    "draw", "draws", "drawing", "drew", "cut", "cuts", "cutting",
+    "open", "opens", "opened", "opening", "fix", "fixes", "fixed", "fixing",
+    "clean", "cleans", "cleaned", "cleaning", "paint", "paints", "painted",
+    "pay", "pays", "paid", "paying", "cook", "cooks", "cooked", "cooking",
+    "build", "builds", "built", "building", "tie", "ties", "tied",
+    "mix", "mixes", "mixed", "wipe", "wipes", "wiped", "fill", "fills",
+    "filled", "replace", "replaces", "replaced", "charge", "charges",
+    "charged", "measure", "measures", "measured", "screw", "unscrew",
+})
 
 
 @dataclass
@@ -221,6 +261,9 @@ def classify(text: str) -> Optional[IncompleteSignal]:
     if _COMPLETE_EMBEDDED_PREPOSITION_PAT.search(lower):
         return None
 
+    if _quantifier_infinitive_is_complete(lower):
+        return None
+
     if last in _INCOMPLETE_END_WORDS:
         if has_terminal_punct and last not in {"to", "because", "with", "about"}:
             return None
@@ -230,6 +273,19 @@ def classify(text: str) -> Optional[IncompleteSignal]:
         )
 
     return None
+
+
+def _quantifier_infinitive_is_complete(lower: str) -> bool:
+    try:
+        if not _COMPLETE_QUANTIFIER_INFINITIVE_PAT.search(lower or ""):
+            return False
+    except Exception:
+        return False
+    _log.info(
+        "[turn_completion] complete stranded-preposition phrase, not holding: %r",
+        lower,
+    )
+    return True
 
 
 def _starts_with_continuation_opener(text: str) -> bool:
@@ -518,7 +574,7 @@ def _prompt_for(words: list[str], text: str) -> str:
     if last == "because":
         return "Because why?"
     if last == "with":
-        return "With who?"
+        return "With what?" if _with_wants_a_thing(words) else "With who?"
     if last == "about":
         return "About what?"
     if last == "for":
@@ -528,6 +584,14 @@ def _prompt_for(words: list[str], text: str) -> str:
     if last in {"and", "but", "so", "then"}:
         return "And then?"
     return "You left me hanging. Finish the sentence?"
+
+
+def _with_wants_a_thing(words: list[str]) -> bool:
+    try:
+        tail = [w.lower() for w in words[:-1]][-4:]
+        return any(w in _INSTRUMENT_WITH_VERBS for w in tail)
+    except Exception:
+        return False
 
 
 def _clean(text: str) -> str:

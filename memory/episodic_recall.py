@@ -135,6 +135,65 @@ def _norm_summary(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower()).rstrip(".")
 
 
+# "I met X." is the one episode kind that can name a person Rex was never
+# actually in a room with, so it is the one kind the out-loud musing has to vet.
+_NEVER_MET_GUARDED_KINDS = frozenset({"person_enrolled"})
+
+
+def _person_was_actually_met(person_id) -> bool:
+    """Did Rex really encounter this person, or is the row only a NAME?
+
+    Field 2026-08-27 13:38:44, spoken unprompted into a seven-second lull: "I met
+    someone named Fuck once, which is honestly the most honest introduction this
+    room has ever offered." The row behind it was minted the night before from a
+    misheard Jeopardy roster call-out and nobody by that name ever spoke to him.
+    Names also arrive third-hand and perfectly legitimately — Bret's sister
+    Jennifer is a real person Rex has never met, and "I met Jennifer." is just as
+    false said out loud.
+
+    Someone Rex genuinely met leaves a trace past the name: a face or voice
+    print, or a logged conversation. visit_count is deliberately NOT the test —
+    a real guest met ten minutes ago still sits at 0 (Jade Smith, id 8).
+
+    Fails CLOSED on a lookup error on purpose: losing one nostalgia beat costs
+    nothing, saying a phantom's name into a quiet room costs the whole bit.
+    """
+    if person_id is None:
+        return False
+    try:
+        from memory import database as people_db
+        row = people_db.fetchone(
+            "SELECT (SELECT COUNT(*) FROM biometrics WHERE person_id = p.id) AS prints, "
+            "(SELECT COUNT(*) FROM conversations WHERE person_id = p.id) AS convos "
+            "FROM people p WHERE p.id = ?",
+            (int(person_id),),
+        )
+        if row is None:
+            return False
+        return int(row["prints"] or 0) > 0 or int(row["convos"] or 0) > 0
+    except Exception as exc:
+        _log.debug("person-met check failed for person_id=%s: %s", person_id, exc)
+        return False
+
+
+def _recap_allows(row) -> bool:
+    """session_recap only. person_episodes() is asked ABOUT someone already in
+    the room, so it never needs this and is left alone."""
+    try:
+        if row["kind"] not in _NEVER_MET_GUARDED_KINDS:
+            return True
+        if _person_was_actually_met(row["person_id"]):
+            return True
+        _log.info(
+            "[episodic_recall] recap dropped never-met %s person_id=%s summary=%r",
+            row["kind"], row["person_id"], (row["summary"] or "").strip(),
+        )
+        return False
+    except Exception as exc:
+        _log.debug("recap filter failed: %s", exc)
+        return True
+
+
 # ── Reads ───────────────────────────────────────────────────────────────────────
 
 def _fetch_window(lookback_days: int, exclude_session: Optional[str]) -> list:
@@ -245,6 +304,7 @@ def session_recap(
         if exclude_sensitive:
             sensitive = set(_cfg("EPISODIC_RECALL_SENSITIVE_KINDS", ()) or ())
             candidates = [r for r in rows if r["kind"] not in sensitive]
+        candidates = [r for r in candidates if _recap_allows(r)]
         highlights = _dedupe(rank_episodes(candidates, now=now), limit=max_highlights)
 
         parts: list[str] = []

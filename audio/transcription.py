@@ -231,6 +231,46 @@ def _impossible_speaking_rate(text: str, duration_secs: float) -> bool:
     return False
 
 
+def _rex_speech_word_set() -> "set[str]":
+    """Content words (4+ letters) from Rex's recent lines and the biasing prompt."""
+    with _context_lock:
+        lines = list(_recent_rex_lines)
+        prompt = _last_context_prompt
+    words: "set[str]" = set()
+    for cand in ([prompt] if prompt else []) + lines:
+        words.update(w for w in _norm_for_echo(cand).split() if len(w) >= 4)
+    return words
+
+
+def _overlaps_recent_rex_speech(text: str) -> bool:
+    """True when a rejected decode is built out of REX'S OWN recent words.
+
+    Field 2026-08-27 13:34:07: the post-boot capture seam decoded as his ready
+    line doubled up (33 words in 1.98s) and only the speaking-rate backstop
+    caught it — the similarity guard missed because doubling halves every ratio
+    and the imperfect re-decode broke the verbatim coverage strip. The softer
+    sibling of _context_echo_hallucination: that one has to be sure enough to
+    throw a transcript away, this one only has to be sure enough to distrust a
+    RETRY of audio the decoder already read Rex's lines out of.
+    """
+    try:
+        rex_words = _rex_speech_word_set()
+        if not rex_words:
+            return False
+        words = [w for w in _norm_for_echo(text).split() if len(w) >= 4]
+        if not words:
+            return False
+        hits = sum(1 for w in words if w in rex_words)
+        return (hits / len(words)) >= float(
+            getattr(config, "ASR_ECHO_CLASS_WORD_OVERLAP", 0.6))
+    except Exception as exc:
+        # Whatever got here was already rejected as physically impossible, so it
+        # is junk either way — if the probe breaks, call it echo and skip the
+        # rescue rather than hand a fabrication to the turn pipeline.
+        logger.debug("[transcription] rex-overlap probe failed: %s", exc)
+        return True
+
+
 def _qwen_transcribe(
     audio_array: np.ndarray, *, use_context: bool = True,
 ) -> "tuple[str, float | None]":
@@ -577,11 +617,25 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
                 getattr(config, "AUDIO_SAMPLE_RATE", 16000))
             raw, avg_logprob = _qwen_transcribe(audio_array)
             raw = raw.strip()
-            poisoned = bool(raw) and (
-                _context_echo_hallucination(raw)
-                or _impossible_speaking_rate(raw, duration)
-            )
-            if poisoned:
+            reject_reason = ""
+            if raw:
+                if _context_echo_hallucination(raw):
+                    reject_reason = "context-echo"
+                elif _impossible_speaking_rate(raw, duration):
+                    reject_reason = "impossible-rate"
+            if reject_reason:
+                # ECHO-CLASS: the words the biased decoder produced were REX'S
+                # OWN, so his voice is provably in this audio and a second decode
+                # of it is a second look at his residual. Field 2026-08-27
+                # 13:34:09 — the seam after "Ready to go. Statistically, one of us
+                # is about to say something interesting." was rejected at 16.6
+                # wps, the unbiased retry read the same residue as a bare "Okay."
+                # (-0.69), and Rex answered himself with "Okay what, exactly?"
+                # while Bret sat there saying "I didn't say anything".
+                echo_class = (
+                    reject_reason == "context-echo"
+                    or _overlaps_recent_rex_speech(raw)
+                )
                 raw = ""
                 # The BIAS is what broke this decode — the model completed the
                 # prompt instead of transcribing — so the audio deserves one
@@ -598,12 +652,38 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
                     except Exception as exc:
                         logger.debug("[transcription] unbiased retry failed: %s", exc)
                         retry, retry_logprob = "", None
-                    if retry and not _context_echo_hallucination(retry) and not (
-                        _impossible_speaking_rate(retry, duration)
+                    retry_ok = bool(retry) and not _context_echo_hallucination(
+                        retry
+                    ) and not _impossible_speaking_rate(retry, duration)
+                    if (
+                        retry_ok
+                        and echo_class
+                        and bool(getattr(
+                            config, "ASR_ECHO_RETRY_REQUIRE_TRUSTED", True))
+                        and not (
+                            retry_logprob is not None
+                            and _is_confident(retry_logprob, None, "qwen3_asr")
+                        )
                     ):
+                        # Dropping the bias cannot turn Rex's voice into somebody
+                        # else's words. All 11 retries of the 2026-08-27 13:33 run
+                        # sat behind an echo-class rejection and every one came
+                        # back a low-trust fragment ("Oh.", "Okay." -0.69, "Look
+                        # me what you got me." -0.55) that he then answered.
+                        logger.info(
+                            "[transcription] unbiased retry DISCARDED — the "
+                            "rejected decode (%s) was Rex's own voice and the "
+                            "retry is low-trust (avg_logprob=%s): %r",
+                            reject_reason,
+                            "n/a" if retry_logprob is None
+                            else f"{retry_logprob:.2f}",
+                            retry[:80],
+                        )
+                        retry_ok = False
+                    if retry_ok:
                         logger.info(
                             "[transcription] unbiased retry recovered a rejected "
-                            "decode: %r", retry[:80],
+                            "decode (%s): %r", reject_reason, retry[:80],
                         )
                         raw, avg_logprob = retry, retry_logprob
                     else:

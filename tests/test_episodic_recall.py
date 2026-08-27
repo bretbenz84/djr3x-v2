@@ -242,5 +242,63 @@ class LlmSessionClearTest(unittest.TestCase):
         self.assertIn("llm.clear_session()", src)
 
 
+class NeverMetPersonRecapTest(_TempRexDb):
+    """A person Rex only has a NAME for must not become lull material.
+
+    Field 2026-08-27 13:38:44, unprompted into a seven-second lull: "I met someone
+    named Fuck once, which is honestly the most honest introduction this room has
+    ever offered." The source was a person_enrolled episode (rex.db id 899) whose
+    person row had no print, no conversation, and no visit.
+    """
+
+    def test_recap_drops_a_never_met_person_enrolled(self):
+        self._insert("person_enrolled", "I met Fuck.", person_id=10,
+                     person_name="Fuck", salience=0.8)
+        self._insert("animal", "I saw a dog.", salience=0.5)
+        with mock.patch.object(episodic_recall, "_person_was_actually_met",
+                               return_value=False):
+            recap = episodic_recall.session_recap()
+        self.assertIsNotNone(recap)
+        self.assertIn("dog", recap)
+        self.assertNotIn("Fuck", recap)
+
+    def test_recap_keeps_someone_rex_really_met(self):
+        self._insert("person_enrolled", "I met Jade.", person_id=8,
+                     person_name="Jade Smith", salience=0.8)
+        with mock.patch.object(episodic_recall, "_person_was_actually_met",
+                               return_value=True):
+            recap = episodic_recall.session_recap()
+        self.assertIsNotNone(recap)
+        self.assertIn("Jade", recap)
+
+    def test_a_person_enrolled_row_with_no_person_id_is_never_recalled(self):
+        # The legacy phantoms ("I met Also.", rex.db id 25) carry no person_id.
+        self._insert("person_enrolled", "I met Also.", salience=0.9)
+        self._insert("animal", "I saw a dog.", salience=0.5)
+        recap = episodic_recall.session_recap()
+        self.assertIsNotNone(recap)
+        self.assertNotIn("Also", recap)
+
+    def test_every_other_kind_is_untouched_by_the_floor(self):
+        self._insert("game_played", "I played Jeopardy with Bret.", person_id=1,
+                     salience=0.9)
+        with mock.patch.object(episodic_recall, "_person_was_actually_met",
+                               return_value=False):
+            recap = episodic_recall.session_recap()
+        self.assertIsNotNone(recap)
+        self.assertIn("Jeopardy", recap)
+
+    def test_person_episodes_is_not_filtered(self):
+        # A person Rex is talking to is in the room by definition; the floor
+        # belongs to the unprompted lull lane only.
+        self._insert("person_enrolled", "I met Jennifer.", person_id=5,
+                     person_name="Jennifer", salience=0.8)
+        with mock.patch.object(episodic_recall, "_person_was_actually_met",
+                               return_value=False):
+            self.assertTrue(
+                any("Jennifer" in c for c in episodic_recall.person_episodes(5))
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

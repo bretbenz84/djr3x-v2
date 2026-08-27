@@ -11329,5 +11329,91 @@ class PostQuestionRetroScanTest(unittest.TestCase):
         self.assertIsNone(self.interaction._maybe_recover_post_question_answer())
 
 
+class InvitationAcceptanceIsNotClosureTest(unittest.TestCase):
+    """Field 2026-08-27 13:36:56 — Rex: "Hey Bret, I'm thinking about you. Want to
+    sit with me a minute?"; Bret: "Yeah."; end_thread called it closure, the 35s
+    grace window blocked every lean impulse, and the accepted invitation to sit
+    together came out as 47 seconds of silence."""
+
+    def setUp(self):
+        from intelligence import dialogue_act, end_thread
+        # A leaked Rex-turn frame from an earlier module would feed the wrong line
+        # into the invitation check, so clear both layers.
+        dialogue_act.clear()
+        end_thread.clear()
+
+    def tearDown(self):
+        from intelligence import dialogue_act, end_thread
+        dialogue_act.clear()
+        end_thread.clear()
+
+    def test_yes_to_an_invitation_does_not_arm_grace(self):
+        from intelligence import end_thread
+        end_thread.note_assistant_turn(
+            "Hey Bret, I'm thinking about you. Want to sit with me a minute?"
+        )
+        self.assertIsNone(end_thread.note_user_turn("Yeah.", 1))
+        self.assertFalse(end_thread.is_grace_active())
+
+    def test_acceptance_is_reported_to_the_agenda_exactly_once(self):
+        from intelligence import end_thread
+        end_thread.note_assistant_turn("Want to sit with me a minute?")
+        end_thread.note_user_turn("Yeah.", 1)
+        self.assertTrue(end_thread.consume_invitation_acceptance())
+        self.assertFalse(end_thread.consume_invitation_acceptance())
+
+    def test_invitation_is_read_from_the_synthesized_answered_question(self):
+        # The live proactive path never calls note_assistant_turn — the Rex line
+        # arrives as answered_question['question_text'], synthesized from the
+        # dialogue-act frame in interaction.py. That path must work on its own.
+        from intelligence import end_thread
+        closure = end_thread.note_user_turn(
+            "Yeah.",
+            1,
+            answered_question={
+                "question_text": "Hey Bret, I'm thinking about you. "
+                                 "Want to sit with me a minute?",
+                "answer_text": "Yeah.",
+            },
+        )
+        self.assertIsNone(closure)
+        self.assertFalse(end_thread.is_grace_active())
+        self.assertTrue(end_thread.consume_invitation_acceptance())
+
+    def test_presence_invitation_without_a_question_mark_counts(self):
+        from intelligence import end_thread
+        end_thread.note_assistant_turn("Stick around, I'm not done with you.")
+        self.assertIsNone(end_thread.note_user_turn("Sure", 1))
+        self.assertFalse(end_thread.is_grace_active())
+
+    def test_yeah_trailing_a_finished_topic_still_closes(self):
+        from intelligence import end_thread
+        end_thread.note_assistant_turn("So that was the whole story, huh?")
+        self.assertIsNotNone(end_thread.note_user_turn("Yeah.", 1))
+        self.assertTrue(end_thread.is_grace_active())
+        self.assertFalse(end_thread.consume_invitation_acceptance())
+
+    def test_an_offer_that_is_itself_a_goodbye_still_closes(self):
+        # "Should I let you get back to it?" is offer-shaped, but a yes to THAT
+        # really does end the thread — the release veto has to win.
+        from intelligence import end_thread
+        end_thread.note_assistant_turn("Should I let you get back to it?")
+        self.assertIsNotNone(end_thread.note_user_turn("Yeah.", 1))
+        self.assertTrue(end_thread.is_grace_active())
+
+    def test_bare_thanks_after_an_offer_still_closes(self):
+        # "thanks" is politeness, not acceptance; the narrowing must not swallow it.
+        from intelligence import end_thread
+        end_thread.note_assistant_turn("Want me to queue something up?")
+        self.assertIsNotNone(end_thread.note_user_turn("thanks", 1))
+        self.assertTrue(end_thread.is_grace_active())
+
+    def test_a_real_goodbye_after_an_invitation_still_closes(self):
+        from intelligence import end_thread
+        end_thread.note_assistant_turn("Want to sit with me a minute?")
+        self.assertIsNotNone(end_thread.note_user_turn("alright, I gotta go", 1))
+        self.assertTrue(end_thread.is_grace_active())
+
+
 if __name__ == "__main__":
     unittest.main()

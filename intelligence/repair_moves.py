@@ -134,6 +134,85 @@ _RECALL_REQUEST_PAT = re.compile(
     r")",
     re.IGNORECASE,
 )
+# "I didn't say anything" is NOT a mishearing — it asserts there were no words to
+# mishear, because Rex answered phantom audio. Field 2026-08-27 13:34: Rex's own boot
+# line ("Ready to go. Statistically, one of us is about to say something interesting.")
+# came back through the mic, was salvaged as "Okay.", and Rex answered it with "Okay
+# what, exactly?". Bret's "I didn't say anything." then matched the bare `i didn'?t say`
+# alternative in _MISHEARD_PAT, so Rex said "Ah, my audio processor fumbled that one.
+# Run that by me one more time?" — and the denial of THAT ("There's nothing to run by
+# you. I didn't say anything.") came back as another turn and earned "Hit me with it
+# again and I'll get it right." Asking for a repeat of speech that never existed cannot
+# terminate: every denial re-triggers the ask. "I didn't say anything ABOUT the cat" is
+# deliberately excluded by the trailing lookahead — that is a content dispute and keeps
+# its existing routing.
+_PHANTOM_AUDIO_PAT = re.compile(
+    r"\b(?:"
+    r"i (?:didn'?t|did not) (?:say|speak|utter)"
+    r"\s+(?:anything|a word|a thing|nothing|at all)"
+    # PAST tense only. "I never say anything interesting" is self-deprecation, not
+    # a denial that this turn happened.
+    r"|i never (?:said|spoke|uttered)"
+    r"\s+(?:anything|a word|a thing|nothing|at all)"
+    r"|i (?:said|spoke) nothing"
+    r"|i (?:didn'?t|did not) speak"
+    r"|i (?:wasn'?t|was not) (?:talking|speaking|saying anything)"
+    r"|(?:nobody|no one|no-one) (?:said|spoke|was talking|was speaking)"
+    r"(?:\s+(?:anything|a word|a thing|at all))?"
+    r"|(?:that|it) (?:wasn'?t|was not) me (?:talking|speaking)"
+    r"|nothing was said"
+    # The denial must END the clause. A blocklist of following words could not
+    # work: it only ever sees the word after the VERB, so "Nobody said anything
+    # for like a full minute, it was so awkward" — ordinary storytelling about a
+    # silence — was answered with "that was my own echo coming back at me".
+    # Anything that continues the sentence (a narrative tail, or a content
+    # defence like "I didn't say anything WRONG") keeps its old routing.
+    r")\b(?=\s*(?:[.!?;:]|$))",
+    re.IGNORECASE,
+)
+# "There's nothing to run by you" / "there's nothing to hit you again with" only mean
+# "you heard a ghost" as an ANSWER to Rex's own ask-to-repeat. Standalone they are
+# ordinary speech — "there's nothing to worry about" must stay conversation — so
+# detect() gates this one on Rex having just asked for a repeat, or on a phantom
+# stand-down still being warm.
+_NOTHING_TO_REPEAT_PAT = re.compile(
+    r"\b(?:there'?s|there is|there was|i'?ve got|i have|i got)\s+nothing\s+to\s+"
+    r"(?:repeat|say|add|run|hit|give|tell)\b",
+    re.IGNORECASE,
+)
+# The verbs above are only unambiguous when Rex's OWN last line asked for a
+# repeat. On the warm stand-down window alone they are ordinary speech — "I have
+# nothing to add", "there's nothing to say" — and answering those with "that was
+# my own echo" is its own non-sequitur. Only the verbs that can ONLY refer back
+# to an ask survive on the window.
+_NOTHING_TO_REPEAT_STRICT_PAT = re.compile(
+    r"\b(?:there'?s|there is|there was|i'?ve got|i have|i got)\s+nothing\s+to\s+"
+    r"(?:repeat|run|hit)\b",
+    re.IGNORECASE,
+)
+# Rex's OWN two ask-to-repeat pools: _REPROMPT_LINES below, and
+# _LOW_TRUST_REPROMPT_LINES in intelligence/interaction.py (which cannot be imported
+# here without a cycle). Kept as one pattern so both lanes are recognised — the
+# 2026-08-27 loop alternated between them, so a check that only knew one would miss.
+_ASK_TO_REPEAT_PAT = re.compile(
+    r"(?:say (?:it|that) again|say (?:it|that) one more time|said again|"
+    r"run (?:that|it) by me|one more time|once more|give it to me again|"
+    r"hit me with it again|what'?d you say|what did you say|"
+    r"what was that|didn'?t catch that|come again)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_ask_to_repeat(text: str) -> bool:
+    """True when `text` is one of Rex's own 'say that again' lines (either pool)."""
+    return bool(_ASK_TO_REPEAT_PAT.search(text or ""))
+
+
+def _last_assistant_snapshot() -> str:
+    with _lock:
+        return _last_assistant_text
+
+
 _PRONOUN_PAT = re.compile(
     r"\b(wrong pronouns?|not (he|she|him|her)|"
     r"(?:i|they|he|she|[A-Z][A-Za-z]+)\s+(?:use|uses|go by|goes by)\s+"
@@ -315,6 +394,113 @@ def misheard_recovery_response() -> str:
     return f"{joke} {ask}"
 
 
+# Phantom-audio stand-down. NOT A QUESTION — a question here is itself an ask to
+# repeat, the human's denial of it comes back as a new turn, and that is precisely the
+# 2026-08-27 13:34 loop these lines exist to break ("I didn't say anything." → "Run
+# that by me one more time?" → "There's nothing to run by you..." → "Hit me with it
+# again"). Own the ghost, close the subject, stop. No line here may end in '?'.
+_PHANTOM_AUDIO_LINES = [
+    "Ah — that was my own echo coming back at me. Nothing on your end.",
+    "My mistake. I answered a ghost in my microphone, not you.",
+    "Scratch that. Phantom audio on my side; you said nothing.",
+    "Right, no one spoke. My receivers invented that one. Moving on.",
+    "That one was my own voice bouncing back. Ignore it — I have.",
+]
+_last_phantom_line: str = ""
+_last_phantom_at: float = 0.0
+
+# Stand-down for the ask-to-repeat CAP, which is a different situation from
+# phantom audio: here the human demonstrably DID speak and Rex simply kept
+# missing it, so none of the lines above may be reused — telling someone who has
+# now said it three times that they "said nothing" is worse than the third ask.
+# Still no question anywhere in the pool: a question is another ask to repeat.
+_ASK_CAP_STAND_DOWN_LINES = [
+    "I've made you say that twice already — I'll stop asking and keep up from here.",
+    "My ears are having a bad minute. Not making you repeat it a third time.",
+    "That one's on my receivers, not on you. Let's carry on.",
+    "I'll quit asking you to run it back. Go ahead.",
+]
+_last_ask_cap_line: str = ""
+
+# How long a phantom stand-down keeps the ask-to-repeat lanes muzzled.
+PHANTOM_STAND_DOWN_WINDOW_SECS = 90.0
+# Consecutive "say that again?" moves allowed before Rex stops asking. Field
+# 2026-08-27: three asks in 75 seconds — one low-trust reprompt (13:34:17) and two
+# misheard repairs (13:34:42, 13:34:57) — and every ask manufactured the next denial
+# to ask about. The counter is shared by BOTH lanes on purpose; a per-lane cap just
+# lets them take turns.
+ASK_TO_REPEAT_STRIKE_CAP = 2
+ASK_TO_REPEAT_STRIKE_WINDOW_SECS = 120.0
+_ask_to_repeat_strikes: int = 0
+_last_ask_to_repeat_at: float = 0.0
+
+
+def phantom_audio_response() -> str:
+    """Stand-down for 'I didn't say anything': own the phantom, ask nothing. Rotates
+    with anti-repeat and arms the phantom window that muzzles the reprompt lanes."""
+    global _last_phantom_line, _last_phantom_at
+    with _lock:
+        line = _pick_distinct(_PHANTOM_AUDIO_LINES, _last_phantom_line)
+        _last_phantom_line = line
+        _last_phantom_at = time.monotonic()
+    return line
+
+
+def ask_cap_stand_down_response() -> str:
+    """Stop asking without claiming the human was silent — they weren't. Arms the
+    same window phantom_audio_response() does, so the low-trust reprompt lane
+    stays muzzled and the two lanes cannot take turns asking."""
+    global _last_ask_cap_line, _last_phantom_at
+    with _lock:
+        line = _pick_distinct(_ASK_CAP_STAND_DOWN_LINES, _last_ask_cap_line)
+        _last_ask_cap_line = line
+        _last_phantom_at = time.monotonic()
+    return line
+
+
+def phantom_recent(max_age_secs: Optional[float] = None) -> bool:
+    """True while a phantom-audio stand-down is still warm."""
+    if max_age_secs is None:
+        max_age_secs = PHANTOM_STAND_DOWN_WINDOW_SECS
+    with _lock:
+        last = _last_phantom_at
+    return last > 0.0 and (time.monotonic() - last) <= float(max_age_secs)
+
+
+def note_ask_to_repeat() -> None:
+    """Record that Rex just asked the human to say it again — from any lane."""
+    global _ask_to_repeat_strikes, _last_ask_to_repeat_at
+    with _lock:
+        now = time.monotonic()
+        if (
+            _last_ask_to_repeat_at > 0.0
+            and now - _last_ask_to_repeat_at > ASK_TO_REPEAT_STRIKE_WINDOW_SECS
+        ):
+            _ask_to_repeat_strikes = 0
+        _ask_to_repeat_strikes += 1
+        _last_ask_to_repeat_at = now
+
+
+def ask_to_repeat_exhausted() -> bool:
+    """True once Rex has asked for a repeat back-to-back too many times: asking again
+    is how the 2026-08-27 loop kept itself alive."""
+    with _lock:
+        strikes = _ask_to_repeat_strikes
+        last = _last_ask_to_repeat_at
+    if last <= 0.0:
+        return False
+    if time.monotonic() - last > ASK_TO_REPEAT_STRIKE_WINDOW_SECS:
+        return False
+    return strikes >= ASK_TO_REPEAT_STRIKE_CAP
+
+
+def clear_ask_to_repeat_strikes() -> None:
+    global _ask_to_repeat_strikes, _last_ask_to_repeat_at
+    with _lock:
+        _ask_to_repeat_strikes = 0
+        _last_ask_to_repeat_at = 0.0
+
+
 def _norm_apostrophes(s: str) -> str:
     """Fold curly/modifier apostrophes to a straight ' so a substring check survives the
     LLM rendering a recovery line with U+2019 while the constant uses U+0027. Without this,
@@ -356,11 +542,15 @@ class RepairMove:
 
 def clear() -> None:
     global _last_assistant_text, _last_assistant_at, _last_repair_at, _last_tone_repair_at
+    global _last_phantom_at, _ask_to_repeat_strikes, _last_ask_to_repeat_at
     with _lock:
         _last_assistant_text = ""
         _last_assistant_at = 0.0
         _last_repair_at = 0.0
         _last_tone_repair_at = 0.0
+        _last_phantom_at = 0.0
+        _ask_to_repeat_strikes = 0
+        _last_ask_to_repeat_at = 0.0
 
 
 def note_assistant_turn(text: str) -> None:
@@ -396,7 +586,26 @@ def detect(user_text: str) -> Optional[dict]:
     if _RECALL_REQUEST_PAT.search(cleaned):
         return None
 
-    if _INTERRUPT_PAT.search(cleaned):
+    # A denial that any words were spoken outranks every correction lane: there is
+    # nothing to correct, so the only right move is to own the phantom and stop
+    # asking. Checked FIRST because "that wasn't me talking" would otherwise be eaten
+    # by _WRONG_PERSON_PAT and "I didn't say anything" by _MISHEARD_PAT — which is
+    # exactly how the 2026-08-27 13:34 repeat loop started.
+    if (
+        _PHANTOM_AUDIO_PAT.search(cleaned)
+        or (
+            _NOTHING_TO_REPEAT_PAT.search(cleaned)
+            and looks_like_ask_to_repeat(_last_assistant_snapshot())
+        )
+        or (
+            _NOTHING_TO_REPEAT_STRICT_PAT.search(cleaned)
+            and phantom_recent()
+        )
+    ):
+        kind = "phantom_audio"
+        severity = "medium"
+        requires_recent = True
+    elif _INTERRUPT_PAT.search(cleaned):
         kind = "interruption"
         severity = "high"
     elif _TONE_PAT.search(cleaned):
@@ -456,7 +665,10 @@ def detect(user_text: str) -> Optional[dict]:
         return None
 
     correction = _extract_correction(cleaned)
-    if kind in {"tone", "pacing", "interruption", "repeat", "clarify", "bare_negation"}:
+    if kind in {
+        "tone", "pacing", "interruption", "repeat", "clarify", "bare_negation",
+        "phantom_audio",
+    }:
         correction = ""
     if not correction and kind in {"misheard", "misunderstood", "wrong_person", "pronoun", "factual"}:
         # Preserve the useful part in common forms like "no, Tom Foster".
@@ -501,6 +713,13 @@ def build_prompt(repair: dict) -> str:
     user_text = repair.get("user_text") or ""
 
     kind_rule = {
+        "phantom_audio": (
+            "The human says they did not speak at all — Rex reacted to phantom "
+            "audio (his own echo, or room noise). Own the false trigger in ONE "
+            "short beat and close the subject. Do NOT ask them to repeat "
+            "anything, do NOT ask any question at all, and do NOT guess at what "
+            "they might have said."
+        ),
         "misheard": (
             "Rex likely misheard or used the wrong words. Own that briefly. "
             "If the human supplied the corrected words, use them exactly once."
@@ -613,6 +832,8 @@ def build_prompt(repair: dict) -> str:
 def fallback_response(repair: dict) -> str:
     kind = repair.get("kind") or "repair"
     correction = repair.get("correction") or ""
+    if kind == "phantom_audio":
+        return phantom_audio_response()
     if kind == "tone":
         return "Yeah, that landed wrong. I'll pull the claws in."
     if kind == "wrong_person":

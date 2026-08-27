@@ -81,5 +81,58 @@ class LowTrustRepromptGateTest(unittest.TestCase):
             self.assertNotEqual(a, b, "consecutive reprompt lines must differ")
 
 
+class PhantomAudioMuzzlesTheRepromptTest(unittest.TestCase):
+    """Field 2026-08-27 13:34: the low-trust lane and the misheard repair lane took turns
+    asking Bret to repeat words he never said. Once a phantom stand-down has landed — or
+    the shared ask-to-repeat cap is spent — this lane must stay quiet."""
+
+    def setUp(self):
+        from intelligence import repair_moves
+        self.rm = repair_moves
+        self.rm.clear()
+        self.addCleanup(self.rm.clear)
+        interaction._last_low_trust_reprompt_at = 0.0
+        interaction._last_low_trust_reprompt_line = ""
+        self._game_patch = mock.patch.object(
+            interaction, "_game_suppresses_conversation", return_value=False
+        )
+        self._game_patch.start()
+        self.addCleanup(self._game_patch.stop)
+
+    def _should(self, text):
+        return interaction._should_reprompt_low_trust(
+            text, trusted=False, text_input=False
+        )
+
+    def test_baseline_still_reprompts(self):
+        self.assertTrue(self._should("I'm not a cat."))
+
+    def test_recent_phantom_stand_down_blocks_the_reprompt(self):
+        self.rm.phantom_audio_response()
+        self.assertFalse(self._should("I'm not a cat."))
+
+    def test_reprompt_returns_once_the_phantom_window_lapses(self):
+        self.rm.phantom_audio_response()
+        self.assertFalse(self._should("I'm not a cat."))
+        self.rm._last_phantom_at = (
+            time.monotonic() - self.rm.PHANTOM_STAND_DOWN_WINDOW_SECS - 1.0
+        )
+        self.assertTrue(self._should("A whole new garble arrived."))
+
+    def test_spent_ask_to_repeat_cap_blocks_the_reprompt(self):
+        for _ in range(self.rm.ASK_TO_REPEAT_STRIKE_CAP):
+            self.rm.note_ask_to_repeat()
+        self.assertFalse(self._should("I'm not a cat."))
+        self.rm.clear_ask_to_repeat_strikes()
+        self.assertTrue(self._should("I'm not a cat."))
+
+    def test_repair_moves_failure_degrades_to_previous_behaviour(self):
+        # Fail-safe: a broken guard must not silence the lane by raising.
+        with mock.patch.object(
+            self.rm, "phantom_recent", side_effect=RuntimeError("boom")
+        ):
+            self.assertTrue(self._should("I'm not a cat."))
+
+
 if __name__ == "__main__":
     unittest.main()
