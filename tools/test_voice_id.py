@@ -146,10 +146,26 @@ def _scan_once(audio: np.ndarray) -> None:
 
 
 def _find_person_id(name: str) -> int | None:
+    """Resolve a spoken/typed name to a person row the way the live stack does.
+
+    Exact name first, then aliases and unique first tokens via
+    people.find_person_by_name — "PJ" is an alias of the row named "PJ Thomas",
+    and an exact-only lookup silently SPLIT such a person in two here: --enroll
+    "PJ" created a second row and put the voice there while the face stayed on
+    the original (the face tool hit the same trap, fixed f201e94)."""
     row = db.fetchone(
         "SELECT id FROM people WHERE LOWER(name) = LOWER(?)", (name,)
     )
-    return row["id"] if row else None
+    if row:
+        return row["id"]
+    try:
+        resolved = people_mod.find_person_by_name(name)
+    except Exception:
+        resolved = None
+    if resolved:
+        print(f"  resolved {name!r} → {resolved['name']!r} (person_id={resolved['id']})")
+        return resolved["id"]
+    return None
 
 
 def _trim_voices_for(person_id: int, label: str) -> int:
@@ -173,18 +189,37 @@ def _trim_voices_for(person_id: int, label: str) -> int:
 
 def _enroll(name: str, seconds: float, replace: bool = False) -> None:
     print(f"Enrolling voice for {name!r}{' (replace mode)' if replace else ''}.")
-    audio = _record(seconds)
-    pid_existing = _find_person_id(name)
-    if pid_existing is not None:
-        print(f"  Found existing person_id={pid_existing}, adding voice biometric.")
-        pid = pid_existing
-    else:
+    # Resolve the person BEFORE recording: you should know whose row you are
+    # about to write to while you can still Ctrl-C, and a typo must not mint a
+    # phantom person row that then competes with the real one in every scan.
+    pid = _find_person_id(name)
+    if pid is None:
+        rows = db.fetchall("SELECT id, name FROM people ORDER BY id")
+        print(f"\n  No person matches {name!r}. People on file:")
+        for row in rows:
+            print(f"    {row['id']:>3}  {row['name']}")
+        answer = input(f"\n  Create a NEW person named {name!r}? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("  Aborted — nothing written.")
+            return
         pid = people_mod.enroll_person(name)
         print(f"  Created new person_id={pid}.")
+    else:
+        existing = db.fetchone(
+            "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type='voice'",
+            (pid,),
+        )["n"]
+        print(f"  Target: person_id={pid} ({existing} voice row(s) on file).")
+
+    audio = _record(seconds)
     ok = speaker_id.enroll_voice(pid, audio)
     print(f"  Voice enrollment {'OK' if ok else 'FAILED'}.")
     if ok and replace:
         _trim_voices_for(pid, name)
+    if ok:
+        # Immediate feedback: score the clip you just enrolled against every
+        # print, so a cross-matching twin shows up now rather than mid-party.
+        _scan_once(audio)
 
 
 def _trim_named(name: str) -> None:
