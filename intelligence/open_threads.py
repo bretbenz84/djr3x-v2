@@ -56,6 +56,29 @@ BOOKKEEPING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Game-table mechanics — chatter from a game REX HIMSELF hosted (Jeopardy,
+# trivia): score disputes, board requests, whose turn, how the game proceeds.
+# Rex administers the game, so these resolve inside it and die with it — never
+# life events (field 2026-08-26: "take her points away, she cheated" became the
+# next-day cold open "T'Joy's points came up the other day — did they actually
+# get taken away?"). Same dual-guard shape as BOOKKEEPING_RE: the diary
+# extractor (intelligence/llm.py) imports this for its write-side guarantee,
+# and pending_for_person kills threads stored before it shipped. The game
+# HAVING happened (who played, who won) is still memorable — that belongs in
+# the diary NOTE, not in threads.
+GAME_MECHANICS_RE = re.compile(
+    r"\bpoints?\b.{0,40}\b(?:taken|took|deduct\w*|removed?|restored?|awarded|given)\b|"
+    r"\b(?:take|taking|took|giv(?:e|ing)|got)\b.{0,20}\bpoints?\s+(?:away|back)\b|"
+    r"\bcheat\w*\b.{0,40}\b(?:game|points?|jeopardy|trivia|score\w*)\b|"
+    r"\b(?:game|jeopardy|trivia|score\w*|points?)\b.{0,40}\bcheat\w*\b|"
+    r"\b(?:game|board|round)\b.{0,30}\b(?:proceed|continue|resume|restart)\w*\b|"
+    r"\bhow\s+the\s+game\b|\bwhose\s+turn\b|"
+    r"\bnext\s+(?:clue|category|square)\b|\b(?:pick|choose|chos\w+)\w*\b.{0,15}\bcategory\b|"
+    r"\bdaily\s+double\b|\bfinal\s+jeopardy\b|\bdollar\s+value\b|"
+    r"\bscore\w*\b.{0,30}\b(?:settl\w+|correct\w+|adjust\w+|fix\w+|final)\b",
+    re.IGNORECASE,
+)
+
 
 def _age_days(created_at: str) -> Optional[float]:
     try:
@@ -140,6 +163,12 @@ def pending_for_person(person_id: int) -> list:
                 _log.info(
                     "[open_threads] dropping stored thread %r — bookkeeping "
                     "about Rex's own records, not a life event", t,
+                )
+                continue
+            if GAME_MECHANICS_RE.search(t):
+                _log.info(
+                    "[open_threads] dropping stored thread %r — game-table "
+                    "mechanics from a game Rex hosted, not a life event", t,
                 )
                 continue
             if _thread_covers_resolved_plan(t, resolved):

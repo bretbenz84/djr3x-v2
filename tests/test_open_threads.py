@@ -234,3 +234,19 @@ class ResolvedPlanGuardTest(unittest.TestCase):
         self._episode(threads=["the little free library Bret is building"])
         pending = [p["thread"] for p in self.ot.pending_for_person(1)]
         self.assertIn("the little free library Bret is building", pending)
+
+
+class GameMechanicsReadFilterTest(OpenThreadsTest):
+    """Threads stored BEFORE the game-mechanics guard shipped must die at read
+    time too (field 2026-08-26: episode 902 held "whether T'Joy's points were
+    actually taken away" and "how the game will proceed next" from a Jeopardy
+    session, and the lull lane spoke both)."""
+
+    def test_stored_game_mechanics_threads_are_dropped(self):
+        self._episode(threads=[
+            "whether T'Joy's points were actually taken away",
+            "how the game will proceed next",
+            "whether the motor swap happened",
+        ])
+        pending = [p["thread"] for p in self.ot.pending_for_person(1)]
+        self.assertEqual(pending, ["whether the motor swap happened"])

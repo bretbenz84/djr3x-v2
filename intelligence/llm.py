@@ -2047,6 +2047,27 @@ _CURIOSITY_THREAD_RE = re.compile(
 # pattern lives in intelligence.open_threads (the consumer also filters at
 # read time, killing threads stored before this guard shipped).
 from intelligence.open_threads import BOOKKEEPING_RE as _BOOKKEEPING_THREAD_RE
+from intelligence.open_threads import GAME_MECHANICS_RE as _GAME_MECHANICS_THREAD_RE
+
+# Vague filler that cannot anchor a thread on its own. "what Bret is currently
+# doing" (field 2026-08-26, minted from a garbled ASR line mid-Jeopardy) passed
+# every guard because "currently" is technically a content token — and the lull
+# lane spoke it as "The thing you were doing came up earlier today — did it get
+# sorted out?". A thread whose tokens are ALL filler (or speaker names) has no
+# subject to ask about; the prompt asks for concreteness, this enforces it.
+# Generic game words are here too: a legit game thread names WHICH game
+# ("poker night"), never just "the game".
+_VAGUE_THREAD_TOKENS = frozenset({
+    "currently", "recently", "earlier", "today", "tonight", "yesterday",
+    "tomorrow", "later", "soon", "eventually", "stuff", "whatever", "anything",
+    "everything", "someone", "somebody", "somewhere", "sometime", "situation",
+    "matter", "happen", "happened", "happening", "happens", "moment", "busy",
+    "finished", "finish", "started", "start", "starting", "continue",
+    "continued", "resolved", "sorted", "settled", "went", "goes", "mentioned",
+    "discussed", "conversation", "session", "activity", "activities",
+    "game", "games", "play", "playing", "played", "proceed", "proceeds",
+    "proceeding",
+})
 
 
 def _filtered_open_threads(raw, transcript: list[dict]) -> list:
@@ -2108,11 +2129,27 @@ def _filtered_open_threads(raw, transcript: list[dict]) -> list:
                       "Rex's own records (name fix / mishear / forget "
                       "request), not a life event", thread)
             continue
-        anchor = _thread_tokens(thread) - speaker_names
+        if _GAME_MECHANICS_THREAD_RE.search(thread):
+            _log.info("[diary] dropping open thread %r — game-table mechanics "
+                      "(scores, turns, the board) from a game Rex hosted, not "
+                      "a life event", thread)
+            continue
+        toks = _thread_tokens(thread)
+        anchor = toks - speaker_names
         if anchor and human_tokens and not (anchor & human_tokens):
             _log.info("[diary] dropping open thread %r — shares nothing with "
                       "anything the human said (model curiosity, not a real "
                       "thread)", thread)
+            continue
+        # Concreteness floor: a thread must keep at least one token that is
+        # neither a speaker name nor vague filler, or there is nothing to ask
+        # about. Threads with no tokens at all stay undecidable and pass
+        # through (the shape blocklists are their guard), matching the
+        # grounding rule above.
+        if toks and not (anchor - _VAGUE_THREAD_TOKENS):
+            _log.info("[diary] dropping open thread %r — no concrete anchor, "
+                      "only filler words; 'the thing you were doing' is not "
+                      "askable", thread)
             continue
         grounded.append(thread)
     threads = grounded
@@ -2130,7 +2167,60 @@ def _filtered_open_threads(raw, transcript: list[dict]) -> list:
     return kept[:3]
 
 
-def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None" = None) -> "dict | None":
+def _games_context_block(games_played: "list[dict] | None") -> str:
+    """Prompt block describing games REX HOSTED this session, from the
+    features/games session ledger. The ledger is the only authority on players,
+    scores, and winner — the transcript's score talk is noisy ASR plus Rex's
+    own banter, and grading a winner from it is how "take her points away"
+    became a stored open thread (field 2026-08-26)."""
+    lines = []
+    for g in games_played or []:
+        try:
+            display = str(g.get("display") or g.get("game") or "a game")
+            players = [str(p).strip() for p in (g.get("players") or []) if str(p).strip()]
+            line = f"- You hosted {display}"
+            line += f" with {', '.join(players)}." if players else "."
+            scores = g.get("scores") or {}
+            if scores:
+                line += " Final scores: " + ", ".join(
+                    f"{n} {'negative ' if int(s) < 0 else ''}${abs(int(s))}"
+                    for n, s in scores.items()) + "."
+            if g.get("winner"):
+                line += f" WINNER: {g['winner']}."
+            elif not g.get("finished"):
+                line += " The game was cut short before it finished — nobody won."
+            elif scores:
+                line += " No single winner."
+            if g.get("outcome"):
+                line += f" Outcome: {g['outcome']}."
+            lines.append(line)
+        except Exception:
+            continue
+    if not lines:
+        return ""
+    return (
+        "GAME SESSION — you (Rex) hosted during this conversation:\n"
+        + "\n".join(lines) + "\n"
+        "The game itself IS memorable: record in the note that you hosted it, "
+        "who played, and — exactly as stated above — who won, if anyone. The "
+        "list above is the ONLY authority on players, scores, and winner; "
+        "never re-derive them from the transcript. Everything said DURING play "
+        "is game mechanics — clue answers, category picks, score changes, "
+        "whose turn it was, accusations of cheating over points, requests for "
+        "a new board. Game mechanics are NOT facts about anyone's life: never "
+        "record them as something a person shared, and NEVER open a thread "
+        "from them ('whether the points were taken away', 'how the game will "
+        "proceed') — every score dispute was settled when the game ended. "
+        "Things people said ABOUT their lives between clues still count "
+        "normally.\n\n"
+    )
+
+
+def generate_diary_entry(
+    transcript: list[dict],
+    people_names: "list[str] | None" = None,
+    games_played: "list[dict] | None" = None,
+) -> "dict | None":
     """Session -> ONE first-person diary entry for Rex's episodic memory (rex.db).
 
     Purpose-built for the diary (the conversations-table summarizer above serves a
@@ -2196,6 +2286,7 @@ def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None
         "you misheard, a request to forget something, or complaints about your "
         "hearing/memory are maintenance of YOUR records — resolved the moment they "
         "happen, never something to ask about later.\n\n"
+        + _games_context_block(games_played)
         + denial_note +
         f"Who was here: {who}\n\nTranscript:\n{_format_transcript_attributed(transcript)}"
     )

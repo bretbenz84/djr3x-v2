@@ -194,6 +194,78 @@ class DenialClosesThreadTest(unittest.TestCase):
         self.assertEqual(len(self.llm._filtered_open_threads(list("abcdef"), clean)), 3)
 
 
+# ── 3a-bis. Game mechanics and content-free threads never survive ───────────
+
+class GameMechanicsThreadTest(unittest.TestCase):
+    """Field 2026-08-26 (logs/conversation-2026-08-26-20-11-08.log): mid-Jeopardy
+    chatter was mined into open threads — "take her points away, she cheated"
+    became "whether T'Joy's points were actually taken away", asked cold as the
+    next day's lull opener. Rex hosts the game and owns the scoreboard: score
+    disputes resolve inside the game, never as life events."""
+
+    TRANSCRIPT = [
+        {"speaker": "Bret Benziger",
+         "text": "Hey, looks like I currently doing the thing. No, my sit. "
+                 "What is? State nicknames for a hundred."},
+        {"speaker": "Bret Benziger",
+         "text": "Hey, take her points away. She cheated. Girl, she cheated."},
+    ]
+
+    def setUp(self):
+        from intelligence import llm
+        self.llm = llm
+
+    def test_the_exact_jeopardy_threads_are_dropped(self):
+        filed = ["whether T'Joy's points were actually taken away",
+                 "what Bret is currently doing",
+                 "how the game will proceed next"]
+        self.assertEqual(self.llm._filtered_open_threads(filed, self.TRANSCRIPT), [])
+
+    def test_more_game_mechanics_shapes_die(self):
+        for t in ("whether the points got given back",
+                  "whether Jeremy cheated in the trivia game",
+                  "whose turn it was when the board reset",
+                  "whether the game will continue tomorrow"):
+            with self.subTest(thread=t):
+                self.assertEqual(self.llm._filtered_open_threads([t], self.TRANSCRIPT), [])
+
+    def test_life_threads_that_merely_mention_games_survive(self):
+        transcript = [{"speaker": "Bret", "text":
+                       "My poker game got moved and I finally booked the "
+                       "dentist. PJ is off to a chess tournament."}]
+        raw = ["whether Bret's poker game happened",
+               "whether the dentist appointment happened",
+               "whether PJ won the chess tournament"]
+        self.assertEqual(self.llm._filtered_open_threads(raw, transcript), raw)
+
+
+class VagueThreadFloorTest(unittest.TestCase):
+    """"what Bret is currently doing" (same session) was pure ASR garble
+    abstracted into a thread, and the lull lane spoke it as "The thing you were
+    doing came up earlier today — did it get sorted out?". A thread must keep
+    one token that is neither a speaker name nor filler."""
+
+    def setUp(self):
+        from intelligence import llm
+        self.llm = llm
+        self.transcript = [
+            {"speaker": "Bret Benziger",
+             "text": "I currently doing the thing. Also the motor swap is "
+                     "tomorrow and my dad edited a newspaper."}]
+
+    def test_content_free_threads_are_dropped(self):
+        for t in ("what Bret is currently doing",
+                  "whether it got sorted out",
+                  "what happened earlier today"):
+            with self.subTest(thread=t):
+                self.assertEqual(self.llm._filtered_open_threads([t], self.transcript), [])
+
+    def test_one_concrete_token_is_enough(self):
+        raw = ["whether the motor swap happened",
+               "what Bret's dad did at the newspaper"]
+        self.assertEqual(self.llm._filtered_open_threads(raw, self.transcript), raw)
+
+
 # ── 3b. A guess never mints a person or a room ──────────────────────────────
 
 class GuessNeverEnrollsTest(unittest.TestCase):

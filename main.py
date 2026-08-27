@@ -679,13 +679,26 @@ def _episodic_shutdown_summary() -> None:
         except Exception:
             pass
 
+        # Games hosted this session (including one still running at shutdown):
+        # the diary must know the transcript is game chatter, and gets the real
+        # scoreboard + winner instead of grading them from noisy ASR.
+        games_played: list = []
+        try:
+            from features import games as _games
+            games_played = _games.session_games_played()
+        except Exception:
+            pass
+
         result: dict = {}
 
         def _work() -> None:
             try:
                 from intelligence import llm
                 names = [p.get("name") for p in people if p.get("name")]
-                result["entry"] = llm.generate_diary_entry(transcript, people_names=names)
+                result["entry"] = llm.generate_diary_entry(
+                    transcript, people_names=names,
+                    games_played=games_played or None,
+                )
             except Exception as exc:
                 logger.debug("episodic shutdown summary llm failed: %s", exc)
 

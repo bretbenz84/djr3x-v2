@@ -3169,6 +3169,71 @@ def _extract_game_outcome(state: dict) -> str:
     return ""
 
 
+# ── Session game ledger (diary context) ──────────────────────────────────────
+# Every game played this session, snapshotted at its end. The shutdown diary
+# extractor (main._episodic_shutdown_summary → llm.generate_diary_entry) reads
+# this so a game session is remembered as "I hosted Jeopardy with X and Y — PJ
+# won", instead of being mined for fake life-event threads out of game chatter
+# (field 2026-08-26: "take her points away, she cheated" became the stored open
+# thread "whether T'Joy's points were actually taken away", asked cold the next
+# day). Winner comes from the REAL scoreboard here, never from the transcript.
+_session_games: list[dict] = []
+
+
+def _game_session_entry(game: str, state: dict, *, finished: bool) -> dict:
+    """Pure snapshot of one game for the session ledger. Caller holds _lock."""
+    display = _GAME_DISPLAY_NAMES.get(game, game.replace("_", " ").title())
+    entry: dict = {
+        "game": game, "display": display, "finished": bool(finished),
+        "players": [], "scores": {}, "winner": None,
+        "outcome": _extract_game_outcome(state),
+    }
+    for player in (state or {}).get("players") or []:
+        try:
+            name = str(player.get("name") or "").strip()
+        except AttributeError:
+            continue
+        if not name:
+            continue
+        entry["players"].append(name)
+        try:
+            entry["scores"][name] = int(player.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    # A winner needs a FINISHED game and a strict high score — a tie is not a
+    # winner, and a game cut short mid-board crowned nobody.
+    if finished and entry["scores"]:
+        top = max(entry["scores"].values())
+        leaders = [n for n, s in entry["scores"].items() if s == top]
+        if len(leaders) == 1:
+            entry["winner"] = leaders[0]
+    return entry
+
+
+def _record_session_game(game: Optional[str], state: dict, *, finished: bool) -> None:
+    """Append one ended game to the session ledger. Caller holds _lock."""
+    if not game:
+        return
+    try:
+        _session_games.append(_game_session_entry(game, state or {}, finished=finished))
+    except Exception as exc:
+        _log.debug("[games] session ledger record failed: %s", exc)
+
+
+def session_games_played() -> list[dict]:
+    """Games played this session, oldest first — plus a live snapshot of a game
+    still running (shutdown never stops the active game, so a mid-game
+    power-off must still reach the diary)."""
+    with _lock:
+        out = [dict(e) for e in _session_games]
+        if _active_game:
+            try:
+                out.append(_game_session_entry(_active_game, _game_state, finished=False))
+            except Exception:
+                pass
+    return out
+
+
 def _episodic_game_played(game: Optional[str], person_id, outcome: str = "") -> None:
     """Log "I played Trivia with Bret — scored 4 out of 5" to Rex's episodic memory.
     Gated + failure-safe (no-ops under the test runner / when episodic memory is off)."""
@@ -3322,6 +3387,7 @@ def handle_input(text: str, person_id: Optional[int] = None, audio_array=None) -
     if done:
         with _lock:
             outcome = _extract_game_outcome(_game_state)
+            _record_session_game(game, _game_state, finished=True)
             _clear_game()
         # "I played Trivia with Bret — scored 4 out of 5" → rex.db.
         _episodic_game_played(game, person_id, outcome)
@@ -3346,6 +3412,7 @@ def stop_game(person_id: Optional[int] = None) -> str:
     _log.info("[games] Stopping game: %s", game)
     with _lock:
         outcome = _extract_game_outcome(_game_state)  # snapshot before the stop handler clears it
+        _record_session_game(game, _game_state, finished=False)
     response = _GAME_HANDLERS[game]["stop"](person_id)
 
     with _lock:
@@ -3506,6 +3573,7 @@ def stop_game_fast(person_id: Optional[int] = None) -> str:
     display_name = _GAME_DISPLAY_NAMES.get(game, game.replace("_", " ").title())
     _log.info("[games] Fast stopping game: %s", game)
     with _lock:
+        _record_session_game(game, _game_state, finished=False)
         _clear_game()
     return f"{display_name} stopped."
 

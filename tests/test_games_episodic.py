@@ -73,5 +73,68 @@ class GamePlayedWriteTest(unittest.TestCase):
         self.assertEqual(episodes.recent_episodes(1)[0]["summary"], "I played Word Association.")
 
 
+class SessionGameLedgerTest(unittest.TestCase):
+    """The session game ledger feeds the shutdown diary: who played, real
+    scores, and a winner taken from the scoreboard — never from the transcript
+    (field 2026-08-26: the diary graded a Jeopardy session from ASR chatter and
+    minted "whether T'Joy's points were actually taken away" as a thread)."""
+
+    PLAYERS = [{"name": "PJ", "score": 800, "person_id": 7},
+               {"name": "Bret", "score": -200, "person_id": 1}]
+
+    def setUp(self):
+        games._session_games.clear()
+
+    def tearDown(self):
+        games._session_games.clear()
+        with games._lock:
+            games._active_game = None
+            games._game_state = {}
+
+    def test_finished_game_with_strict_high_score_names_a_winner(self):
+        entry = games._game_session_entry(
+            "jeopardy", {"players": self.PLAYERS}, finished=True)
+        self.assertEqual(entry["display"], "Jeopardy")
+        self.assertEqual(entry["players"], ["PJ", "Bret"])
+        self.assertEqual(entry["scores"], {"PJ": 800, "Bret": -200})
+        self.assertEqual(entry["winner"], "PJ")
+
+    def test_a_tie_is_not_a_winner(self):
+        entry = games._game_session_entry(
+            "jeopardy",
+            {"players": [{"name": "PJ", "score": 400}, {"name": "Bret", "score": 400}]},
+            finished=True)
+        self.assertIsNone(entry["winner"])
+
+    def test_an_unfinished_game_crowned_nobody(self):
+        entry = games._game_session_entry(
+            "jeopardy", {"players": self.PLAYERS}, finished=False)
+        self.assertIsNone(entry["winner"])
+        self.assertFalse(entry["finished"])
+
+    def test_live_game_is_snapshotted_at_read_time(self):
+        # Shutdown never stops the active game — a mid-game power-off must
+        # still reach the diary as an unfinished game.
+        with games._lock:
+            games._active_game = "jeopardy"
+            games._game_state = {"players": [dict(p) for p in self.PLAYERS]}
+        played = games.session_games_played()
+        self.assertEqual(len(played), 1)
+        self.assertFalse(played[0]["finished"])
+        self.assertIsNone(played[0]["winner"])
+        self.assertEqual(played[0]["scores"]["PJ"], 800)
+
+    def test_stop_game_fast_records_an_unfinished_entry(self):
+        with games._lock:
+            games._active_game = "jeopardy"
+            games._game_state = {"players": [dict(p) for p in self.PLAYERS]}
+        games.stop_game_fast()
+        self.assertEqual(len(games._session_games), 1)
+        self.assertFalse(games._session_games[0]["finished"])
+        self.assertFalse(games.is_active())
+        # And the read view doesn't double-count a game that already ended.
+        self.assertEqual(len(games.session_games_played()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
