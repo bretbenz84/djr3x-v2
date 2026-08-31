@@ -7868,6 +7868,21 @@ def _same_person_name(left: Optional[str], right: Optional[str]) -> bool:
     return left_norm.lower() == right_norm.lower()
 
 
+def _same_first_name(left: Optional[str], right: Optional[str]) -> bool:
+    """True when two names share a first token ("Bret" vs "Bret Benziger").
+
+    Deliberately first-token only: "Bret Smith" and "Bret Jones" are two people
+    and this returns True for them, so callers must already be asking a question
+    where a shared first name means "the same person" — e.g. is this extracted
+    newcomer actually the person who is speaking right now.
+    """
+    left_key = normalized_name_key(_normalize_name(left or "") or "")
+    right_key = normalized_name_key(_normalize_name(right or "") or "")
+    if not left_key or not right_key:
+        return False
+    return left_key.split()[0] == right_key.split()[0]
+
+
 def _name_supported_by_user_text(name: Optional[str], text: str) -> bool:
     normalized_name = _normalize_name(name or "")
     if not normalized_name:
@@ -7934,9 +7949,16 @@ def _filter_relationship_introduction_evidence(
             parsed,
         )
         name = None
+    # The speaker is not their own newcomer. Whole-string equality and the fuzzy
+    # ratio both MISS the first-name-only form: "Bret" vs "Bret Benziger" scores
+    # 0.47, nowhere near the 0.84 bar. Field 2026-08-29 11:23:22 — Bret answered
+    # the who's-that ask with "Bret Benziger said that.", the extractor handed
+    # back "Bret", this guard passed it as a newcomer, and Rex greeted his
+    # best friend of 63 visits with "good to meet you".
     if name and speaker_name and (
         _same_person_name(name, speaker_name)
         or names_are_similar(name, speaker_name)
+        or _same_first_name(name, speaker_name)
     ):
         _log.warning(
             "[identity] rejected extracted newcomer name matching speaker "
@@ -9457,6 +9479,40 @@ def _looks_like_direct_offscreen_identity_answer(
     )
 
 
+# "That was me." / "it was just me" / "I said that" — the same answer as naming
+# yourself, minus the name. Anchored to the start of the reply so a trailing
+# aside ("...that was PJ, not me") can't trip it.
+_OFFSCREEN_SELF_ANSWER_RE = re.compile(
+    r"^\s*(?:oh[,\s]+|uh[,\s]+|um[,\s]+)*"
+    r"(?:that|this|it)?\s*(?:'?s|was|is)?\s*(?:still\s+|just\s+|only\s+)*"
+    r"(?:me\b|i\s+(?:said|did)\b)",
+    re.IGNORECASE,
+)
+
+
+def _offscreen_answer_names_the_speaker(
+    text: str,
+    intro_name: Optional[str],
+    speaker_name: Optional[str],
+) -> bool:
+    """True when the who's-that answer points back at the person answering it.
+
+    Two shapes: the name they gave IS their own ("Bret Benziger said that." from
+    Bret), or they answered in the first person ("that was me"). Both mean the
+    off-camera unknown and the engaged speaker are one person.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if intro_name and speaker_name and (
+        _same_person_name(intro_name, speaker_name)
+        or names_are_similar(intro_name, speaker_name)
+        or _same_first_name(intro_name, speaker_name)
+    ):
+        return True
+    return bool(_OFFSCREEN_SELF_ANSWER_RE.match(cleaned))
+
+
 def _is_offscreen_identify_cancel_reply(text: str) -> bool:
     plain = _plain_confirmation_text(text)
     return plain in {
@@ -9708,12 +9764,12 @@ def _handle_pending_offscreen_identify_reply(
         _log.info("[interaction] off-camera identify cancelled text=%r", text)
         return True, None
 
-    intro_name, rel_label = _extract_offscreen_identify_reply(
+    raw_intro_name, rel_label = _extract_offscreen_identify_reply(
         text,
         person_name or prior_engaged_name,
     )
     intro_name, rel_label = _filter_relationship_introduction_evidence(
-        {"name": intro_name, "relationship": rel_label},
+        {"name": raw_intro_name, "relationship": rel_label},
         text,
         person_name or prior_engaged_name,
         source="offscreen_identify",
@@ -9724,6 +9780,45 @@ def _handle_pending_offscreen_identify_reply(
     )
     if not from_engaged_person and not from_unknown_self_answer:
         return False, None
+
+    # SELF-ATTRIBUTION. "Who just said that?" — "Bret Benziger said that." /
+    # "That was me." The person Rex is already talking to is telling him he split
+    # one voice into two, so there is no newcomer to mint, enroll or greet: fold
+    # the anonymous slot back into them and own the mix-up. Field 2026-08-29
+    # 11:23:23 answered a best_friend of 63 visits with "Bret, good to meet you".
+    if from_engaged_person and _offscreen_answer_names_the_speaker(
+        text, raw_intro_name, person_name or prior_engaged_name
+    ):
+        _pending_offscreen_identify = None
+        for label in {pending.get("anonymous_speaker_label"), anonymous_speaker_label}:
+            _retire_anonymous_speaker_slot(
+                label, person_id=person_id, person_name=person_name
+            )
+        first = _first_name_or(person_name or prior_engaged_name, "friend")
+        ack_text = f"That was you the whole time, {first}. My ears split you in two."
+        try:
+            ack_text = llm.get_response(
+                f"You asked who the unfamiliar off-camera voice belonged to, and "
+                f"{first} — who you were already talking to, and already know — just "
+                f"told you it was them. You mistook them for a stranger. In ONE very "
+                f"short in-character Rex line, own the mix-up. Do NOT greet them, do "
+                f"NOT welcome them, do NOT say it is nice to meet them, do not ask "
+                f"another question."
+            ) or ack_text
+        except Exception as exc:
+            _log.debug("off-camera self-attribution ack generation failed: %s", exc)
+        _log.info(
+            "[interaction] off-camera identify: the speaker named THEMSELF "
+            "(person_id=%s, %r) — no newcomer, acknowledging the mix-up",
+            person_id, raw_intro_name or text,
+        )
+        _speak_blocking(ack_text)
+        conv_memory.add_to_transcript("Rex", ack_text)
+        conv_log.log_rex(ack_text)
+        _session_exchange_count += 1
+        _register_rex_utterance(ack_text)
+        repair_moves.mark_handled("wrong_person")
+        return True, ack_text
 
     if not intro_name:
         # No name in this reply. Drop the pending state so Rex doesn't badger;
@@ -9789,8 +9884,13 @@ def _handle_pending_offscreen_identify_reply(
         return True, None
 
     new_pid = None
+    # Sampled BEFORE enrollment: the enroll + familiarity bump below would make a
+    # brand-new person look "previously met" within the same turn and rob them of
+    # their welcome.
+    already_met = False
     try:
         new_pid, created = people_memory.find_or_create_person(intro_name)
+        already_met = (not created) and _person_previously_met(new_pid)
         if new_pid is not None:
             # A human just CONFIRMED who this voice is — the strongest credibility
             # signal there is. Anchor voice continuity so their next marginal-scoring
@@ -9913,7 +10013,11 @@ def _handle_pending_offscreen_identify_reply(
     if new_pid is None:
         return True, None
 
-    ack_text = f"Got it: {intro_name}. Welcome to the frequency."
+    ack_text = (
+        f"Right — that was {intro_name}."
+        if already_met
+        else f"Got it: {intro_name}. Welcome to the frequency."
+    )
     # Celebrity personas (JT the volleyball legend, Joy/Exudica, the creator) get
     # their authored intro bit — identifying via the who's-that ask must land the
     # same routine a face-recognized arrival would (field gap 2026-07-05: JT was
@@ -9936,12 +10040,23 @@ def _handle_pending_offscreen_identify_reply(
     else:
         try:
             introducer_name = _first_name_or(person_name or prior_engaged_name, "friend")
-            ack_text = llm.get_response(
+            # A name resolved here is only sometimes a NEWCOMER. When the row is
+            # someone Rex has already met, greeting them cold reads as amnesia —
+            # place them instead.
+            framing = (
+                f"You already know {intro_name} — this only told you which known "
+                f"person the voice belonged to, not that someone new arrived. In "
+                f"ONE very short in-character Rex line, acknowledge that you have "
+                f"placed the voice as {intro_name}. Do NOT welcome them, do NOT "
+                f"greet them, do NOT say it is nice to meet them."
+                if already_met else
                 f"You just learned the nearby/off-camera person's "
                 f"name is {intro_name}. {introducer_name} introduced "
                 f"or named them. In ONE very short in-character Rex line, "
-                f"acknowledge {intro_name} by name and welcome "
-                f"them. Address {intro_name}, not {introducer_name}. "
+                f"acknowledge {intro_name} by name and welcome them."
+            )
+            ack_text = llm.get_response(
+                f"{framing} Address {intro_name}, not {introducer_name}. "
                 f"Do not ask another question."
             ) or ack_text
         except Exception as exc:
@@ -12023,6 +12138,17 @@ def _enroll_introduced_person(
         return None
     if new_id is None:
         return None
+    # The name resolved to the introducer's own row — a self-identification that
+    # slipped the name check upstream (a nickname, a middle name). Filing it
+    # would make them their own acquaintance and open a voice-capture window on
+    # the person already speaking.
+    if _safe_int(new_id) == _safe_int(introducer_id):
+        _log.info(
+            "[introduction] %r resolves to the introducer (person_id=%s) — "
+            "self-identification, nothing filed",
+            name, introducer_id,
+        )
+        return None
 
     first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
     if created and first_inc > 0:
@@ -12596,6 +12722,11 @@ def _intro_voice_text_sounds_like_newcomer(text: str, name: str) -> bool:
     cleaned = (text or "").strip().lower()
     if not cleaned:
         return False
+    # "PJ is not here. This is Bret." is the introducer correcting Rex, never the
+    # newcomer's voice sample. Checked first so the word-count fallback below
+    # can't wave a short denial through (field 2026-08-29 11:21:46).
+    if introductions.denies_introduction(text, introduced_name=name):
+        return False
     if re.search(r"\b(no|nope|not now|not here|later|wait|hold on|can't|cannot)\b", cleaned):
         return False
     first = _first_name_or(name).lower()
@@ -12630,6 +12761,58 @@ def _bind_intro_visible_face_if_present(person_id: int, name: str) -> None:
         _log.warning("introduction visible face bind failed: %s", exc)
 
 
+def _unwind_intro_capture(ctx: dict, text: str, *, reason: str) -> str:
+    """A human just DENIED the introduction's premise — retract what the open
+    window wrote and say so.
+
+    Clearing the pending state is not enough. By the time the correction lands,
+    the window may already have stored a voice print on the newcomer: field
+    2026-08-29 11:21:46, Rex was told "say hi to PJ", took BRET'S next sentence
+    as PJ's sample (Bret was the top raw match at 0.604, but the intro window had
+    suppressed his visible face so identity read "off-camera unknown" and the
+    introducer guard — which only checks a resolved person_id — never ran), and
+    PJ's print set carried Bret's voice out of the session. One turn later Bret's
+    correction was filed as their connection story. The retraction has to reach
+    the biometric row, not just the slot.
+    """
+    global _pending_intro_voice_capture, _pending_intro_followup
+
+    introduced_id = _safe_int(ctx.get("introduced_id"))
+    introduced_name = ctx.get("introduced_name") or "the newcomer"
+    bio_id = _safe_int(ctx.get("enrolled_voice_biometric_id"))
+    if bio_id is not None:
+        try:
+            people_memory.delete_biometric(bio_id)
+            _log.info(
+                "[introduction] retracted voice print id=%s from person_id=%s (%s) "
+                "— introduction denied: %r",
+                bio_id, introduced_id, introduced_name, text,
+            )
+        except Exception as exc:
+            _log.warning("intro voice print retraction failed: %s", exc)
+    _pending_intro_voice_capture = None
+    _pending_intro_followup = None
+    _log.info(
+        "[introduction] premise denied (%s) — standing down the %s window: %r",
+        reason, introduced_name, text,
+    )
+
+    first = _first_name_or(introduced_name)
+    try:
+        line = llm.get_response(
+            f"You thought you were meeting someone called {first} and started "
+            f"filing their voice. The person you're actually talking to just told "
+            f"you {first} is not the one speaking. In ONE short in-character Rex "
+            f"line, admit you had the wrong read and drop it. No question, no "
+            f"greeting, do not use the name {first} as if addressing them."
+        )
+        if line:
+            return line
+    except Exception as exc:
+        _log.debug("intro unwind ack generation failed: %s", exc)
+    return f"My mistake — scratch that. No {first} on the line."
+
+
 def _handle_intro_voice_capture(
     text: str,
     audio_array: np.ndarray,
@@ -12646,6 +12829,14 @@ def _handle_intro_voice_capture(
         _log.info("[introduction] voice capture window expired for %s", ctx.get("introduced_name"))
         _pending_intro_voice_capture = None
         return None
+    # A denial of the premise ("PJ is not here. This is Bret.", "wrong person",
+    # "that was me") is a correction, not a voice sample and not connection
+    # colour. It has to be caught BEFORE the enrollment guards below, because
+    # those reason about who is speaking and this reply is about who ISN'T.
+    if introductions.denies_introduction(
+        text, introduced_name=ctx.get("introduced_name")
+    ):
+        return _unwind_intro_capture(ctx, text, reason="voice_capture_window")
 
     introduced_id = int(ctx["introduced_id"])
     introduced_name = ctx.get("introduced_name") or "the newcomer"
@@ -12757,8 +12948,18 @@ def _handle_intro_voice_capture(
             f"more sentence so I can stop calling you theoretical."
         )
 
+    # Carry the row id forward: this print was taken on the window's expectation
+    # of who was speaking, and the very next turn is where a human gets to say
+    # that expectation was wrong. _unwind_intro_capture deletes it then.
+    enrolled_bio_id = None
+    try:
+        enrolled_bio_id = people_memory.latest_biometric_id(introduced_id, "voice")
+    except Exception as exc:
+        _log.debug("intro voice print id lookup failed: %s", exc)
+
     _pending_intro_voice_capture = None
     followup = dict(ctx)
+    followup["enrolled_voice_biometric_id"] = enrolled_bio_id
     followup["followup_kind"] = followup_kind
     followup["asked_at"] = time.monotonic()
     _pending_intro_followup = followup
@@ -12837,7 +13038,20 @@ def _handle_intro_followup_answer(text: str) -> Optional[str]:
     if not introductions.followup_fresh(ctx):
         _pending_intro_followup = None
         return None
-    if not introductions.should_capture_followup(text):
+    introduced_name_ctx = (ctx or {}).get("introduced_name")
+    # The answer slot to "so how do you two know each other?" is wide open by
+    # design — any three words land in it as relationship colour. A denial of the
+    # premise must not: field 2026-08-29 11:22:01 wrote "Bret Benziger and PJ: PJ
+    # is not here. This is Bret." onto BOTH people at confidence 0.90
+    # (person_facts 132/133). Retract the window instead of quoting the
+    # correction back as their history.
+    if introductions.denies_introduction(
+        text, introduced_name=introduced_name_ctx
+    ):
+        return _unwind_intro_capture(dict(ctx), text, reason="followup_answer")
+    if not introductions.should_capture_followup(
+        text, introduced_name=introduced_name_ctx
+    ):
         return None
 
     _pending_intro_followup = None
@@ -12910,6 +13124,25 @@ def _handle_intro_followup_answer(text: str) -> Optional[str]:
     except Exception as exc:
         _log.debug("intro followup ack generation failed: %s", exc)
     return "Noted. Another organic relationship filed under suspicious but charming."
+
+
+def _introduced_name_is_the_introducer(
+    name: Optional[str],
+    introducer_name: Optional[str],
+) -> bool:
+    """True when the 'introduced' name is the person doing the introducing.
+
+    Name comparison only — the id-level check lives in _enroll_introduced_person,
+    where find_or_create_person has already resolved the row and it costs no
+    extra lookup.
+    """
+    candidate = _normalize_name(name or "")
+    if not candidate or not introducer_name:
+        return False
+    return (
+        _same_person_name(candidate, introducer_name)
+        or _same_first_name(candidate, introducer_name)
+    )
 
 
 def _resolve_existing_visible_introduced_person(
@@ -13003,6 +13236,22 @@ def _handle_introduction_parse(
             if parsed.relationship:
                 return f"Got the {parsed.relationship} part. What name am I filing for them?"
             return "Fine, I see the mystery organic. What name and relationship am I filing under?"
+
+    # "This is Bret." from Bret is a self-identification, not an introduction.
+    # Nothing downstream catches it: the visible-person resolver below excludes
+    # the introducer, but then hands off to _enroll_introduced_person, which
+    # files Bret as his own acquaintance and opens a voice-capture window for
+    # him. Bret said exactly this sentence on 2026-08-29 11:22:01 while
+    # correcting Rex; an open follow-up slot ate that turn first, so the shape
+    # never surfaced. Falling through to normal conversation is the right answer.
+    if _introduced_name_is_the_introducer(parsed.name, introducer_name):
+        _pending_introduction = None
+        _log.info(
+            "[introduction] %r names the introducer themself (person_id=%s) — "
+            "self-identification, not an introduction",
+            parsed.name, introducer_id,
+        )
+        return None
 
     existing_intro = _resolve_existing_visible_introduced_person(
         parsed.name,
@@ -13529,6 +13778,29 @@ def tell_about_on_external_rex_line(source: Optional[str]) -> None:
         source,
         state.get("subject_name"),
     )
+
+
+def _person_previously_met(person_id: Optional[int]) -> bool:
+    """True when Rex has actually MET this person before, not merely holds a row
+    for them. A name can reach people.db from a pre-briefing or a third-party
+    mention with visit_count still 0 — those deserve a real welcome. Someone with
+    visits, familiarity or enrolled prints does not."""
+    pid = _safe_int(person_id)
+    if pid is None:
+        return False
+    try:
+        person = people_memory.get_person(pid) or {}
+        if int(person.get("visit_count") or 0) > 0:
+            return True
+        if float(person.get("familiarity_score") or 0.0) > 0.0:
+            return True
+        return bool(
+            people_memory.has_voice_biometric(pid)
+            or people_memory.has_face_biometric(pid)
+        )
+    except Exception as exc:
+        _log.debug("previously-met lookup failed for person_id=%s: %s", person_id, exc)
+        return False
 
 
 def _told_about_teller_name(introduced_id: Optional[int]) -> Optional[str]:

@@ -120,12 +120,101 @@ def parse_pending_answer(
     return parsed
 
 
-def should_capture_followup(text: str) -> bool:
+def should_capture_followup(
+    text: str,
+    *,
+    introduced_name: Optional[str] = None,
+) -> bool:
     cleaned = (text or "").strip()
     if not cleaned or _DECLINE_PAT.search(cleaned):
         return False
+    if denies_introduction(cleaned, introduced_name=introduced_name):
+        return False
     words = re.findall(r"[A-Za-z']+", cleaned)
     return len(words) >= 3
+
+
+# A reply that DENIES the introduction's premise is not connection color, and it
+# is not the newcomer's voice sample either — it is the human telling Rex he got
+# the whole frame wrong. Field 2026-08-29 11:21-11:22: Rex was told "say hi to
+# PJ", opened a voice-capture window, enrolled BRET'S clip onto PJ (person 7,
+# biometric 56), asked how they know each other, and then filed Bret's correction
+# "PJ is not here. This is Bret." as the Bret<->PJ connection story (person_facts
+# 132/133). Every one of those writes was downstream of not reading a denial as a
+# denial.
+_PREMISE_DENIAL_PAT = re.compile(
+    r"(?:"
+    r"\b(?:is|was|are|were)\s+not\s+(?:here|there|around|present|in\s+the\s+room)\b|"
+    r"\b(?:isn'?t|wasn'?t|aren'?t|weren'?t|ain'?t)\s+(?:here|there|around|present|in\s+the\s+room)\b|"
+    r"\bnot\s+(?:here|there|around)\s+(?:right\s+now|anymore|any\s+more|yet)\b|"
+    r"\b(?:nobody|no\s+one)\s+(?:else\s+)?(?:is\s+)?(?:here|there|around)\b|"
+    r"\bthere(?:'?s|\s+is)\s+no\s+(?:one|body)\b|"
+    r"\bwrong\s+(?:person|name|guy|girl|voice|one)\b|"
+    r"\b(?:you'?ve|you\s+have)\s+got\s+the\s+wrong\b|"
+    r"\b(?:that\s+was|that'?s|this\s+is|it'?s|it\s+is)\s+(?:still\s+|just\s+)*me\b|"
+    r"\b(?:still|only)\s+(?:just\s+)?me\s+(?:here|talking)\b|"
+    r"\bjust\s+me\s+(?:here|in\s+here)\b|"
+    r"\bi'?m\s+the\s+only\s+one\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# "This is Bret." / "I'm Bret." during PJ's window: the speaker is naming
+# THEMSELF as somebody other than the person Rex is capturing. Case-sensitive on
+# the name token on purpose — the ASR capitalizes proper nouns, and a lowercase
+# match would swallow ordinary sentences ("it's not that big a deal").
+_SELF_NAME_CLAIM_PAT = re.compile(
+    r"\b(?i:this is|that is|that'?s|it'?s|it is|i'?m|i am)\s+"
+    r"(?P<name>[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*)?)\b"
+)
+
+
+def _first_token(name: Optional[str]) -> str:
+    tokens = re.findall(r"[A-Za-z][A-Za-z'\-]*", name or "")
+    return tokens[0].lower() if tokens else ""
+
+
+def denies_introduction(
+    text: str,
+    *,
+    introduced_name: Optional[str] = None,
+) -> bool:
+    """True when a reply DENIES the introduction's premise instead of answering it.
+
+    Covers three shapes, in rising specificity:
+      1. presence/identity denial with no name needed ("she isn't here",
+         "wrong person", "that was me"),
+      2. the newcomer named as absent ("PJ is not here", "that's not PJ"),
+      3. the speaker naming THEMSELF as somebody else ("This is Bret").
+
+    Callers pass ``introduced_name`` when the open window knows who it is
+    capturing; without it only shape 1 can fire.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _PREMISE_DENIAL_PAT.search(cleaned):
+        return True
+
+    first = _first_token(introduced_name)
+    if not first:
+        return False
+    esc = re.escape(first)
+    if re.search(
+        rf"\b{esc}\s+(?:is|was)\s+(?:not|no\s+longer)\b|"
+        rf"\b{esc}\s+(?:isn'?t|wasn'?t|ain'?t)\b|"
+        rf"\bnot\s+{esc}\b",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        return True
+
+    claim = _SELF_NAME_CLAIM_PAT.search(cleaned)
+    if claim:
+        claimed = _normalize_name(claim.group("name"))
+        if claimed and _first_token(claimed) != first:
+            return True
+    return False
 
 
 def _parse_intro_text(text: str) -> IntroductionParse:

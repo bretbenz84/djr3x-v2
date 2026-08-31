@@ -534,6 +534,26 @@ def add_biometric(person_id: int, type: str, encoding: np.ndarray) -> Optional[i
     )
 
 
+def latest_biometric_id(person_id: int, type: str) -> Optional[int]:
+    """Row id of the most recently stored face/voice biometric for a person."""
+    row = db.fetchone(
+        "SELECT id FROM biometrics WHERE person_id = ? AND type = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (person_id, type),
+    )
+    return int(row["id"]) if row else None
+
+
+def delete_biometric(biometric_id: int) -> bool:
+    """Remove one biometric row. Used to UNDO an enrollment a human just
+    corrected — a print stored on the wrong person poisons every later match,
+    so the retraction has to reach the row, not just the pending state."""
+    if biometric_id is None:
+        return False
+    db.execute("DELETE FROM biometrics WHERE id = ?", (int(biometric_id),))
+    return True
+
+
 def get_person(person_id: int) -> Optional[dict]:
     """Return the full people row as a plain dict, or None if not found."""
     row = db.fetchone("SELECT * FROM people WHERE id = ?", (person_id,))

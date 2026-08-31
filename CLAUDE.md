@@ -54,9 +54,10 @@ change (tracked as their own fix-up task):
 Found by a full per-module sweep of all 241 modules on 2026-08-05 and each verified
 against clean HEAD the same day:
 
-- `tests/test_lean_memory_musing.py` — FIXED 2026-08-27 by the never-met recall
-  floor in `memory/episodic_recall.py` (the musing lane no longer surfaces a
-  person Rex never actually met, which is what left the flag unset)
+- `tests/test_lean_memory_musing.py` — `test_spoken_musing_sets_once_per_session_flag`
+  (was FIXED 2026-08-27 by the never-met recall floor in
+  `memory/episodic_recall.py`; BACK as of 2026-08-30, verified against clean HEAD
+  that day — something between those dates re-broke the flag, or it is date-rot)
 - `tests/test_proactive_discipline.py` — `test_idle_monologue_is_excluded_from_the_cooldown`
 - `tests/test_pose_face_guard.py` — `test_no_pose_anchor_keeps_all`
 - `tests/test_rfdetr_backend.py` — `test_object_records_apply_exclusions`
@@ -75,10 +76,12 @@ Two more appeared between then and 2026-08-20 (the tree is 284 modules now, not
 - `tests/test_review_regressions.py` —
   `test_router_keeps_known_named_person_topic_as_memory_query`
 
-**A full sweep should now come back with exactly these 11 modules and nothing
-else** (sweep of all 299 modules, 2026-08-27, 436s — `test_lean_memory_musing`
-came off the list that day, and `test_rex_supervisor` will report as a TIMEOUT
-rather than a failure if the sweep runs its modules under load).
+**A full sweep should now come back with exactly these 12 modules and nothing
+else** (sweep of all 300 modules, 2026-08-30, 448s — `test_lean_memory_musing`
+came back onto the list that day, and `test_rex_supervisor` will report as a
+TIMEOUT rather than a failure if the sweep runs its modules under load).
+`test_audio_and_conversation_gating` is down to 2 failures: its
+`test_existing_common_name_prompt_logs_human_turn_before_returning` passes again.
 
 Note the trap that cost time on 2026-08-20: `git stash -u` is a NO-OP when your
 work is already committed, so the usual "stash, test, pop" baseline check silently
