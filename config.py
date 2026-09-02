@@ -1564,9 +1564,14 @@ MEMORY_SEMANTIC_BREAKER_COOLDOWN_SECS = 60.0
 MEMORY_SEMANTIC_BREAKER_COOLDOWN_MAX_SECS = 600.0
 MEMORY_SEMANTIC_PROBE_MAX_SECS = 0.4
 # Boot-time warm-up (background thread): pin the model, measure cold/warm trips, open
-# the breaker up front if warm is slower than the probe budget.
+# the breaker up front if warm is slower than the probe budget. The LOAD budget is
+# also what the background recovery probe uses for its first request. MEASURED
+# 2026-09-02 00:27:43 under the real live stack: cold load 16.66 s, warm 0.060 s,
+# then 10 ms per turn all session (Ollama's log: 0 aborted loads). On an idle
+# machine the same load is 0.3 s, and no synthetic load reproduced the 16 s — so
+# the budget must cover the live number with room, not the bench number.
 MEMORY_SEMANTIC_WARMUP_ON_STARTUP = True
-MEMORY_SEMANTIC_WARMUP_TIMEOUT_SECS = 30.0
+MEMORY_SEMANTIC_WARMUP_TIMEOUT_SECS = 60.0
 # In-process candidate-embedding cache size (texts are stable, so this warms once).
 MEMORY_SEMANTIC_CACHE_SIZE = 1024
 

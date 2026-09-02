@@ -107,6 +107,20 @@ class SemanticBreakerTests(unittest.TestCase):
         self.assertTrue(semantic.is_open())
         self.assertIn("probe took", semantic._last_error)
 
+    def test_probe_gives_the_load_the_long_budget_and_times_the_warm_call(self):
+        """Field 2026-09-02 00:27:43: the live cold load took 16.66 s. A probe on the
+        inline budget would abort that load exactly like the old breaker did."""
+        self._trip()
+        vec = np.ones(4, dtype=np.float32)
+        seen = []
+        with mock.patch.object(semantic, "_request_embedding",
+                               side_effect=lambda text, timeout=None: seen.append(timeout) or vec):
+            self.assertTrue(semantic._recovery_probe())
+        self.assertEqual(len(seen), 2, "one request to load, one warm request to time")
+        self.assertGreaterEqual(seen[0], semantic._warmup_timeout())
+        self.assertLessEqual(seen[1], semantic._inline_timeout())
+        self.assertFalse(semantic.is_open())
+
     def test_only_one_probe_in_flight(self):
         self._trip()
         with mock.patch.object(semantic.threading, "Thread") as thread:

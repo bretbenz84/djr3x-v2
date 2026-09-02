@@ -218,14 +218,35 @@ def _probe_budget() -> float:
     return max(0.05, float(_cfg("MEMORY_SEMANTIC_PROBE_MAX_SECS", 0.4)))
 
 
+def _warmup_timeout() -> float:
+    """Budget for a request that may have to LOAD the model. Field 2026-09-02
+    00:27:43: under the real live stack the load took 16.66 s (0.3 s on an idle
+    machine, and no synthetic load reproduced it). Any request that may trigger a
+    load must get this budget, or it becomes the abort loop the old breaker was —
+    Ollama kills an in-progress load the moment the client hangs up."""
+    return max(5.0, float(_cfg("MEMORY_SEMANTIC_WARMUP_TIMEOUT_SECS", 60.0)))
+
+
 def _recovery_probe() -> bool:
-    """One health probe. Closes the breaker on a fast success; re-opens it with a
-    longer cooldown on failure or a slow reply. Runs on a background thread."""
+    """One health probe. Closes the breaker on a fast WARM round trip; re-opens it
+    with a longer cooldown on failure or a slow reply. Runs on a background thread.
+
+    Two requests, deliberately: the first gets the LOAD budget (the model may have
+    been evicted, and a probe on the inline budget would abort the load exactly the
+    way the old breaker did — off the reply path now, but the feature would stay
+    dead forever); the second is the one that is timed, because the inline calls it
+    would re-enable are warm calls."""
     global _last_error, _probe_in_flight
     try:
+        try:
+            _request_embedding(_PROBE_TEXT, timeout=_warmup_timeout())
+        except Exception as exc:
+            _last_error = f"{type(exc).__name__}: {exc}"
+            _open_breaker("probe failed")
+            return False
         started = time.monotonic()
         try:
-            _request_embedding(_PROBE_TEXT, timeout=_inline_timeout())
+            _request_embedding(_PROBE_TEXT + " again", timeout=_inline_timeout())
         except Exception as exc:
             _last_error = f"{type(exc).__name__}: {exc}"
             _open_breaker("probe failed")
@@ -264,7 +285,7 @@ def warmup() -> bool:
     if not bool(_cfg("MEMORY_SEMANTIC_RECALL_ENABLED", False)):
         return False
     model = str(_cfg("MEMORY_SEMANTIC_EMBED_MODEL", "nomic-embed-text"))
-    warm_timeout = max(5.0, float(_cfg("MEMORY_SEMANTIC_WARMUP_TIMEOUT_SECS", 30.0)))
+    warm_timeout = _warmup_timeout()
     try:
         started = time.monotonic()
         _request_embedding(_PROBE_TEXT, timeout=warm_timeout)
