@@ -53,8 +53,19 @@ class RoastLevelSharpTierTest(unittest.TestCase):
     def test_heavy_sensitivity_beats_warmth(self):
         self.assertEqual(_level(0.95, sensitivity="heavy"), "none")
 
-    def test_micro_target_caps_at_light_not_sharp(self):
-        self.assertEqual(_level(0.95, target="micro"), "light")
+    def test_a_short_turn_is_not_a_soft_turn(self):
+        # Owner directive 2026-09-02: brevity is length, not intensity. A micro or
+        # brief plan used to cap the roast at "light" (00:30:21 that night: the
+        # owner's one-line answer lost its self-own and became "Tell me more.").
+        self.assertEqual(_level(0.95, target="micro"), "sharp")
+        self.assertEqual(_level(0.95, target="brief"), "sharp")
+        self.assertEqual(_level(0.5, target="brief"), "normal")
+
+    def test_a_flat_arc_no_longer_pulls_punches_by_default(self):
+        with mock.patch("intelligence.topic_thread.arc_reads_flat", return_value=True):
+            self.assertEqual(_level(0.5), "normal")
+            with mock.patch.object(sf.config, "ARC_EASES_ROAST_ON_FLOP", True):
+                self.assertEqual(_level(0.5), "light")
 
     def test_kill_switch_disables_sharp(self):
         with mock.patch.object(sf.config, "SHARP_ROAST_TIER_ENABLED", False):
@@ -93,20 +104,33 @@ class EffectiveWarmthTest(unittest.TestCase):
 
 
 class CrueltyBackstopAtSharpTest(unittest.TestCase):
-    """The harsh-word/cruelty governor must hold at EVERY tier, incl. sharp."""
+    """The backstop runs at EVERY tier, incl. sharp — so it is CONTEMPT only.
+    Owner directive 2026-09-02: "R3X needs to be able to insult people if it's
+    funny." Insult vocabulary (idiot, pathetic, loser, disaster) is roast material
+    the intensity tiers own; hatred and disgust are what no tier may say."""
 
-    def test_name_calling_scrubbed_even_at_sharp(self):
+    def test_insults_survive_at_sharp(self):
         res = sf.govern_response("You're a pathetic idiot. Nice work though.", _frame("sharp"))
-        self.assertNotIn("idiot", res.text.lower())
-        self.assertNotIn("pathetic", res.text.lower())
-        self.assertIn("removed_cruel_roast", res.notes)
+        self.assertIn("idiot", res.text.lower())
+        self.assertNotIn("removed_cruel_roast", res.notes)
 
-    def test_stream_scrubs_cruelty_at_sharp(self):
-        self.assertEqual(sf.govern_stream_sentence("You're a worthless loser.", _frame("sharp")), "")
+    def test_insults_survive_at_normal(self):
+        self.assertEqual(
+            sf.govern_stream_sentence("Bold choice, you absolute disaster.", _frame("normal")),
+            "Bold choice, you absolute disaster.",
+        )
 
-    def test_cruelty_scrubbed_at_normal_too(self):
-        # Net safety improvement: 'normal' had NO harsh scrub before; now it does.
-        self.assertEqual(sf.govern_stream_sentence("Shut up, moron.", _frame("normal")), "")
+    def test_contempt_is_scrubbed_at_every_tier(self):
+        for line in ("I hate you.", "Shut up, moron.", "You're a worthless loser.",
+                     "You are a piece of garbage.", "You're a disgrace.",
+                     "Honestly, you're ugly."):
+            for tier in ("sharp", "normal", "light"):
+                with self.subTest(line=line, tier=tier):
+                    self.assertEqual(sf.govern_stream_sentence(line, _frame(tier)), "")
+
+    def test_light_still_strips_the_harsh_words(self):
+        # "light" now only comes from an explicit "likes light roasts" preference.
+        self.assertEqual(sf.govern_stream_sentence("You're a pathetic idiot.", _frame("light")), "")
 
     def test_sharp_lets_a_vivid_rib_through_that_light_drops(self):
         # The whole point of the lift: a vivid, affectionate sharp rib survives at "sharp"
@@ -160,10 +184,10 @@ class SelfDirectedRoastTest(unittest.TestCase):
             )
         self.assertIn("removed_sharp_roast", got.notes)
 
-    def test_cruelty_backstop_still_catches_second_person(self):
-        self.assertTrue(sf.contains_cruelty("You are such an idiot."))
-        self.assertFalse(sf.contains_cruelty("I am such an idiot."))
-        self.assertTrue(sf.contains_cruelty("I think you're an idiot."))
+    def test_cruelty_backstop_is_contempt_and_never_self_directed(self):
+        self.assertTrue(sf.contains_cruelty("Shut up, you worthless idiot."))
+        self.assertFalse(sf.contains_cruelty("I'm a worthless pile of wiring today."))
+        self.assertFalse(sf.contains_cruelty("You are such an idiot."))   # roast, not contempt
 
     def test_a_vocative_is_not_self_directed(self):
         # "genius" is aimed at the human even with no "you" in the sentence.

@@ -124,22 +124,26 @@ _HARSH_ROAST_PAT = re.compile(
     r")\b",
     re.IGNORECASE,
 )
-# Genuine cruelty — name-calling / contempt that is over the line even for a best friend.
-# Scrubbed at EVERY roast tier (incl. normal/sharp) as the cruelty backstop, so lifting the
-# intensity cap to "sharp" sharpens the PROMPT, never the safety net. Deliberately TIGHTER
-# than _HARSH_ROAST_PAT (which also flags context-sensitive words like "body"/"weight" and
-# runs only at the light tier): this is the unambiguous insult subset, safe to drop at all
-# tiers without scrubbing innocent mentions ("the weight of the box") or the vivid-but-
-# affectionate hyperbole ("your code is a dumpster fire") a sharp rib is allowed to use.
+# Genuine cruelty — CONTEMPT and hostility, not insult vocabulary. This is the
+# one scrub that runs at EVERY roast tier (incl. normal/sharp), so it has to be
+# narrow: owner directive 2026-09-02 — "R3X needs to be able to insult people if
+# it's funny." Calling someone an idiot, a moron, pathetic, a loser, a disaster is
+# roast material and belongs to the intensity tiers (light strips it, normal and
+# sharp keep it); what no tier may say is the stuff that reads as real hatred or
+# disgust — "I hate you", "shut up", "worthless", "piece of garbage", "you're a
+# disgrace", and appearance contempt ("you're ugly/gross/disgusting" — the
+# body/appearance ban is a persona rule, not a roast tier). Self-directed lines
+# are exempt via _is_cruel_sentence.
 _CRUEL_ROAST_PAT = re.compile(
     r"\b("
-    r"idiots?|morons?|imbeciles?|cretins?|dumbass(?:es)?|jackass(?:es)?|halfwits?|"
-    r"losers?|worthless|pathetic|pitiful|"
+    r"worthless|"
     r"hate you|shut up|"
-    r"piece of (?:trash|garbage|crap|shit)"
+    r"piece of (?:trash|garbage|crap|shit)|"
+    r"waste of (?:space|oxygen|air|skin)"
     r")\b"
-    r"|\b(?:you'?re|you are|what(?:'?s| is)? an?)\s+(?:so\s+|such\s+|a\s+|an\s+|really\s+)*"
-    r"(?:stupid|dumb|ugly|gross|disgusting|useless|a\s+failure|a\s+disgrace|a\s+joke|an\s+idiot)\b",
+    r"|\b(?:you[\u2019']?re|you are|what(?:[\u2019']?s| is)? an?)\s+(?:so\s+|such\s+|a\s+|an\s+|really\s+)*"
+    r"(?:ugly|gross|disgusting|repulsive|a\s+disgrace|worthless|"
+    r"nothing|garbage|trash)\b",
     re.IGNORECASE,
 )
 _BAD_CLOSURE_PAT = re.compile(
@@ -1003,8 +1007,14 @@ def _roast_level(
                 return "light"
         except Exception as exc:
             _log.debug("[social_frame] roast preference lookup failed: %s", exc)
-    if target in {"micro", "brief"}:
-        return "light"
+    # Brevity is a LENGTH decision, not an intensity one. Until 2026-09-02 any
+    # micro/brief plan capped the roast at "light" — so a one-line answer to the
+    # owner (sharp tier by warmth) was filtered like a stranger's, and the
+    # light-tier scrub then deleted "...like an idiot with a subscription" and
+    # spoke "Tell me more." instead (00:30:21). Owner directive that night: Rex
+    # is a roaster; the sensitive-moment gates above (tone repair, boundary,
+    # tender mode, sad/heavy affect, roast boundary, preference, closure) are
+    # the ONLY things that soften him. A short jab is still a jab.
     # Act-on-signal: if the conversation arc reads flat (disengaged/disappointed
     # mood), ease a would-be "normal" roast to "light" so Rex stops needling a
     # flagging room. Additive — only downgrades the default; the care/affect "none"

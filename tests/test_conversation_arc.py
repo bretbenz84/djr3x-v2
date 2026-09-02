@@ -352,9 +352,18 @@ class ActOnSignalRoastTest(unittest.TestCase):
         )
 
     def test_normal_eased_to_light_when_arc_flat(self):
+        import config
+        from intelligence import topic_thread
+        # Opt-in since 2026-09-02 (owner: a flat room is a reason to change the
+        # subject, not to pull punches) — the easing still works when switched on.
+        with mock.patch.object(topic_thread, "arc_reads_flat", return_value=True), \
+             mock.patch.object(config, "ARC_EASES_ROAST_ON_FLOP", True):
+            self.assertEqual(self._roast(person_id=None), "light")
+
+    def test_easing_is_off_by_default(self):
         from intelligence import topic_thread
         with mock.patch.object(topic_thread, "arc_reads_flat", return_value=True):
-            self.assertEqual(self._roast(person_id=None), "light")
+            self.assertEqual(self._roast(person_id=None), "normal")
 
     def test_normal_stays_when_arc_not_flat(self):
         from intelligence import topic_thread

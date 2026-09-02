@@ -545,7 +545,10 @@ CONVERSATION_TURN_CLASSIFIER_TIMEOUT_SECS = 1.5
 # what would otherwise be a "normal" roast (never touches the care/affect "none"
 # cases or the engaged-turn default). The existing conversation_steering pivot
 # already handles "change the channel". Kill switch: set False to disable.
-ARC_EASES_ROAST_ON_FLOP = True
+# OFF 2026-09-02 (owner directive: Rex is a roaster; a flat room is a reason to
+# change the subject, not to pull punches — only the sensitive-moment gates in
+# social_frame._roast_level soften him).
+ARC_EASES_ROAST_ON_FLOP = False
 
 # ── Relationship-tone (smaller win) ──────────────────────────────────────────
 # Make warmth/edge track the RELATIONSHIP, not flip per turn: a relationship-tone
