@@ -185,6 +185,36 @@ def get_embedding(audio_array: np.ndarray) -> Optional[np.ndarray]:
         return None
 
 
+def buffer_secs(audio_array: Optional[np.ndarray]) -> float:
+    """Wall length of a capture buffer in seconds (pre-roll and padding included)."""
+    if not isinstance(audio_array, np.ndarray) or len(audio_array) <= 0:
+        return 0.0
+    rate = float(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
+    return float(len(audio_array)) / max(rate, 1.0)
+
+
+def voiced_secs(audio_array: Optional[np.ndarray]) -> float:
+    """Seconds of actual SPEECH in a buffer: 30 ms frames counted voiced against an
+    amplitude-relative floor (same rule as interaction._voiced_duration_secs). The
+    embedder pools statistics over the WHOLE buffer, which carries ~0.45 s pre-roll
+    and ~0.65 s silence timeout around every utterance, so this — not buffer length —
+    is the duration a score should be read against. Instrumentation 2026-09-02."""
+    if not isinstance(audio_array, np.ndarray) or len(audio_array) <= 0:
+        return 0.0
+    rate = float(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
+    frame = max(1, int(0.03 * rate))
+    usable = (len(audio_array) // frame) * frame
+    if usable <= 0:
+        return 0.0
+    frames = np.abs(audio_array[:usable].astype(np.float32)).reshape(-1, frame)
+    rms = np.sqrt(np.mean(frames * frames, axis=1))
+    peak = float(rms.max()) if rms.size else 0.0
+    if peak <= 0.0:
+        return 0.0
+    floor = max(0.004, 0.1 * peak)
+    return float(int((rms >= floor).sum()) * frame / rate)
+
+
 def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float, int]]:
     """Return [(person_id, name, similarity, n_prints), ...] sorted by similarity desc,
     ONE entry per person, scoring the query against that person's CENTROID (mean of all
@@ -201,13 +231,21 @@ def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float, int]]:
     embedding = get_embedding(audio_array)
     if embedding is None:
         return []
+    return rank_embedding(embedding)
+
+
+def rank_embedding(embedding: np.ndarray) -> list[tuple[int, str, float, int]]:
+    """rank_speakers for an ALREADY-computed embedding (the enrollment provenance log
+    scores the clip about to be stored without embedding it twice)."""
+    if embedding is None:
+        return []
     rows = db.fetchall(
         "SELECT person_id, encoding FROM biometrics WHERE type = 'voice'"
     )
     if not rows:
         return []
 
-    query = embedding.astype(np.float32)
+    query = np.asarray(embedding, dtype=np.float32)
     query_norm = query / (np.linalg.norm(query) + 1e-10)
 
     per_person: dict[int, list[np.ndarray]] = {}
@@ -271,13 +309,25 @@ def required_ambiguity_margin(ranked: list) -> float:
     return base
 
 
-def _log_scoreboard(scored: list) -> None:
-    # Same "Name#id=score" format tooling/test_voice_id.py read (now one row per person).
-    parts = [f"{nm}#{pid}={sim:.3f}" for pid, nm, sim, _n in scored[:3]]
+def format_scoreboard(scored: list) -> str:
+    """'Name#id=score(nP)' per row, EVERY row — the runner-up gap as a function of
+    voiced seconds is the number the whole margin design hinges on, and the old
+    three-row cut hid the tail (instrumentation 2026-09-02)."""
+    return ", ".join(f"{nm}#{pid}={sim:.3f}({n}p)" for pid, nm, sim, n in scored)
+
+
+def _log_scoreboard(
+    scored: list, *, voiced: Optional[float] = None, buffer: Optional[float] = None,
+) -> None:
+    # Same "Name#id=score" format tooling/test_voice_id.py read (one row per person).
+    dur = ""
+    if voiced is not None or buffer is not None:
+        dur = f" voiced={float(voiced or 0.0):.2f}s buffer={float(buffer or 0.0):.2f}s"
     logger.info(
-        "[speaker_id] scan — threshold=%.3f, candidates: %s",
+        "[speaker_id] scan — threshold=%.3f,%s candidates: %s",
         config.SPEAKER_ID_SIMILARITY_THRESHOLD,
-        ", ".join(parts),
+        dur,
+        format_scoreboard(scored),
     )
 
 
@@ -369,8 +419,20 @@ def comparable_print_count(person_id) -> int:
     return count
 
 
-def enroll_voice(person_id: int, audio_array: np.ndarray) -> bool:
-    """Compute an embedding from audio and store it as a voice biometric for person_id."""
+def enroll_voice(
+    person_id: int,
+    audio_array: np.ndarray,
+    *,
+    source: str = "",
+    transcript: Optional[str] = None,
+) -> bool:
+    """Compute an embedding from audio and store it as a voice biometric for person_id.
+
+    Logs the clip's PROVENANCE before storing it — voiced/buffer seconds, word count,
+    and how the clip scored against every existing print — so a poisoned print can
+    be traced to the turn that made it. Field 2026-08-29 11:21: the introduction
+    capture enrolled a clip as PJ that the scoreboard read as Bret 0.604 / PJ 0.552,
+    with Bret alone in the room; nothing recorded that at the time."""
     embedding = get_embedding(audio_array)
     if embedding is None:
         logger.warning(
@@ -378,6 +440,17 @@ def enroll_voice(person_id: int, audio_array: np.ndarray) -> bool:
             person_id,
         )
         return False
+    try:
+        words = len(str(transcript or "").split()) if transcript else None
+        logger.info(
+            "[speaker_id] enroll provenance person_id=%s source=%s voiced=%.2fs "
+            "buffer=%.2fs words=%s scored_against_existing: %s",
+            person_id, source or "unspecified", voiced_secs(audio_array),
+            buffer_secs(audio_array), "n/a" if words is None else words,
+            format_scoreboard(rank_embedding(embedding)) or "(no prints yet)",
+        )
+    except Exception as exc:
+        logger.debug("[speaker_id] enroll provenance log failed: %s", exc)
     people.add_biometric(person_id, "voice", embedding)
     logger.info("[speaker_id] enrolled voice biometric for person_id=%s", person_id)
     return True

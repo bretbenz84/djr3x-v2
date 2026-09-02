@@ -9730,7 +9730,9 @@ def _safe_enroll_voice(
         )
         return False
     try:
-        enrolled = bool(speaker_id.enroll_voice(person_id, audio_array))
+        enrolled = bool(speaker_id.enroll_voice(
+            person_id, audio_array, source=source, transcript=transcript_text,
+        ))
     except Exception as exc:
         _log.warning("voice enrollment failed for person_id=%s source=%s: %s", person_id, source, exc)
         return False
@@ -14199,9 +14201,95 @@ def _maybe_onboarding_timeout() -> bool:
 
 # Full per-person scoreboard of the most recent scan: [(pid, name, score, rows)].
 _last_scan_ranked: list = []
+# Durations of the buffer the last scan embedded — voiced (speech frames) and wall
+# length — for the [identity_decision] line. The embedder pools over the whole
+# buffer, pre-roll and silence timeout included, so both numbers matter.
+_last_scan_secs: dict = {"buffer": 0.0, "voiced": 0.0}
 
 # Final attribution of the last accepted human turn: who "has the floor".
 _last_speaker_turn: Optional[dict] = None
+
+
+def _identity_decision_payload(
+    *,
+    turn_id: Optional[int],
+    text: str,
+    text_input: bool,
+    transcript_trusted: bool,
+    scan_secs: dict,
+    scoreboard: list,
+    raw_best_id: Optional[int],
+    raw_best_name: Optional[str],
+    speaker_score: float,
+    speaker_margin: float,
+    required_margin: float,
+    accept_tier: Optional[str],
+    decision_outcome: Optional[str],
+    identity_resolution: Optional[str],
+    visible_known_ids: list,
+    visual_latch: Optional[dict],
+    mouth_still: bool,
+    engaged: Optional[dict],
+    continuity_anchor_age: Optional[float],
+    previous_speaker: Optional[dict],
+    person_id: Optional[int],
+    person_name: Optional[str],
+    anonymous_label: Optional[str],
+    anonymous_score: Optional[float],
+    off_camera_unknown: bool,
+) -> dict:
+    """One record per audio turn with EVERYTHING the identity decision saw and did.
+    Pure (no I/O) so it is testable; the caller json-dumps it on one INFO line
+    tagged [identity_decision]. Written 2026-09-02 for measurement before any
+    behavioural change to speaker ID: the runner-up gap vs voiced seconds, whether
+    a face was articulating, and who spoke last were never recorded per decision."""
+    now = time.monotonic()
+    words = len(re.findall(r"[A-Za-z0-9']+", str(text or "")))
+    latch = None
+    if visual_latch:
+        latch = {
+            "person_id": _safe_int(visual_latch.get("person_db_id")),
+            "confidence": round(float(visual_latch.get("confidence") or 0.0), 3),
+            "age_secs": round(max(0.0, time.time() - float(visual_latch.get("at") or 0.0)), 2),
+        }
+    prev = None
+    if previous_speaker:
+        at = previous_speaker.get("at")
+        prev = {
+            "person_id": previous_speaker.get("person_id"),
+            "label": previous_speaker.get("label") or previous_speaker.get("person_name"),
+            "age_secs": (None if at is None else round(max(0.0, now - float(at)), 1)),
+        }
+    return {
+        "turn_id": turn_id,
+        "text_input": bool(text_input),
+        "trusted": bool(transcript_trusted),
+        "words": words,
+        "buffer_secs": round(float((scan_secs or {}).get("buffer") or 0.0), 2),
+        "voiced_secs": round(float((scan_secs or {}).get("voiced") or 0.0), 2),
+        "scoreboard": [
+            {"person_id": _safe_int(pid), "name": nm, "score": round(float(sim), 3), "prints": int(n)}
+            for pid, nm, sim, n in (scoreboard or [])
+        ],
+        "raw_best": {"person_id": _safe_int(raw_best_id), "name": raw_best_name,
+                     "score": round(float(speaker_score or 0.0), 3)},
+        "margin": round(float(speaker_margin or 0.0), 3),
+        "required_margin": round(float(required_margin or 0.0), 3),
+        "accept_tier": accept_tier,
+        "decision": decision_outcome,
+        "identity_resolution": identity_resolution,
+        "visible_known_ids": [int(x) for x in (visible_known_ids or [])],
+        "visual_latch": latch,
+        "mouth_still": bool(mouth_still),
+        "engaged": ({"person_id": _safe_int(engaged.get("person_id")), "name": engaged.get("name")}
+                    if engaged else None),
+        "continuity_anchor_age_secs": (None if continuity_anchor_age is None
+                                       else round(float(continuity_anchor_age), 1)),
+        "previous_speaker": prev,
+        "final": {"person_id": _safe_int(person_id), "name": person_name,
+                  "label": anonymous_label, "off_camera_unknown": bool(off_camera_unknown)},
+        "anonymous_match_score": (None if anonymous_score is None else round(float(anonymous_score), 3)),
+    }
 
 
 def _note_last_speaker_turn(
@@ -14302,6 +14390,11 @@ def _process_audio(
     """
     global _last_scan_ranked
     _last_scan_ranked = []
+    try:
+        _last_scan_secs["buffer"] = speaker_id.buffer_secs(audio_array)
+        _last_scan_secs["voiced"] = speaker_id.voiced_secs(audio_array)
+    except Exception:
+        _last_scan_secs["buffer"] = _last_scan_secs["voiced"] = 0.0
     default_margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07))
     text_box: list[str] = [""]
     # [person_id, name, score, margin, required_margin]
@@ -14319,7 +14412,9 @@ def _process_audio(
         _last_scan_ranked = list(ranked or [])
         if not ranked:
             return
-        speaker_id._log_scoreboard(ranked)
+        speaker_id._log_scoreboard(
+            ranked, voiced=_last_scan_secs["voiced"], buffer=_last_scan_secs["buffer"],
+        )
         pid, name, score, _n = ranked[0]
         second = ranked[1][2] if len(ranked) > 1 else -1.0
         speaker_box[0] = pid
@@ -26889,6 +26984,13 @@ def _handle_speech_segment(
         person_name: Optional[str] = None
         sticky_accepted = False
         identity_resolution_override: Optional[str] = None
+        # Instrumentation (2026-09-02): which accept tier fired, what the
+        # voice-vs-face decision returned, and what the camera latch held — for
+        # the per-turn [identity_decision] line. Measurement before behaviour.
+        identity_accept_tier: Optional[str] = None
+        identity_decision_outcome: Optional[str] = None
+        identity_visual_pid: Optional[int] = None
+        identity_mouth_still = False
         if (
             raw_best_id is not None
             and speaker_score >= hard_threshold
@@ -26899,6 +27001,7 @@ def _handle_speech_segment(
             # the next different person before trusting voice alone.
             person_id = raw_best_id
             person_name = raw_best_name
+            identity_accept_tier = "hard"
         elif (
             raw_best_id is not None
             and speaker_score >= known_floor
@@ -26911,6 +27014,7 @@ def _handle_speech_segment(
             # "what can you tell about me?" identify Bret without him saying his name.
             person_id = raw_best_id
             person_name = raw_best_name
+            identity_accept_tier = "known_floor"
             _log.info(
                 "[interaction] voice known-speaker soft-accept — person_id=%s name=%r "
                 "score=%.3f margin=%.3f (floor=%.2f, margin>=%.2f)",
@@ -26940,6 +27044,7 @@ def _handle_speech_segment(
             person_id = raw_best_id
             person_name = raw_best_name or _recent_engaged.get("name")
             sticky_accepted = True
+            identity_accept_tier = "sticky"
             _log.info(
                 "[interaction] voice soft-accept under session stickiness — "
                 "person_id=%s name=%r score=%.3f (hard=%.2f, soft=%.2f)",
@@ -26958,6 +27063,7 @@ def _handle_speech_segment(
             person_id = raw_best_id
             person_name = raw_best_name
             identity_resolution_override = "game_roster_ambiguity"
+            identity_accept_tier = "roster"
             # Tie-break INSIDE the ambiguity band only: if the player whose turn
             # it is sits within the margin of the top candidate, the declared
             # turn order is a better prior than a sub-margin acoustic edge —
@@ -27178,6 +27284,8 @@ def _handle_speech_segment(
                 )
             except Exception as exc:
                 _log.debug("active-speaker recent lookup (single-visible) failed: %s", exc)
+            identity_visual_pid = _safe_int(_voice_dec_visual_pid)
+            identity_mouth_still = bool(_voice_dec_mouth_still)
             # Voiceless-face signature: the visible person has no voice print
             # under the active embedder, so a voice match pointing elsewhere is
             # expected for THEIR OWN speech (see voiceless_face_wins).
@@ -27221,6 +27329,7 @@ def _handle_speech_segment(
                 raw_best_recently_visible=_known_person_visible_recently(person_id),
                 roster_ids=_active_game_roster_ids(),
             )
+            identity_decision_outcome = decision
             if decision == "voice_agrees":
                 _note_confident_voice(person_id, speaker_score)
                 _log.info(
@@ -27836,6 +27945,49 @@ def _handle_speech_segment(
                 "[interaction] speech segment — speaker=%r person_id=%s text=%r",
                 speaker_label, person_id, text,
             )
+            # [identity_decision]: the full record of this turn's speaker decision
+            # (measurement first — see _identity_decision_payload). Read the
+            # previous speaker BEFORE _note_last_speaker_turn overwrites it.
+            try:
+                _latch = None
+                try:
+                    from vision import active_speaker as _asp_log
+                    _latch = _asp_log.recent_visual_speaker()
+                except Exception:
+                    _latch = None
+                _anchor = _last_confident_voice_at.get(_safe_int(raw_best_id)) \
+                    if _safe_int(raw_best_id) is not None else None
+                _payload = _identity_decision_payload(
+                    turn_id=getattr(character_trace, "turn_id", None),
+                    text=str(text),
+                    text_input=bool(text_input),
+                    transcript_trusted=bool(transcript_trusted),
+                    scan_secs=dict(_last_scan_secs) if not text_input else {},
+                    scoreboard=list(_last_scan_ranked or []),
+                    raw_best_id=raw_best_id,
+                    raw_best_name=raw_best_name,
+                    speaker_score=speaker_score,
+                    speaker_margin=speaker_margin,
+                    required_margin=required_margin,
+                    accept_tier=identity_accept_tier,
+                    decision_outcome=identity_decision_outcome,
+                    identity_resolution=identity_resolution_override,
+                    visible_known_ids=list(visible_known_by_id.keys()),
+                    visual_latch=_latch,
+                    mouth_still=identity_mouth_still,
+                    engaged=recent_engagement,
+                    continuity_anchor_age=(None if _anchor is None
+                                           else time.monotonic() - float(_anchor)),
+                    previous_speaker=_last_speaker_turn,
+                    person_id=person_id,
+                    person_name=person_name,
+                    anonymous_label=anonymous_speaker_label,
+                    anonymous_score=anonymous_speaker_match_score,
+                    off_camera_unknown=off_camera_unknown,
+                )
+                _log.info("[identity_decision] %s", json.dumps(_payload, ensure_ascii=False, default=str))
+            except Exception as exc:
+                _log.debug("[identity_decision] log failed: %s", exc)
             _note_session_person_turn(person_id)
             _note_last_speaker_turn(person_id, person_name, anonymous_speaker_label)
             # Anchor for the lean-impulse flow gate: REAL accepted speech only. The

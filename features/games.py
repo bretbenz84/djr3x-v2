@@ -2944,7 +2944,7 @@ def _jeopardy_handle_voice_enroll(
             return (_jeopardy_voice_check_prompt(player, prefix="I could not store that one. "), False)
         try:
             from audio import speaker_id
-            ok = speaker_id.enroll_voice(int(pid), audio_array)
+            ok = speaker_id.enroll_voice(int(pid), audio_array, source="game_roster")
         except Exception as exc:
             _log.debug("[jeopardy] voice enrollment failed for %s: %s", name, exc)
             ok = False
