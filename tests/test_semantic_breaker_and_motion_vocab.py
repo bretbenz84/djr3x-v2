@@ -1,5 +1,6 @@
 """Semantic-recall breaker observability, and one missing motion vocabulary token."""
 
+import time
 import unittest
 from unittest import mock
 
@@ -10,37 +11,125 @@ from memory import semantic
 
 
 class SemanticBreakerTests(unittest.TestCase):
-    """The 2026-08-20 run logged ONE warning at 20:09:08 and then 24 minutes of
-    silence, so it cannot answer whether semantic recall was live or degraded
-    across its 78 conversational turns. _warned latched for the life of the
-    process: no recovery line, and no re-trip line either."""
+    """Reply-path contract (rewritten 2026-09-01). The robot logs from 08-21 through
+    09-01 showed the old breaker — three 2.0s inline timeouts to trip, an inline
+    retry every 60s — stalling llm_first_sentence by ~6s on every turn that came a
+    minute after the last trip. Now ONE inline failure opens it, inline calls never
+    block while it is open, and recovery is a background probe that must be FAST."""
 
     def setUp(self):
-        semantic._fail_count = 0
-        semantic._disabled_until = 0.0
-        semantic._warned = False
-        semantic._last_error = ""
-        semantic._cand_cache.clear()
-        semantic._topic_cache = ("", None)
-        self.addCleanup(semantic._cand_cache.clear)
+        semantic.reset_cache()
+        self.addCleanup(semantic.reset_cache)
+        # Keep un-asserted breaker warnings out of the test output; patched
+        # loggers (mock.patch.object on .warning/.info) are unaffected by level.
+        import logging
+        level = semantic._log.level
+        semantic._log.setLevel(logging.CRITICAL)
+        self.addCleanup(semantic._log.setLevel, level)
 
     def _trip(self):
         for _ in range(semantic._FAIL_THRESHOLD):
             semantic._note_failure()
 
-    def test_recovery_is_logged_and_rearms_the_warning(self):
+    def test_one_inline_failure_opens_the_breaker(self):
+        self.assertEqual(semantic._FAIL_THRESHOLD, 1)
         with mock.patch.object(semantic._log, "warning") as warn:
-            self._trip()
+            semantic._note_failure()
             self.assertEqual(warn.call_count, 1)
-        with mock.patch.object(semantic._log, "info") as info:
-            semantic._note_success()
-            info.assert_called_once()
-            self.assertIn("recovered", info.call_args[0][0])
+        self.assertTrue(semantic.is_open())
+        self.assertFalse(semantic._healthy())
+
+    def test_inline_embed_never_touches_the_endpoint_while_open(self):
+        self._trip()
+        with mock.patch.object(semantic, "_request_embedding",
+                               side_effect=AssertionError("inline retry")) as req:
+            self.assertIsNone(semantic._embed("Max is a dog"))
+            req.assert_not_called()
+
+    def test_inline_timeout_opens_after_a_single_miss(self):
+        with mock.patch.object(semantic, "_request_embedding",
+                               side_effect=TimeoutError("read timed out")):
+            self.assertIsNone(semantic._embed("Max is a dog"))
+        self.assertTrue(semantic.is_open())
+        self.assertIn("read timed out", semantic._last_error)
+
+    def test_expired_cooldown_launches_a_probe_but_stays_off_inline(self):
+        self._trip()
+        semantic._disabled_until = 0.0     # cooldown over
+        with mock.patch.object(semantic, "_launch_recovery_probe",
+                               return_value=True) as launch:
+            self.assertFalse(semantic._healthy(),
+                             "an expired cooldown must not re-enable inline calls")
+            launch.assert_called_once()
+
+    def test_unexpired_cooldown_launches_nothing(self):
+        self._trip()
+        with mock.patch.object(semantic, "_launch_recovery_probe") as launch:
+            self.assertFalse(semantic._healthy())
+            launch.assert_not_called()
+
+    def test_fast_probe_closes_the_breaker_and_logs_recovery(self):
+        self._trip()
+        vec = np.ones(4, dtype=np.float32)
+        with mock.patch.object(semantic, "_request_embedding", return_value=vec), \
+             mock.patch.object(semantic._log, "info") as info:
+            self.assertTrue(semantic._recovery_probe())
+        self.assertFalse(semantic.is_open())
+        self.assertTrue(semantic._healthy())
+        self.assertTrue(any("recovered" in c[0][0] for c in info.call_args_list))
         # A LATER outage must warn again — that is the edge the old latch ate.
         with mock.patch.object(semantic._log, "warning") as warn:
             self._trip()
-            self.assertEqual(warn.call_count, 1,
-                             "a re-trip after recovery was silent")
+            self.assertEqual(warn.call_count, 1, "a re-trip after recovery was silent")
+
+    def test_failed_probe_reopens_with_a_longer_cooldown(self):
+        self._trip()
+        first_cooldown = semantic._cooldown_secs
+        with mock.patch.object(semantic, "_request_embedding",
+                               side_effect=ConnectionError("refused")):
+            self.assertFalse(semantic._recovery_probe())
+        self.assertTrue(semantic.is_open())
+        self.assertGreater(semantic._cooldown_secs, first_cooldown,
+                           "consecutive failures must back off")
+        self.assertLessEqual(semantic._cooldown_secs, semantic._max_cooldown())
+
+    def test_slow_probe_keeps_the_breaker_open(self):
+        self._trip()
+        vec = np.ones(4, dtype=np.float32)
+
+        def _slow(*_a, **_k):
+            time.sleep(0.02)
+            return vec
+
+        with mock.patch.object(semantic, "_request_embedding", side_effect=_slow), \
+             mock.patch.object(semantic, "_probe_budget", return_value=0.001):
+            self.assertFalse(semantic._recovery_probe())
+        self.assertTrue(semantic.is_open())
+        self.assertIn("probe took", semantic._last_error)
+
+    def test_only_one_probe_in_flight(self):
+        self._trip()
+        with mock.patch.object(semantic.threading, "Thread") as thread:
+            thread.return_value.start = mock.Mock()
+            self.assertTrue(semantic._launch_recovery_probe())
+            self.assertFalse(semantic._launch_recovery_probe())
+            self.assertEqual(thread.call_count, 1)
+
+    def test_warmup_failure_opens_the_breaker_before_the_first_turn(self):
+        with mock.patch.object(semantic, "_cfg",
+                               side_effect=lambda n, d: True if n == "MEMORY_SEMANTIC_RECALL_ENABLED" else d), \
+             mock.patch.object(semantic, "_request_embedding",
+                               side_effect=ConnectionError("refused")):
+            self.assertFalse(semantic.warmup())
+        self.assertTrue(semantic.is_open())
+
+    def test_warmup_success_leaves_it_closed(self):
+        vec = np.ones(4, dtype=np.float32)
+        with mock.patch.object(semantic, "_cfg",
+                               side_effect=lambda n, d: True if n == "MEMORY_SEMANTIC_RECALL_ENABLED" else d), \
+             mock.patch.object(semantic, "_request_embedding", return_value=vec):
+            self.assertTrue(semantic.warmup())
+        self.assertFalse(semantic.is_open())
 
     def test_success_without_a_trip_is_quiet(self):
         with mock.patch.object(semantic._log, "info") as info:
@@ -54,6 +143,24 @@ class SemanticBreakerTests(unittest.TestCase):
         rendered = warn.call_args[0][0] % warn.call_args[0][1:]
         self.assertIn("Connection refused", rendered,
                       "the warning must name the cause, not guess at it")
+
+    def test_keep_alive_rides_on_every_request(self):
+        seen = {}
+
+        class _Resp:
+            content = b"x"
+            def raise_for_status(self): pass
+            def json(self): return {"embedding": [1.0, 0.0]}
+
+        def _post(url, json=None, timeout=None):
+            seen.update(json or {})
+            seen["timeout"] = timeout
+            return _Resp()
+
+        with mock.patch.dict("sys.modules", {"requests": mock.Mock(post=_post)}):
+            semantic._request_embedding("hi")
+        self.assertIn("keep_alive", seen)
+        self.assertLessEqual(float(seen["timeout"]), semantic._inline_timeout())
 
 
 class NegativeCachingTests(unittest.TestCase):

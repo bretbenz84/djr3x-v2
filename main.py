@@ -1543,6 +1543,25 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.warning("Local LLM preload failed; continuing without local sidecar model.")
     _preload_breath()
 
+    # Semantic-recall embed model: pin it in Ollama and measure a warm round trip
+    # OFF the boot path and off the reply path. If the endpoint is missing or slow
+    # on this machine the breaker opens here, so the first turn never stalls on
+    # discovering it (memory/semantic.py module doc — the 6s-per-turn reply stall
+    # of 2026-08-21..09-01).
+    if bool(getattr(config, "MEMORY_SEMANTIC_RECALL_ENABLED", False)) and bool(
+        getattr(config, "MEMORY_SEMANTIC_WARMUP_ON_STARTUP", True)
+    ):
+        def _warm_semantic_embed() -> None:
+            try:
+                from memory import semantic
+                semantic.warmup()
+            except Exception as exc:
+                logger.debug("semantic embed warmup thread failed: %s", exc)
+
+        threading.Thread(
+            target=_warm_semantic_embed, daemon=True, name="semantic-embed-warmup"
+        ).start()
+
     # ── Local Qwen3-TTS preload ──────────────────────────────────────────────
     # Preload the on-device voice when it's in use this run: --local-tts mode, or
     # LOCAL_TTS_WARM_ON_BOOT (so the first fallback line is instant). Otherwise the

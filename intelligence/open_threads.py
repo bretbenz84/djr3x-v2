@@ -128,6 +128,74 @@ def _thread_covers_resolved_plan(thread: str, resolved: list) -> bool:
     return any(toks <= thread_tokens for toks in resolved)
 
 
+# Words a diary thread uses to FRAME its subject ("whether the circus happened",
+# "how the dentist appointment went") — not the subject itself. Stripped before the
+# session-awareness check below so the match is on what the thread is ABOUT.
+_THREAD_FRAME_WORDS = (
+    "whether if how when what did does ever still yet actually really happened "
+    "happen happens went goes ended end turned turn out up okay ok well later "
+    "next again after before around eventually finally"
+)
+_thread_frame_tokens: Optional[frozenset] = None
+
+
+def _frame_tokens() -> frozenset:
+    global _thread_frame_tokens
+    if _thread_frame_tokens is None:
+        try:
+            from memory import dedup
+            _thread_frame_tokens = frozenset(dedup._tokens(_THREAD_FRAME_WORDS))
+        except Exception:
+            _thread_frame_tokens = frozenset()
+    return _thread_frame_tokens
+
+
+def _session_transcript_tokens() -> frozenset:
+    """Content tokens of everything said THIS session (both sides), for the
+    session-awareness guard. Empty when the transcript is unavailable."""
+    try:
+        from memory import conversations as conv_memory
+        from memory import dedup
+        toks: set = set()
+        for turn in conv_memory.get_session_transcript() or []:
+            toks.update(dedup._token_set(str((turn or {}).get("text") or "")))
+        return frozenset(toks)
+    except Exception:
+        return frozenset()
+
+
+def _thread_discussed_this_session(thread: str, session_tokens) -> bool:
+    """True when the thread's SUBJECT already came up in this session's transcript.
+
+    Field 2026-09-01 23:05:13: the reply model had already asked "did the circus
+    actually happen?" at 23:01:49 (the previous session's recap sits in its prompt)
+    and Bret had answered at length — then the lull lane, which only knows about
+    threads IT spent, asked "The circus came up the other day — did you end up
+    enjoying it?" and Bret had to say "we just talked about that". Only the lull
+    lane marks threads asked; the reply model raising the same subject from the
+    recap is invisible to it. So a thread whose subject the room has already
+    covered this session is held back (it stays unspent — a later session can still
+    raise it if the diary never closed it).
+
+    Match rule: at least half of the thread's content tokens (frame words like
+    "whether"/"happened" stripped; minimum one) appear in the session transcript.
+    A one-word core ("circus") matches on that word; a two-word core ("dentist
+    appointment") needs one of them; a false hold only delays a bring-up, while a
+    false miss is the duplicate question the owner complained about."""
+    if not session_tokens:
+        return False
+    try:
+        from memory import dedup
+        core = {t for t in dedup.event_content_tokens(thread) if t not in _frame_tokens()}
+    except Exception:
+        return False
+    if not core:
+        return False
+    hit = len(core & set(session_tokens))
+    need = max(1, (len(core) + 1) // 2)
+    return hit >= need
+
+
 def pending_for_person(person_id: int) -> list:
     """Unasked open threads for this person, freshest-first:
     [{"episode_id", "thread", "age_days"}]. Empty when none qualify."""
@@ -136,6 +204,7 @@ def pending_for_person(person_id: int) -> list:
     min_age_d = float(getattr(config, "OPEN_THREAD_MIN_AGE_HOURS", 6.0)) / 24.0
     max_age_d = float(getattr(config, "OPEN_THREAD_MAX_AGE_DAYS", 21.0))
     resolved = _resolved_event_token_sets(person_id)
+    session_tokens = _session_transcript_tokens()
     try:
         rows = rex_db.fetchall(
             "SELECT id, created_at, detail FROM rex_episodes "
@@ -175,6 +244,13 @@ def pending_for_person(person_id: int) -> list:
                 _log.info(
                     "[open_threads] dropping stored thread %r — its plan was "
                     "already resolved by a follow-up", t,
+                )
+                continue
+            if _thread_discussed_this_session(t, session_tokens):
+                # Held, not spent: the thread stays unasked for a later session.
+                _log.info(
+                    "[open_threads] holding thread %r — its subject already came "
+                    "up this session", t,
                 )
                 continue
             out.append({"episode_id": int(row["id"]), "thread": t, "age_days": age})

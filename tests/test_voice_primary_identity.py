@@ -541,6 +541,92 @@ class VisualCorroborationTest(unittest.TestCase):
         self.assertIsNone(self._decide(raw_best_id=None, visual_speaker_pid=None))
 
 
+class VoiceTieFaceWinsTest(unittest.TestCase):
+    """Field 2026-09-01 23:05:30: Bret alone, face locked (db:1) all session, said
+    "Yes, we just talked about that." — PJ 0.748 vs Bret 0.733 (margin 0.016 < 0.07;
+    PJ and Bret are near acoustic twins). The margin guard rejected the match
+    (person_id=None), the decision fell through to off_screen_unknown, and Rex asked
+    the owner "mystery voice — who are you, exactly?" mid-conversation. When the
+    runner-up the guard tripped on IS the one visible known face, the camera breaks
+    the tie."""
+
+    def _decide(self, **kw):
+        base = dict(
+            person_id=None,
+            raw_best_id=7,            # PJ's print won the scoreboard...
+            speaker_score=0.748,
+            ws_pid=1,                 # ...but Bret is the face on camera
+            single_visible=True,
+            engaged_is_visible=True,
+            unknown_visible=False,
+            other_known_recently=False,
+            ws_in_voice_tie=True,     # ...and Bret's print sat 0.016 behind PJ's
+        )
+        base.update(kw)
+        return I._voice_primary_face_decision(**base)
+
+    def test_field_case_face_breaks_the_tie(self):
+        self.assertEqual(self._decide(), "tie_face_wins")
+
+    def test_without_the_tie_the_voice_still_points_away(self):
+        self.assertEqual(self._decide(ws_in_voice_tie=False), "off_screen_unknown")
+
+    def test_engagement_is_not_required(self):
+        # First exchange of a session: no engagement yet, face + tie is enough.
+        self.assertEqual(self._decide(engaged_is_visible=False), "tie_face_wins")
+
+    def test_an_unknown_face_keeps_the_intro_path(self):
+        self.assertEqual(self._decide(unknown_visible=True), "unknown_intro_path")
+
+    def test_a_second_known_face_recently_blocks_it(self):
+        self.assertEqual(self._decide(other_known_recently=True), "off_screen_unknown")
+
+    def test_camera_pointing_at_someone_else_blocks_it(self):
+        self.assertEqual(self._decide(visual_speaker_pid=7), "off_screen_unknown")
+
+    def test_camera_confirming_the_face_is_fine(self):
+        self.assertEqual(self._decide(visual_speaker_pid=1), "tie_face_wins")
+
+    def test_a_still_mouth_blocks_it(self):
+        self.assertEqual(self._decide(visual_mouth_still=True), "off_screen_unknown")
+
+    def test_a_tie_between_two_rejects_is_noise(self):
+        thr = float(getattr(config, "SPEAKER_ID_SIMILARITY_THRESHOLD", 0.50))
+        self.assertEqual(self._decide(speaker_score=thr - 0.05), "off_screen_unknown")
+
+    def test_an_accepted_voice_is_untouched(self):
+        # person_id set = the guard PASSED; the tie flag is meaningless there and
+        # the existing voice-over-face tiers decide.
+        self.assertEqual(
+            self._decide(person_id=7, speaker_score=0.80), "voice_over_face")
+
+
+class VisibleFaceInVoiceTieTest(unittest.TestCase):
+    """The scoreboard helper behind ws_in_voice_tie, fed by _process_audio's last scan."""
+
+    def setUp(self):
+        self._saved = list(I._last_scan_ranked or [])
+        self.addCleanup(lambda: setattr(I, "_last_scan_ranked", self._saved))
+
+    def test_field_scoreboard_puts_the_visible_face_in_the_band(self):
+        # (pid, name, score, print_count) — 23:05:23 scan, mature prints on both.
+        I._last_scan_ranked = [(7, "PJ Thomas", 0.748, 6), (1, "Bret Benziger", 0.733, 6),
+                               (8, "Jade Smith", 0.383, 3)]
+        with mock.patch.object(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07, create=True):
+            self.assertTrue(I._visible_face_in_voice_tie(1))
+            self.assertFalse(I._visible_face_in_voice_tie(8), "0.383 is not a tie")
+            self.assertFalse(I._visible_face_in_voice_tie(None))
+
+    def test_a_clear_winner_is_not_a_tie(self):
+        I._last_scan_ranked = [(7, "PJ Thomas", 0.80, 6), (1, "Bret Benziger", 0.60, 6)]
+        with mock.patch.object(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07, create=True):
+            self.assertFalse(I._visible_face_in_voice_tie(1))
+
+    def test_empty_scan_is_never_a_tie(self):
+        I._last_scan_ranked = []
+        self.assertFalse(I._visible_face_in_voice_tie(1))
+
+
 if __name__ == "__main__":
     unittest.main()
 

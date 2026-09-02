@@ -290,7 +290,10 @@ def _qwen_transcribe(
     # MLX_LOCK: same shared-Metal-runtime rule as mlx_whisper below — concurrent
     # evaluation with the local TTS engine is a fatal native crash.
     context = _asr_context_prompt() if use_context else None
+    wait_started = time.monotonic()
     with MLX_LOCK:
+        lock_wait = time.monotonic() - wait_started
+        decode_started = time.monotonic()
         for token, logprobs in model.stream_generate(
             audio_array,
             language=str(getattr(config, "WHISPER_LANGUAGE", "en") or "en"),
@@ -305,6 +308,24 @@ def _qwen_transcribe(
                 pass
         import mlx.core as mx
         mx.synchronize()
+        decode_secs = time.monotonic() - decode_started
+    # Slow-decode diagnostic: separate "sat behind another MLX_LOCK holder" from
+    # "the decode itself crawled" (memory pressure, GPU contention). Field
+    # 2026-09-01 23:05: a 3s utterance took 6.9s here while speaker-ID on the
+    # same clip finished instantly, and nothing at INFO could say which it was.
+    try:
+        slow_after = float(getattr(config, "ASR_SLOW_DECODE_LOG_SECS", 1.5) or 0.0)
+        if slow_after > 0.0 and (lock_wait + decode_secs) >= slow_after:
+            audio_secs = len(audio_array) / float(
+                getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
+            logger.info(
+                "[transcription] slow decode — waited %.2fs for MLX_LOCK, decoded "
+                "%.1fs of audio in %.2fs (%d tokens, context=%s)",
+                lock_wait, audio_secs, decode_secs, len(tokens),
+                "on" if context else "off",
+            )
+    except Exception:
+        pass
     text = model._tokenizer.decode(tokens).strip()
     return text, (sum(logps) / len(logps)) if logps else None
 

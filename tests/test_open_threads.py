@@ -236,6 +236,62 @@ class ResolvedPlanGuardTest(unittest.TestCase):
         self.assertIn("the little free library Bret is building", pending)
 
 
+class SessionAwarenessTest(OpenThreadsTest):
+    """Field 2026-09-01 23:05:13: the reply model asked about the circus at 23:01:49
+    (previous session's recap in its prompt), Bret answered at length, and the lull
+    lane — which only knows about threads IT spent — asked "The circus came up the
+    other day — did you end up enjoying it?" four minutes later. A thread whose
+    subject already came up this session is HELD (not spent)."""
+
+    def _pending_with_session(self, turns):
+        from unittest import mock
+        from memory import dedup
+        toks = set()
+        for t in turns:
+            toks.update(dedup._token_set(t))
+        with mock.patch.object(self.ot, "_session_transcript_tokens",
+                               return_value=frozenset(toks)):
+            return self.ot.pending_for_person(1)
+
+    def test_field_case_circus_thread_is_held(self):
+        self._episode(age_hours=48, threads=["whether the circus happened"])
+        got = self._pending_with_session([
+            "So, did the circus actually happen, or did reality cancel the act?",
+            "Oh, the circus was fantastic. We had a lot of fun at the circus.",
+        ])
+        self.assertEqual(got, [])
+
+    def test_held_threads_are_not_spent(self):
+        self._episode(age_hours=48, threads=["whether the circus happened"])
+        self._pending_with_session(["the circus was fantastic"])
+        # Next session, nothing about the circus said yet → it is still pending.
+        got = self._pending_with_session(["how are you doing today"])
+        self.assertEqual([g["thread"] for g in got], ["whether the circus happened"])
+
+    def test_unrelated_session_leaves_the_thread_pending(self):
+        self._episode(age_hours=48, threads=["whether the dentist appointment happened"])
+        got = self._pending_with_session([
+            "I am going to Atlanta, Georgia with my father.",
+            "We're not leaving until the eighth.",
+        ])
+        self.assertEqual(len(got), 1)
+
+    def test_frame_words_alone_never_match(self):
+        # "happened"/"whether"/"how"/"went" are how a thread is PHRASED, not its subject.
+        self._episode(age_hours=48, threads=["whether the motor swap happened"])
+        got = self._pending_with_session(["what happened yesterday, how did it go"])
+        self.assertEqual(len(got), 1)
+
+    def test_half_of_a_multi_word_core_is_enough(self):
+        self._episode(age_hours=48, threads=["how the Huntsville space center visit went"])
+        got = self._pending_with_session(["then we're going to the Huntsville Space Center"])
+        self.assertEqual(got, [])
+
+    def test_empty_session_transcript_holds_nothing(self):
+        self._episode(age_hours=48, threads=["whether the circus happened"])
+        self.assertEqual(len(self._pending_with_session([])), 1)
+
+
 class GameMechanicsReadFilterTest(OpenThreadsTest):
     """Threads stored BEFORE the game-mechanics guard shipped must die at read
     time too (field 2026-08-26: episode 902 held "whether T'Joy's points were

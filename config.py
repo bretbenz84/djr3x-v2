@@ -1525,25 +1525,48 @@ OFFLINE_PROBE_TIMEOUT_SECS = 1.2     # per-endpoint TCP connect timeout
 OFFLINE_PROBE_MIN_INTERVAL_SECS = 5.0  # failure-driven probes rate limit
 OFFLINE_RECHECK_SECS = 20.0          # recovery poll interval while offline
 
-# ── Semantic recall (embedding relevance) — OPT-IN, default OFF ───────────────────
+# ── Semantic recall (embedding relevance) ─────────────────────────────────────────
 # When on, the unified retrieval layer scores topic relevance by EMBEDDING cosine
 # (meaning) instead of stemmed keyword overlap — so an "ocean" topic surfaces a "sailing"
 # interest even with no shared word. Pluggable backend (memory/semantic.py) using the
-# local Ollama embeddings endpoint. DEFAULT OFF because it needs an embed model pulled
-# (`ollama pull nomic-embed-text`) and adds a per-turn embedding call; it degrades
-# gracefully to keyword overlap whenever the model/endpoint is unavailable, so enabling
-# it can never make recall WORSE than keyword.
+# local Ollama embeddings endpoint. It needs an embed model pulled
+# (`ollama pull nomic-embed-text`) and adds a per-turn embedding call ON THE REPLY
+# PATH; it degrades to keyword overlap whenever the model/endpoint is unavailable, so
+# enabling it can never make recall WORSE than keyword.
 # ENABLED 2026-07-06: latency verified (~20ms/turn warm, 0ms cached; "sailing"
 # scores 0.65/3 on an ocean topic where keyword scored 0). setup_assets pulls the
-# embed model alongside the qwen sidecar; if it's missing on a machine, recall
-# just stays keyword-grade until setup runs (circuit breaker, no per-turn cost).
+# embed model alongside the qwen sidecar.
+# BREAKER REWORK 2026-09-01: on the robot Mac the endpoint never answered inside the
+# old 2.0s inline timeout during a live session, and the old breaker (3 failures to
+# trip, inline retry every 60s) stalled the reply by 6s on every turn that came more
+# than a minute after the last trip (llm_first_sentence 6.7-7.3s vs ~1s; 4 of 12
+# turns on 2026-09-01, 6 of 11 on 08-29 — the "5-8 second replies"). One inline
+# failure now opens the breaker, recovery is a BACKGROUND probe (never an inline
+# retry) with a doubling cooldown, and main.py warms/pins the model at boot so a
+# slow endpoint is discovered before the first turn, not during it.
 MEMORY_SEMANTIC_RECALL_ENABLED = _env_bool("MEMORY_SEMANTIC_RECALL_ENABLED", True)
 MEMORY_SEMANTIC_EMBED_MODEL = "nomic-embed-text"
 # Cosine floor: below this the topic/candidate are treated as unrelated (relevance ~0).
 # These embed models put unrelated text around 0.3–0.5, so the floor keeps the signal
 # discriminative instead of giving everything a baseline boost.
 MEMORY_SEMANTIC_FLOOR = 0.55
-MEMORY_SEMANTIC_EMBED_TIMEOUT_SECS = 2.0
+# Inline (reply-path) round-trip budget. A warm nomic-embed-text call is ~20ms; if it
+# cannot finish in this long the machine is too loaded for inline embedding and the
+# breaker opens after ONE miss — this number is the worst case a single turn can lose.
+MEMORY_SEMANTIC_EMBED_TIMEOUT_SECS = 1.0
+# Pin the embed model in Ollama (rides on every request, like OLLAMA_KEEP_ALIVE for
+# the sidecar LLM) so it is never reloaded under session load. None → Ollama default.
+MEMORY_SEMANTIC_EMBED_KEEP_ALIVE = -1
+# Background recovery: first cooldown after a trip, doubling per consecutive failed
+# probe up to the max. The probe must round-trip within PROBE_MAX_SECS (well inside
+# the inline budget) to re-enable inline calls — a barely-alive endpoint stays off.
+MEMORY_SEMANTIC_BREAKER_COOLDOWN_SECS = 60.0
+MEMORY_SEMANTIC_BREAKER_COOLDOWN_MAX_SECS = 600.0
+MEMORY_SEMANTIC_PROBE_MAX_SECS = 0.4
+# Boot-time warm-up (background thread): pin the model, measure cold/warm trips, open
+# the breaker up front if warm is slower than the probe budget.
+MEMORY_SEMANTIC_WARMUP_ON_STARTUP = True
+MEMORY_SEMANTIC_WARMUP_TIMEOUT_SECS = 30.0
 # In-process candidate-embedding cache size (texts are stable, so this warms once).
 MEMORY_SEMANTIC_CACHE_SIZE = 1024
 
@@ -2369,6 +2392,12 @@ QWEN_ASR_CONTEXT_REX_LINES = 2     # how many of Rex's recent lines to include
 # one beside a regurgitation rejection, because the long entity-dense clue Rex
 # had just read WAS the prompt. Costs one extra decode only on a rejection.
 ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO = _env_bool("ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO", True)
+# Log (INFO) any Qwen3-ASR decode whose MLX_LOCK wait + decode time reaches this,
+# with the two parts separated. Field 2026-09-01 23:05:23-29: one 3s utterance took
+# 6.9s to transcribe while the speaker-ID thread finished instantly, and INFO logs
+# could not say whether the decode itself was slow (memory pressure after the 2GB
+# local-TTS clone load) or it sat behind another MLX_LOCK holder. 0 disables.
+ASR_SLOW_DECODE_LOG_SECS = 1.5
 # ...but the retry must never resurrect REX'S OWN voice. Field 2026-08-27
 # 13:34:09: the post-boot seam decoded as his ready line ("Ready to go.
 # Statistically, one of us is about to say something interesting. I like my
@@ -5073,6 +5102,20 @@ JEOPARDY_ANSWER_SILENCE_TIMEOUT_SECS = 0.65
 # dev-Mac sessions keep stock endpointing.
 MOTION_EAGER_ENDPOINT_ENABLED = _env_bool("MOTION_EAGER_ENDPOINT_ENABLED", True)
 MOTION_EAGER_ENDPOINT_SILENCE_SECS = 0.35
+# REUSE the probe's decode as the turn's transcript (2026-09-01). The probe fully
+# transcribes the segment-so-far after SILENCE_SECS of quiet; when the turn then ends
+# on the normal SILENCE_TIMEOUT_SECS with nobody having spoken since, that decode
+# already covers every word of the utterance — but it was thrown away unless it was a
+# drive command, and the turn decoded the same audio AGAIN (two identical
+# "[transcription] backend=qwen3_asr" lines per turn in every robot log, ~0.5-1.0s
+# of transcribe_and_speaker_id on each turn, with the second decode queued behind
+# the first on MLX_LOCK). Now the turn adopts the probe transcript instead. An empty
+# or rejected probe decode (echo, hallucination) is NOT adopted — the turn decodes
+# itself as before. REUSE_WAIT_SECS bounds how long the turn waits for a probe that
+# is still decoding (it would otherwise queue behind that same decode on MLX_LOCK
+# anyway, so waiting is never slower than re-decoding).
+MOTION_EAGER_ENDPOINT_REUSE_TRANSCRIPT = _env_bool("MOTION_EAGER_ENDPOINT_REUSE_TRANSCRIPT", True)
+MOTION_EAGER_ENDPOINT_REUSE_WAIT_SECS = 3.0
 MOTION_EAGER_ENDPOINT_REQUIRE_AEC = True
 # Off during parlor games: an answer, a board pick or a wager is never a drive
 # command, so every probe is a wasted full Qwen decode — and it takes MLX_LOCK

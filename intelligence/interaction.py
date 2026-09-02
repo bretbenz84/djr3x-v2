@@ -2375,7 +2375,8 @@ def _game_roster_ambiguity_accept(
 
 def _game_roster_tied_candidate(person_id: Optional[int]) -> Optional[tuple]:
     """The scoreboard row for `person_id` when it sits inside the ambiguity band
-    of the top candidate, else None. Used only to break a roster near-tie."""
+    of the top candidate, else None. Breaks a roster near-tie (game path) and,
+    via _visible_face_in_voice_tie, a 1:1 near-tie against the one visible face."""
     pid = _safe_int(person_id)
     if pid is None:
         return None
@@ -2394,6 +2395,16 @@ def _game_roster_tied_candidate(person_id: Optional[int]) -> Optional[tuple]:
         except Exception:
             return None
     return None
+
+
+def _visible_face_in_voice_tie(ws_pid: Optional[int]) -> bool:
+    """True when the ONE visible known face is itself inside the ambiguity band
+    of the voice scoreboard's top candidate — i.e. the margin guard refused the
+    top match BECAUSE this face's own print was right behind it. That is not a
+    voice pointing away from the face; it is a voice that cannot split two prints,
+    one of which belongs to the person on camera. The camera breaks that tie
+    (see ``tie_face_wins`` in _voice_primary_face_decision)."""
+    return _game_roster_tied_candidate(ws_pid) is not None
 
 
 def _voice_primary_face_decision(
@@ -2415,6 +2426,7 @@ def _voice_primary_face_decision(
     ws_voiceless: bool = False,
     raw_best_recently_visible: bool = False,
     roster_ids: frozenset = frozenset(),
+    ws_in_voice_tie: bool = False,
 ) -> str:
     """Voice-primary attribution decision when exactly one known face (``ws_pid``)
     is visible. Pure (no side effects) so it is directly unit-testable.
@@ -2457,6 +2469,11 @@ def _voice_primary_face_decision(
       ``short_face_wins``         clip too short for the embedder to score reliably and the
                                   voice doesn't point at someone else — the sole visible known
                                   face resolves identity; never touch the print
+      ``tie_face_wins``           the margin guard rejected the top voice match because the
+                                  VISIBLE face's own print was within the ambiguity band of it
+                                  (``ws_in_voice_tie``) — two prints the embedder cannot split,
+                                  one of them the person on camera. The face breaks the tie;
+                                  never touch the print
       ``unknown_intro_path``      voice unrecognized while an unknown face is present — leave
                                   person unresolved for the intro/identify path (not off-screen)
       ``off_screen_unknown``      voice points away / scene ambiguous — off-screen unknown voice
@@ -2573,6 +2590,33 @@ def _voice_primary_face_decision(
     # ambiguous). Corroborate, don't override.
     if unknown_visible:
         return "unknown_intro_path"
+    accept_thr = float(getattr(config, "SPEAKER_ID_SIMILARITY_THRESHOLD", 0.50))
+    if (
+        ws_in_voice_tie
+        and single_visible
+        and not other_known_recently
+        and raw_id is not None
+        and raw_id != ws
+        and speaker_score >= accept_thr
+        and (vis is None or vis == ws)
+        and not visual_mouth_still
+    ):
+        # AMBIGUOUS BETWEEN TWO ENROLLED PRINTS, ONE OF THEM THE FACE ON CAMERA.
+        # The margin guard refused the top match (person_id is None) because the
+        # runner-up was too close — and the runner-up IS the one visible known
+        # face. That is not "voice points away from the face": the embedder
+        # simply cannot split these two people, and the camera can. Field
+        # 2026-09-01 23:05:30: Bret alone, face locked (db:1) all session, said
+        # "Yes, we just talked about that." — PJ 0.748 vs Bret 0.733 (margin
+        # 0.016 < 0.07; PJ and Bret are near acoustic twins) — and the old
+        # fall-through made him unknown_voice_1, sent the head on an off-camera
+        # gaze search, and asked "mystery voice — who are you, exactly?" of the
+        # owner mid-conversation. Attribute to the face; NEVER refresh the print
+        # (the audio matched the other person's print equally well — folding it
+        # into either would blur both). Ordinary guards still apply: the camera
+        # may not contradict the face, no other known face recently, top score
+        # must clear the accept threshold (a tie between two rejects is noise).
+        return "tie_face_wins"
     eng_visible_floor = float(getattr(config, "SPEAKER_ID_ENGAGED_VISIBLE_FLOOR", 0.50))
     match_floor = float(getattr(config, "SPEAKER_ID_SINGLE_VISIBLE_MATCH_FLOOR", 0.35))
     voice_leans_visible = (
@@ -14765,18 +14809,26 @@ def _merge_gap_speech(onset_at: float, armed_at: float) -> Optional[str]:
     except Exception:
         pass
     audio_seg = _accumulate_speech(onset_at)
+    # The eager probe may already have decoded this line (see
+    # _adopt_probe_transcript). Pop it HERE, whatever happens next: this path
+    # never reaches _handle_speech_segment, so an un-popped transcript would
+    # surface as the NEXT turn's words.
+    eager_line2 = _pop_eager_transcript()
     # Whatever happens next, the buffer through now has been examined; the
     # phase-2 scan after the (regenerated) reply covers only fresh audio.
     _arm_gap_watch()
     if audio_seg is None or len(audio_seg) == 0:
         _capture_dropped("gap_merge_capture_empty")
         return None
-    try:
-        line2 = str(transcription.transcribe(audio_seg) or "").strip()
-    except Exception as exc:
-        _log.warning("[gap_speech] merge transcription failed: %s", exc)
-        _capture_dropped("gap_merge_transcribe_failed")
-        return None
+    if eager_line2 is not None and str(eager_line2).strip():
+        line2 = str(eager_line2).strip()
+    else:
+        try:
+            line2 = str(transcription.transcribe(audio_seg) or "").strip()
+        except Exception as exc:
+            _log.warning("[gap_speech] merge transcription failed: %s", exc)
+            _capture_dropped("gap_merge_transcribe_failed")
+            return None
     if not line2:
         _capture_dropped("gap_merge_transcript_empty")
         return None
@@ -15118,8 +15170,16 @@ def _eager_motion_transcript_matches(text: str) -> bool:
 
 
 def _start_eager_motion_probe(speech_start_mono: float) -> dict:
-    """Transcribe the segment-so-far in the background; box carries the result."""
-    box: dict = {"matched": False, "transcript": None}
+    """Transcribe the segment-so-far in the background; box carries the result.
+
+    ``text`` is the probe's decode of everything said so far (a Transcript, or
+    None if the probe failed / decoded nothing), ``done`` fires when the probe
+    has finished either way, and ``matched``/``transcript`` keep the drive-command
+    early-cut contract. The decode is kept even when it is NOT a drive command so
+    the turn can adopt it instead of decoding the same audio a second time — see
+    _adopt_probe_transcript."""
+    box: dict = {"matched": False, "transcript": None, "text": None,
+                 "done": threading.Event()}
 
     def _run() -> None:
         try:
@@ -15128,14 +15188,58 @@ def _start_eager_motion_probe(speech_start_mono: float) -> dict:
             if len(audio) == 0:
                 return
             text = transcription.transcribe(audio)
+            box["text"] = text
             if str(text or "").strip() and _eager_motion_transcript_matches(str(text)):
                 box["transcript"] = text
                 box["matched"] = True
         except Exception as exc:
             _log.debug("[eager_endpoint] probe failed: %s", exc)
+        finally:
+            box["done"].set()
 
     threading.Thread(target=_run, daemon=True, name="eager-motion-probe").start()
     return box
+
+
+def _adopt_probe_transcript(probe: Optional[dict]) -> bool:
+    """Hand the eager probe's decode to the turn as its transcript.
+
+    Called when the turn ends on the NORMAL silence timeout while the probe
+    started in that same silence run is still the live one — nobody spoke after
+    the probe captured its audio, so its decode already covers every word of the
+    utterance (the final capture only adds trailing room tone). Before this, the
+    probe's decode was discarded unless it was a drive command and the turn
+    decoded the SAME audio again: two identical "[transcription] backend=" lines
+    on every turn of every robot log, and the second decode queued behind the
+    first on MLX_LOCK (transcribe_and_speaker_id 0.5-1.1s per turn).
+
+    Waits (bounded) for a probe still decoding — the alternative re-decode would
+    queue behind it on MLX_LOCK anyway. An empty or rejected probe decode (echo,
+    hallucination, impossible rate) is NOT adopted: the turn decodes itself with
+    the full capture, exactly as before."""
+    global _eager_endpoint_transcript
+    if not probe:
+        return False
+    if not bool(getattr(config, "MOTION_EAGER_ENDPOINT_REUSE_TRANSCRIPT", True)):
+        return False
+    done = probe.get("done")
+    wait_secs = float(getattr(config, "MOTION_EAGER_ENDPOINT_REUSE_WAIT_SECS", 3.0) or 0.0)
+    if done is not None and not done.wait(timeout=max(0.0, wait_secs)):
+        _log.info(
+            "[eager_endpoint] probe still decoding after %.1fs — turn decodes itself",
+            wait_secs,
+        )
+        return False
+    text = probe.get("text")
+    if text is None or not str(text).strip():
+        return False
+    _eager_endpoint_transcript = text
+    _log.info(
+        "[eager_endpoint] adopting the probe's decode as the turn transcript "
+        "(decoded once, not twice): %r",
+        str(text)[:80],
+    )
+    return True
 
 
 def _accumulate_speech(
@@ -15158,6 +15262,10 @@ def _accumulate_speech(
     prerequisite of that listener) has already removed the music.
     """
     global _eager_endpoint_transcript
+    # Never let a transcript from an earlier capture leak into this one: every
+    # caller that adopts the probe's decode pops it right after this returns,
+    # but a stale value here would become the NEXT turn's words.
+    _eager_endpoint_transcript = None
     silence_timeout = config.SILENCE_TIMEOUT_SECS
     # A live Jeopardy clue buys a longer thinking pause — see the config note.
     # Deliberately NOT gated on raw_vad: an answer barged in over the thinking
@@ -15181,6 +15289,10 @@ def _accumulate_speech(
     )
     eager_silence = float(getattr(config, "MOTION_EAGER_ENDPOINT_SILENCE_SECS", 0.35))
     eager_probe: Optional[dict] = None
+    # The probe whose decode the turn will adopt (set at the normal-timeout
+    # break; the adoption itself waits until AFTER the segment is captured so
+    # a still-running probe never widens the audio window).
+    adopt_probe: Optional[dict] = None
 
     while not _stop_event.is_set():
         if state_module.get_state() not in allowed_states:
@@ -15202,6 +15314,9 @@ def _accumulate_speech(
             elapsed = time.monotonic() - speech_start_mono
             min_duration = getattr(config, "MIN_SPEECH_DURATION_SECS", 0.0)
             if silence_elapsed >= silence_timeout and elapsed >= min_duration:
+                # Same silence run the probe started in — its decode covers the
+                # whole utterance; don't decode it a second time.
+                adopt_probe = eager_probe
                 break
             if eager_enabled and elapsed >= min_duration and silence_elapsed >= eager_silence:
                 if eager_probe is None:
@@ -15227,7 +15342,10 @@ def _accumulate_speech(
     # before the first VAD-positive chunk are not clipped, clamped to the latest
     # post-TTS handoff so Rex's own question is not transcribed as user speech.
     capture_secs = _speech_capture_secs(speech_start_mono)
-    return stream.get_audio_chunk(capture_secs)
+    segment = stream.get_audio_chunk(capture_secs)
+    if adopt_probe is not None:
+        _adopt_probe_transcript(adopt_probe)
+    return segment
 
 
 def _wake_from_sleep_if_transcribed(audio_segment: Optional[np.ndarray]) -> bool:
@@ -26954,6 +27072,9 @@ def _handle_speech_segment(
                 raw_best_id=raw_best_id,
                 speaker_score=speaker_score,
                 ws_pid=ws_pid,
+                ws_in_voice_tie=(
+                    person_id is None and _visible_face_in_voice_tie(ws_pid)
+                ),
                 single_visible=(len(visible_known_by_id) == 1),
                 engaged_is_visible=(
                     recent_engagement is not None
@@ -27155,6 +27276,20 @@ def _handle_speech_segment(
                 _log.info(
                     "[interaction] person resolution: voice unrecognized while an unknown "
                     "face is/was visible — leaving speaker unknown (intro/identify path)",
+                )
+            elif decision == "tie_face_wins":
+                # The voice could not split two enrolled prints and one of them is
+                # the face on camera — the camera breaks the tie. No print refresh
+                # (see the decision's comment), no confident-voice note.
+                person_id = ws_pid
+                person_name = ws_name
+                identity_resolution_override = "tie_face_wins"
+                _log.info(
+                    "[interaction] person resolution: voice tied between %s/%r (%.3f) "
+                    "and the visible face %r (margin %.3f < %.3f) — the face breaks "
+                    "the tie — person_id=%s name=%r (no print refresh)",
+                    raw_best_id, raw_best_name, speaker_score, ws_name,
+                    speaker_margin, required_margin, person_id, person_name,
                 )
             else:  # off_screen_unknown
                 off_camera_unknown = True
