@@ -1799,6 +1799,24 @@ TTS_V3_TAG_BY_EMOTION = {
 # whitelist. Model output is sanitized regardless (whitelist + cap below), so turning
 # this off only stops SUGGESTING tags; stray ones are still handled safely.
 TTS_V3_LLM_INLINE_TAGS_ENABLED = True
+# The reply's OWN emotion outranks the comedy stance's timbre (owner call 2026-09-02).
+# The stance ("dry acknowledgment" → deadpan profile) is chosen BEFORE the model writes
+# a word; when the model then tags its line [excited], or the self-emotion read says
+# excited/happy/curious, the line was being synthesized with deadpan settings (style
+# 0.20, speed 0.97) against an [excited] tag — the flat "yes I'm excited" of 2026-09-02
+# 00:35:21. With this on, a non-neutral reply emotion (from a whitelisted inline tag
+# or the self-emotion classifier) selects TTS_VOICE_SETTINGS_BY_STYLE for that
+# emotion instead of the comedy profile, per sentence. Empathy/grief delivery still
+# wins over both.
+REPLY_EMOTION_OVERRIDES_COMEDY_VOICE = _env_bool("REPLY_EMOTION_OVERRIDES_COMEDY_VOICE", True)
+# Inline v3 tag the model placed → the reply emotion it implies (tags that are a
+# stance, not a feeling — sarcastic, mischievously — map to nothing and keep the
+# comedy timbre).
+TTS_V3_TAG_TO_EMOTION = {
+    "excited": "excited",
+    "curious": "curious",
+    "laughs":  "happy",
+}
 # Max inline tags kept per synthesized line/chunk (earliest win). Bounds an over-eager
 # LLM (or a pathological authored line) so a reply can't become a laugh track. The
 # leading affect-mapped tag doesn't count against this — it only fires when NO inline

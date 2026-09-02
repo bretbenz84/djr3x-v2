@@ -372,8 +372,10 @@ class LeanStreamPrepTest(unittest.TestCase):
             # frame/comedy_mode are ignored on the lean branch, so None is fine.
             kept = I._prepare_stream_sentence("What's the trouble, Bret?", None, None)
             self.assertIn("trouble", kept.lower())
-            # Genuine cruelty is still scrubbed at every tier.
-            self.assertEqual(I._prepare_stream_sentence("You're a pathetic idiot.", None, None), "")
+            # Genuine cruelty (contempt) is still scrubbed at every tier — but insult
+            # vocabulary is roast material and rides (owner contract 2026-09-02).
+            self.assertEqual(I._prepare_stream_sentence("Shut up, you worthless idiot.", None, None), "")
+            self.assertIn("idiot", I._prepare_stream_sentence("You're a pathetic idiot.", None, None))
 
 
 if __name__ == "__main__":

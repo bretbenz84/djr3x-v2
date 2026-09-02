@@ -16562,6 +16562,7 @@ def _stream_llm_response(
     delivery_emotion = "neutral"
     delivery_post_beat_ms = 0
     delivery_voice_settings: Optional[dict] = None
+    empathy_voice_set_ns = False
     if full_text and full_text.strip() and not _interrupted.is_set():
         try:
             governed = social_frame.govern_response(full_text, frame)
@@ -16611,6 +16612,7 @@ def _stream_llm_response(
                 pre_beat_ms = max(pre_beat_ms, extra_pre)
             delivery_post_beat_ms = int(overrides.get("post_beat_ms") or 0)
             delivery_voice_settings = overrides.get("voice_settings")
+            empathy_voice_set_ns = delivery_voice_settings is not None
             _log.info(
                 "[empathy] delivery shaping: mode=%s emotion=%s pre=%dms post=%dms voice=%s",
                 overrides.get("mode"), delivery_emotion,
@@ -16660,6 +16662,16 @@ def _stream_llm_response(
                     source="self_emotion",
                     intensity=float(getattr(config, "SELF_EMOTION_BODY_MOOD_INTENSITY", 0.6)),
                 )
+        if delivery_emotion == "neutral":
+            tag_emotion = _reply_emotion_from_tag(full_text)
+            if tag_emotion:
+                delivery_emotion = tag_emotion
+        delivery_voice_settings = _reply_voice_settings(
+            delivery_voice_settings, delivery_emotion,
+            empathy_voice=empathy_voice_set_ns,
+            comedy_mode_key=getattr(comedy_mode, "key", None),
+            logged={},
+        )
 
         speak_started = time.monotonic()
         completed = _speak_blocking(
@@ -16915,6 +16927,70 @@ def _await_streamed_speech(
     return True
 
 
+# ── Reply emotion vs comedy timbre ────────────────────────────────────────────
+# The comedy STANCE (and its deadpan/smug voice profile) is chosen before the
+# model writes a word. Two later signals know what the line actually IS: the
+# whitelisted v3 tag the model itself placed ("[excited] Very, Bret — ...") and the
+# self-emotion read over the first sentence. Until 2026-09-02 neither could touch
+# the voice settings — 00:35:21 that night was synthesized deadpan (style 0.20,
+# speed 0.97) around an [excited] tag, and the owner heard a flat "yes". Owner call:
+# the reply's own emotion outranks the stance. Empathy/grief delivery still wins.
+_REPLY_VOICE_EMOTIONS = frozenset({"excited", "happy", "curious", "surprised"})
+
+
+def _reply_emotion_from_tag(text: str) -> Optional[str]:
+    """The reply emotion implied by the FIRST whitelisted v3 tag in `text`, per
+    config.TTS_V3_TAG_TO_EMOTION; None when there is no tag or the tag is a stance
+    ([sarcastic], [mischievously]) rather than a feeling."""
+    if not text:
+        return None
+    try:
+        from utils.audio_tags import AUDIO_TAG_RE
+        mapping = getattr(config, "TTS_V3_TAG_TO_EMOTION", {}) or {}
+        for m in AUDIO_TAG_RE.finditer(text):
+            emo = mapping.get(m.group(1).strip().lower())
+            if emo:
+                return str(emo)
+    except Exception as exc:
+        _log.debug("reply tag emotion read failed: %s", exc)
+    return None
+
+
+def _reply_voice_settings(
+    base: Optional[dict],
+    emotion: Optional[str],
+    *,
+    empathy_voice: bool,
+    comedy_mode_key: Optional[str] = None,
+    logged: Optional[dict] = None,
+) -> Optional[dict]:
+    """Voice settings for one synthesized line. `base` is what the turn resolved
+    up front (empathy's settings, else the comedy profile, else None). When
+    empathy shaped the voice, base wins. Otherwise a non-neutral reply emotion
+    selects its own TTS_VOICE_SETTINGS_BY_STYLE preset over the comedy profile.
+    `logged` (a dict) makes the override line print once per reply."""
+    emo = str(emotion or "neutral").strip().lower()
+    if empathy_voice or emo not in _REPLY_VOICE_EMOTIONS:
+        return base
+    if not bool(getattr(config, "REPLY_EMOTION_OVERRIDES_COMEDY_VOICE", True)):
+        return base
+    try:
+        from intelligence import emotion_orchestrator as _eo
+        preset = _eo.voice_settings_for_emotion(emo)
+    except Exception as exc:
+        _log.debug("reply emotion voice preset failed: %s", exc)
+        return base
+    if not preset:
+        return base
+    if logged is not None and not logged.get(emo):
+        logged[emo] = True
+        _log.info(
+            "[comedy] reply emotion %s overrides the %s delivery profile → voice=%s",
+            emo, comedy_mode_key or "-", preset,
+        )
+    return preset
+
+
 def _stream_and_speak_sentences(
     user_text: str,
     person_id: Optional[int],
@@ -16964,6 +17040,10 @@ def _stream_and_speak_sentences(
         empathy_pre_beat_ms = int(overrides.get("pre_beat_ms") or 0)
         empathy_post_beat_ms = int(overrides.get("post_beat_ms") or 0)
         delivery_voice_settings = overrides.get("voice_settings")
+    # Empathy shaped the voice → nothing below may override it (grief beats comedy
+    # AND beats the reply's own excitement).
+    empathy_voice_set = delivery_voice_settings is not None
+    voice_override_logged: dict = {}
 
     # Comedic delivery profile — layer the comedy stance's timbre (deadpan / smug)
     # UNDER empathy: only when empathy supplied no voice_settings of its own (a
@@ -17037,6 +17117,13 @@ def _stream_and_speak_sentences(
         # is still written once below.
         conv_log.log_rex_stream(prepared)
 
+        # The model's own delivery tag ("[excited] Very, Bret — ...") is the
+        # earliest, most specific read of the line — it names the feeling before
+        # the self-emotion classifier has returned, so the FIRST sentence carries it.
+        if state["emotion"] == "neutral":
+            tag_emotion = _reply_emotion_from_tag(prepared)
+            if tag_emotion:
+                state["emotion"] = tag_emotion
         # Once the self-emotion read is in, let the rest of the reply carry it.
         if (
             state["emotion"] == "neutral"
@@ -17044,6 +17131,12 @@ def _stream_and_speak_sentences(
             and self_emo["value"] != "neutral"
         ):
             state["emotion"] = self_emo["value"]
+        sentence_voice = _reply_voice_settings(
+            delivery_voice_settings, state["emotion"],
+            empathy_voice=empathy_voice_set,
+            comedy_mode_key=getattr(comedy_mode, "key", None),
+            logged=voice_override_logged,
+        )
 
         pre_beat_ms = empathy_pre_beat_ms
         on_start = None
@@ -17082,7 +17175,7 @@ def _stream_and_speak_sentences(
                 _latency_log(turn_start, "llm_first_sentence", llm_started)
         elif prefetch_enabled:
             _prefetch_stream_audio(
-                prepared, state["emotion"], delivery_voice_settings,
+                prepared, state["emotion"], sentence_voice,
                 previous_text=stream_prev_text,
             )
 
@@ -17092,7 +17185,7 @@ def _stream_and_speak_sentences(
             priority=priority,
             pre_beat_ms=pre_beat_ms,
             post_beat_ms=0,
-            voice_settings=delivery_voice_settings,
+            voice_settings=sentence_voice,
             on_start=on_start,
             log_text=False,  # the whole turn is logged once below
             # One v3 audio tag per reply, on the FIRST sentence only (from the comedy stance +
@@ -17133,18 +17226,28 @@ def _stream_and_speak_sentences(
         if not parts:
             return
         blob = " ".join(parts)
+        if state["emotion"] == "neutral":
+            tag_emotion = _reply_emotion_from_tag(blob)
+            if tag_emotion:
+                state["emotion"] = tag_emotion
         if (
             state["emotion"] == "neutral"
             and self_emo["value"]
             and self_emo["value"] != "neutral"
         ):
             state["emotion"] = self_emo["value"]
+        blob_voice = _reply_voice_settings(
+            delivery_voice_settings, state["emotion"],
+            empathy_voice=empathy_voice_set,
+            comedy_mode_key=getattr(comedy_mode, "key", None),
+            logged=voice_override_logged,
+        )
         conv_log.log_rex_stream(blob)
         stream_prev_text = " ".join(spoken).strip()
         if prefetch_enabled:
             # Kick synthesis NOW so chunk 2 renders while chunk 1 is playing.
             _prefetch_stream_audio(
-                blob, state["emotion"], delivery_voice_settings,
+                blob, state["emotion"], blob_voice,
                 previous_text=stream_prev_text,
             )
         done = speech_queue.enqueue(
@@ -17153,7 +17256,7 @@ def _stream_and_speak_sentences(
             priority=priority,
             pre_beat_ms=0,
             post_beat_ms=0,
-            voice_settings=delivery_voice_settings,
+            voice_settings=blob_voice,
             log_text=False,
             comedy_mode=getattr(comedy_mode, "key", None),
             suppress_audio_tag=True,          # the reply's one LEADING tag rode chunk 1
