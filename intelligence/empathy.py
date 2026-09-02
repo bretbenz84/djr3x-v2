@@ -534,7 +534,7 @@ _CLASSIFY_PROMPT = (
     "suicide ideation, or someone-in-immediate-danger language\n"
     '  "confidence": 0.0–1.0 — how confident you are overall\n'
     '  "event": null OR an object with keys category, valence, description, '
-    "loss_subject, loss_subject_kind, loss_subject_name, recency.\n"
+    "loss_subject, loss_subject_kind, loss_subject_name, loss_relation, recency.\n"
     "    Set event when the utterance reveals a SPECIFIC emotional life event "
     "the robot should remember across sessions or check in on soon (e.g. "
     "someone died, lost a job, breakup, illness, big milestone like a wedding/"
@@ -556,6 +556,15 @@ _CLASSIFY_PROMPT = (
     "    loss_subject_name: the name of the deceased/affected person/pet IF "
     "explicitly mentioned in the utterance (e.g. \"my dog Buddy died\" → "
     '"Buddy"). Null otherwise — DO NOT guess.\n'
+    "    loss_relation: ONLY for grief/death/illness — who the affected being is "
+    'TO THE SPEAKER: one of "family", "partner", "friend", "pet", "colleague", '
+    '"acquaintance", "public_figure", "unknown". Use "public_figure" for a '
+    "celebrity, politician, artist, athlete, or anyone in the news whom the "
+    "speaker does not personally know — \"Tim Curry died\", \"she died two "
+    "days ago\" about a singer named in the recent conversation. A public "
+    "figure's death is news the speaker is sharing, NOT a bereavement: still "
+    "record the event, but with loss_relation public_figure. Use the recent "
+    "conversation to resolve pronouns.\n"
     '    recency: one of "recent","historical","unknown" — WHEN the event '
     "itself happened, judged ONLY from explicit time markers in the utterance. "
     '"recent" = within roughly the last 3 months ("yesterday", "last week", '
@@ -569,10 +578,17 @@ _CLASSIFY_PROMPT = (
 )
 
 
+_VALID_LOSS_RELATIONS = {
+    "family", "partner", "friend", "pet", "colleague", "acquaintance",
+    "public_figure", "unknown",
+}
+
+
 def classify_affect(
     text: str,
     prosody_features: Optional[dict] = None,
     face_mood: Optional[dict] = None,
+    context_lines: Optional[list] = None,
 ) -> Optional[dict]:
     """Run the classifier and return a normalized dict, or None on failure.
 
@@ -580,9 +596,25 @@ def classify_affect(
     `tag` line is appended to the prompt as additional acoustic evidence so the
     LLM can resolve text/voice mismatches (flat "I'm fine" with shaky voice,
     upbeat words with quiet voice, etc.).
+
+    `context_lines` are the last few transcript lines ("Rex: ...", "Bret: ..."),
+    oldest first. Without them the classifier cannot tell WHO "she" is in "She
+    died two days ago" — field 2026-08-26 22:30: that line was about Dolly
+    Parton, one turn after "Tim Curry died", and it became a personal
+    bereavement that opened the next three sessions with a grief check-in.
     """
     if not text or not text.strip():
         return None
+
+    context_clause = ""
+    lines = [str(l).strip() for l in (context_lines or []) if str(l).strip()]
+    if lines:
+        context_clause = (
+            "\nRecent conversation, oldest first (context only — classify the "
+            "utterance above, and use this to resolve pronouns and to tell a "
+            "public figure from someone the speaker knows):\n"
+            + "\n".join(f"  {l[:200]}" for l in lines[-6:])
+        )
 
     prosody_clause = ""
     if prosody_features and prosody_features.get("tag"):
@@ -608,7 +640,9 @@ def classify_affect(
         )
 
     try:
-        user_msg = _CLASSIFY_PROMPT.format(text=text) + prosody_clause + face_clause
+        user_msg = (
+            _CLASSIFY_PROMPT.format(text=text) + context_clause + prosody_clause + face_clause
+        )
     except Exception as exc:
         _log.warning("empathy.classify_affect prompt build failed: %s", exc)
         return None
@@ -665,6 +699,9 @@ def classify_affect(
         if ev_subject_kind not in {"person", "pet", "other", None}:
             ev_subject_kind = "other"
         ev_subject_name = str(event.get("loss_subject_name") or "").strip() or None
+        ev_relation = str(event.get("loss_relation") or "").strip().lower() or None
+        if ev_relation not in _VALID_LOSS_RELATIONS:
+            ev_relation = None
 
         event = (
             {
@@ -674,6 +711,9 @@ def classify_affect(
                 "loss_subject": ev_subject,
                 "loss_subject_kind": ev_subject_kind,
                 "loss_subject_name": ev_subject_name,
+                "loss_relation": ev_relation,
+                # memory.emotional_events.is_public_figure_loss reads this.
+                "public_figure": ev_relation == "public_figure",
                 # Deterministic text markers win; the LLM may only contribute
                 # "historical", never an evidence-free "recent".
                 "recency": resolve_event_recency(text, event.get("recency")),

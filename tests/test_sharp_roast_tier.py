@@ -127,5 +127,61 @@ class SharpDirectiveTextTest(unittest.TestCase):
         self.assertIn("curiosity", c.lower())
 
 
+
+class SelfDirectedRoastTest(unittest.TestCase):
+    """Field 2026-09-02 00:30:21: "Do you check the news while you're offline?" →
+    "No, I just end up carrying it around in my head like an idiot with a
+    subscription." The light-tier filter saw "idiot", dropped the only sentence,
+    and Rex said "Tell me more." — so Bret had to ask again. A first-person line
+    that never addresses a "you" is Rex roasting Rex."""
+
+    FIELD = ("No, I just end up carrying it around in my head like an idiot "
+             "with a subscription.")
+
+    def test_field_answer_survives_the_light_tier(self):
+        frame = _frame(allow_roast="light", purpose="answer")
+        with mock.patch.object(sf, "_rex_last_line", return_value=""):
+            got = sf.govern_response(self.FIELD, frame)
+        self.assertEqual(got.text, self.FIELD)
+        self.assertNotIn("fallback", got.notes)
+
+    def test_field_answer_survives_the_no_roast_tier(self):
+        frame = _frame(allow_roast="none", purpose="answer")
+        with mock.patch.object(sf, "_rex_last_line", return_value=""):
+            got = sf.govern_response(self.FIELD, frame)
+        self.assertEqual(got.text, self.FIELD)
+
+    def test_the_same_insult_aimed_at_the_human_is_still_removed(self):
+        frame = _frame(allow_roast="light", purpose="answer")
+        with mock.patch.object(sf, "_rex_last_line", return_value=""):
+            got = sf.govern_response(
+                "No, you just carry it around in your head like an idiot with a subscription.",
+                frame,
+            )
+        self.assertIn("removed_sharp_roast", got.notes)
+
+    def test_cruelty_backstop_still_catches_second_person(self):
+        self.assertTrue(sf.contains_cruelty("You are such an idiot."))
+        self.assertFalse(sf.contains_cruelty("I am such an idiot."))
+        self.assertTrue(sf.contains_cruelty("I think you're an idiot."))
+
+    def test_a_vocative_is_not_self_directed(self):
+        # "genius" is aimed at the human even with no "you" in the sentence.
+        self.assertFalse(sf._is_self_directed("I meant that, genius."))
+        self.assertFalse(sf._is_self_directed("Correct, because sleep is when I\u2019m not doing the job, genius."))
+
+    def test_leading_interjection_is_skipped(self):
+        self.assertTrue(sf._is_self_directed("Well, I'm the idiot here."))
+        self.assertTrue(sf._is_self_directed("Honestly, my wiring is a dumpster fire."))
+        self.assertFalse(sf._is_self_directed("Well, the idiot here is you."))
+
+    def test_dead_closures_are_not_exempt(self):
+        frame = _frame(allow_roast="none", purpose="closure")
+        self.assertTrue(sf._is_roast_sentence("I can't say I enjoyed that."))
+
+    def test_streaming_sentence_path_agrees(self):
+        frame = _frame(allow_roast="light", purpose="answer")
+        self.assertEqual(sf.govern_stream_sentence(self.FIELD, frame), self.FIELD)
+
 if __name__ == "__main__":
     unittest.main()

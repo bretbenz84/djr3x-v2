@@ -74,6 +74,69 @@ _FAMILY_LOSS_SUBJECTS = {
     "brother", "sister", "sibling",
 }
 
+# Words that make a loss PERSONAL: the deceased was someone in the person's own
+# life. Mirrors intelligence.empathy._LOSS_SUBJECT_PAT.
+_RELATION_WORDS = frozenset({
+    "mom", "mother", "mum", "dad", "father", "parent", "parents", "grandma",
+    "grandmother", "grandpa", "grandfather", "grandparent", "grandparents",
+    "wife", "husband", "partner", "spouse", "son", "daughter", "child", "kid",
+    "kids", "children", "brother", "sister", "sibling", "uncle", "aunt", "cousin",
+    "nephew", "niece", "friend", "friends", "buddy", "roommate", "coworker",
+    "colleague", "neighbor", "neighbour", "boss", "teacher", "mentor",
+    "dog", "cat", "pet", "puppy", "kitten", "horse", "bird",
+})
+_PROPER_NAME_RE = re.compile(r"^[A-Z][a-z'\-]+(?:\s+[A-Z][a-z'\-]+)+$")
+_PERSONAL_MARKER_RE = re.compile(
+    r"\b(?:my|our)\s+(?:" + "|".join(sorted(_RELATION_WORDS)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_public_figure_loss(event: dict) -> bool:
+    """A death/grief event about a person who is NOT in the person's own life —
+    a celebrity, a public figure, someone in the news.
+
+    Field 2026-08-26 22:29: Bret said "Tim Curry died." and, thirty seconds
+    later, "You're wrong. She died two days ago." (Dolly Parton). The empathy
+    path stored both as personal bereavements with a 180-day sensitivity window
+    and person_invited_topic=1, and from then on every first sight of Bret
+    opened with a grief check-in ("how are you holding up with everything"
+    09-01, "everything you're carrying right now" 09-02) until he asked why Rex
+    kept doing that. Such an event stays in memory as knowledge; it must never
+    drive a check-in or a how-long-ago probe.
+
+    Two signals, either is enough:
+      * the classifier said so (``public_figure`` / ``loss_relation`` =
+        "public_figure" — it has the conversation, so it can tell that "she" is
+        Dolly Parton);
+      * the loss subject is a multi-word proper name and NO relation word appears
+        anywhere in the subject or description ("my mother", "our dog", "best
+        friend"). A bare pronoun subject is not decidable here and stays personal."""
+    ev = event or {}
+    cat = str(ev.get("category") or "").strip().lower()
+    if cat not in ("death", "grief"):
+        return False
+    if bool(ev.get("public_figure")):
+        return True
+    if str(ev.get("loss_relation") or "").strip().lower() in ("public_figure", "celebrity", "public"):
+        return True
+    subject = str(ev.get("loss_subject") or "").strip()
+    name = str(ev.get("loss_subject_name") or "").strip()
+    desc = str(ev.get("description") or "").strip()
+    for blob in (subject, name, desc):
+        toks = {t.strip(".,!?'\"").lower() for t in blob.split()}
+        if toks & _RELATION_WORDS:
+            return False
+    if _PERSONAL_MARKER_RE.search(desc):
+        return False
+    if name and _PROPER_NAME_RE.match(name):
+        return True
+    if subject and len(subject.split()) >= 2:
+        titled = " ".join(w.capitalize() for w in subject.split())
+        if _PROPER_NAME_RE.match(titled):
+            return True
+    return False
+
 _TOKEN_PAT = re.compile(r"[a-z0-9']+")
 _STOPWORDS = {
     "a", "an", "and", "are", "at", "be", "for", "from", "going", "i",
@@ -331,7 +394,7 @@ def get_due_checkins(
         "ORDER BY mentioned_at DESC LIMIT ?",
         (int(person_id), int(min_ack_gap_days), int(limit)),
     )
-    return [dict(r) for r in rows]
+    return [dict(r) for r in rows if not is_public_figure_loss(dict(r))]
 
 
 def get_due_celebrations(
@@ -381,10 +444,10 @@ def get_startup_checkins(
         ack_clause = (
             "AND (last_acknowledged_at IS NULL OR last_acknowledged_at < ?)"
         )
-        params = (int(person_id), process_started_iso, int(limit))
+        params = (int(person_id), process_started_iso, int(limit) * 4)
     else:
         ack_clause = ""
-        params = (int(person_id), int(limit))
+        params = (int(person_id), int(limit) * 4)
 
     rows = db.fetchall(
         "SELECT id, category, valence, description, "
@@ -404,7 +467,9 @@ def get_startup_checkins(
         "ORDER BY mentioned_at DESC LIMIT ?",
         params,
     )
-    return [dict(r) for r in rows]
+    # Read-side guard for rows stored before is_public_figure_loss existed.
+    out = [dict(r) for r in rows if not is_public_figure_loss(dict(r))]
+    return out[: int(limit)]
 
 
 def get_startup_celebrations(
@@ -546,6 +611,34 @@ def mute_recent_checkin_for_person(
     event = dict(rows[0])
     mute_checkins(int(event["id"]), reason=reason)
     return event
+
+
+def mute_category_for_person(
+    person_id: int,
+    category: str,
+    reason: str = "",
+) -> list[int]:
+    """Mute every still-active negative event of one category for a person.
+
+    The consent boundary "I'd rather not talk about that" closes the SUBJECT,
+    not one database row. Field 2026-09-01 23:01 → 09-02 00:27: the boundary
+    muted death event 8, and the next boot opened with death event 7 (the same
+    conversation, thirty seconds apart) — "everything you're carrying right now"
+    — after Rex had said "I won't bring it up again unless you do". Returns the
+    ids muted (rows already muted are left alone)."""
+    cat = (category or "").strip().lower()
+    if not cat or cat == "recent_checkin":
+        return []
+    rows = db.fetchall(
+        "SELECT id FROM person_emotional_events "
+        "WHERE person_id = ? AND category = ? AND valence < 0 "
+        "AND checkins_muted_at IS NULL",
+        (int(person_id), cat),
+    )
+    ids = [int(r["id"]) for r in rows]
+    for event_id in ids:
+        mute_checkins(event_id, reason=reason)
+    return ids
 
 
 def mute_latest_active_negative_for_person(

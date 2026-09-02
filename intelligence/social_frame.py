@@ -679,7 +679,7 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
     # "sharp" sharpens the PROMPT, never the safety net: genuine name-calling/contempt is
     # dropped regardless of warmth. (none/light already remove these via their broader
     # filters above; this guarantees normal + sharp do too — a net safety improvement.)
-    kept = [s for s in sentences if not _CRUEL_ROAST_PAT.search(s)]
+    kept = [s for s in sentences if not _is_cruel_sentence(s)]
     if len(kept) != len(sentences):
         sentences = kept
         notes.append("removed_cruel_roast")
@@ -756,8 +756,9 @@ def is_question_sentence(text: str) -> bool:
 
 def contains_cruelty(text: str) -> bool:
     """True if text contains genuine name-calling / contempt (the all-tiers cruelty backstop).
-    Public so the lean reply path can keep this one safety scrub while skipping the frame gates."""
-    return bool(_CRUEL_ROAST_PAT.search(text or ""))
+    Public so the lean reply path can keep this one safety scrub while skipping the frame gates.
+    Self-directed lines ("I'm an idiot with a subscription") are not cruelty."""
+    return _is_cruel_sentence(text or "")
 
 
 def govern_stream_sentence(sentence: str, frame: SocialFrame) -> str:
@@ -788,7 +789,7 @@ def govern_stream_sentence(sentence: str, frame: SocialFrame) -> str:
     if frame.allow_roast == "light" and _is_sharp_roast_sentence(current):
         return ""
     # Cruelty backstop — every tier, incl. normal/sharp (see govern_response).
-    if _CRUEL_ROAST_PAT.search(current):
+    if _is_cruel_sentence(current):
         return ""
     return current
 
@@ -1236,10 +1237,56 @@ def _is_tiny_opener(sentence: str) -> bool:
     )
 
 
+# A sentence whose insult lands on REX HIMSELF. Field 2026-09-02 00:30:21: Bret
+# asked "Do you check the news while you're offline?" and the model answered
+# "No, I just end up carrying it around in my head like an idiot with a
+# subscription." — a direct answer with a self-own on the end. The light-tier
+# filter saw "idiot" (_HARSH_ROAST_PAT), dropped the only sentence, and the
+# governor spoke the canned "Tell me more." instead, so Bret had to ask again.
+# Every roast pattern here is about what Rex says TO the human; a sentence led
+# by "I"/"my" that never addresses a "you" (or a vocative like "genius") is Rex
+# roasting Rex, which the persona is built on. Leading interjections ("No,",
+# "Well,") are skipped before the first-person check.
+_SELF_LEAD_RE = re.compile(
+    r"^(?:(?:no|nope|nah|yes|yeah|yep|well|honestly|fine|okay|ok|sure|fair|right|"
+    r"true|look|listen|oh|ugh|god|correct|exactly|admittedly)[,.!;:\s]+)*"
+    r"(?:i|i'm|i’m|i've|i’ve|i'd|i’d|i'll|i’ll|my|me|mine|myself)\b",
+    re.IGNORECASE,
+)
+_SECOND_PERSON_RE = re.compile(
+    r"\b(?:you|your|yours|you're|you’re|youre|you've|you’ve|you'd|you’d|"
+    r"you'll|you’ll|yourself|yourselves|u|"
+    r"buddy|pal|genius|champ|captain)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_self_directed(sentence: str) -> bool:
+    """True when a sentence is first-person-led and never addresses the human:
+    the insult, if any, is Rex's own. Such a sentence is exempt from the roast
+    filters and the cruelty backstop (see _SELF_LEAD_RE)."""
+    text = (sentence or "").strip()
+    if not text or not _SELF_LEAD_RE.search(text):
+        return False
+    return not _SECOND_PERSON_RE.search(text)
+
+
+def _is_cruel_sentence(sentence: str) -> bool:
+    """The all-tiers cruelty backstop, minus self-directed lines."""
+    text = (sentence or "").strip()
+    if not text or not _CRUEL_ROAST_PAT.search(text):
+        return False
+    return not _is_self_directed(text)
+
+
 def _is_roast_sentence(sentence: str) -> bool:
     """Broad heuristic for pointed teasing that should vanish in no-roast mode."""
     text = (sentence or "").strip()
     if not text:
+        return False
+    if _BAD_CLOSURE_PAT.search(text):
+        return True        # a dead closure is never a self-own
+    if _is_self_directed(text):
         return False
     return any(
         pat.search(text)
@@ -1258,6 +1305,8 @@ def _is_sharp_roast_sentence(sentence: str) -> bool:
     """Return True for roasts too pointed for light-roast turns."""
     text = (sentence or "").strip()
     if not text:
+        return False
+    if _is_self_directed(text):
         return False
     if _HARSH_ROAST_PAT.search(text):
         return True
@@ -1353,7 +1402,7 @@ def _salvage_pure_question(dropped_questions: list[str], frame: SocialFrame) -> 
             continue
         if frame.allow_roast == "light" and _is_sharp_roast_sentence(sentence):
             continue
-        if _CRUEL_ROAST_PAT.search(sentence):   # cruelty backstop — every tier
+        if _is_cruel_sentence(sentence):   # cruelty backstop — every tier
             continue
         return sentence
     return ""

@@ -21045,6 +21045,23 @@ def _handle_emotional_checkin_boundary(
                 return None
             muted = {"id": None, "category": "recent_checkin"}
         _grief_flow_clear(person_id)
+        # The boundary closes the SUBJECT, not one row: every other active event
+        # in the same category goes quiet too, DB-backed so it survives the
+        # restart (field 2026-09-01 → 09-02: event 8 muted, event 7 — the same
+        # disclosure — opened the next boot with "everything you're carrying").
+        if muted.get("id") is not None:
+            try:
+                siblings = emotional_events.mute_category_for_person(
+                    person_id, str(muted.get("category") or ""), reason=reason,
+                )
+                if siblings:
+                    _log.info(
+                        "[empathy] boundary also muted %d other active %s event(s) "
+                        "for person_id=%s: %s",
+                        len(siblings), muted.get("category"), person_id, siblings,
+                    )
+            except Exception as exc:
+                _log.debug("category-wide check-in mute failed: %s", exc)
         _log.info(
             "[empathy] muted proactive emotional check-ins for person_id=%s "
             "event_id=%s category=%s due to boundary reply: %r",
@@ -30289,10 +30306,24 @@ def _handle_speech_segment(
                         empathy.consume_recency_answer(person_id, text)
                     except Exception as exc:
                         _log.debug("recency answer consume failed: %s", exc)
+                    # The last few lines of the session, so the classifier can
+                    # resolve pronouns and tell a public figure from someone the
+                    # person knows ("she died two days ago" = Dolly Parton, one
+                    # turn after "Tim Curry died" — field 2026-08-26 22:30).
+                    context_lines: list = []
+                    try:
+                        for turn in (conv_memory.get_session_transcript() or [])[-7:-1]:
+                            spk = str((turn or {}).get("speaker") or "").strip()
+                            body = " ".join(str((turn or {}).get("text") or "").split())
+                            if body:
+                                context_lines.append(f"{spk or 'user'}: {body}")
+                    except Exception as exc:
+                        _log.debug("empathy context lines skipped: %s", exc)
                     result = empathy.classify_affect(
                         text,
                         prosody_features=prosody_features,
                         face_mood=face_mood,
+                        context_lines=context_lines,
                     )
                     if not result:
                         return
@@ -30389,12 +30420,33 @@ def _handle_speech_segment(
                                     row_id, ev.get("category"), ev_recency,
                                     person_id, ev.get("description"),
                                 )
+                                public_loss = False
+                                try:
+                                    public_loss = emotional_events.is_public_figure_loss(ev)
+                                except Exception as exc:
+                                    _log.debug("public-figure loss check failed: %s", exc)
+                                if public_loss:
+                                    # "Tim Curry died." is news, not bereavement
+                                    # (field 2026-08-26 → three sessions of grief
+                                    # openers). Keep it as knowledge; never lead
+                                    # with it, never ask how long ago.
+                                    emotional_events.mute_checkins(
+                                        row_id,
+                                        reason="public-figure loss, not a personal bereavement",
+                                    )
+                                    _log.info(
+                                        "[empathy] event id=%s is about a public figure "
+                                        "(%s) — kept as knowledge, check-ins muted",
+                                        row_id,
+                                        ev.get("loss_subject_name") or ev.get("loss_subject"),
+                                    )
                                 # No timeframe on a heavy disclosure: arm the
                                 # how-long-ago probe so the person's answer on
                                 # a following turn can settle check-in
                                 # eligibility (historical → never; recent → ok).
                                 if (
                                     ev_recency == "unknown"
+                                    and not public_loss
                                     and emotional_events.is_heavy_event(ev)
                                 ):
                                     empathy.note_recency_probe(person_id, row_id)
