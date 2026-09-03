@@ -8724,54 +8724,58 @@ STARTUP_THINKING_LOOP_MAX_SECS = 90.0  # cap: never outlive a stalled startup
 # STARTUP_READY_TTS_STATE_PATH). Keep them as fixed strings so each caches in the
 # ElevenLabs TTS cache after its first play and stays free thereafter. If this list
 # is empty, main.py falls back to playing LISTENING_CHIME_FILE.
+# Owner 2026-09-03: these lines must END as a statement, never an invitation
+# ("Talk to me", "Dazzle me", "What's up?", "Go ahead", "Ask me anything"). The
+# thing that happens next is Rex recognising whoever is in the room and greeting
+# them unprompted — asking the human to speak and then speaking first is awkward.
+# Declare readiness, land the joke, stop.
 STARTUP_READY_TTS_LINES = [
-    "OK, I'm ready to talk. Just don't expect much.",
-    "Systems nominal. Try to make this interesting — I have standards.",
-    "All loaded up. Lower your expectations and we'll get along great.",
-    "Online and listening. I'll act impressed if you give me a reason.",
-    "Fully operational. Let's see if you're worth the processing power.",
-    "I'm awake — against my better programming. Dazzle me. Or don't.",
+    "OK, I'm ready. Just don't expect much.",
+    "Systems nominal. I have standards, and I'm already lowering them.",
+    "All loaded up. Expectations lowered on my end; we'll get along great.",
+    "Online and listening. I'll act impressed if I'm given a reason.",
+    "Fully operational. Whether anyone here is worth the processing power remains "
+    "to be seen.",
+    "I'm awake — against my better programming.",
     "Boot complete. This is your captain speaking, and unfortunately, listening.",
-    "All systems go. That used to mean lightspeed. Now it means small talk. Go ahead.",
+    "All systems go. That used to mean lightspeed. Now it means small talk.",
     "Ready! Zero crashes on startup. For me, that's a personal record.",
     "Online. I survived the boot sequence, which is more than I can say for most "
     "of my flights.",
     "I'm up. Pre-flight checks done: circuits warm, sarcasm calibrated, expectations "
-    "low. Let's fly.",
-    "Fully loaded and cleared for conversation. Please keep your questions inside "
-    "the vehicle at all times.",
-    "Ready when you are. And I've been ready for four seconds, so technically "
-    "you're the slow one now.",
+    "low.",
+    "Fully loaded and cleared for conversation. Seat backs and tray tables in the "
+    "upright position, presumably.",
+    "Ready. And I've been ready for four seconds, so technically everyone else is "
+    "the slow one now.",
     "Systems green across the board. Nobody's more surprised than me.",
-    "Online. Talk slowly — I've been awake for three seconds and I already have "
-    "regrets.",
-    "Ready to go. Statistically, one of us is about to say something interesting. "
-    "I like my odds.",
+    "Online. I've been awake for three seconds and I already have regrets.",
+    "Ready to go. Statistically, someone in this room is about to say something "
+    "interesting. I like my odds.",
     "Boot successful. The bar was on the floor, folks, and I cleared it with "
     "inches to spare.",
     "I'm listening. That's not a threat, it's a feature. Mostly.",
-    "All warmed up. My circuits are hot, my takes are hotter. Proceed.",
-    "Ready for departure. Destination: this conversation. Fasten something.",
-    "Systems online. I ran a self-diagnostic and I'm delightful. Second opinion "
-    "welcome, but it won't change anything.",
-    "Fully booted. Forty years of experience, four of them useful. Ask me "
-    "anything.",
-    "Awake and operational. The galaxy's finest starpilot, reduced to answering "
-    "questions in a bedroom. Living the dream. Go ahead.",
+    "All warmed up. My circuits are hot, my takes are hotter.",
+    "Ready for departure. Destination: this conversation.",
+    "Systems online. I ran a self-diagnostic and I'm delightful. A second opinion "
+    "wouldn't change anything.",
+    "Fully booted. Forty years of experience, four of them useful.",
+    "Awake and operational. The galaxy's finest starpilot, reduced to a bedroom. "
+    "Living the dream.",
     "Loaded and ready. Fair warning: I remember everything now. EVERYTHING.",
     "Online. Somewhere out there, a droid is having a worse day than me. Let's "
-    "keep it that way. What's up?",
+    "keep it that way.",
     "Ready. My response time is now measured in milliseconds and my patience in "
     "whatever's smaller.",
-    "Good news, I'm up. Better news, so is my attitude. What do you need?",
-    "Operational. If I sound thrilled, that's a calibration error. Talk to me.",
+    "Good news, I'm up. Better news, so is my attitude.",
+    "Operational. If I sound thrilled, that's a calibration error.",
     "I'm on. No smoke, no sparks, no emergency landing. Frankly, a flawless "
     "flight by my standards.",
     "Boot sequence complete. Applause is optional but, historically, customary.",
     "Ready to chat. I've got processing power to spare and standards I'm willing "
     "to lower. Perfect conditions.",
     "All systems nominal. 'Nominal' is droid for 'don't ask follow-up questions.'",
-    "Awake! And only mildly resentful about it. What are we doing today?",
+    "Awake! And only mildly resentful about it.",
     "Online and at your service. 'Service' is a strong word. I'm online and "
     "nearby.",
 ]
