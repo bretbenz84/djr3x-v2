@@ -100,3 +100,8 @@ psutil>=6.0.0
 
 # ── HTTP (weather API, misc) ──────────────────────────────────────────────────
 requests>=2.32.0
+
+# ── ReSpeaker Flex XVF3800 parameter access (tools/flex_ctl.py; USB control
+# transfers via the bundled libusb — no Homebrew libusb needed) ───────────────
+pyusb>=1.2.1
+libusb-package>=1.0.26

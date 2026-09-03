@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-tools/mic_check.py — Far-field microphone diagnostic for the ReSpeaker Lite.
+tools/mic_check.py — Far-field microphone diagnostic for the ReSpeaker
+(Flex XVF3800 Circular-4 since 2026-09-02; the Lite before that).
 
 Answers the question "why are transcriptions bad when I talk from across the
 room?" with measurements instead of guesses. It reproduces the LIVE capture math
@@ -16,10 +17,17 @@ so what it reports is what Whisper actually receives.
     ./venv/bin/python tools/mic_check.py listen       # record + PLAY BACK what Rex hears
     ./venv/bin/python tools/mic_check.py ab           # A/B one change (charger in/out)
     ./venv/bin/python tools/mic_check.py score        # scripted accuracy benchmark, logged
+    ./venv/bin/python tools/mic_check.py aec          # PLAYS SOUND: echo cancellation per channel, logged
     ./venv/bin/python tools/mic_check.py all          # channels + noise + speech + verdict
 
-Nothing here writes to the robot's databases or speaks. Run it with the main app
-STOPPED (it needs exclusive use of the mic).
+Nothing here writes to the robot's databases. Only `aec` and `listen` make sound,
+and both say so and wait for Enter first. Run it with the main app STOPPED (it
+needs exclusive use of the mic).
+
+Comparison records: `score` appends to logs/mic_check/history.jsonl and `aec` to
+logs/mic_check/aec_history.jsonl, so a mic swap can be judged against the last
+board's numbers instead of memory (the ReSpeaker Lite baselines live in
+docs/respeaker_flex_xvf3800.md).
 
 Reference points used for the verdicts (16-bit capture, speech at conversational
 level): a healthy far-field signal lands around -30 dBFS RMS with >= 18 dB SNR.
@@ -180,13 +188,81 @@ def _config_banner() -> None:
 
 # ── tests ─────────────────────────────────────────────────────────────────────
 
+# Known USB channel layouts, keyed by channel count. Verified by capture +
+# tools/flex_ctl.py on 2026-09-02 for the Flex; the Lite entry is the AEC
+# firmware build that duplicated processed mono on both channels.
+_KNOWN_LAYOUTS = {
+    6: {
+        "board": "reSpeaker Flex XVF3800 (6-ch USB build)",
+        "roles": {0: "Conference output — AEC + beamform + NS + AGC (room floor ~26 dB hot)",
+                  1: "ASR output of the auto-selected beam — AEC + beamform, no AGC",
+                  2: "raw mic 0", 3: "raw mic 1", 4: "raw mic 2", 5: "raw mic 3"},
+        "recommend": 1,
+    },
+}
+
+
+def _correlation_clusters(corr: np.ndarray, threshold: float = 0.9) -> list[list[int]]:
+    """Group channels whose pairwise |correlation| exceeds threshold (single-link)."""
+    n = corr.shape[0]
+    seen: set[int] = set()
+    clusters: list[list[int]] = []
+    for i in range(n):
+        if i in seen:
+            continue
+        group = [i]
+        seen.add(i)
+        frontier = [i]
+        while frontier:
+            a = frontier.pop()
+            for b in range(n):
+                if b not in seen and abs(float(corr[a, b])) >= threshold:
+                    seen.add(b)
+                    group.append(b)
+                    frontier.append(b)
+        clusters.append(sorted(group))
+    return clusters
+
+
+def _classify_channels(stats: list[dict], corr: np.ndarray) -> dict:
+    """Pure decision logic for test_channels, so it is unit-testable without a mic.
+
+    Returns {"verdict": str, "recommend": int | None, "clusters": [...]}. recommend
+    is the AUDIO_AEC_INPUT_CHANNEL to set (None = leave blank / mix).
+    """
+    n_ch = len(stats)
+    clusters = _correlation_clusters(corr) if n_ch > 1 else [[0]]
+    if n_ch in _KNOWN_LAYOUTS:
+        layout = _KNOWN_LAYOUTS[n_ch]
+        return {"verdict": f"known layout: {layout['board']}",
+                "recommend": layout["recommend"], "clusters": clusters,
+                "roles": layout["roles"]}
+    if n_ch == 1:
+        return {"verdict": "mono device", "recommend": None, "clusters": clusters}
+    silent = [s["ch"] for s in stats if s["rms_dbfs"] < -70.0]
+    live = [s["ch"] for s in stats if s["rms_dbfs"] >= -70.0]
+    if silent and live:
+        return {"verdict": f"channel(s) {silent} silent while you talked — playback reference; "
+                           f"read the live channel", "recommend": live[0], "clusters": clusters}
+    c01 = abs(float(corr[0, 1]))
+    if n_ch == 2 and c01 > 0.999 and abs(stats[0]["rms_dbfs"] - stats[1]["rms_dbfs"]) < 0.5:
+        return {"verdict": "two IDENTICAL channels — one processed mono stream duplicated; "
+                           "mixing costs nothing", "recommend": None, "clusters": clusters}
+    if n_ch == 2 and c01 > 0.9:
+        return {"verdict": "two raw capsules (nearly the same signal); mixing is fine but no "
+                           "array processing is applied", "recommend": None, "clusters": clusters}
+    return {"verdict": "channels carry DIFFERENT audio — inspect before choosing",
+            "recommend": None, "clusters": clusters}
+
+
 def test_channels(secs: float = 6.0) -> dict:
     """Identify what each physical mic channel carries.
 
-    With the AEC firmware the ReSpeaker Lite puts echo-cancelled MIC audio on one
-    channel and the raw playback REFERENCE on the other. If the reference channel
-    is being mixed into the mono feed, the speech level is halved AND Rex's own
-    output is added back — both of which wreck far-field transcription.
+    Flex XVF3800 (6-ch build): 0 = Conference (AGC'd), 1 = ASR beam, 2-5 = raw
+    capsules — channel 1 is the one our pipeline wants. Old ReSpeaker Lite AEC
+    firmware: processed mono on both channels. Mixing the wrong channels either
+    halves speech level, adds Rex's own output back, or (Flex) buries everything
+    under the AGC channel's 26 dB-hot noise floor.
     """
     print("\n=== CHANNEL IDENTIFICATION ===")
     print("Talk normally from where you usually stand for the whole recording.")
@@ -209,33 +285,34 @@ def test_channels(secs: float = 6.0) -> dict:
               f"peak {stats[-1]['peak_dbfs']:7.1f} dBFS   "
               f"clipped {stats[-1]['clip'] * 100:5.2f}%")
 
+    corr = np.eye(n_ch)
     if n_ch >= 2:
-        a, b = raw[:, 0], raw[:, 1]
-        denom = (np.std(a) * np.std(b))
-        corr = float(np.corrcoef(a, b)[0, 1]) if denom > 1e-9 else 0.0
-        print(f"\n  channel 0/1 correlation: {corr:+.3f}")
-        quiet = [s for s in stats if s["rms_dbfs"] < -70.0]
-        print()
-        if quiet:
-            for s in quiet:
-                print(f"  ! channel {s['ch']} is essentially SILENT ({s['rms_dbfs']:.1f} dBFS) "
-                      f"while you were talking.")
-            print("    That is the playback-reference channel (silent because Rex wasn't")
-            print("    speaking). Mixing it in just halves your speech level.")
-            live = [s for s in stats if s["rms_dbfs"] >= -70.0]
-            if live:
-                print(f"    -> set AUDIO_AEC_INPUT_CHANNEL={live[0]['ch']} in .env")
-        elif abs(corr) > 0.999 and abs(stats[0]["rms_dbfs"] - stats[1]["rms_dbfs"]) < 0.5:
-            print("  The two channels are IDENTICAL — one processed mono stream")
-            print("  duplicated, not two raw capsules. That is what the AEC/beamforming")
-            print("  firmware emits, so the on-chip processing IS in the signal path.")
-            print("  Mixing costs nothing here: leave AUDIO_AEC_INPUT_CHANNEL blank.")
-        elif abs(corr) > 0.9:
-            print("  Both channels carry nearly the same signal (two raw capsules).")
-            print("  Mixing them is fine, but no array processing is being applied.")
-        else:
-            print("  Both channels carry DIFFERENT live audio — inspect before choosing.")
-    return {"channels": stats}
+        stds = raw.std(axis=0)
+        if np.all(stds > 1e-9):
+            corr = np.corrcoef(raw.T)
+        print("\n  correlation matrix:")
+        for i in range(n_ch):
+            print("   ", " ".join(f"{float(corr[i, j]):+.2f}" for j in range(n_ch)))
+
+    result = _classify_channels(stats, corr)
+    print(f"\n  {result['verdict']}")
+    for group in result["clusters"]:
+        if len(group) > 1:
+            print(f"    channels {group} move together")
+    for ch, role in (result.get("roles") or {}).items():
+        print(f"    ch{ch}: {role}")
+    if result["recommend"] is None:
+        print("  -> leave AUDIO_AEC_INPUT_CHANNEL blank (mix).")
+    else:
+        print(f"  -> set AUDIO_AEC_INPUT_CHANNEL={result['recommend']} in .env")
+    cur = getattr(config, "AUDIO_AEC_INPUT_CHANNEL", -1)
+    try:
+        cur = int(cur)
+    except (TypeError, ValueError):
+        cur = -1
+    if (cur if cur >= 0 else None) != result["recommend"]:
+        print(f"  ! .env currently has {cur if cur >= 0 else 'blank'} — change it.")
+    return {"channels": stats, "classification": result}
 
 
 def test_noise(secs: float = 5.0) -> float:
@@ -519,6 +596,212 @@ def test_ab(secs: float = 6.0) -> None:
     print(f"  Recordings saved under {outdir}/ — listen to them.")
 
 
+def _resolve_output_index():
+    """The playback device the robot uses (config.AUDIO_OUTPUT_DEVICE_*), else None."""
+    import sounddevice as sd
+    idx = int(getattr(config, "AUDIO_OUTPUT_DEVICE_INDEX", -1) or -1)
+    if idx >= 0:
+        return idx
+    name = str(getattr(config, "AUDIO_OUTPUT_DEVICE_NAME", "") or "").strip().lower()
+    if not name:
+        return None
+    for i, dev in enumerate(sd.query_devices()):
+        if name in str(dev.get("name", "")).lower() and int(dev.get("max_output_channels", 0)) > 0:
+            return i
+    return None
+
+
+def _rex_speech_program(secs: float) -> np.ndarray:
+    """secs of Rex's own cached voice at 16 kHz, peak-normalized to -12 dBFS.
+
+    His real lines are the echo the AEC has to cancel in service, so that is what
+    we play. Falls back to a shaped 1 kHz tone when the TTS cache is empty.
+    """
+    import glob
+    import math
+
+    parts: list[np.ndarray] = []
+    total = 0
+    cache = sorted(glob.glob(str(_ROOT / "assets" / "audio" / "tts_cache" / "*.wav")),
+                   key=lambda p: Path(p).stat().st_size, reverse=True)
+    try:
+        import soundfile as sf
+        from scipy.signal import resample_poly
+    except Exception:
+        cache = []
+    for path in cache:
+        try:
+            a, sr = sf.read(path, dtype="float32", always_2d=True)
+        except Exception:
+            continue
+        a = a.mean(axis=1)
+        if sr != SR:
+            g = math.gcd(int(sr), SR)
+            a = resample_poly(a, SR // g, int(sr) // g).astype(np.float32)
+        parts.append(a)
+        total += len(a)
+        if total >= secs * SR:
+            break
+    if parts:
+        x = np.concatenate(parts)[: int(secs * SR)]
+    else:
+        t = np.arange(int(secs * SR)) / SR
+        x = np.sin(2 * np.pi * 1000.0 * t).astype(np.float32)
+    x = x / max(1e-6, float(np.max(np.abs(x)))) * (10.0 ** (-12.0 / 20.0))
+    r = int(0.05 * SR)
+    x[:r] *= np.linspace(0.0, 1.0, r)
+    x[-r:] *= np.linspace(1.0, 0.0, r)
+    return x.astype(np.float32)
+
+
+def _erle_windows(rec: np.ndarray, processed: list[int], raw: list[int],
+                  win_secs: float = 1.0) -> list[dict]:
+    """Per-window echo return loss enhancement: raw-capsule level minus each
+    processed channel's level, in dB. Pure math, unit-tested."""
+    win = max(1, int(win_secs * SR))
+    out = []
+    for start in range(0, len(rec) - win + 1, win):
+        w = rec[start:start + win]
+        raw_db = float(np.mean([_dbfs(w[:, c]) for c in raw])) if raw else float("nan")
+        row = {"t": start / SR, "raw_dbfs": raw_db}
+        for c in processed:
+            lvl = _dbfs(w[:, c])
+            row[f"ch{c}_dbfs"] = lvl
+            row[f"erle_ch{c}"] = raw_db - lvl if raw else float("nan")
+        out.append(row)
+    return out
+
+
+def test_aec(secs: float = 20.0) -> dict | None:
+    """Measure the on-chip echo cancellation: play Rex's own voice OUT through the
+    robot's speaker and record every mic channel at the same time.
+
+    Reports, per processed channel, how far below the raw capsules the echo lands
+    (ERLE) window by window — the adaptive filter needs a few seconds of far-end
+    audio to converge, so the number that matters is the LAST few seconds, not
+    the first. The XVF3800's own AEC_AECCONVERGED flag is read afterwards when
+    tools/flex_ctl.py can reach the board. Appended to logs/mic_check/aec_history.jsonl.
+
+    THIS TEST MAKES SOUND. It says so and waits for Enter.
+    """
+    import json
+    import sounddevice as sd
+    from datetime import datetime
+
+    in_idx = _device_index()
+    out_idx = _resolve_output_index()
+    if in_idx is None:
+        raise SystemExit("no input device resolved (AUDIO_DEVICE_NAME / AUDIO_DEVICE_INDEX)")
+    if out_idx is None:
+        raise SystemExit("no output device resolved — set AUDIO_OUTPUT_DEVICE_NAME to the "
+                         "ReSpeaker so the chip gets its echo reference")
+    info_in = sd.query_devices(in_idx)
+    info_out = sd.query_devices(out_idx)
+    n_ch = int(info_in.get("max_input_channels", 1))
+    layout = _KNOWN_LAYOUTS.get(n_ch)
+    processed = [0, 1] if n_ch >= 2 else [0]
+    raw = [c for c in range(2, n_ch)] if layout else []
+
+    print("\n=== HARDWARE AEC (ECHO CANCELLATION) ===")
+    print(f"  will PLAY {secs:.0f}s of Rex's own cached voice, peak -12 dBFS, through")
+    print(f"  output device {out_idx} ({info_out.get('name')}) — the robot's speaker —")
+    print(f"  while recording all {n_ch} channel(s) of input device {in_idx} ({info_in.get('name')}).")
+    if not raw:
+        print("  (no raw-capsule channels on this device, so only level RISE per channel")
+        print("   can be reported, not a true ERLE)")
+    print("  Keep the room quiet (TV off) and do not talk during the recording.")
+    if input("\n  Press Enter to play, or Ctrl-C to abort... ") is None:
+        return None
+
+    program = _rex_speech_program(secs)
+    out = np.stack([program, program], axis=1)
+    quiet = _record(2.0)
+    rec = sd.playrec(out, samplerate=SR, channels=n_ch, dtype="float32",
+                     device=(in_idx, out_idx))
+    sd.wait()
+    rec = np.asarray(rec, dtype=np.float32).reshape(len(program), n_ch)
+
+    rows = _erle_windows(rec, processed, raw, 1.0)
+    print(f"\n  {'t':>4}  {'raw':>7}  " + "  ".join(f"{'ch' + str(c):>7}  {'ERLE' + str(c):>6}" for c in processed))
+    for r in rows:
+        print(f"  {r['t']:4.0f}  {r['raw_dbfs']:7.1f}  "
+              + "  ".join(f"{r[f'ch{c}_dbfs']:7.1f}  {r[f'erle_ch{c}']:6.1f}" for c in processed))
+    tail = rows[-5:] if len(rows) >= 5 else rows
+    summary = {}
+    for c in processed:
+        summary[f"erle_ch{c}_last5s"] = float(np.mean([r[f"erle_ch{c}"] for r in tail]))
+        summary[f"ch{c}_quiet_dbfs"] = _dbfs(quiet[:, c])
+        summary[f"ch{c}_residual_dbfs"] = float(np.mean([r[f"ch{c}_dbfs"] for r in tail]))
+    if raw:
+        summary["raw_echo_dbfs"] = float(np.mean([r["raw_dbfs"] for r in tail]))
+        summary["raw_peak_dbfs"] = float(max(_peak_dbfs(rec[:, c]) for c in raw))
+
+    print("\n  last 5 s:")
+    for c in processed:
+        role = (layout or {}).get("roles", {}).get(c, "")
+        print(f"    ch{c}: residual {summary[f'ch{c}_residual_dbfs']:6.1f} dBFS "
+              f"(quiet floor {summary[f'ch{c}_quiet_dbfs']:6.1f})  "
+              f"ERLE {summary[f'erle_ch{c}_last5s']:5.1f} dB   {role}")
+    if raw:
+        print(f"    raw capsules: echo {summary['raw_echo_dbfs']:.1f} dBFS, "
+              f"peak {summary['raw_peak_dbfs']:.1f} dBFS"
+              + ("  ! raw mics near clipping — lower the amp" if summary["raw_peak_dbfs"] > -3.0 else ""))
+
+    converged = None
+    dsp: dict = {}
+    try:
+        from tools import flex_ctl
+        dsp = flex_ctl.snapshot(["AEC_AECCONVERGED", "AEC_AECPATHCHANGE", "AEC_RT60",
+                                 "AUDIO_MGR_SYS_DELAY", "AUDIO_MGR_MIC_GAIN",
+                                 "AUDIO_MGR_REF_GAIN", "PP_AGCONOFF", "PP_ECHOONOFF",
+                                 "AEC_HPFONOFF", "VERSION", "BLD_MSG"])
+        conv = dsp.get("AEC_AECCONVERGED")
+        if isinstance(conv, list):
+            converged = bool(conv[0])
+            print(f"    XVF3800 reports AEC converged = {converged}")
+    except Exception as exc:
+        print(f"    (flex_ctl unavailable: {exc})")
+
+    # Verdict against the numbers that matter for barge-in / talk-over.
+    sel = getattr(config, "AUDIO_AEC_INPUT_CHANNEL", -1)
+    try:
+        sel = int(sel)
+    except (TypeError, ValueError):
+        sel = -1
+    key = f"erle_ch{sel}_last5s" if sel in processed else f"erle_ch{processed[-1]}_last5s"
+    erle = summary[key]
+    print()
+    if raw:
+        if erle >= 25.0:
+            print(f"  {erle:.0f} dB on the pipeline channel: strong — wake word over Rex's voice is realistic.")
+        elif erle >= 15.0:
+            print(f"  {erle:.0f} dB on the pipeline channel: on par with the old ReSpeaker Lite (~17 dB).")
+        elif erle >= 6.0:
+            print(f"  {erle:.0f} dB: weak. Check the filter converged (re-run longer), that the amp")
+            print("  is on the Flex's OWN output, and that AUDIO_OUTPUT_DEVICE_NAME routes here.")
+        else:
+            print(f"  {erle:.0f} dB: NOT cancelling. The chip is not seeing this playback as its")
+            print("  reference (wrong output device) or the AEC is bypassed (SHF_BYPASS).")
+    print()
+
+    outdir = _ROOT / "logs" / "mic_check"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    outdir.mkdir(parents=True, exist_ok=True)
+    for c in processed:
+        _save_wav(outdir / f"aec-{stamp}-ch{c}.wav", rec[:, c])
+    if raw:
+        _save_wav(outdir / f"aec-{stamp}-raw{raw[0]}.wav", rec[:, raw[0]])
+    record = {"ts": stamp, "device": info_in.get("name"), "output": info_out.get("name"),
+              "secs": secs, "channels": n_ch, "processed": processed, "raw": raw,
+              "pipeline_channel": sel, "summary": summary, "converged": converged,
+              "dsp": {k: v for k, v in dsp.items() if not k.startswith("_")},
+              "windows": rows}
+    with (outdir / "aec_history.jsonl").open("a") as f:
+        f.write(json.dumps(record) + "\n")
+    print(f"  logged to {outdir / 'aec_history.jsonl'}; residual takes saved as aec-{stamp}-*.wav")
+    return record
+
+
 # Mixed lengths on purpose: the 1-2 word lines are Rex's known weak spot (short
 # utterances give Whisper almost no context and get mislabeled/homophoned in the
 # field), the long ones test sustained accuracy. Keep both ends represented.
@@ -653,7 +936,7 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("test", nargs="?", default="all",
                     choices=["channels", "noise", "speech", "spectrum",
-                             "distance", "transcribe", "listen", "ab", "score", "all"])
+                             "distance", "transcribe", "listen", "ab", "score", "aec", "all"])
     ap.add_argument("--secs", type=float, default=None, help="override recording length")
     ap.add_argument("--device", default=None,
                     help="capture through a different input device (name substring or "
@@ -674,6 +957,8 @@ def main() -> None:
             test_ab(args.secs or 6.0)
         elif args.test == "score":
             test_score(args.secs or 6.0)
+        elif args.test == "aec":
+            test_aec(args.secs or 20.0)
         elif args.test == "noise":
             test_noise(args.secs or 5.0)
         elif args.test == "speech":

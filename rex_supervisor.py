@@ -190,6 +190,34 @@ def _device_max_input_channels(device) -> int:
         return 0
 
 
+def _aec_input_channel(env: dict[str, str]):
+    """AUDIO_AEC_INPUT_CHANNEL from the environment / .env: the ONE mic channel
+    to read, or None to mix every channel.
+
+    Mirrors audio/stream.py. On the reSpeaker Flex XVF3800 (6-ch USB build) the
+    channels are NOT interchangeable: 0 is the AGC'd Conference output (room
+    noise sits ~26 dB hot), 1 is the ASR beam, 2-5 are raw capsules. Averaging
+    all six buried the wake word under the AGC channel, so the supervisor has
+    to honor the same selection the main app does.
+    """
+    raw = (os.environ.get("AUDIO_AEC_INPUT_CHANNEL") or env.get("AUDIO_AEC_INPUT_CHANNEL") or "").strip()
+    try:
+        ch = int(raw)
+    except ValueError:
+        return None
+    return ch if ch >= 0 else None
+
+
+def _frames_to_mono(arr, aec_channel):
+    """(frames, channels) float32 → 1-D mono, exactly like audio/stream.py._callback:
+    the selected channel verbatim when it exists, else the mean of all channels."""
+    if getattr(arr, "ndim", 1) == 2 and arr.shape[1] > 1:
+        if aec_channel is not None and 0 <= aec_channel < arr.shape[1]:
+            return arr[:, aec_channel].copy()
+        return arr.mean(axis=1)
+    return arr.reshape(-1)
+
+
 def _resolve_input_device(env: dict[str, str]):
     """Resolve a sounddevice input device from .env, else the system default.
 
@@ -576,10 +604,13 @@ def run() -> int:
         return 1
 
     device = _resolve_input_device(env)
+    aec_channel = _aec_input_channel(env)
     log.info(
         "Supervisor online. Listening for 'wake up rex' "
-        "(mic=%s, threshold=%.2f, consecutive=%d, debug=%s).",
-        _device_label(device), threshold, required_consecutive, _DEBUG,
+        "(mic=%s, channel=%s, threshold=%.2f, consecutive=%d, debug=%s).",
+        _device_label(device),
+        "mix" if aec_channel is None else aec_channel,
+        threshold, required_consecutive, _DEBUG,
     )
 
     child: Optional[subprocess.Popen] = None
@@ -620,7 +651,11 @@ def run() -> int:
                 s.start()
                 open_channels = ch
                 if ch != 1:
-                    log.info("Mic opened with %d channels (mixing → mono).", ch)
+                    log.info(
+                        "Mic opened with %d channels (%s → mono).", ch,
+                        "mixing" if aec_channel is None or aec_channel >= ch
+                        else f"reading channel {aec_channel}",
+                    )
                 return s
             except Exception as exc:
                 last_exc = exc
@@ -721,14 +756,12 @@ def run() -> int:
                 stream = None
                 continue
 
-            # Mix to mono: sounddevice returns (frames, channels). On a 2-in
-            # device (ReSpeaker Lite) averaging both capsules is what the main app
-            # does; a naive reshape would interleave L/R into garbage.
+            # To mono: sounddevice returns (frames, channels). Read the configured
+            # AEC channel when there is one (Flex XVF3800: channel 1 = ASR beam),
+            # else average every capsule like the main app; a naive reshape would
+            # interleave the channels into garbage.
             arr = np.asarray(audio, dtype=np.float32)
-            if arr.ndim == 2 and arr.shape[1] > 1:
-                samples = arr.mean(axis=1)
-            else:
-                samples = arr.reshape(-1)
+            samples = _frames_to_mono(arr, aec_channel)
             rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
 
             # openWakeWord wants int16-range PCM (see _to_oww_input). Feeding raw
@@ -823,11 +856,14 @@ def meter(seconds: float = 20.0) -> int:
         return 1
     env = _read_env_file()
     device = _resolve_input_device(env)
+    aec_channel = _aec_input_channel(env)
     model = _load_model()
-    # Open with the device's real channel count (ReSpeaker Lite = 2-in), mono-mix.
+    # Open with the device's real channel count (Flex XVF3800 = 6-in, Lite = 2-in)
+    # and reduce to mono the same way the listener does.
     max_in = _device_max_input_channels(device)
     channels = max_in if max_in else 1
-    print(f"Metering mic: {_device_label(device)} ({channels}-ch → mono)")
+    how = "mix" if aec_channel is None or aec_channel >= channels else f"channel {aec_channel}"
+    print(f"Metering mic: {_device_label(device)} ({channels}-ch → mono via {how})")
     print("Speak now — bar = level, score = wakeuprex confidence. Ctrl-C to stop.\n")
     peak = 0.0
     peak_score = 0.0
@@ -838,7 +874,7 @@ def meter(seconds: float = 20.0) -> int:
             while time.monotonic() < end and not _stop.is_set():
                 audio, _ = s.read(_CHUNK_SAMPLES)
                 a = np.asarray(audio, dtype=np.float32)
-                x = a.mean(axis=1) if (a.ndim == 2 and a.shape[1] > 1) else a.reshape(-1)
+                x = _frames_to_mono(a, aec_channel)
                 rms = float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
                 peak = max(peak, rms)
                 score = 0.0

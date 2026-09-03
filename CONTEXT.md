@@ -768,7 +768,7 @@ Optional hardware:
 - Head LED Arduino.
 - Chest LED Arduino.
 - Camera.
-- Microphone or ReSpeaker Lite.
+- Microphone: reSpeaker Flex XVF3800 Circular-4 (2026-09-02+; ReSpeaker Lite before) — also the playback path, so its on-chip AEC gets the reference. Channel map, measurements and the re-test plan: `docs/respeaker_flex_xvf3800.md`.
 - Speakers/audio output.
 
 Missing serial ports are warnings, not fatal errors, unless a feature explicitly requires hardware safety validation. Servo min/max overrides belong in `.env`, using microsecond values from the Maestro Control Center. Do not connect live servos until safe travel limits are configured.
@@ -2750,3 +2750,24 @@ surfaced five distinct failures; each is fixed at its own layer:
 - Improve group turn triage for crosstalk and ambiguous addressees.
 - Continue reducing OpenAI calls on common conversational paths.
 - Expand tests around identity introduction, GUI text mode, no-audio mode, and multi-speaker ambiguity.
+
+### Mic swap: ReSpeaker Lite → reSpeaker Flex XVF3800 Circular-4 (2026-09-02)
+
+- The Flex's stock 6-channel USB build is not a stereo pair: ch0 = Conference
+  (AEC + beamform + NS + AGC, room floor ~26 dB hot), ch1 = ASR beam (AEC +
+  beamform, no AGC), ch2-5 = raw capsules with NO echo cancellation. The
+  pipeline reads ch1 (`AUDIO_AEC_INPUT_CHANNEL=1`). Mixing — the old blank
+  setting — would have buried everything under ch0.
+- `rex_supervisor.py` now honors `AUDIO_AEC_INPUT_CHANNEL` too
+  (`_aec_input_channel` / `_frames_to_mono`); it used to average every channel
+  the device exposed, which was harmless on the Lite (identical channels) and
+  wrong on the Flex. `tests/test_flex_audio_channels.py`.
+- `tools/flex_ctl.py` reads (and, only with typed confirmation, writes) the
+  XVF3800 DSP parameters over USB control. `tools/mic_check.py aec` measures
+  echo cancellation per channel against the raw capsules and logs it;
+  `channels` is N-channel aware. Verified on a 1 kHz tone: ≥38 dB on ch1, ~50 dB
+  on ch0. Broadband speech ERLE and the far-field SNR gain are still owed by
+  the user-run re-test plan in `docs/respeaker_flex_xvf3800.md`.
+- Owner rules the same day: no sound / recording / servo motion / firmware
+  flash / DSP write without an explicit go from Bret.
+

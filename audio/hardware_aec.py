@@ -1,7 +1,9 @@
-"""Detect whether the ReSpeaker Lite (onboard hardware AEC) is the live audio I/O.
+"""Detect whether a ReSpeaker with onboard hardware AEC is the live audio I/O.
 
-The droid routes BOTH mic capture and Rex's playback through the ReSpeaker Lite,
-whose XU316 cancels Rex's voice from the mic (~16 dB measured). That hardware
+The droid routes BOTH mic capture and Rex's playback through the ReSpeaker —
+the Flex XVF3800 Circular-4 since 2026-09-02 (XMOS XVF3800: AEC + 4-mic
+beamforming; see docs/respeaker_flex_xvf3800.md), the ReSpeaker Lite before
+that (XU316, ~16 dB measured). The chip cancels Rex's voice from the mic. That hardware
 cancellation is what makes it safe to shrink the post-TTS "deaf window" so speech
 landing as Rex finishes is still captured (see interaction.py boundary handling).
 
@@ -9,7 +11,7 @@ On a dev macOS machine (built-in mic / speakers, AirPods, or any non-ReSpeaker
 device) there is NO hardware AEC, so every AEC-dependent change must stay OFF and
 the original flush/suppression logic must remain intact. ``is_active()`` is the
 single gate for that: it is True only when BOTH the resolved input and output
-devices are the ReSpeaker Lite.
+devices are the ReSpeaker (the name hint below matches both boards).
 
 Override with env ``HARDWARE_AEC=on|off`` (default ``auto`` = device detection).
 The result is cached after first resolution; call ``reset_cache()`` in tests.
@@ -60,7 +62,7 @@ def _detect() -> bool:
     if override in {"off", "0", "false", "no"}:
         return False
 
-    # auto: require the ReSpeaker Lite on BOTH the mic and the speaker path.
+    # auto: require the ReSpeaker on BOTH the mic and the speaker path.
     if AUDIO_DEVICE_INDEX is None:
         return False
     if _HINT not in _device_name(AUDIO_DEVICE_INDEX):
@@ -74,7 +76,7 @@ def _detect() -> bool:
 
 
 def is_active() -> bool:
-    """True only when the ReSpeaker Lite is the live input AND output device.
+    """True only when the ReSpeaker is the live input AND output device.
 
     Cached after first call. The single gate for every hardware-AEC-dependent
     behavior change — must stay False on non-ReSpeaker (dev) machines.
@@ -83,7 +85,7 @@ def is_active() -> bool:
     if _cached is None:
         _cached = _detect()
         _log.info(
-            "[hardware_aec] active=%s (ReSpeaker Lite on both input and output required)",
+            "[hardware_aec] active=%s (a ReSpeaker on both input and output required)",
             _cached,
         )
     return _cached
