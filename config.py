@@ -4212,6 +4212,20 @@ FLEX_DOA_SEGMENT_PAD_SECS = 0.3        # window padding around the captured segm
 FLEX_DOA_MAX_AGE_SECS = 12.0           # a stored voice bearing older than this is stale
 FLEX_DOA_RECONNECT_SECS = 30.0
 
+# ── Voice bearing ↔ face attribution (perception/voice_bearing_match.py) ─────
+# The voice's direction of arrival is a second camera-frame witness next to the
+# lip-motion detector: a visible face within TOLERANCE of the voice bearing is
+# confirmed as the talker (and, if no other face is within MARGIN of it, picked
+# as THE visible speaker among several); a voice farther than CONTRADICTION from
+# every visible face is positive evidence the talker is off camera (folded into
+# the same mouth-still veto the lip detector feeds). Camera geometry reuses
+# MOTION_COME_CAM_HALF_FOV_DEG / CAMERA_WIDTH; neck yaw from the servo readback.
+VOICE_BEARING_ATTRIBUTION_ENABLED = True
+VOICE_BEARING_MIN_SHARE = 0.5              # dominant-cluster share the bearing needs
+VOICE_BEARING_FACE_TOLERANCE_DEG = 20.0    # face this close to the voice = confirmed talker
+VOICE_BEARING_FACE_MARGIN_DEG = 10.0       # next face must be this much farther to SELECT
+VOICE_BEARING_CONTRADICTION_DEG = 45.0     # nearest face farther than this = off-camera talker
+
 # ── Audio playback QoS ────────────────────────────────────────────────────────
 # Playback runs through a Python-level PortAudio callback that must grab the GIL for
 # EVERY audio block. Heavy work elsewhere (model preloads at boot: Whisper, speaker-ID,

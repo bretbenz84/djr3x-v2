@@ -282,6 +282,45 @@ and from off-camera left/right, watching the `[voice_doa]` and
 (`sounddevice status` / `stream_watchdog`), since the poller shares the USB
 device with the mic stream.
 
+## Voice bearing ↔ face attribution (shipped 2026-09-02, bench test owed)
+
+Owner spec: "a face to the right of the robot would be connected to the voice
+on the right". `perception/voice_bearing_match.py` puts a visible face into the
+base frame — face bearing = −(neck yaw + face offset × `MOTION_COME_CAM_HALF_FOV_DEG`),
+the ONE negation between the camera's +right and the DoA's +left — and ranks
+faces by angular distance from the voice. Three outputs feed
+`interaction._handle_speech_segment` (`_voice_bearing_face_match`, one
+`[voice_doa] voice … vs faces …` line per turn):
+
+- **selected** (nearest face within `VOICE_BEARING_FACE_TOLERANCE_DEG` 20°,
+  next face ≥ `VOICE_BEARING_FACE_MARGIN_DEG` 10° farther): with two or more
+  known faces on camera this becomes the "visible face" for the voice-primary
+  decision (`single_visible` / `other_known_recently` relaxed for it) — before
+  the array that case fell to "no single visible face". In the multi-visible
+  weak-voice block it corroborates like the lip detector does
+  (`voice_corroborated_by_bearing`).
+- **confirm_pid** == the visible face → folded into the visual-speaker witness
+  (`visual_speaker_pid`), so a marginal voice on that face is `voice_agrees`.
+- **contradicts** (nearest face > `VOICE_BEARING_CONTRADICTION_DEG` 45° from
+  the voice) → folded into `visual_mouth_still`: the calibrated veto that keeps
+  a silently-on-camera face from absorbing an off-camera voice
+  (`voice_weak_face_wins` → `off_screen_unknown`, sub-genuine-band marginal
+  → `challenge_identity`). This is the misattribution shape from the 20:45
+  session (off-camera "Turn around" credited to Jeremy Thomas).
+
+Requires a fresh bearing (`FLEX_DOA_MAX_AGE_SECS`) with cluster share ≥
+`VOICE_BEARING_MIN_SHARE` (0.5). Kill switch `VOICE_BEARING_ATTRIBUTION_ENABLED`.
+Tests: `tests/test_voice_bearing_match.py`; the decision-function suites are
+unchanged and green.
+
+**Bench tool:** `tools/voice_face_test.py` — records a take through the robot
+mic path, polls DoA for the same window, grabs a frame mid-take, then prints
+the voice bearing, every face's identity + bearing, the voice-ID scoreboard and
+the matcher's verdict; saves an annotated frame + `logs/mic_check/voice_face.jsonl`.
+Run with Rex stopped, head centred (`--neck-deg` otherwise). Expected for
+Bret ~20° right of the nose: voice ≈ −20°, face box ≈ 80 % across to the
+right ⇒ face ≈ −20°, verdict "consistent".
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is

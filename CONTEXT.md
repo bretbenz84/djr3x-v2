@@ -2783,4 +2783,12 @@ surfaced five distinct failures; each is fixed at its own layer:
   and into the off-camera gaze search as the first waypoint. Knobs:
   `FLEX_DOA_*`, `MOTION_COME_VOICE_*`; `FLEX_DOA_MOUNT=head` for a ring that
   turns with the neck. `tests/test_flex_doa.py`; live floor test owed.
+- Voice bearing ↔ face (owner spec, same day): `perception/voice_bearing_match.py`
+  converts a visible face into the base frame (one negation: camera +right →
+  DoA +left) and matches it to the turn's voice bearing. Several known faces on
+  camera → the face at the voice bearing is the visible speaker; a voice from
+  where the visible face is confirms it (visual-speaker witness); a voice far
+  from every face is the mouth-still veto (off-camera talker). Knobs
+  `VOICE_BEARING_*`; `tools/voice_face_test.py` benches it;
+  `tests/test_voice_bearing_match.py`.
 

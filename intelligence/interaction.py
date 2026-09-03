@@ -15377,6 +15377,45 @@ def _recent_voice_bearing(max_age: Optional[float] = None) -> Optional[dict]:
     return res
 
 
+def _voice_bearing_face_match(people: list) -> Optional[dict]:
+    """Which visible known face the current turn's voice came from, per the Flex
+    DoA (perception.voice_bearing_match). None when the feature is off, no
+    fresh/strong bearing exists, or no identified face has a box."""
+    if not bool(getattr(config, "VOICE_BEARING_ATTRIBUTION_ENABLED", True)):
+        return None
+    voice = _recent_voice_bearing()
+    if not voice:
+        return None
+    if float(voice.get("share") or 0.0) < float(getattr(config, "VOICE_BEARING_MIN_SHARE", 0.5)):
+        return None
+    faces = [p for p in (people or [])
+             if isinstance(p, dict) and p.get("person_db_id") is not None
+             and not (p.get("face_visible") is False or p.get("face_missing"))]
+    if not faces:
+        return None
+    neck = None
+    try:
+        from intelligence import motion_agency as _ma
+        neck = _ma._come_neck_bearing_deg()
+    except Exception:
+        neck = None
+    from perception import voice_bearing_match as _vbm
+    res = _vbm.match_faces_to_voice(
+        faces, float(voice["bearing_deg"]), float(neck or 0.0),
+        frame_width=float(getattr(config, "CAMERA_WIDTH", 1920) or 1920),
+        half_fov_deg=float(getattr(config, "MOTION_COME_CAM_HALF_FOV_DEG", 25.0)),
+        tolerance_deg=float(getattr(config, "VOICE_BEARING_FACE_TOLERANCE_DEG", 20.0)),
+        margin_deg=float(getattr(config, "VOICE_BEARING_FACE_MARGIN_DEG", 10.0)),
+        contradiction_deg=float(getattr(config, "VOICE_BEARING_CONTRADICTION_DEG", 45.0)),
+    )
+    if not res.get("faces"):
+        return None
+    names = {r["pid"]: (r["person"].get("face_id") or r["person"].get("voice_id") or r["person"].get("name"))
+             for r in res["faces"]}
+    _log.info("[voice_doa] %s (neck %+.0f°)", _vbm.describe(res, names), float(neck or 0.0))
+    return res
+
+
 def _accumulate_speech(
     speech_start_mono: float,
     *,
@@ -27142,6 +27181,28 @@ def _handle_speech_segment(
         except Exception:
             ws_identified = []
             ws_person = None
+        # Flex DoA (owner spec 2026-09-02): with SEVERAL known faces on camera,
+        # the voice's bearing says which one the words came from — the face on
+        # the right of the frame is tied to a voice from the right. Before the
+        # array this was a guess ("no single visible face"). The pick has to be
+        # unambiguous (next face at least the margin farther from the voice).
+        _bearing_match = None
+        _bearing_selected = False
+        if not text_input:
+            try:
+                _bearing_match = _voice_bearing_face_match(ws_identified)
+            except Exception as exc:
+                _log.debug("[voice_doa] face match failed: %s", exc)
+        if (ws_person is None and len(ws_identified) >= 2 and _bearing_match
+                and _bearing_match.get("selected") is not None):
+            ws_person = _bearing_match["selected"]
+            _bearing_selected = True
+            _log.info(
+                "[interaction] person resolution: %d known faces visible — the voice "
+                "bearing (%+.0f°) picks %r as the visible speaker",
+                len(ws_identified), float(_bearing_match.get("voice_deg") or 0.0),
+                ws_person.get("face_id") or ws_person.get("voice_id"),
+            )
 
         # While an introduction is actively expecting the newcomer to speak, do
         # NOT let the introducer's still-visible / recently-seen face drive
@@ -27270,6 +27331,26 @@ def _handle_speech_segment(
                     "by active-speaker visual — person_id=%s name=%r (floor=%.2f)",
                     speaker_score, person_id, person_name, speaking_floor,
                 )
+            elif (
+                _bearing_match is not None
+                and _bearing_match.get("selected") is not None
+                and _safe_int(raw_best_id) in visible_known_by_id
+                and _safe_int(raw_best_id) == _safe_int(_bearing_match.get("confirm_pid"))
+                and speaker_score >= speaking_floor
+            ):
+                # Same shape as the lip-detector corroboration, with the voice
+                # BEARING as the witness: the weak voice leans at a visible face
+                # and the sound came from where that face is.
+                vis = visible_known_by_id[int(raw_best_id)]
+                person_id = int(raw_best_id)
+                person_name = raw_best_name or vis.get("face_id") or vis.get("voice_id")
+                identity_resolution_override = "voice_corroborated_by_bearing"
+                _log.info(
+                    "[interaction] person resolution: multi-visible weak voice (%.3f) confirmed "
+                    "by the voice bearing (%+.0f°) — person_id=%s name=%r (floor=%.2f)",
+                    speaker_score, float(_bearing_match.get("voice_deg") or 0.0),
+                    person_id, person_name, speaking_floor,
+                )
             else:
                 recent_id = (recent_engagement or {}).get("person_id")
                 if (
@@ -27327,6 +27408,26 @@ def _handle_speech_segment(
                 )
             except Exception as exc:
                 _log.debug("active-speaker recent lookup (single-visible) failed: %s", exc)
+            # The voice BEARING is a second camera-frame witness (Flex DoA): a
+            # voice from where the visible face is confirms that face is the
+            # talker (same weight as the lip detector's latch); a voice from
+            # where NO face is — the off-camera talker while a known face sits
+            # silently in frame, the exact voice_weak_face_wins misattribution —
+            # is positive "mouth still" evidence with the same calibrated scope.
+            if _bearing_match:
+                _confirm = _safe_int(_bearing_match.get("confirm_pid"))
+                if _confirm is not None and _confirm == ws_pid:
+                    if _voice_dec_visual_pid is None:
+                        _voice_dec_visual_pid = ws_pid
+                    _voice_dec_mouth_still = False
+                    _log.info("[voice_doa] voice bearing confirms the visible face %r is the talker",
+                              ws_name)
+                elif _bearing_match.get("contradicts"):
+                    _voice_dec_mouth_still = True
+                    _log.info("[voice_doa] voice bearing (%+.0f°) is %.0f° from the nearest visible "
+                              "face — the talker is off camera",
+                              float(_bearing_match.get("voice_deg") or 0.0),
+                              float(_bearing_match.get("nearest_delta_deg") or 0.0))
             identity_visual_pid = _safe_int(_voice_dec_visual_pid)
             identity_mouth_still = bool(_voice_dec_mouth_still)
             # Voiceless-face signature: the visible person has no voice print
@@ -27346,13 +27447,14 @@ def _handle_speech_segment(
                 ws_in_voice_tie=(
                     person_id is None and _visible_face_in_voice_tie(ws_pid)
                 ),
-                single_visible=(len(visible_known_by_id) == 1),
+                single_visible=(len(visible_known_by_id) == 1 or _bearing_selected),
                 engaged_is_visible=(
                     recent_engagement is not None
                     and _safe_int(recent_engagement.get("person_id")) == ws_pid
                 ),
                 unknown_visible=_has_unknown_visible_or_recent(),
-                other_known_recently=_other_known_visible_recently(ws_pid),
+                other_known_recently=(False if _bearing_selected
+                                      else _other_known_visible_recently(ws_pid)),
                 visual_speaker_pid=_voice_dec_visual_pid,
                 visual_mouth_still=_voice_dec_mouth_still,
                 voice_continuity=_voice_continuity_active(person_id),
