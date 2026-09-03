@@ -1062,7 +1062,8 @@ def _start_wake_orient_reflex(model_name: str, current_state) -> Optional[thread
             _last_voice_bearing = res
             from intelligence import motion_agency
             outcome = motion_agency.orient_to_voice(
-                res["bearing_deg"], share=res.get("share"), reason=f"wake:{model_name}",
+                res["bearing_deg"], share=res.get("share"), samples=res.get("cluster_n"),
+                reason=f"wake:{model_name}",
             )
             _log.info("[wake_orient] %s heard at %+.0f° (%d/%d samples agree) → %s",
                       model_name, res["bearing_deg"], res["cluster_n"], res["n"], outcome)
@@ -15401,6 +15402,11 @@ def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
         return None
     res["at"] = time.monotonic()
     _last_voice_bearing = res
+    try:
+        from intelligence import motion_agency as _ma
+        _ma.note_voice_bearing(res["bearing_deg"])
+    except Exception:
+        pass
     _log.info("[voice_doa] bearing %+.0f° (chip %s°, %d/%d samples agree, spread %.0f°)",
               res["bearing_deg"],
               "?" if res.get("raw_deg") is None else f"{res['raw_deg']:.0f}",

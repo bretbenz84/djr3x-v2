@@ -150,5 +150,77 @@ class WakeHookTest(unittest.TestCase):
         self.assertIsNone(I._start_wake_orient_reflex("Hey_rex", State.QUIET))
 
 
+
+class FieldFixes20260902Test(unittest.TestCase):
+    """The 22:02 live run: radar orient undid the reflex, a spinning ring fed the
+    DoA, and a 4/7-sample bearing turned him the wrong way."""
+
+    def setUp(self):
+        flex_doa._reset_for_tests()
+        MA._state.update(voice_bearing_at=0.0, wake_orient_at=0.0, orient_hits=0,
+                         orient_last_at=0.0, orient_visited=[], last_turn_at=0.0,
+                         last_approach_at=0.0, last_flinch_at=0.0, hold_at=None,
+                         traction_fails=0, no_traction_until=0.0)
+
+    def tearDown(self):
+        flex_doa._reset_for_tests()
+        MA._state.update(voice_bearing_at=0.0)
+
+    def test_samples_taken_while_the_base_moves_are_ignored(self):
+        now = time.monotonic()
+        flex_doa._inject_for_tests([(now - 1.0 + 0.1 * i, 105.0, 105.0, True, 1.0, True) for i in range(10)])
+        self.assertIsNone(flex_doa.bearing_between(now - 1.2, now))
+        flex_doa._inject_for_tests([(now - 0.5 + 0.1 * i, 30.0, 30.0, True, 1.0, False) for i in range(5)])
+        res = flex_doa.bearing_between(now - 1.2, now)
+        self.assertAlmostEqual(res["bearing_deg"], 30.0)
+        self.assertEqual(res["n"], 5)
+
+    def test_thin_cluster_does_not_turn(self):
+        with mock.patch.object(MA.motion_controller, "turn", return_value=7) as turn, \
+             mock.patch("sequences.animations.travel_glance_pose"), \
+             mock.patch("intelligence.consciousness.hold_directed_gaze"):
+            self.assertEqual(MA.orient_to_voice(-65.0, share=0.57, samples=4), "thin")
+            turn.assert_not_called()
+
+    def test_radar_orient_stands_down_while_a_voice_bearing_is_fresh(self):
+        from tests.test_motion_agency import _profile
+        body = {"bearing_deg": 120.0, "range_m": 1.5, "confidence": 0.9, "hits": 5, "frames": 8}
+        patches = [
+            mock.patch.object(MA.motion_controller, "available", return_value=True),
+            mock.patch.object(MA.motion, "state", return_value="idle"),
+            mock.patch.object(MA.motion_controller, "turn", return_value=7),
+            mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
+            mock.patch("sequences.animations.travel_glance_pose"),
+            mock.patch("intelligence.consciousness.hold_directed_gaze"),
+            mock.patch.object(MA, "_radar_bodies", return_value=([body], True)),
+            mock.patch.object(config, "MOTION_RADAR_ORIENT_VOICE_DEFER_SECS", 20.0, create=True),
+        ]
+        started = [p.start() for p in patches]
+        turn = started[2]
+        try:
+            MA.note_voice_bearing(-10.0)
+            for _ in range(4):
+                MA.step({"people": []}, _profile())
+            turn.assert_not_called()
+            MA._state["voice_bearing_at"] = time.monotonic() - 60.0     # stale — radar may act again
+            for _ in range(4):
+                MA.step({"people": []}, _profile())
+            turn.assert_called()
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_busy_base_is_waited_out(self):
+        states = iter(["turning", "turning", "idle", "idle", "idle"])
+        with mock.patch.object(MA.motion_controller, "available", return_value=True), \
+             mock.patch.object(MA.motion, "state", side_effect=lambda: next(states, "idle")), \
+             mock.patch.object(MA.motion_controller, "turn", return_value=7) as turn, \
+             mock.patch.object(MA, "no_drive_room", return_value=None), \
+             mock.patch.object(MA, "_clear_idle_wander"), \
+             mock.patch("world_state.world_state.get", return_value=[]), \
+             mock.patch.object(config, "WAKE_ORIENT_BASE_WAIT_SECS", 2.0, create=True):
+            self.assertEqual(MA.orient_to_voice(-120.0, share=0.9, samples=12), "turned")
+            turn.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()

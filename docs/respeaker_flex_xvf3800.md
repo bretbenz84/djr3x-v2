@@ -398,6 +398,33 @@ Only fires in IDLE/ACTIVE (not SLEEP/QUIET) and, since
 `[motion_agency] name-call reflex (wake:Hey_rex): …`. Knobs `WAKE_ORIENT_*`;
 tests `tests/test_wake_orient.py`.
 
+### First live run of the reflex, 2026-09-02 22:02 — "going the wrong direction, but not always"
+
+Log `djr3x-2026-09-02-22-02-00.log`. The reflex fired 10 times: 5 base turns
+(+97, +158, +99, −65, +155), 2 `facing`, 2 `base_busy`, 1 swing-refused →
+glance. What went wrong was mostly NOT the reflex:
+
+1. **Radar orient fought it.** Seven `radar orient … base turn ±60°` in six
+   minutes, every time the camera had no face: 22:03:05 the reflex read the
+   caller at −7° ("facing"), 22:03:09 radar orient turned +60° toward a
+   return the camera never confirmed. Fix: radar orient stands down for
+   `MOTION_RADAR_ORIENT_VOICE_DEFER_SECS` (20 s) after any voice bearing
+   (`motion_agency.note_voice_bearing`, called by the reflex and by every
+   transcribed segment).
+2. **DoA read through a turn.** 22:04:03 `+105° (11/11)` was a segment
+   captured across a base turn; the ring rotates with the base and the motors
+   are a source. Fix: the poller marks samples taken while `motion.state()` is
+   not idle (+0.6 s settle) and `bearing_between` drops them.
+3. **A thin cluster turned him.** 22:04:10 `−65° (4/7)` → base turn. Fix:
+   `WAKE_ORIENT_MIN_SAMPLES` = 6 (outcome `thin`).
+4. `base_busy` twice (idle-wander shuffle in progress): the reflex now waits up
+   to `WAKE_ORIENT_BASE_WAIT_SECS` (2.5 s) for the base and clears the wander.
+
+Also seen: the compass over-reads every turn by ~20 % (+60 → +74.5, −65 →
+−75.5) and its correction leaves ~6° — noise at this scale, not touched. The
+voice↔face check worked in the field: `voice +33° vs faces Bret +28° (Δ4)`
+with the neck at −45°.
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is

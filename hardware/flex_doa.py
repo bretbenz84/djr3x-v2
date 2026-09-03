@@ -43,7 +43,8 @@ import config
 _log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_samples: deque = deque()          # (t_mono, doa_raw_deg, base_bearing_deg, speech, energy)
+_samples: deque = deque()          # (t_mono, doa_raw_deg, base_bearing_deg, speech, energy, moving)
+_last_moving_at: float = 0.0       # last poll that saw the base in motion (settle window anchor)
 _thread: Optional[threading.Thread] = None
 _stop = threading.Event()
 _dev = None
@@ -146,7 +147,19 @@ def _close() -> None:
             pass
 
 
+def _base_moving() -> bool:
+    """True while the drive base reports anything but idle — its turns rotate the
+    ring under the sound field and its motors/sfx are a sound source of their own."""
+    try:
+        from hardware import motion
+        st = str(motion.state() or "unknown").lower()
+    except Exception:
+        return False
+    return st not in ("idle", "unknown", "")
+
+
 def _poll_once() -> bool:
+    global _last_moving_at
     with _dev_lock:
         dev = _dev
     if dev is None:
@@ -169,9 +182,14 @@ def _poll_once() -> bool:
             neck = None
     now = time.monotonic()
     bearing = chip_to_base_bearing(float(doa), neck)
+    moving = _base_moving()
+    if moving:
+        _last_moving_at = now
+    elif (now - _last_moving_at) < _num("FLEX_DOA_MOTION_SETTLE_SECS", 0.6):
+        moving = True                      # still settling after a maneuver
     keep = _num("FLEX_DOA_HISTORY_SECS", 20.0)
     with _lock:
-        _samples.append((now, float(doa), bearing, bool(speech), energy))
+        _samples.append((now, float(doa), bearing, bool(speech), energy, moving))
         while _samples and (now - _samples[0][0]) > keep:
             _samples.popleft()
     _status["reads"] += 1
@@ -271,7 +289,7 @@ def bearing_between(t0: float, t1: float) -> "Optional[dict]":
     pad = _num("FLEX_DOA_SEGMENT_PAD_SECS", 0.3)
     lo, hi = float(t0) - pad, float(t1) + pad
     with _lock:
-        rows = [s for s in _samples if lo <= s[0] <= hi and s[3]]
+        rows = [s for s in _samples if lo <= s[0] <= hi and s[3] and not (len(s) > 5 and s[5])]
     if len(rows) < int(_num("FLEX_DOA_MIN_SAMPLES", 3)):
         return None
     cluster = dominant_cluster([r[2] for r in rows], _num("FLEX_DOA_CLUSTER_DEG", 20.0))
@@ -301,7 +319,7 @@ def _reset_for_tests() -> None:
 
 
 def _inject_for_tests(rows) -> None:
-    """(t, doa_raw, base_bearing, speech, energy) rows straight into the history."""
+    """(t, doa_raw, base_bearing, speech, energy[, moving]) rows straight into the history."""
     with _lock:
-        _samples.extend(rows)
+        _samples.extend(tuple(r) if len(r) > 5 else tuple(r) + (False,) for r in rows)
     _status.update(enabled=True, connected=True)

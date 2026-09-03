@@ -111,6 +111,7 @@ _state = {
     "last_flinch_at": 0.0,
     "orient_last_at": 0.0,   # radar-orient cooldown stamp
     "wake_orient_at": 0.0,   # name-call reflex cooldown stamp
+    "voice_bearing_at": 0.0, # last fresh voice bearing (radar orient defers to it)
     "orient_visited": [],    # (world_bearing_deg, at) — bodies already looked at
     "wander_pending": None,  # in-flight weight-shift pair (out leg + inverse)
     "wander_next_at": 0.0,   # randomized idle-wander cooldown stamp
@@ -1670,6 +1671,12 @@ def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
     if _any_visible_face(snapshot):
         _reset("orient_hits")
         return False
+    if _voice_bearing_fresh(now):
+        # The talker's own direction is on record — the name-call reflex / the
+        # turn's voice bearing already pointed him. A radar return now is a dog,
+        # a ghost, or the same person; none of them justify a blind ±60° spin.
+        _reset("orient_hits")
+        return False
     cooldown = _num("MOTION_RADAR_ORIENT_COOLDOWN_SECS", 30.0)
     if (now - float(_state.get("orient_last_at") or 0.0)) < cooldown:
         return False
@@ -1781,6 +1788,18 @@ def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
 # phrase itself rather than a persistent radar body.
 
 
+def note_voice_bearing(bearing_deg: "float | None" = None) -> None:
+    """Someone just spoke and the Flex DoA said where from. Radar orient stands
+    down for MOTION_RADAR_ORIENT_VOICE_DEFER_SECS: the ring cannot tell a dog or
+    a ghost from the person who is talking, the voice can."""
+    _state["voice_bearing_at"] = time.monotonic()
+
+
+def _voice_bearing_fresh(now: float) -> bool:
+    at = float(_state.get("voice_bearing_at") or 0.0)
+    return at > 0.0 and (now - at) < _num("MOTION_RADAR_ORIENT_VOICE_DEFER_SECS", 20.0)
+
+
 def _voice_lands_on_visible_face(bearing_deg: float) -> bool:
     """True when a face on camera sits within the voice-bearing tolerance of the
     bearing — the caller is already in view, so the reflex has nothing to do
@@ -1832,6 +1851,7 @@ def _orient_glance(bearing_deg: float, *, fraction: "float | None" = None) -> bo
 
 
 def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
+                    samples: "int | None" = None,
                     reason: str = "wake") -> str:
     """Turn toward a voice bearing (base frame, + = left) once. Returns a machine
     key: ``glanced`` (neck), ``turned`` (base), ``facing`` (already), ``on_camera``
@@ -1843,8 +1863,11 @@ def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
         return "disabled"
     if share is not None and float(share) < _num("WAKE_ORIENT_MIN_SHARE", 0.5):
         return "weak"
+    if samples is not None and int(samples) < int(_num("WAKE_ORIENT_MIN_SAMPLES", 6)):
+        return "thin"
     now = time.monotonic()
     bearing = _wrap180(float(bearing_deg))
+    note_voice_bearing(bearing)
     if (now - float(_state.get("wake_orient_at") or 0.0)) < _num("WAKE_ORIENT_COOLDOWN_SECS", 3.0):
         return "cooldown"
     if abs(bearing) < _num("WAKE_ORIENT_MIN_BEARING_DEG", 15.0):
@@ -1879,10 +1902,19 @@ def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
     if _traction_lost(now):
         _orient_glance(bearing, fraction=1.0)
         return "traction_glance"
-    try:
-        base_idle = motion.state() == "idle"
-    except Exception:
-        base_idle = False
+    # A base mid-maneuver (an idle-wander shuffle, a settling turn) is waited
+    # out — the caller is still there — rather than answered with a shrug.
+    _clear_idle_wander("name-call reflex")
+    deadline = now + _num("WAKE_ORIENT_BASE_WAIT_SECS", 2.5)
+    base_idle = False
+    while True:
+        try:
+            base_idle = motion.state() == "idle"
+        except Exception:
+            base_idle = False
+        if base_idle or time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
     if not base_idle:
         _orient_glance(bearing, fraction=1.0)
         return "base_busy"

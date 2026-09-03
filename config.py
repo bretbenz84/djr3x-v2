@@ -4211,6 +4211,11 @@ FLEX_DOA_MIN_CLUSTER_SHARE = 0.4       # dominant cluster must hold this share o
 FLEX_DOA_SEGMENT_PAD_SECS = 0.3        # window padding around the captured segment
 FLEX_DOA_MAX_AGE_SECS = 12.0           # a stored voice bearing older than this is stale
 FLEX_DOA_RECONNECT_SECS = 30.0
+# Samples taken while the base is turning/driving (and a settle after) are
+# marked and excluded from every bearing: the ring rotates with the base, the
+# motors are loud, and the wheel sound effect plays — a segment captured across
+# a turn read +105° with 11/11 "agreement" (field 2026-09-02 22:04:03).
+FLEX_DOA_MOTION_SETTLE_SECS = 0.6
 
 # ── Voice bearing ↔ face attribution (perception/voice_bearing_match.py) ─────
 # The voice's direction of arrival is a second camera-frame witness next to the
@@ -9661,6 +9666,11 @@ MOTION_RADAR_ORIENT_COOLDOWN_SECS = 30.0   # between orients
 # the TTL (field 2026-08-19 22:49: three +60° chases of the same rear return in
 # three minutes, each spinning him away from the owner). World-frame via IMU yaw.
 MOTION_RADAR_ORIENT_VISITED_TTL_SECS = 150.0
+# A fresh VOICE bearing outranks the ring: while one is this recent, radar orient
+# stands down entirely (field 2026-09-02 22:03: the name-call reflex had the
+# caller dead ahead and 4 s later radar orient turned +60° toward a return the
+# camera never confirmed — seven such spins in six minutes, dogs and ghosts).
+MOTION_RADAR_ORIENT_VOICE_DEFER_SECS = 20.0
 
 # ── Name-call reflex (owner spec 2026-09-02) ────────────────────────────────────
 # "Hey Rex" from off camera: turn toward the voice the way a person turns toward
@@ -9680,6 +9690,9 @@ WAKE_ORIENT_NECK_MAX_DEG = 40.0      # within the neck's reach = glance; beyond 
 WAKE_ORIENT_NECK_HOLD_SECS = 6.0     # directed-gaze hold after the glance (face tracking runs)
 WAKE_ORIENT_TURN_MAX_DEG = 180.0     # base turn cap — a call from behind is a real about-face
 WAKE_ORIENT_COOLDOWN_SECS = 3.0
+WAKE_ORIENT_MIN_SAMPLES = 6          # speech-flagged DoA samples the phrase must have (field
+                                     # 2026-09-02 22:04: a 4/7-sample bearing spun him −65° the wrong way)
+WAKE_ORIENT_BASE_WAIT_SECS = 2.5     # a base mid-maneuver (idle wander shuffle) is waited out, not skipped
 MOTION_RADAR_ORIENT_VISITED_DEG = 30.0
 
 # ── Idle base wander ("weight shift", owner spec 2026-08-19) ────────────────────
