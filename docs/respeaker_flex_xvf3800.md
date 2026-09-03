@@ -497,6 +497,43 @@ speech-flagged samples (`FLEX_DOA_TAIL_SHARE` 0.5, never fewer than
 now prints the groups it saw (`groups −1°×7, −90°×6 — earlier samples pointed
 elsewhere (chip hold)`), so this shape is visible at a glance.
 
+### Fourth live run, 22:44 — "it's like he's going the wrong way"
+
+Owner account: behind him at startup → "Rex, I'm over here" → he turned but
+stopped 90° short; repeated → completed the 180°. Then 90° to his RIGHT →
+"over here" → he turned LEFT, a long way. The trail:
+
+| call | chip groups (base frame) | radar | picked | turn |
+|---|---|---|---|---|
+| 1, Bret behind | −158°×11, +100°×7, −23°×4 | −152° / 2.4 m steady | +101° (tail rule) | +101° |
+| 2, repeat | +79°×8 | — | +79° | +79° (total 180° — on him) |
+| 3, Bret at −90° | +154°×14, −131°×6, +115°×3 | −112…−129° / 1.7 m | +154° (majority) | +154° |
+
+The base turned exactly what it was told; the chip offered several
+directions per utterance and the wrong group won twice. Owner observation
+that decided the fix: **right bearings came with HIGH speech energy, wrong
+ones with LOW** — walls. The hero-arm mount was checked and ruled out (the
+ring is fixed; the arm shifts it a few degrees). Three changes:
+
+1. **Energy-weighted vote** (`flex_doa.dominant_cluster(weights=…)`): each
+   sample counts by the chip's speech energy on its beam (floored at 2 % of
+   the window's max so DOA-only samples still count), times a recency factor
+   (0.5 at the window start → 1.0 at its end) so the converged tail beats a
+   stale hold when energies are flat. The tail-only rule is now the fallback
+   for windows with no energy readings.
+2. **Radar tie-break** (`motion_agency.resolve_voice_bearing`): among the
+   chip's groups (≥ `WAKE_ORIENT_RADAR_TIEBREAK_MIN_SAMPLES` 3 samples), one
+   with a persistent radar body within `MOTION_COME_VOICE_RADAR_MATCH_DEG`
+   (40°) wins. Both field misses above flip to the right group under this
+   rule (radar −152° ↔ group −158°; radar −121° ↔ group −131°). The ring
+   still never acts on its own.
+3. Every `[voice_doa]` / `[wake_orient]` / `[over_here]` line now prints the
+   groups with their mean energy (`−131°×6 e=0.90M, +154°×14 e=0.02M`) and the
+   radar note, plus the hero-arm and neck servo positions for correlation.
+
+Also added (inert until measured): `FLEX_DOA_HEROARM_YAW_DEG_AT_MAX` per-sample
+correction and `IDLE_ARM_WANDER_HEROARM_ENABLED` (left ON per the owner).
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is

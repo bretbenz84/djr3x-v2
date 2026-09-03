@@ -1074,12 +1074,15 @@ def _start_over_here_reflex(text: str) -> Optional[threading.Thread]:
     def _run() -> None:
         try:
             from intelligence import motion_agency
+            from hardware import flex_doa as _fd
+            bearing, note = motion_agency.resolve_voice_bearing(voice)
             outcome = motion_agency.orient_to_voice(
-                voice["bearing_deg"], share=voice.get("share"), samples=voice.get("cluster_n"),
+                bearing, share=voice.get("share"), samples=voice.get("cluster_n"),
                 reason="over_here",
             )
-            _log.info("[over_here] %r heard at %+.0f° (%d/%d samples agree) → %s",
-                      text, voice["bearing_deg"], voice.get("cluster_n") or 0, voice.get("n") or 0, outcome)
+            _log.info("[over_here] %r heard at %+.0f° (%d/%d samples agree; groups %s%s) → %s",
+                      text, bearing, voice.get("cluster_n") or 0, voice.get("n") or 0,
+                      _fd.describe_clusters(voice), note, outcome)
         except Exception as exc:
             _log.debug("[over_here] reflex failed: %s", exc)
 
@@ -1118,16 +1121,19 @@ def _start_wake_orient_reflex(model_name: str, current_state) -> Optional[thread
                     pass
                 return
             res["at"] = time.monotonic()
-            _last_voice_bearing = res
             from intelligence import motion_agency
+            bearing, note = motion_agency.resolve_voice_bearing(res)
+            res["bearing_deg"] = bearing
+            _last_voice_bearing = res
             outcome = motion_agency.orient_to_voice(
-                res["bearing_deg"], share=res.get("share"), samples=res.get("cluster_n"),
+                bearing, share=res.get("share"), samples=res.get("cluster_n"),
                 reason=f"wake:{model_name}",
             )
-            _log.info("[wake_orient] %s heard at %+.0f° (%d/%d samples agree) → %s",
-                      model_name, res["bearing_deg"], res["cluster_n"], res["n"], outcome)
+            _log.info("[wake_orient] %s heard at %+.0f° (%d/%d samples agree; groups %s%s) → %s",
+                      model_name, bearing, res["cluster_n"], res["n"],
+                      flex_doa.describe_clusters(res), note, outcome)
             try:
-                conv_log.log_wake(model_name, f"heard at {res['bearing_deg']:+.0f}° ({res['cluster_n']}/{res['n']}) → {outcome}")
+                conv_log.log_wake(model_name, f"heard at {bearing:+.0f}° ({res['cluster_n']}/{res['n']}) → {outcome}")
             except Exception:
                 pass
         except Exception as exc:
@@ -15475,7 +15481,9 @@ def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
               "?" if res.get("raw_deg") is None else f"{res['raw_deg']:.0f}",
               res["cluster_n"], res["n"], res.get("window_n", res["n"]), res["spread_deg"],
               flex_doa.describe_clusters(res),
-              " — earlier samples pointed elsewhere (chip hold)" if res.get("head_disagrees") else "")
+              (" — earlier samples pointed elsewhere (chip hold)" if res.get("head_disagrees") else "")
+              + (f"; heroarm {res['heroarm_qus']:.0f} qus" if res.get("heroarm_qus") is not None else "")
+              + (f"; neck {res['neck_qus']:.0f} qus" if res.get("neck_qus") is not None else ""))
     return res
 
 

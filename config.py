@@ -4216,7 +4216,7 @@ FLEX_DOA_SEGMENT_PAD_SECS = 0.3        # window padding around the captured segm
 # stood 90° right). So the bearing is decided from the LAST part of the
 # speech-flagged samples: the trailing share below, but never fewer than
 # FLEX_DOA_MIN_SAMPLES. The earlier samples only break ties.
-FLEX_DOA_TAIL_SHARE = 0.5
+FLEX_DOA_TAIL_SHARE = 0.5              # FALLBACK only, when no speech-energy readings exist
 FLEX_DOA_TAIL_MIN_SAMPLES = 5          # the tail never shrinks below this (a 0.6 s phrase is ~6 samples)
 # Per-sample source: the auto-selected BEAM azimuth (AEC_AZIMUTH_VALUES[3])
 # swings to a new talker ~1 s before DOA_VALUE follows (bench 2026-09-02: beam
@@ -4225,6 +4225,12 @@ FLEX_DOA_TAIL_MIN_SAMPLES = 5          # the tail never shrinks below this (a 0.
 # floor (real speech scored 1e5-2.5e6; between-word flickers mostly 0-3e4).
 # Below the floor the sample is DOA_VALUE with its own speech flag.
 FLEX_DOA_BEAM_ENERGY_MIN = 50000.0
+# The ring rides on the hero-arm section (owner 2026-09-02). Its 0° therefore
+# turns with that servo: degrees of ring yaw at heroarm MAX (8000 qus) relative
+# to neutral (6000), + = the ring's 0° swung toward Rex's LEFT; linear per qus,
+# mirrored below neutral. 0 = no compensation (unmeasured). Measure with
+# tools/flex_doa.py from one marked spot at heroarm neutral / max / min.
+FLEX_DOA_HEROARM_YAW_DEG_AT_MAX = 0.0
 FLEX_DOA_MAX_AGE_SECS = 12.0           # a stored voice bearing older than this is stale
 FLEX_DOA_RECONNECT_SECS = 30.0
 # Samples taken while the base is turning/driving (and a settle after) are
@@ -9703,6 +9709,12 @@ MOTION_RADAR_ORIENT_VISITED_TTL_SECS = 150.0
 # caller dead ahead and 4 s later radar orient turned +60° toward a return the
 # camera never confirmed — seven such spins in six minutes, dogs and ghosts).
 MOTION_RADAR_ORIENT_VOICE_DEFER_SECS = 20.0
+# Idle arm wander swings the HERO arm 1300-2000 qus off neutral every 4-9 s.
+# The Flex mic ring is mounted near that section; the owner confirms it is
+# fixed and shifts only a few degrees with the arm, so wander stays ON. The
+# knob exists to hold the hero arm at neutral if a per-sample correction
+# (FLEX_DOA_HEROARM_YAW_DEG_AT_MAX) ever proves necessary.
+IDLE_ARM_WANDER_HEROARM_ENABLED = True   # owner: the ring is fixed; the arm shifts it only a few degrees
 
 # ── Name-call reflex (owner spec 2026-09-02) ────────────────────────────────────
 # "Hey Rex" from off camera: turn toward the voice the way a person turns toward
@@ -9727,6 +9739,16 @@ WAKE_ORIENT_MIN_SAMPLES = 4          # speech-flagged DoA samples the phrase mus
                                      # at 10 Hz); the −65° spin of 22:04 (4/7) is now caught by the
                                      # self-speech / base-motion exclusions and the share floor instead.
 WAKE_ORIENT_BASE_WAIT_SECS = 2.5     # a base mid-maneuver (idle wander shuffle) is waited out, not skipped
+# The chip often offers several candidate directions for one utterance (a
+# stale hold, a reflection, the talker). The radar ring cannot find people on
+# its own, but a persistent body within MOTION_COME_VOICE_RADAR_MATCH_DEG of a
+# candidate breaks the tie in that candidate's favour (field 2026-09-02 22:45:
+# radar −152° + chip group −158°×11 lost to a +100°×7 tail; 22:46: radar −121°
+# + chip −131°×6 lost to +154°×14). A candidate needs this many samples to be
+# eligible; without radar agreement the tail-of-phrase rule stands.
+WAKE_ORIENT_RADAR_TIEBREAK_ENABLED = True
+WAKE_ORIENT_RADAR_TIEBREAK_MIN_SAMPLES = 3
+WAKE_ORIENT_RADAR_WINDOW_SECS = 3.0
 # "Over here" (owner spec 2026-09-02): the same reflex for a spoken location cue
 # with no direction word — the DoA on that very utterance is the direction. Fires
 # on the transcribed turn, alongside the normal reply. Mid come-here search the

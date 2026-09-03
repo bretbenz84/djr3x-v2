@@ -259,14 +259,21 @@ def _idle_arm_target(
 
 def _idle_arm_wander_targets() -> dict[int, int]:
     current = _current_body_pose((7, 6))
-    return {
-        7: _idle_arm_target(
+    # The Flex mic ring rides on the hero-arm section: an idle swing there
+    # rotates the voice bearing's 0° (config.IDLE_ARM_WANDER_HEROARM_ENABLED).
+    hero_target = (
+        _idle_arm_target(
             7,
             HEROARM_NEUTRAL,
             current.get(7, HEROARM_NEUTRAL),
             _IDLE_HEROARM_SWING_RANGE_QUS,
             _IDLE_HEROARM_MIN_TRAVEL_QUS,
-        ),
+        )
+        if bool(getattr(config, "IDLE_ARM_WANDER_HEROARM_ENABLED", True))
+        else HEROARM_NEUTRAL
+    )
+    return {
+        7: hero_target,
         6: _idle_arm_target(
             6,
             POKERARM_NEUTRAL,

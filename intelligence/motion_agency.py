@@ -1853,6 +1853,41 @@ def _orient_glance(bearing_deg: float, *, fraction: "float | None" = None) -> bo
     return True
 
 
+def resolve_voice_bearing(res: dict, now: "float | None" = None) -> "tuple[float, str]":
+    """Pick the bearing to act on from a flex_doa result. The chip's groups
+    (``res["clusters"]``: [(base_deg, n), ...]) are candidates; a persistent radar
+    body within MOTION_COME_VOICE_RADAR_MATCH_DEG of one promotes it. Returns
+    (bearing_deg, note) — note explains the choice for the log."""
+    chosen = float(res.get("bearing_deg"))
+    groups = [(float(g[0]), int(g[1])) for g in (res.get("clusters") or [])]
+    if not _flag("WAKE_ORIENT_RADAR_TIEBREAK_ENABLED", True) or len(groups) < 2:
+        return chosen, ""
+    now = time.monotonic() if now is None else now
+    window = _num("WAKE_ORIENT_RADAR_WINDOW_SECS", 3.0)
+    bodies, ready = _radar_bodies(now, since=now - window, window=window)
+    if not ready or not bodies:
+        return chosen, ""
+    match_deg = _num("MOTION_COME_VOICE_RADAR_MATCH_DEG", 40.0)
+    min_n = int(_num("WAKE_ORIENT_RADAR_TIEBREAK_MIN_SAMPLES", 3))
+    agreeing = []
+    for centre, k in groups:
+        if k < min_n:
+            continue
+        near = [b for b in bodies if abs(_wrap180(float(b["bearing_deg"]) - centre)) <= match_deg]
+        if near:
+            best = min(near, key=lambda b: abs(_wrap180(float(b["bearing_deg"]) - centre)))
+            agreeing.append((k, centre, best))
+    bodies_txt = ", ".join(f"{b['bearing_deg']:+.0f}°/{b['range_m']:.1f}m" for b in bodies)
+    if not agreeing:
+        return chosen, f" (radar {bodies_txt} agrees with none of the groups)"
+    agreeing.sort(key=lambda t: -t[0])
+    k, centre, body = agreeing[0]
+    if abs(_wrap180(centre - chosen)) <= _num("FLEX_DOA_CLUSTER_DEG", 20.0):
+        return chosen, f" (radar body {body['bearing_deg']:+.0f}°/{body['range_m']:.1f}m agrees)"
+    return centre, (f" — radar body {body['bearing_deg']:+.0f}°/{body['range_m']:.1f}m backs the "
+                    f"{centre:+.0f}°×{k} group over the {chosen:+.0f}° pick")
+
+
 def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
                     samples: "int | None" = None,
                     reason: str = "wake") -> str:

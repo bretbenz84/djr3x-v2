@@ -394,7 +394,7 @@ class StaleHoldTest(unittest.TestCase):
         self.assertAlmostEqual(res["bearing_deg"], -90.0, delta=1.0)
         self.assertTrue(res["head_disagrees"])
         self.assertEqual(res["window_n"], 13)
-        self.assertEqual([k for _, k in res["clusters"]], [7, 6])
+        self.assertEqual(sorted(g[1] for g in res["clusters"]), [6, 7])   # both groups reported
 
     def test_beam_with_energy_is_the_sample(self):
         with mock.patch.object(flex_doa, "_dev", _FakeFlex(doa=359, beam_deg=270.0, energy=500000.0)), \
@@ -402,7 +402,7 @@ class StaleHoldTest(unittest.TestCase):
              mock.patch.object(flex_doa, "_self_speaking", return_value=False):
             self.assertTrue(flex_doa._poll_once())
         with flex_doa._lock:
-            t, raw, bearing, speech, energy, moving = flex_doa._samples[-1]
+            t, raw, bearing, speech, energy, moving, _hero, _neck = flex_doa._samples[-1]
         self.assertAlmostEqual(raw, 270.0)
         self.assertAlmostEqual(bearing, -90.0)
         self.assertTrue(speech)
@@ -413,9 +413,143 @@ class StaleHoldTest(unittest.TestCase):
              mock.patch.object(flex_doa, "_self_speaking", return_value=False):
             self.assertTrue(flex_doa._poll_once())
         with flex_doa._lock:
-            _t, raw, bearing, speech, _e, _m = flex_doa._samples[-1]
+            _t, raw, bearing, speech, _e, _m, _h, _nk = flex_doa._samples[-1]
         self.assertAlmostEqual(raw, 90.0)
         self.assertAlmostEqual(bearing, 90.0)
+
+
+class HeroArmMountTest(unittest.TestCase):
+    """The ring rides on the hero-arm section (owner 2026-09-02): idle wander
+    holds that arm at neutral, and each DoA sample is corrected by the arm's
+    position once the ring-yaw ratio is measured."""
+
+    def test_idle_wander_can_hold_the_hero_arm(self):
+        from sequences import animations as A
+        with mock.patch.object(config, "IDLE_ARM_WANDER_HEROARM_ENABLED", False, create=True), \
+             mock.patch.object(A, "_current_body_pose", return_value={7: 7500, 6: 6000}):
+            targets = A._idle_arm_wander_targets()
+        self.assertEqual(targets[7], A.HEROARM_NEUTRAL)
+        self.assertIn(6, targets)
+
+    def test_idle_wander_can_be_re_enabled(self):
+        from sequences import animations as A
+        with mock.patch.object(config, "IDLE_ARM_WANDER_HEROARM_ENABLED", True, create=True), \
+             mock.patch.object(A, "_current_body_pose", return_value={7: 6000, 6: 6000}):
+            targets = A._idle_arm_wander_targets()
+        self.assertNotEqual(targets[7], A.HEROARM_NEUTRAL)
+
+    def test_unmeasured_ratio_means_no_correction(self):
+        with mock.patch.object(config, "FLEX_DOA_HEROARM_YAW_DEG_AT_MAX", 0.0, create=True):
+            self.assertAlmostEqual(flex_doa.chip_to_base_bearing(90.0, None, 8000.0), 90.0)
+
+    def test_ring_swung_left_reports_sources_too_far_right(self):
+        # Ring 0° swung 40° left at heroarm max: a source dead ahead of the BODY
+        # reads 40° right on the chip (320°); the correction restores 0°.
+        with mock.patch.object(config, "FLEX_DOA_HEROARM_YAW_DEG_AT_MAX", 40.0, create=True):
+            self.assertAlmostEqual(flex_doa.chip_to_base_bearing(320.0, None, 8000.0), 0.0)
+            self.assertAlmostEqual(flex_doa.chip_to_base_bearing(0.0, None, 6000.0), 0.0)   # neutral
+            self.assertAlmostEqual(flex_doa.chip_to_base_bearing(0.0, None, 7000.0), 20.0)  # half throw
+            self.assertAlmostEqual(flex_doa.chip_to_base_bearing(0.0, None, 4000.0), -40.0, delta=0.5)
+
+    def test_samples_carry_the_arm_position(self):
+        flex_doa._reset_for_tests()
+        try:
+            now = time.monotonic()
+            flex_doa._inject_for_tests([(now - 0.5 + 0.1 * i, 30.0, 30.0, True, 1.0, False, 6500.0) for i in range(6)])
+            res = flex_doa.bearing_between(now - 0.6, now)
+            self.assertAlmostEqual(res["heroarm_qus"], 6500.0)
+        finally:
+            flex_doa._reset_for_tests()
+
+
+class RadarTiebreakTest(unittest.TestCase):
+    """A persistent radar body promotes the chip group it agrees with (22:45 /
+    22:46 field cases); without agreement the chip's own pick stands."""
+
+    def _res(self, chosen, groups):
+        return {"bearing_deg": chosen, "clusters": groups, "cluster_n": 6, "n": 20, "share": 0.6}
+
+    def _bodies(self, *bearings):
+        return ([{"bearing_deg": b, "range_m": 1.8, "confidence": 1.0, "hits": 5, "frames": 8}
+                 for b in bearings], True)
+
+    def test_call_one_radar_backs_the_majority_over_the_tail(self):
+        res = self._res(101.0, [(-158.0, 11), (100.0, 7), (-23.0, 4)])
+        with mock.patch.object(MA, "_radar_bodies", return_value=self._bodies(-152.0)), \
+             mock.patch.object(config, "WAKE_ORIENT_RADAR_TIEBREAK_ENABLED", True, create=True):
+            bearing, note = MA.resolve_voice_bearing(res)
+        self.assertAlmostEqual(bearing, -158.0)
+        self.assertIn("backs", note)
+
+    def test_call_three_radar_backs_the_minority(self):
+        res = self._res(154.0, [(154.0, 14), (-131.0, 6), (115.0, 3)])
+        with mock.patch.object(MA, "_radar_bodies", return_value=self._bodies(-121.0, 80.0)), \
+             mock.patch.object(config, "WAKE_ORIENT_RADAR_TIEBREAK_ENABLED", True, create=True):
+            bearing, _ = MA.resolve_voice_bearing(res)
+        self.assertAlmostEqual(bearing, -131.0)
+
+    def test_no_radar_agreement_keeps_the_chip_pick(self):
+        res = self._res(154.0, [(154.0, 14), (-131.0, 6)])
+        with mock.patch.object(MA, "_radar_bodies", return_value=self._bodies(20.0)):
+            bearing, note = MA.resolve_voice_bearing(res)
+        self.assertAlmostEqual(bearing, 154.0)
+        self.assertIn("agrees with none", note)
+
+    def test_radar_agreeing_with_the_pick_confirms_it(self):
+        res = self._res(-90.0, [(-90.0, 9), (60.0, 4)])
+        with mock.patch.object(MA, "_radar_bodies", return_value=self._bodies(-100.0)):
+            bearing, note = MA.resolve_voice_bearing(res)
+        self.assertAlmostEqual(bearing, -90.0)
+        self.assertIn("agrees", note)
+
+    def test_single_group_or_no_radar_is_untouched(self):
+        res = self._res(-90.0, [(-90.0, 9)])
+        with mock.patch.object(MA, "_radar_bodies", return_value=self._bodies(60.0)):
+            self.assertAlmostEqual(MA.resolve_voice_bearing(res)[0], -90.0)
+        res = self._res(154.0, [(154.0, 14), (-131.0, 6)])
+        with mock.patch.object(MA, "_radar_bodies", return_value=([], True)):
+            self.assertAlmostEqual(MA.resolve_voice_bearing(res)[0], 154.0)
+
+    def test_tiny_groups_cannot_be_promoted(self):
+        res = self._res(154.0, [(154.0, 14), (-131.0, 2)])
+        with mock.patch.object(MA, "_radar_bodies", return_value=self._bodies(-125.0)):
+            self.assertAlmostEqual(MA.resolve_voice_bearing(res)[0], 154.0)
+
+
+class EnergyWeightedVoteTest(unittest.TestCase):
+    """Owner observation 2026-09-02: right bearings came with high speech energy,
+    wrong ones with low (reflections). A few strong samples outvote many weak."""
+
+    def setUp(self):
+        flex_doa._reset_for_tests()
+
+    def tearDown(self):
+        flex_doa._reset_for_tests()
+
+    def test_strong_minority_beats_weak_majority(self):
+        now = time.monotonic()
+        rows = [(now - 2.0 + 0.1 * i, 154.0, 154.0, True, 20000.0, False) for i in range(14)]
+        rows += [(now - 0.6 + 0.1 * i, 229.0, -131.0, True, 900000.0, False) for i in range(6)]
+        flex_doa._inject_for_tests(rows)
+        res = flex_doa.bearing_between(now - 2.1, now)
+        self.assertAlmostEqual(res["bearing_deg"], -131.0, delta=1.0)
+        self.assertEqual(res["clusters"][0][1], 6)          # heaviest group first
+        self.assertGreater(res["clusters"][0][2], res["clusters"][1][2])
+
+    def test_without_energy_the_tail_rule_still_applies(self):
+        now = time.monotonic()
+        rows = [(now - 1.3 + 0.1 * i, 359.0, -1.0, True, 0.0, False) for i in range(7)]
+        rows += [(now - 0.6 + 0.1 * i, 270.0, -90.0, True, 0.0, False) for i in range(6)]
+        flex_doa._inject_for_tests(rows)
+        res = flex_doa.bearing_between(now - 1.4, now)
+        self.assertAlmostEqual(res["bearing_deg"], -90.0, delta=1.0)
+
+    def test_weighted_cluster_math(self):
+        res = flex_doa.dominant_cluster([10.0, 12.0, -100.0], 20.0, weights=[1.0, 1.0, 10.0])
+        self.assertAlmostEqual(res["bearing_deg"], -100.0)
+        self.assertAlmostEqual(res["weight_share"], 10.0 / 12.0)
+        res = flex_doa.dominant_cluster([10.0, 12.0, -100.0], 20.0)
+        self.assertAlmostEqual(res["bearing_deg"], 11.0, delta=0.1)
 
 
 if __name__ == "__main__":

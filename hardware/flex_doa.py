@@ -78,11 +78,53 @@ def set_neck_yaw_provider(fn: Optional[Callable[[], Optional[float]]]) -> None:
     _neck_yaw_provider = fn
 
 
-def chip_to_base_bearing(doa_deg: float, neck_yaw_right_deg: Optional[float] = None) -> float:
+def heroarm_ring_yaw_deg(heroarm_qus: Optional[float]) -> float:
+    """How far the ring's 0° is swung (deg, + = toward Rex's LEFT) by the hero-arm
+    servo at ``heroarm_qus``: linear from neutral, FLEX_DOA_HEROARM_YAW_DEG_AT_MAX
+    at the channel max, mirrored below neutral. 0 when unmeasured/unknown."""
+    full = _num("FLEX_DOA_HEROARM_YAW_DEG_AT_MAX", 0.0)
+    if not full or heroarm_qus is None:
+        return 0.0
+    try:
+        cfg = config.SERVO_CHANNELS["heroarm"]
+        neutral = float(cfg["neutral"]); hi = float(cfg["max"])
+    except Exception:
+        return 0.0
+    span = max(1.0, hi - neutral)
+    return full * (float(heroarm_qus) - neutral) / span
+
+
+def current_neck_qus() -> Optional[float]:
+    """Neck servo position at this poll (logged per bearing so head shadowing of
+    the ring can be correlated with bad readings; not used in the math)."""
+    try:
+        from world_state import world_state
+        positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
+        v = positions.get("neck")
+        return float(v) if v is not None else None
+    except Exception:
+        return None
+
+
+def current_heroarm_qus() -> Optional[float]:
+    try:
+        from world_state import world_state
+        positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
+        v = positions.get("heroarm")
+        return float(v) if v is not None else None
+    except Exception:
+        return None
+
+
+def chip_to_base_bearing(doa_deg: float, neck_yaw_right_deg: Optional[float] = None,
+                         heroarm_qus: Optional[float] = None) -> float:
     """Chip DoA (0-359) → base-frame bearing (deg, + = left/CCW, wrapped ±180).
 
     ``neck_yaw_right_deg`` is applied only for a head mount: a sound the head
     (turned θ to the right) hears dead ahead sits −θ in the base frame.
+    ``heroarm_qus`` corrects for the hero-arm section the ring is mounted on
+    (heroarm_ring_yaw_deg): a ring swung φ to the left reports a source φ
+    further right than it is, so φ is added back.
     """
     sign = _num("FLEX_DOA_SIGN", 1.0) or 1.0
     offset = _num("FLEX_DOA_FORWARD_OFFSET_DEG", 0.0)
@@ -90,32 +132,46 @@ def chip_to_base_bearing(doa_deg: float, neck_yaw_right_deg: Optional[float] = N
     if str(getattr(config, "FLEX_DOA_MOUNT", "base")).strip().lower() == "head" \
             and neck_yaw_right_deg is not None:
         bearing -= float(neck_yaw_right_deg)
+    bearing += heroarm_ring_yaw_deg(heroarm_qus)
     return _wrap180(bearing)
 
 
-def dominant_cluster(bearings: "list[float]", cluster_deg: float) -> "Optional[dict]":
-    """The largest group of mutually-agreeing bearings.
+def dominant_cluster(bearings: "list[float]", cluster_deg: float,
+                     weights: "Optional[list[float]]" = None) -> "Optional[dict]":
+    """The heaviest group of mutually-agreeing bearings.
 
-    Returns {"bearing_deg", "n", "cluster_n", "share", "spread_deg"} or None
-    when the list is empty. Each sample seeds a candidate cluster of every
-    sample within ±cluster_deg of it; the biggest wins (ties → the candidate
-    seeded latest, i.e. the freshest reading), and the cluster's circular mean
-    is the answer.
+    Returns {"bearing_deg", "n", "cluster_n", "share", "spread_deg", "weight",
+    "weight_share"} or None when the list is empty. Each sample seeds a
+    candidate cluster of every sample within ±cluster_deg of it; the cluster
+    with the largest summed weight wins (ties → the candidate seeded latest,
+    i.e. the freshest reading), and its weighted circular mean is the answer.
+    Unweighted, weight = count. With the chip's speech energy as the weight
+    (owner observation 2026-09-02: right bearings came with high energy, wrong
+    ones with low — reflections), a few strong direct-path samples outvote a
+    pile of weak ones.
     """
     if not bearings:
         return None
     n = len(bearings)
-    best_members: "list[float]" = []
-    for seed in bearings:                      # later seeds overwrite on ties (>=)
-        members = [b for b in bearings if abs(_wrap180(b - seed)) <= cluster_deg]
-        if len(members) >= len(best_members):
-            best_members = members
-    sx = sum(math.cos(math.radians(b)) for b in best_members)
-    sy = sum(math.sin(math.radians(b)) for b in best_members)
-    centre = _wrap180(math.degrees(math.atan2(sy, sx))) if (sx or sy) else best_members[0]
-    spread = sum(abs(_wrap180(b - centre)) for b in best_members) / max(1, len(best_members))
-    return {"bearing_deg": centre, "n": n, "cluster_n": len(best_members),
-            "share": len(best_members) / n, "spread_deg": spread}
+    if weights is None or len(weights) != n:
+        weights = [1.0] * n
+    weights = [max(0.0, float(w)) for w in weights]
+    total_w = sum(weights) or float(n)
+    best_idx: "list[int]" = []
+    best_w = -1.0
+    for i in range(n):                          # later seeds overwrite on ties (>=)
+        idx = [j for j in range(n) if abs(_wrap180(bearings[j] - bearings[i])) <= cluster_deg]
+        w = sum(weights[j] for j in idx)
+        if w >= best_w:
+            best_w, best_idx = w, idx
+    ww = [weights[j] if weights[j] > 0 else 1e-9 for j in best_idx]
+    sx = sum(w * math.cos(math.radians(bearings[j])) for w, j in zip(ww, best_idx))
+    sy = sum(w * math.sin(math.radians(bearings[j])) for w, j in zip(ww, best_idx))
+    centre = _wrap180(math.degrees(math.atan2(sy, sx))) if (sx or sy) else bearings[best_idx[0]]
+    spread = sum(abs(_wrap180(bearings[j] - centre)) for j in best_idx) / max(1, len(best_idx))
+    return {"bearing_deg": centre, "n": n, "cluster_n": len(best_idx),
+            "share": len(best_idx) / n, "spread_deg": spread,
+            "weight": best_w, "weight_share": (best_w / total_w) if total_w > 0 else 0.0}
 
 
 # ── poller ────────────────────────────────────────────────────────────────────
@@ -240,7 +296,9 @@ def _poll_once() -> bool:
         except Exception:
             neck = None
     now = time.monotonic()
-    bearing = chip_to_base_bearing(raw_deg, neck)
+    hero = current_heroarm_qus()
+    neck_qus = current_neck_qus()
+    bearing = chip_to_base_bearing(raw_deg, neck, hero)
     moving = _base_moving()
     if moving:
         _last_moving_at = now
@@ -253,7 +311,7 @@ def _poll_once() -> bool:
         moving = True                      # the room is still ringing with him
     keep = _num("FLEX_DOA_HISTORY_SECS", 20.0)
     with _lock:
-        _samples.append((now, raw_deg, bearing, speech_flag, energy, moving))
+        _samples.append((now, raw_deg, bearing, speech_flag, energy, moving, hero, neck_qus))
         while _samples and (now - _samples[0][0]) > keep:
             _samples.popleft()
     _status["reads"] += 1
@@ -358,47 +416,81 @@ def bearing_between(t0: float, t1: float) -> "Optional[dict]":
     if len(rows) < min_n:
         return None
     cluster_deg = _num("FLEX_DOA_CLUSTER_DEG", 20.0)
-    # The chip's direction register lags a talker who moved: decide from the
-    # TAIL of the phrase (the converged part), never fewer than min_n samples.
-    tail_n = max(min_n, int(_num("FLEX_DOA_TAIL_MIN_SAMPLES", 5)),
-                 int(round(len(rows) * _num("FLEX_DOA_TAIL_SHARE", 0.5))))
-    tail = rows[-tail_n:]
-    cluster = dominant_cluster([r[2] for r in tail], cluster_deg)
-    if cluster is None or cluster["share"] < _num("FLEX_DOA_MIN_CLUSTER_SHARE", 0.4):
+    energies = [max(0.0, float(r[4])) for r in rows]
+    if any(e > 0.0 for e in energies):
+        # ENERGY-WEIGHTED vote over the whole window: the direct path carries
+        # the speech energy, reflections and the chip's stale hold come in
+        # weak (owner observation 2026-09-02). A zero-energy sample still
+        # counts a little so a window of DOA-only samples is not empty.
+        floor_w = max(1.0, 0.02 * max(energies))
+        # Recency rides on top (0.5 at the window's start → 1.0 at its end): the
+        # chip's direction register lags a talker who moved, so with FLAT
+        # energies the converged tail still outvotes the stale head.
+        t_first, t_last = rows[0][0], rows[-1][0]
+        span = max(1e-6, t_last - t_first)
+        weights = [max(e, floor_w) * (0.5 + 0.5 * (r[0] - t_first) / span)
+                   for e, r in zip(energies, rows)]
+        pool = rows
+        cluster = dominant_cluster([r[2] for r in pool], cluster_deg, weights)
+        ok = cluster is not None and cluster["weight_share"] >= _num("FLEX_DOA_MIN_CLUSTER_SHARE", 0.4)
+        raw = dominant_cluster([r[1] for r in pool], cluster_deg, weights)
+    else:
+        # No energy readings at all: the chip's direction register lags a talker
+        # who moved, so decide from the TAIL of the phrase (the converged part).
+        tail_n = max(min_n, int(_num("FLEX_DOA_TAIL_MIN_SAMPLES", 5)),
+                     int(round(len(rows) * _num("FLEX_DOA_TAIL_SHARE", 0.5))))
+        pool = rows[-tail_n:]
+        cluster = dominant_cluster([r[2] for r in pool], cluster_deg)
+        ok = cluster is not None and cluster["share"] >= _num("FLEX_DOA_MIN_CLUSTER_SHARE", 0.4)
+        raw = dominant_cluster([r[1] for r in pool], cluster_deg)
+    if not ok:
         return None
-    cluster["n"] = len(rows)            # n = every speech sample in the window; share is within the tail
-    raw = dominant_cluster([r[1] for r in tail], cluster_deg)
+    cluster["n"] = len(rows)            # n = every speech sample in the window
     whole = dominant_cluster([r[2] for r in rows], cluster_deg)
+    heroes = [r[6] for r in rows if len(r) > 6 and r[6] is not None]
+    necks = [r[7] for r in rows if len(r) > 7 and r[7] is not None]
     cluster.update({
+        "heroarm_qus": (sum(heroes) / len(heroes)) if heroes else None,
+        "neck_qus": (sum(necks) / len(necks)) if necks else None,
         "raw_deg": (raw["bearing_deg"] % 360.0) if raw else None,
         "t0": float(t0), "t1": float(t1),
         "window_n": len(rows),
-        "tail_n": len(tail),
-        "clusters": cluster_summary([r[2] for r in rows], cluster_deg),
+        "tail_n": len(pool),
+        "clusters": cluster_summary([r[2] for r in rows], cluster_deg, energies=energies),
         "head_disagrees": bool(whole and abs(_wrap180(whole["bearing_deg"] - cluster["bearing_deg"])) > cluster_deg),
     })
     return cluster
 
 
-def cluster_summary(bearings: "list[float]", cluster_deg: float, top: int = 3) -> "list[tuple[float, int]]":
-    """[(centre_deg, count), ...] of the largest distinct groups, for the logs —
-    'chip 359×7, 270×6' says at a glance that a stale hold nearly won."""
-    remaining = list(bearings)
+def cluster_summary(bearings: "list[float]", cluster_deg: float, top: int = 3,
+                    energies: "Optional[list[float]]" = None) -> "list[tuple]":
+    """[(centre_deg, count, mean_energy), ...] of the largest distinct groups,
+    heaviest first, for the logs — '−131°×6 e=0.9M, +154°×14 e=0.1M' says at a
+    glance that a weak reflection outnumbered the talker."""
+    remaining = list(range(len(bearings)))
     out = []
     while remaining and len(out) < top:
-        c = dominant_cluster(remaining, cluster_deg)
+        bs = [bearings[i] for i in remaining]
+        ws = [max(1.0, float(energies[i])) for i in remaining] if energies else None
+        c = dominant_cluster(bs, cluster_deg, ws)
         if c is None:
             break
-        members = [b for b in remaining if abs(_wrap180(b - c["bearing_deg"])) <= cluster_deg]
-        out.append((c["bearing_deg"], len(members)))
-        remaining = [b for b in remaining if abs(_wrap180(b - c["bearing_deg"])) > cluster_deg]
+        members = [i for i in remaining if abs(_wrap180(bearings[i] - c["bearing_deg"])) <= cluster_deg]
+        mean_e = (sum(float(energies[i]) for i in members) / len(members)) if (energies and members) else 0.0
+        out.append((c["bearing_deg"], len(members), mean_e))
+        remaining = [i for i in remaining if i not in members]
     return out
 
 
 def describe_clusters(res: "Optional[dict]") -> str:
     if not res or not res.get("clusters"):
         return ""
-    return ", ".join(f"{c:+.0f}°×{k}" for c, k in res["clusters"])
+    parts = []
+    for g in res["clusters"]:
+        c, k = g[0], g[1]
+        e = g[2] if len(g) > 2 else 0.0
+        parts.append(f"{c:+.0f}°×{k}" + (f" e={e / 1e6:.2f}M" if e else ""))
+    return ", ".join(parts)
 
 
 def latest(max_age_secs: float = 1.0) -> "Optional[dict]":
@@ -419,7 +511,11 @@ def _reset_for_tests() -> None:
 
 
 def _inject_for_tests(rows) -> None:
-    """(t, doa_raw, base_bearing, speech, energy[, moving]) rows straight into the history."""
+    """(t, doa_raw, base_bearing, speech, energy[, moving[, heroarm]]) rows straight into the history."""
     with _lock:
-        _samples.extend(tuple(r) if len(r) > 5 else tuple(r) + (False,) for r in rows)
+        for r in rows:
+            r = tuple(r)
+            while len(r) < 8:
+                r = r + ((False,) if len(r) == 5 else (None,))
+            _samples.append(r)
     _status.update(enabled=True, connected=True)
