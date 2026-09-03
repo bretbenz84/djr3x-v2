@@ -59,7 +59,7 @@ after `SAVE_CONFIGURATION`.
 AUDIO_DEVICE_NAME=ReSpeaker          # substring-matches the Flex's name
 AUDIO_OUTPUT_DEVICE_NAME=ReSpeaker   # playback THROUGH the Flex = AEC reference
 AUDIO_AEC_INPUT_CHANNEL=1            # ASR beam (was blank on the Lite)
-AUDIO_INPUT_GAIN=1.5                 # PROVISIONAL — re-measure, expect 1.0-1.2
+AUDIO_INPUT_GAIN=4.0                 # measured 2026-09-02; matches the Lite's absolute levels
 WAKE_WORD_ALLOW_DURING_TTS=false     # unchanged; a separate talk-over decision
 ```
 
@@ -96,6 +96,37 @@ listened-to session, not a 3 s clip.
 
 Raw-capsule peak during the clip: −18.5 dBFS at −6 dBFS playback — headroom is
 fine, the amp is not driving the capsules into clipping.
+
+## Re-test results, 2026-09-02 evening (TV off, Rex stopped, gain 1.5x)
+
+`noise`: floor **−58.7 dBFS** post-gain (Lite: −49.2 to −54.0).
+
+`channels` at 3 ft: layout confirmed — ch0/ch1 corr 0.91, ch2-5 mutually
+0.89–0.96, groups independent; ch1 −50.2 dBFS RMS while talking, ch0 −26.8.
+
+`speech` (pipeline math, ch1 × 1.5):
+
+| distance | speech RMS | between-word floor | SNR | peak |
+|---|---|---|---|---|
+| 3 ft | −44.7 dBFS | −60.6 | 15.9 dB | −23.8 |
+| 6 ft (usual spot) | −45.7 dBFS | −69.0 | **23.3 dB** | −26.6 |
+| 9 ft | −47.4 dBFS | −60.9 | **13.5 dB** | −27.9 |
+
+Lite at 5–7 ft was 12.7–15.1 dB. So: +8–10 dB SNR at the usual spot, and 9 ft
+on the Flex ≈ 6 ft on the Lite. Speech level falls only ~3 dB from 3 to 9 ft
+(the beam output holds level); the whole curve is ~10 dB quieter than the
+Lite's, so `AUDIO_INPUT_GAIN` went 1.5 → **4.0**, which reproduces the Lite's
+absolute speech/floor levels (~−34 / ~−49) that the VAD, wake word and startle
+detector were tuned on.
+
+`aec` (20 s of Rex's voice at −12 dBFS peak): converged at ~10 s, chip flag
+`AEC_AECCONVERGED=1`. Last 5 s: raw echo −44.7 dBFS; ch1 residual −59.9 (floor
+−62.2) = **15.2 dB, floor-limited** — the residual sits at room noise, so the
+true cancellation is higher and would need louder playback to measure; ch0
+residual −74.1 = 29.4 dB. Logged in `logs/mic_check/aec_history.jsonl`.
+
+Still owed: `score` from 6 ft (Lite: 0.964–0.971), and a live session with a
+talk-over attempt and a "come here" from 9 ft.
 
 ## Re-test plan (needs Bret at the keyboard, TV off, Rex stopped)
 
