@@ -259,3 +259,22 @@ class GazeSearchHintTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TraceTest(unittest.TestCase):
+    def test_result_carries_a_per_sample_trace(self):
+        flex_doa._reset_for_tests()
+        try:
+            now = time.monotonic()
+            flex_doa._inject_for_tests([(now - 1.0 + 0.2 * i, 30.0, 30.0, True, 1e5 * (i + 1), False)
+                                        for i in range(5)])
+            res = flex_doa.bearing_between(now - 1.2, now)
+            self.assertEqual(len(res["trace"]), 5)
+            t, b, e = res["trace"][0]
+            self.assertGreater(t, 0.0)                      # seconds before the window end
+            self.assertEqual(b, 30)
+            text = flex_doa.describe_trace(res)
+            self.assertIn("+30°/0.1M", text)
+            self.assertIn("+30°/0.5M", text)
+        finally:
+            flex_doa._reset_for_tests()

@@ -137,3 +137,71 @@ class WhenLabelTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpcomingPlanAbsorbsUndatedLegsTest(RecentOpenThreadsTest):
+    """One road trip, five rows (field 2026-09-03 12:18): the undated legs must
+    wait for the dated plan instead of being asked about as if they had happened,
+    and closing the dated plan closes them with it."""
+
+    def _dated(self, name, days_ahead=5, mentioned_hours_ago=14.0):
+        from datetime import date
+        return _insert_event(name=name, event_date=(date.today() + timedelta(days=days_ahead)).isoformat(),
+                             mentioned_hours_ago=mentioned_hours_ago)
+
+    def test_shared_token_leg_is_held(self):
+        self._dated("trip to atlanta")
+        _insert_event(name="atlanta with my father", mentioned_hours_ago=14.0)
+        names = [t["event_name"] for t in events.get_recent_open_threads(1)]
+        self.assertEqual(names, [])
+
+    def test_same_conversation_travel_leg_is_held(self):
+        # "trip to grandparents" shares no token with "trip to georgia" (the
+        # filler "trip" is stripped) — same talk + both travel binds them.
+        self._dated("trip to georgia", mentioned_hours_ago=14.0)
+        _insert_event(name="trip to grandparents", mentioned_hours_ago=13.5)
+        _insert_event(name="visit huntsville space center", mentioned_hours_ago=13.8)
+        names = [t["event_name"] for t in events.get_recent_open_threads(1)]
+        self.assertEqual(names, [])
+
+    def test_unrelated_undated_thread_still_surfaces(self):
+        self._dated("trip to georgia", mentioned_hours_ago=14.0)
+        _insert_event(name="making soup", mentioned_hours_ago=13.5)     # same talk, not travel
+        _insert_event(name="visit the dentist", mentioned_hours_ago=60.0)  # travel-shaped word, other day
+        names = sorted(t["event_name"] for t in events.get_recent_open_threads(1))
+        self.assertEqual(names, ["making soup", "visit the dentist"])
+
+    def test_pending_followups_hold_the_same_way(self):
+        self._dated("trip to georgia", mentioned_hours_ago=14.0)
+        _insert_event(name="trip to grandparents", mentioned_hours_ago=14.0 + 24 * 8)
+        with mock.patch.object(config, "FOLLOWUP_UNDATED_DAYS", 7):
+            # 8 days old would normally be due; a same-talk link needs the dated
+            # plan mentioned near it, so this one is held only by the token rule…
+            self.assertEqual([e["event_name"] for e in events.get_pending_followups(1)],
+                             ["trip to grandparents"])
+        _insert_event(name="grandparents", mentioned_hours_ago=14.0)
+        self._dated("see the grandparents in georgia", mentioned_hours_ago=14.0 + 24 * 8)
+        with mock.patch.object(config, "FOLLOWUP_UNDATED_DAYS", 7):
+            self.assertEqual([e["event_name"] for e in events.get_pending_followups(1)], [])
+
+    def test_once_the_date_passes_the_legs_are_released(self):
+        self._dated("trip to georgia", days_ahead=-1, mentioned_hours_ago=14.0)
+        _insert_event(name="trip to grandparents", mentioned_hours_ago=13.5)
+        names = [t["event_name"] for t in events.get_recent_open_threads(1)]
+        self.assertEqual(names, ["trip to grandparents"])
+
+    def test_closing_the_dated_plan_closes_the_absorbed_legs(self):
+        dated = self._dated("trip to georgia", mentioned_hours_ago=14.0)
+        leg = _insert_event(name="trip to grandparents", mentioned_hours_ago=13.5)
+        other = _insert_event(name="making soup", mentioned_hours_ago=13.5)
+        events.mark_followed_up(dated, "it was great")
+        rows = {r["id"]: r for r in (dict(x) for x in db.fetchall("SELECT * FROM person_events"))}
+        self.assertTrue(rows[leg]["followed_up"])
+        self.assertFalse(rows[other]["followed_up"])
+
+    def test_travel_shapes(self):
+        for t in ("trip to grandparents", "visit huntsville space center", "how long they will stay",
+                  "field trip to jimmy carter's house", "driving down to the coast", "flight to denver"):
+            self.assertTrue(events.looks_like_travel(t), t)
+        for t in ("making soup", "watch it tonight", "going to bed early", "dentist appointment"):
+            self.assertFalse(events.looks_like_travel(t), t)

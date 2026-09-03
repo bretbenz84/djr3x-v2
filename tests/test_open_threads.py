@@ -6,6 +6,7 @@ window, once-ever spending (persisted), age phrasing. Temp rex.db, no LLM.
 import json
 import sys
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,8 +29,13 @@ class OpenThreadsTest(unittest.TestCase):
         rex_db.ensure_schema()
         from intelligence import open_threads
         self.ot = open_threads
+        # The upcoming-plan hold reads the REAL people.db otherwise (the owner's
+        # actual trip would hold every travel-shaped fixture thread).
+        self._plans = mock.patch("memory.events.get_upcoming_events", return_value=[])
+        self._plans.start()
 
     def tearDown(self):
+        self._plans.stop()
         config.REX_DB_PATH = self._orig
         self._tmp.cleanup()
 
@@ -343,3 +349,44 @@ class CuriosityReadFilterTest(OpenThreadsTest):
                   "whether the motor swap happened",
                   "how long they will stay in Huntsville"):
             self.assertFalse(rx.search(t), t)
+
+
+class UpcomingPlanHoldTest(OpenThreadsTest):
+    """Field 2026-09-03 12:17: "how long you'd stay in Huntsville — did that get
+    settled?" five days before the trip. Threads about a plan still ahead of
+    them are HELD (not spent) until it has happened."""
+
+    def _upcoming(self, *names, days=5):
+        from datetime import date
+        d = (date.today() + timedelta(days=days)).isoformat()
+        return [{"id": i, "event_name": n, "event_date": d} for i, n in enumerate(names, 1)]
+
+    def test_travel_thread_waits_for_the_upcoming_trip(self):
+        self._episode(threads=["how long they will stay in Huntsville",
+                               "how the new microphone performs over time"])
+        with mock.patch("memory.events.get_upcoming_events", return_value=self._upcoming("trip to atlanta")):
+            pending = [p["thread"] for p in self.ot.pending_for_person(1)]
+        self.assertEqual(pending, ["how the new microphone performs over time"])
+
+    def test_shared_token_thread_waits_even_if_not_travel_shaped(self):
+        self._episode(threads=["what Bret decided about the Atlanta hotel"])
+        with mock.patch("memory.events.get_upcoming_events", return_value=self._upcoming("trip to atlanta")):
+            self.assertEqual(self.ot.pending_for_person(1), [])
+
+    def test_no_upcoming_plan_changes_nothing(self):
+        self._episode(threads=["how long they will stay in Huntsville"])
+        with mock.patch("memory.events.get_upcoming_events", return_value=[]):
+            self.assertEqual([p["thread"] for p in self.ot.pending_for_person(1)],
+                             ["how long they will stay in Huntsville"])
+
+    def test_a_plan_beyond_the_horizon_does_not_hold(self):
+        self._episode(threads=["how long they will stay in Huntsville"])
+        with mock.patch("memory.events.get_upcoming_events", return_value=self._upcoming("trip to atlanta", days=60)):
+            self.assertEqual(len(self.ot.pending_for_person(1)), 1)
+
+    def test_held_thread_is_not_spent(self):
+        self._episode(threads=["how long they will stay in Huntsville"])
+        with mock.patch("memory.events.get_upcoming_events", return_value=self._upcoming("trip to atlanta")):
+            self.ot.pending_for_person(1)
+        with mock.patch("memory.events.get_upcoming_events", return_value=[]):
+            self.assertEqual(len(self.ot.pending_for_person(1)), 1)

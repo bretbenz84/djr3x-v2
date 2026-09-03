@@ -457,6 +457,9 @@ def bearing_between(t0: float, t1: float) -> "Optional[dict]":
         "window_n": len(rows),
         "tail_n": len(pool),
         "clusters": cluster_summary([r[2] for r in rows], cluster_deg, energies=energies),
+        # (seconds before the window end, base bearing, energy) per speech sample —
+        # the only way to tell a stale hold from a reflection after the fact.
+        "trace": [(round(float(t1) - r[0], 1), round(r[2]), float(r[4])) for r in rows],
         "head_disagrees": bool(whole and abs(_wrap180(whole["bearing_deg"] - cluster["bearing_deg"])) > cluster_deg),
     })
     return cluster
@@ -480,6 +483,13 @@ def cluster_summary(bearings: "list[float]", cluster_deg: float, top: int = 3,
         out.append((c["bearing_deg"], len(members), mean_e))
         remaining = [i for i in remaining if i not in members]
     return out
+
+
+def describe_trace(res: "Optional[dict]") -> str:
+    """'−1.9s +85°/0.7M → −1.8s +85°/0.6M → …' — the samples in time order."""
+    if not res or not res.get("trace"):
+        return ""
+    return " ".join(f"{-t:.1f}s {b:+.0f}°/{e / 1e6:.1f}M" for t, b, e in res["trace"])
 
 
 def describe_clusters(res: "Optional[dict]") -> str:

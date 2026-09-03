@@ -5810,9 +5810,14 @@ def _lean_visual_riff_cue(person_id: Optional[int], world: Optional[dict]) -> Op
     # Familiar visual facts are intentionally narrow (the shared helper excludes
     # build/height/age). If none are available, a present non-sensitive posture
     # still permits a people-roast style line grounded in this exact moment.
-    hint = consciousness._pick_appearance_hint(int(person_id))
+    # Hair colour/style is a STABLE trait, not an observation: fed to the riff as
+    # "a familiar visual detail: brown hair" it came back as "Brown hair again,
+    # Bret — bold choice" (field 2026-09-03 12:18), as if it had changed. Only
+    # accessories that come and go can be riffed on; otherwise use the moment.
+    hint = consciousness._pick_appearance_hint(int(person_id), include_hair=False)
     if hint:
-        return {"cue": f"a familiar visual detail: {hint}"}
+        return {"cue": f"a familiar visual detail: {hint} (a standing trait you already "
+                       f"know — do not imply it is new, changed, or back)"}
     cues = []
     for key, label in (
         ("distance_zone", "distance"),
@@ -15510,6 +15515,8 @@ def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
               (" — earlier samples pointed elsewhere (chip hold)" if res.get("head_disagrees") else "")
               + (f"; heroarm {res['heroarm_qus']:.0f} qus" if res.get("heroarm_qus") is not None else "")
               + (f"; neck {res['neck_qus']:.0f} qus" if res.get("neck_qus") is not None else ""))
+    if len(res.get("clusters") or []) > 1:
+        _log.info("[voice_doa] samples: %s", flex_doa.describe_trace(res))
     return res
 
 

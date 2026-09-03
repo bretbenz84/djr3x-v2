@@ -2850,3 +2850,42 @@ safety, he must not repeat the commands as if about to do them):
   "Can't swing that way" after the turn he had just made, then "Turning left"
   (22:59:43); it also could have stepped forward to earn room for a 13° trim.
   Corrections that the swing check refuses are now logged and dropped, silently.
+
+### Sixth live run, 2026-09-03 12:16 — mirrored right side, near-ghost tie-break, one road trip
+
+Bret 90° to Rex's RIGHT the whole time. Three "over here" calls:
+
+- **12:16:20 no turn — verdict `weak`.** The chip put every group on the LEFT
+  (+85°×7, +114°×10, −167°×1) for a talker at −90°: a mirror. The winning
+  group had 7 of 20 samples (share 0.35 < 0.5), so the reflex stood down —
+  correct, since every candidate was wrong. The right side reads badly on this
+  ring (bench 2026-09-02 too); a head-shadow bench is still owed.
+- **12:16:35 turned −177° and swept past him.** Groups −177°×6 at 0.15M vs
+  −95°×2 at 0.32M (the truth, low count). Count×energy went to −177°, and the
+  radar tie-break BACKED it with a "body" at −139°/0.8 m — a shell ghost or the
+  wall (floor 0.60 m). Bodies under `WAKE_ORIENT_RADAR_TIEBREAK_MIN_RANGE_M`
+  (1.0 m) no longer count for the tie-break.
+- **12:17:00 +85° → faced him.** Consistent with a talker at −90° after a −177°
+  turn (−90 + 177 = +87).
+- `[voice_doa] samples:` now logs the per-sample trace (seconds before the
+  window end, bearing, energy) whenever the chip offers more than one group,
+  so a stale hold can be told from a reflection after the fact.
+
+**"Brown hair again, Bret".** The lean visual riff was fed "a familiar visual
+detail: brown hair" and read it as a change. Hair colour/style is a standing
+trait: `_pick_appearance_hint(include_hair=False)` for riffs (accessories that
+come and go still qualify), and the cue says not to imply new/changed/back.
+
+**One road trip, five rows.** Departure "the 8th" (2026-09-08) was stored as
+"trip to atlanta" / "field trip to jimmy carter's house" / "trip to georgia"
+(dated) plus "trip to grandparents" / "visit huntsville space center" (undated),
+and the undated rows kept surfacing as "did that trip actually happen?" (run
+after run; twice this run, also via the episode thread "how long they will stay
+in Huntsville"). Now: an undated open plan is HELD while a dated future plan of
+the same person absorbs it — shared content token, or mentioned in the same
+conversation (`EVENT_SAME_TALK_WINDOW_SECS`) and both travel-shaped
+(`memory.events.looks_like_travel`) — in both the session-opener continuity
+lane and pending follow-ups; closing the dated plan closes the absorbed legs
+with it (`mark_followed_up`), so the return greeting asks once. Episode open
+threads about a plan still ahead (shared token, or travel-shaped while a
+travel plan is within `OPEN_THREAD_UPCOMING_PLAN_HOLD_DAYS`) are held, not spent.

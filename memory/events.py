@@ -201,6 +201,93 @@ def add_event(
     )
 
 
+# One road trip, many rows. The extractor files each leg and each stop of one
+# outing as its own event — field 2026-09-03 12:18: "trip to grandparents"
+# (undated), "trip to atlanta" / "field trip to jimmy carter's house" / "trip to
+# georgia" (all 2026-09-08), "visit huntsville space center" (undated) — and the
+# undated rows then surfaced as "did that trip to your grandparents actually
+# happen?" five days BEFORE the owner leaves, in run after run. An undated open
+# plan is held while a dated FUTURE plan of the same person ABSORBS it: they
+# share a content token, or they were mentioned in the same conversation and
+# both read as travel. The date passing (or the dated row closing) releases it.
+_TRAVEL_PAT = re.compile(
+    r"\b(?:trip|travel\w*|vacation|road\s*trip|visit\w*|stay\w*|driv(?:e|ing)\s+"
+    r"(?:up|down|over|out|to)|fly\w*|flight|tour|cruise|hotel|airbnb|space\s+center|"
+    r"museum|library|grandparents?|grandma|grandpa|cousins?|"
+    r"go(?:ing)?\s+(?:to|up|down|over)\s+(?!bed\b|sleep\b|work\b)|"
+    r"(?:hometown|birthplace|birth\s+house|the\s+coast|the\s+beach|the\s+mountains))\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_travel(text: str) -> bool:
+    return bool(_TRAVEL_PAT.search(text or ""))
+
+
+def _same_talk(a: Optional[str], b: Optional[str]) -> bool:
+    """Mentioned within EVENT_SAME_TALK_WINDOW_SECS of each other."""
+    try:
+        da = datetime.fromisoformat(str(a)); dbb = datetime.fromisoformat(str(b))
+        if da.tzinfo is None:
+            da = da.replace(tzinfo=timezone.utc)
+        if dbb.tzinfo is None:
+            dbb = dbb.replace(tzinfo=timezone.utc)
+        window = float(getattr(config, "EVENT_SAME_TALK_WINDOW_SECS", 7200.0))
+        return abs((da - dbb).total_seconds()) <= window
+    except (TypeError, ValueError):
+        return False
+
+
+def absorbed_by_upcoming_plan(event: dict, upcoming: list[dict]) -> Optional[dict]:
+    """The dated FUTURE plan this undated event belongs to, or None."""
+    if not upcoming or event.get("event_date"):
+        return None
+    try:
+        from memory import dedup
+        mine = set(dedup.event_content_tokens(str(event.get("event_name") or "")))
+    except Exception:
+        mine = set()
+    text = " ".join([str(event.get("event_name") or ""), str(event.get("event_notes") or "")])
+    for plan in upcoming:
+        try:
+            theirs = set(dedup.event_content_tokens(str(plan.get("event_name") or "")))
+        except Exception:
+            theirs = set()
+        if mine and theirs and (mine & theirs):
+            return plan
+        if (_same_talk(event.get("mentioned_at"), plan.get("mentioned_at"))
+                and looks_like_travel(text)
+                and looks_like_travel(str(plan.get("event_name") or ""))):
+            return plan
+    return None
+
+
+def _hold_absorbed(person_id: int, rows: list[dict], lane: str) -> list[dict]:
+    if not bool(getattr(config, "FOLLOWUP_HOLD_UNDATED_FOR_UPCOMING_PLAN", True)):
+        return rows
+    undated = [r for r in rows if not r.get("event_date")]
+    if not undated:
+        return rows
+    try:
+        upcoming = get_upcoming_events(int(person_id))
+    except Exception:
+        upcoming = []
+    if not upcoming:
+        return rows
+    out = []
+    for r in rows:
+        plan = absorbed_by_upcoming_plan(r, upcoming) if not r.get("event_date") else None
+        if plan is None:
+            out.append(r)
+            continue
+        _log.info(
+            "[events] %s: holding undated %r (#%s) — part of the upcoming %r on %s",
+            lane, r.get("event_name"), r.get("id"), plan.get("event_name"),
+            plan.get("event_date"),
+        )
+    return out
+
+
 def get_pending_followups(person_id: int) -> list[dict]:
     """
     Return events that are due for follow-up: followed_up is FALSE and either:
@@ -244,7 +331,7 @@ def get_pending_followups(person_id: int) -> list[dict]:
            ORDER BY mentioned_at""",
         (person_id, today, undated_cutoff),
     )
-    return [dict(r) for r in rows]
+    return _hold_absorbed(int(person_id), [dict(r) for r in rows], "pending followups")
 
 
 def get_recent_open_threads(person_id: int, lookback_days: Optional[int] = None) -> list[dict]:
@@ -276,7 +363,7 @@ def get_recent_open_threads(person_id: int, lookback_days: Optional[int] = None)
            ORDER BY mentioned_at DESC""",
         (person_id, cutoff, _BOOT_AT_ISO),
     )
-    return [dict(r) for r in rows]
+    return _hold_absorbed(int(person_id), [dict(r) for r in rows], "session-opener continuity")
 
 
 def mentioned_when_label(mentioned_at: Optional[str]) -> str:
@@ -359,6 +446,35 @@ def mark_followed_up(event_id: int, outcome: str) -> None:
                 "[events] same-date sibling closed with #%s: #%s %r",
                 event_id, sib["id"], sib["event_name"],
             )
+    # ABSORBED UNDATED LEGS: the undated rows that rode along with this dated plan
+    # (absorbed_by_upcoming_plan — shared token, or same conversation and both
+    # travel) are the same outing; asking about each after the trip is the
+    # "grandparents" / "Atlanta" / "Georgia" / "Jimmy Carter" quadruple ask.
+    if row and row["event_date"]:
+        try:
+            dated = dict(db.fetchone("SELECT * FROM person_events WHERE id = ?", (event_id,)) or {})
+            open_undated = [dict(r) for r in db.fetchall(
+                """SELECT * FROM person_events
+                   WHERE person_id = ? AND id != ? AND event_date IS NULL
+                     AND followed_up = FALSE
+                     AND COALESCE(status, 'planned') IN ('planned', 'promised')""",
+                (row["person_id"], event_id),
+            )]
+            for sib in open_undated:
+                if dated and absorbed_by_upcoming_plan(sib, [dated]) is None:
+                    continue
+                db.execute(
+                    """UPDATE person_events
+                       SET followed_up = TRUE, follow_up_at = ?, status = 'completed',
+                           outcome = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (_now(), f"(part of '{(row['event_name'] or 'that').strip()}' — resolved together)",
+                     _now(), int(sib["id"])),
+                )
+                _log.info("[events] absorbed undated leg closed with #%s: #%s %r",
+                          event_id, sib["id"], sib["event_name"])
+        except Exception as exc:
+            _log.debug("[events] absorbed-leg sweep failed: %s", exc)
     # NAME SIBLINGS: the same-date sweep can't reach UNDATED duplicates, and the
     # extractor mints those too — field 2026-08-19: 'visit presidential library'
     # and 'go to his presidential library' stored three seconds apart, the owner

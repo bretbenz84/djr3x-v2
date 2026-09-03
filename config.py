@@ -7743,6 +7743,13 @@ JEFF_CELEBRITY_GREETING_PENDING_SECS = 45.0
 
 # Days after mentioned_at before a dateless event is due for follow-up
 FOLLOWUP_UNDATED_DAYS = 7
+# An UNDATED open plan is held while a dated FUTURE plan of the same person absorbs
+# it (shared content token, or mentioned in the same conversation and both travel):
+# one road trip arrives as five rows, and the undated legs were asked about as if
+# they had happened, five days before departure (field 2026-09-03). Closing the
+# dated plan closes the absorbed legs with it.
+FOLLOWUP_HOLD_UNDATED_FOR_UPCOMING_PLAN = True
+EVENT_SAME_TALK_WINDOW_SECS = 7200.0
 
 # Session-opener continuity: greet a returning person by picking up an UNDATED open
 # thread from a previous session ("last night you never told me how the soup turned
@@ -9749,6 +9756,10 @@ WAKE_ORIENT_BASE_WAIT_SECS = 2.5     # a base mid-maneuver (idle wander shuffle)
 WAKE_ORIENT_RADAR_TIEBREAK_ENABLED = True
 WAKE_ORIENT_RADAR_TIEBREAK_MIN_SAMPLES = 3
 WAKE_ORIENT_RADAR_WINDOW_SECS = 3.0
+# A radar "body" closer than this cannot be the talker for the tie-break: the ring's
+# shell ghosts and the near wall sit at 0.6-0.9 m, and both wrong picks of 2026-09-03
+# 12:16 were backed by a 0.7 m / 0.8 m body while the owner stood at ~1.8 m.
+WAKE_ORIENT_RADAR_TIEBREAK_MIN_RANGE_M = 1.0
 # "Over here" (owner spec 2026-09-02): the same reflex for a spoken location cue
 # with no direction word — the DoA on that very utterance is the direction. Fires
 # on the transcribed turn, alongside the normal reply. Mid come-here search the
@@ -10630,6 +10641,10 @@ OPEN_THREAD_MAX_AGE_DAYS = _env_float("OPEN_THREAD_MAX_AGE_DAYS", 5.0, min_value
 # didn't go" settled the same plan in person_events). Content-token match against
 # resolved/canceled events updated within this window.
 OPEN_THREAD_RESOLVED_EVENT_GUARD_DAYS = 14.0
+# Episode open threads that are ABOUT a dated plan still ahead of the person (share a
+# token with it, or both read as travel) wait until it has happened — "how long
+# will you stay in Huntsville — did that get settled?" five days before the trip.
+OPEN_THREAD_UPCOMING_PLAN_HOLD_DAYS = 21.0
 
 # Spoken once when the charger is plugged in (firmware detects sustained charge
 # current, locks out the wheels, and reports charging:true in telemetry).

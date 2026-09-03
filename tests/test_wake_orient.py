@@ -512,6 +512,19 @@ class RadarTiebreakTest(unittest.TestCase):
             bearing, _ = MA.resolve_voice_bearing(res)
         self.assertAlmostEqual(bearing, -131.0)
 
+    def test_near_returns_cannot_break_a_tie(self):
+        # 2026-09-03 12:16:35: Bret at −90°/1.8 m, chip groups −177°×6 (weak) and
+        # −95°×2; a 0.8 m "body" at −139° backed the wrong group. Shell ghosts
+        # and the near wall live under a metre; a talker does not.
+        res = self._res(-177.0, [(-177.0, 6), (-95.0, 2)])
+        bodies = ([{"bearing_deg": -139.0, "range_m": 0.8, "confidence": 1.0, "hits": 5, "frames": 8}], True)
+        with mock.patch.object(MA, "_radar_bodies", return_value=bodies), \
+             mock.patch.object(config, "WAKE_ORIENT_RADAR_TIEBREAK_ENABLED", True, create=True):
+            bearing, note = MA.resolve_voice_bearing(res)
+        self.assertAlmostEqual(bearing, -177.0)      # the chip's own pick, unbacked
+        self.assertIn("near returns", note)
+        self.assertIn("ignored", note)
+
     def test_no_radar_agreement_keeps_the_chip_pick(self):
         res = self._res(154.0, [(154.0, 14), (-131.0, 6)])
         with mock.patch.object(MA, "_radar_bodies", return_value=self._bodies(20.0)):

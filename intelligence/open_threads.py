@@ -223,6 +223,42 @@ def _thread_discussed_this_session(thread: str, session_tokens) -> bool:
     return hit >= need
 
 
+def _upcoming_plan_hold(person_id: int) -> "tuple[list, bool]":
+    """(content-token sets of dated FUTURE plans, any of them travel-shaped) —
+    an episode thread about that plan ("how long they will stay in Huntsville",
+    field 2026-09-03 12:17, five days before the owner leaves) must wait until
+    the date has passed. The plan rows are people.db person_events."""
+    try:
+        from memory import events as events_mod
+        from memory import dedup
+        upcoming = events_mod.get_upcoming_events(int(person_id)) or []
+    except Exception:
+        return [], False
+    horizon = float(getattr(config, "OPEN_THREAD_UPCOMING_PLAN_HOLD_DAYS", 21.0))
+    limit = (datetime.now() + timedelta(days=horizon)).date().isoformat()
+    toks, travel = [], False
+    for plan in upcoming:
+        if str(plan.get("event_date") or "") > limit:
+            continue
+        name = str(plan.get("event_name") or "")
+        t = dedup.event_content_tokens(name)
+        if t:
+            toks.append(frozenset(t))
+        travel = travel or events_mod.looks_like_travel(name)
+    return toks, travel
+
+
+def _thread_about_upcoming_plan(thread: str, plan_tokens: list, travel: bool) -> bool:
+    try:
+        from memory import dedup, events as events_mod
+        mine = dedup.event_content_tokens(thread)
+    except Exception:
+        return False
+    if any(mine & p for p in plan_tokens):
+        return True
+    return bool(travel and events_mod.looks_like_travel(thread))
+
+
 def pending_for_person(person_id: int) -> list:
     """Unasked open threads for this person, freshest-first:
     [{"episode_id", "thread", "age_days"}]. Empty when none qualify."""
@@ -232,6 +268,7 @@ def pending_for_person(person_id: int) -> list:
     max_age_d = float(getattr(config, "OPEN_THREAD_MAX_AGE_DAYS", 21.0))
     resolved = _resolved_event_token_sets(person_id)
     session_tokens = _session_transcript_tokens()
+    plan_tokens, plan_travel = _upcoming_plan_hold(person_id)
     try:
         rows = rex_db.fetchall(
             "SELECT id, created_at, detail FROM rex_episodes "
@@ -278,6 +315,13 @@ def pending_for_person(person_id: int) -> list:
                 _log.info(
                     "[open_threads] dropping stored thread %r — its plan was "
                     "already resolved by a follow-up", t,
+                )
+                continue
+            if (plan_tokens or plan_travel) and _thread_about_upcoming_plan(t, plan_tokens, plan_travel):
+                # Held, not spent: it is about a trip that has not happened yet.
+                _log.info(
+                    "[open_threads] holding thread %r — it is about a plan that "
+                    "is still ahead of them", t,
                 )
                 continue
             if _thread_discussed_this_session(t, session_tokens):

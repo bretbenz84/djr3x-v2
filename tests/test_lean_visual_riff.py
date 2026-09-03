@@ -22,10 +22,23 @@ class LeanVisualRiffCueTest(unittest.TestCase):
             mock.patch.object(interaction.people_memory, "get_person", return_value={}),
             mock.patch.object(interaction.facts_memory, "get_facts", return_value=self._adult_facts()),
             mock.patch.object(interaction.boundary_memory, "is_blocked", return_value=False),
-            mock.patch.object(interaction.consciousness, "_pick_appearance_hint", return_value="a familiar hat"),
+            mock.patch.object(interaction.consciousness, "_pick_appearance_hint", return_value="a familiar hat") as hint,
         ):
             cue = interaction._lean_visual_riff_cue(7, world)
-        self.assertEqual(cue, {"cue": "a familiar visual detail: a familiar hat"})
+        self.assertTrue(cue["cue"].startswith("a familiar visual detail: a familiar hat"))
+        self.assertIn("do not imply it is new, changed, or back", cue["cue"])
+        # Hair is a standing trait, never riff material (field 2026-09-03 12:18:
+        # "Brown hair again, Bret — bold choice").
+        self.assertFalse(hint.call_args.kwargs.get("include_hair", True))
+
+    def test_hair_is_excluded_from_riff_hints(self):
+        rows = [{"key": "hair_color", "value": "brown"}, {"key": "notable_features", "value": '["glasses"]'}]
+        with mock.patch("memory.facts.get_facts_by_category", return_value=rows):
+            self.assertEqual(consciousness._pick_appearance_hint(7, include_hair=False), "a familiar glasses")
+            self.assertIn(consciousness._pick_appearance_hint(7), {"a familiar glasses", "brown hair"})
+        with mock.patch("memory.facts.get_facts_by_category", return_value=rows[:1]):
+            self.assertIsNone(consciousness._pick_appearance_hint(7, include_hair=False))
+            self.assertEqual(consciousness._pick_appearance_hint(7), "brown hair")
 
     def test_no_cue_for_minor_or_boundary(self):
         world = {"people": [{"person_db_id": 7, "age_category": "teen", "pose": "standing"}]}

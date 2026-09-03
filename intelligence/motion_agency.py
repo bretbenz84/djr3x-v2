@@ -1867,6 +1867,12 @@ def resolve_voice_bearing(res: dict, now: "float | None" = None) -> "tuple[float
     bodies, ready = _radar_bodies(now, since=now - window, window=window)
     if not ready or not bodies:
         return chosen, ""
+    min_range = _num("WAKE_ORIENT_RADAR_TIEBREAK_MIN_RANGE_M", 1.0)
+    near_ghosts = [b for b in bodies if float(b.get("range_m") or 0.0) < min_range]
+    bodies = [b for b in bodies if float(b.get("range_m") or 0.0) >= min_range]
+    if not bodies:
+        ghosts_txt = ", ".join(f"{b['bearing_deg']:+.0f}°/{b['range_m']:.1f}m" for b in near_ghosts)
+        return chosen, f" (radar only has near returns {ghosts_txt} — ignored)"
     match_deg = _num("MOTION_COME_VOICE_RADAR_MATCH_DEG", 40.0)
     min_n = int(_num("WAKE_ORIENT_RADAR_TIEBREAK_MIN_SAMPLES", 3))
     agreeing = []

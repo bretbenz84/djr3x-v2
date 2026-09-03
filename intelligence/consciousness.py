@@ -9355,7 +9355,7 @@ def _step_interest_discovery(snapshot: dict, profile: SituationProfile) -> None:
 # Step 10 — Presence tracking (departure / return reactions)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _pick_appearance_hint(person_db_id: Optional[int]) -> Optional[str]:
+def _pick_appearance_hint(person_db_id: Optional[int], *, include_hair: bool = True) -> Optional[str]:
     """Return one safe, non-body visual hint for a gentle riff, or ``None``.
 
     Appearance enrollment is deliberately broader than conversational material.
@@ -9395,6 +9395,8 @@ def _pick_appearance_hint(person_db_id: Optional[int]) -> Optional[str]:
                 candidates.append(f"a familiar {value}")
 
     hair = []
+    if not include_hair:
+        attrs = {k: v for k, v in attrs.items() if not k.startswith("hair")}
     if attrs.get("hair_color"):
         hair.append(attrs["hair_color"])
     if attrs.get("hair_style"):
