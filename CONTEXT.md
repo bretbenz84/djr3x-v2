@@ -2798,3 +2798,32 @@ surfaced five distinct failures; each is fixed at its own layer:
   behind), or glances full-throw when the base may not drive. Skipped when the
   caller is already on camera. Knobs `WAKE_ORIENT_*`; `tests/test_wake_orient.py`.
 
+
+### Fifth live run, 2026-09-03 11:44 — charger release, transcribed wake, Clinton thread
+
+Run 5 with the energy-weighted vote + radar tie-break: both "over here" calls
+landed (−13° → already facing; +162° from behind, radar body +156° agreeing →
+base turn). Three things the run exposed, all host-side:
+
+- **"Far too long" after unplugging before he could move.** The firmware's
+  exit proof is ~90 s of consecutive discharge (calib.h `BATT_CHARGE_EXIT_TICKS`,
+  2026-08-07) and the host then ADDED its 20 s voltage-flap grace on top
+  (`MOTION_CHARGING_RELEASE_GRACE_SECS`): flag off 11:44:55, first turn allowed
+  11:45:15. The host grace now applies only when the last positive reading came
+  from the VOLTAGE backstop; a firmware-flag drop releases at once
+  (`MOTION_CHARGING_FW_RELEASE_GRACE_SECS`, 0). The 90 s itself is firmware and
+  unflashed by design — the fast path remains SAYING "you're unplugged"
+  (`chg_assert`, 2026-08-07).
+- **A transcribed "Hey Rex" never turned him.** 11:44:45, "Hey Rex" from +168°
+  arrived as a transcript (fast-acked "I'm listening"), not as a wake-model
+  detection, and only the model path had the reflex. The heard-turn hook
+  (`_start_over_here_reflex`) now fires the same turn for a bare wake address
+  (reason `wake:transcribed`, `[wake_orient]` log + `WAKE |` line); orient's
+  3 s cooldown keeps it from doubling a model-path turn.
+- **"The Clinton quotes came up the other day — did you ever pick one?"** was an
+  open thread minted from the session "Impersonate Bill Clinton" ("whether
+  Bret has any favorite quotes from Clinton") — a preference question about a
+  bit Rex performed, not something Bret left unresolved. `CURIOSITY_RE` is now
+  canonical in `intelligence/open_threads.py` (favourites / preferences /
+  opinions / performance requests added), imported by the diary write side, and
+  applied at read time so stored ones die too.

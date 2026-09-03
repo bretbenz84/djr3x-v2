@@ -283,6 +283,30 @@ class OverHereTest(unittest.TestCase):
         self.assertAlmostEqual(orient.call_args[0][0], 120.0)
         self.assertEqual(orient.call_args[1]["reason"], "over_here")
 
+    def test_transcribed_bare_hey_rex_fires_the_wake_reflex(self):
+        # Field 2026-09-03 11:44:45: "Hey Rex" from +168° arrived as a transcript
+        # (fast-acked "I'm listening"), never as a wake-model detection, and the
+        # base never moved. The heard-turn hook must turn him for that too.
+        from intelligence import interaction as I
+        I._last_voice_bearing = {"bearing_deg": 168.0, "share": 0.6, "cluster_n": 14, "n": 24,
+                                 "at": time.monotonic()}
+        with mock.patch("intelligence.motion_agency.orient_to_voice", return_value="turned") as orient:
+            worker = I._start_over_here_reflex("Hey Rex.")
+            self.assertIsNotNone(worker)
+            worker.join(timeout=5.0)
+        orient.assert_called_once()
+        self.assertAlmostEqual(orient.call_args[0][0], 168.0)
+        self.assertEqual(orient.call_args[1]["reason"], "wake:transcribed")
+
+    def test_wake_reflex_switch_covers_the_transcribed_path(self):
+        from intelligence import interaction as I
+        I._last_voice_bearing = {"bearing_deg": 168.0, "share": 0.6, "cluster_n": 14, "n": 24,
+                                 "at": time.monotonic()}
+        with mock.patch.object(config, "WAKE_ORIENT_REFLEX_ENABLED", False, create=True):
+            self.assertIsNone(I._start_over_here_reflex("Hey Rex."))
+        with mock.patch.object(config, "OVER_HERE_REFLEX_ENABLED", False, create=True):
+            self.assertIsNone(I._start_over_here_reflex("Over here."))
+
     def test_stale_bearing_or_other_phrase_does_nothing(self):
         from intelligence import interaction as I
         I._last_voice_bearing = {"bearing_deg": 120.0, "share": 0.9, "cluster_n": 9, "n": 10,

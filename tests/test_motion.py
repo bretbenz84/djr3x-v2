@@ -334,6 +334,32 @@ class ControllerTest(_MotionTestBase):
             self.assertTrue(mc.charging())                 # still locked (within grace)
             self.assertIsNone(mc.turn_left())              # drive stays blocked
 
+    def test_firmware_flag_drop_releases_without_the_voltage_grace(self):
+        # The firmware proves an unplug itself (~90 s of consecutive discharge before it
+        # drops the flag), so the host must not add its 20 s voltage-flap grace on top
+        # (field 2026-09-03 11:44: "far too long" before an "over here" could turn him).
+        with mock.patch.object(config, "MOTION_CHARGING_RELEASE_GRACE_SECS", 20.0, create=True), \
+             mock.patch.object(config, "MOTION_CHARGING_FW_RELEASE_GRACE_SECS", 0.0, create=True):
+            self._connect(charging=True, batt_mv=14200)
+            self.assertTrue(mc.charging())
+            self.fake.charging = False
+            self.fake.batt_mv = 13400                       # below the voltage backstop
+            time.sleep(0.15)
+            self.assertFalse(mc.charging())                # released at once
+            self.assertIsNotNone(mc.turn_left())
+
+    def test_voltage_backstop_drop_still_gets_the_grace(self):
+        # No firmware flag in play (old firmware / tapered current): the voltage backstop
+        # was the only positive reading, and a sag flap of THAT keeps the sticky grace.
+        with mock.patch.object(config, "MOTION_CHARGING_RELEASE_GRACE_SECS", 20.0, create=True), \
+             mock.patch.object(config, "MOTION_CHARGING_FW_RELEASE_GRACE_SECS", 0.0, create=True):
+            self._connect(charging=False, batt_mv=14200)
+            self.assertTrue(mc.charging())                 # voltage backstop arms the latch
+            self.fake.batt_mv = 13400                       # sags below the threshold
+            time.sleep(0.15)
+            self.assertTrue(mc.charging())                 # still locked (within grace)
+            self.assertIsNone(mc.turn_left())
+
     def test_charging_releases_after_grace_on_real_unplug(self):
         with mock.patch.object(config, "MOTION_CHARGING_RELEASE_GRACE_SECS", 0.0, create=True):
             self._connect(charging=True, batt_mv=14200)

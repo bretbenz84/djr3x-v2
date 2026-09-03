@@ -10252,6 +10252,12 @@ MOTION_CHARGER_VOLTAGE_LOCKOUT_MV = 13600
 # the wheels while the cable is attached. A genuine unplug is sustained and releases
 # after the grace, so this is also how long after unplugging you wait before driving.
 MOTION_CHARGING_RELEASE_GRACE_SECS = 20.0
+# ...but only when the last positive reading came from the VOLTAGE backstop. When it
+# came from the firmware flag, the unplug is already proven (the firmware needs ~90 s of
+# consecutive discharge before it drops the flag, calib.h BATT_CHARGE_EXIT_TICKS), so the
+# host releases at once — 0 (field 2026-09-03: the extra 20 s on top of the firmware's
+# 90 s was the "far too long" wait before he could turn toward an "over here").
+MOTION_CHARGING_FW_RELEASE_GRACE_SECS = 0.0
 # Debounce for the spoken/chirped charger plug/unplug notice — a transition must persist
 # this long before Rex announces it, so a voltage-sag flap never spams the audio.
 MOTION_CHARGER_NOTICE_DEBOUNCE_SECS = 12.0

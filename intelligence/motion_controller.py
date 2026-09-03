@@ -86,8 +86,9 @@ def connect(port: "str | None" = None) -> bool:
     Returns True only on a clean handshake."""
     if not motion.connect(port):
         return False
-    global _charging_last_true_at
+    global _charging_last_true_at, _charging_last_true_fw
     _charging_last_true_at = 0.0        # fresh base — no stale sticky-charging memory
+    _charging_last_true_fw = False
     try:
         _push_config()
     except Exception:
@@ -1143,6 +1144,7 @@ def status() -> "dict | None":
 
 
 _charging_last_true_at = 0.0   # monotonic ts of the last positive charging reading
+_charging_last_true_fw = False  # ...and whether the FIRMWARE flag (not the voltage backstop) said so
 _charge_asserted_off_at = 0.0  # monotonic ts of the operator's last "you're unplugged"
 
 
@@ -1161,7 +1163,7 @@ def charging() -> bool:
     locked for MOTION_CHARGING_RELEASE_GRACE_SECS after the LAST positive reading; a
     genuine unplug is sustained and releases after the grace, a flap is not.
     """
-    global _charging_last_true_at, _charge_asserted_off_at
+    global _charging_last_true_at, _charging_last_true_fw, _charge_asserted_off_at
     snapshot = motion.telemetry() or {}
     now = time.monotonic()
     fw_flag = bool(snapshot.get("charging"))
@@ -1189,8 +1191,19 @@ def charging() -> bool:
                 raw = False
     if raw:
         _charging_last_true_at = now
+        _charging_last_true_fw = fw_flag
         return True
-    grace = _get_float("MOTION_CHARGING_RELEASE_GRACE_SECS", 20.0)
+    # The grace covers a VOLTAGE flap. The firmware flag no longer flaps: its
+    # exit needs ~90 s of CONSECUTIVE discharge (calib.h BATT_CHARGE_EXIT_TICKS,
+    # 2026-08-07), so by the time it drops the unplug is already proven, and
+    # holding the wheels another 20 s on top was pure delay (field 2026-09-03
+    # 11:44: flag off 11:44:55, first turn allowed 11:45:15, owner: "far too
+    # long"). A drop of the firmware flag with the voltage backstop quiet
+    # releases at once (MOTION_CHARGING_FW_RELEASE_GRACE_SECS, default 0).
+    if _charging_last_true_fw:
+        grace = _get_float("MOTION_CHARGING_FW_RELEASE_GRACE_SECS", 0.0)
+    else:
+        grace = _get_float("MOTION_CHARGING_RELEASE_GRACE_SECS", 20.0)
     return _charging_last_true_at > 0.0 and (now - _charging_last_true_at) < grace
 
 

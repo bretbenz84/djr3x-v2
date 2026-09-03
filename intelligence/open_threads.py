@@ -56,6 +56,33 @@ BOOKKEEPING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Getting-to-know-you curiosity shapes — the diary model files these as
+# "threads" after any personal revelation, but they are QUESTIONS REX WANTS TO
+# ASK, not things the person left unresolved. Spoken later as "you mentioned
+# X", they become false memories (field 2026-08-02 13:03). Canonical here since
+# 2026-09-03; the diary extractor (intelligence/llm.py) imports it for the
+# write side and pending_for_person kills already-stored ones.
+#   * favourites / preferences / opinions: "whether Bret has any favorite
+#     quotes from Clinton" (field 2026-09-03 11:45 — the whole session was
+#     "Impersonate Bill Clinton", a bit Rex performed; the next morning's lull
+#     opened with "The Clinton quotes came up the other day — did you ever pick
+#     one?", a follow-up on nothing).
+#   * performance requests to Rex (impersonations, impressions, voices, jokes,
+#     songs): the bit ended when Rex did it.
+CURIOSITY_RE = re.compile(
+    r"\bhow\b[^,;.]*\bmet\b|"
+    r"\bwhat\b[^,;.]*\b(?:enjoy|like)s?\b[^,;.]*\btogether\b|"
+    r"\bwhat\b[^,;.]*\bdo(?:es)?\s+together\b|"
+    r"\bwhat activities\b|"
+    r"\bif\b[^,;.]*\bhas (?:any )?plans\b|"
+    r"\bwhere\b[^,;.]*\b(?:is |are )?from\b|"
+    r"\bfavou?rite\b|\bprefer(?:s|red|ence)?\b|\bopinions?\s+(?:on|of|about)\b|"
+    r"\b(?:any|which|what)\s+(?:other\s+)?(?:quotes?|lines?|sayings?)\b|"
+    r"\bimpersonat|\bimpressions?\s+of\b|\bdo\s+(?:a|an|the|another)\s+(?:voice|accent|impression|impersonation)\b|"
+    r"\b(?:another|more|other)\s+(?:impersonations?|impressions?|voices?|jokes?|songs?)\b",
+    re.IGNORECASE,
+)
+
 # Game-table mechanics — chatter from a game REX HIMSELF hosted (Jeopardy,
 # trivia): score disputes, board requests, whose turn, how the game proceeds.
 # Rex administers the game, so these resolve inside it and die with it — never
@@ -238,6 +265,13 @@ def pending_for_person(person_id: int) -> list:
                 _log.info(
                     "[open_threads] dropping stored thread %r — game-table "
                     "mechanics from a game Rex hosted, not a life event", t,
+                )
+                continue
+            if CURIOSITY_RE.search(t):
+                _log.info(
+                    "[open_threads] dropping stored thread %r — curiosity / "
+                    "preference / performance-bit shape, not something they "
+                    "left unresolved", t,
                 )
                 continue
             if _thread_covers_resolved_plan(t, resolved):

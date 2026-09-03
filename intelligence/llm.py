@@ -2026,19 +2026,10 @@ def _thread_tokens(text: str) -> set:
             if w not in _THREAD_STOPWORDS and w not in _SHORT_STOPWORDS}
 
 
-# Getting-to-know-you curiosity shapes — the model files these as "threads"
-# after any personal revelation, but they are QUESTIONS REX WANTS TO ASK, not
-# things the person left unresolved. Spoken later as "you mentioned X", they
-# become false memories (field 2026-08-02 13:03).
-_CURIOSITY_THREAD_RE = re.compile(
-    r"\bhow\b[^,;.]*\bmet\b|"
-    r"\bwhat\b[^,;.]*\b(?:enjoy|like)s?\b[^,;.]*\btogether\b|"
-    r"\bwhat\b[^,;.]*\bdo(?:es)?\s+together\b|"
-    r"\bwhat activities\b|"
-    r"\bif\b[^,;.]*\bhas (?:any )?plans\b|"
-    r"\bwhere\b[^,;.]*\b(?:is |are )?from\b",
-    re.IGNORECASE,
-)
+# Getting-to-know-you curiosity / preference / performance-bit shapes — the
+# canonical pattern lives in intelligence.open_threads (the consumer filters
+# stored threads with the same one); imported here for the write side.
+from intelligence.open_threads import CURIOSITY_RE as _CURIOSITY_THREAD_RE
 
 # Bookkeeping shapes — maintenance of Rex's own records (name corrections,
 # mishearings, forget/privacy requests). Filing these as threads produces

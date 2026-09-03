@@ -306,3 +306,40 @@ class GameMechanicsReadFilterTest(OpenThreadsTest):
         ])
         pending = [p["thread"] for p in self.ot.pending_for_person(1)]
         self.assertEqual(pending, ["whether the motor swap happened"])
+
+
+class CuriosityReadFilterTest(OpenThreadsTest):
+    """Preference / favourite / performance-bit shapes are questions Rex WANTS
+    to ask, not something the person left unresolved — and stored ones must
+    die at read time (field 2026-09-03 11:45: "Impersonate Bill Clinton" became
+    "whether Bret has any favorite quotes from Clinton", spoken the next morning
+    as "The Clinton quotes came up the other day — did you ever pick one?")."""
+
+    def test_stored_curiosity_threads_are_dropped(self):
+        self._episode(threads=[
+            "whether Bret has any favorite quotes from Clinton",
+            "what other impersonations Bret wants to hear",
+            "Bret's opinion on the new Star Trek captain",
+            "whether Bret went to the presidential library this week",
+            "how Toby is adjusting to being blind",
+        ])
+        pending = [p["thread"] for p in self.ot.pending_for_person(1)]
+        self.assertEqual(pending, [
+            "whether Bret went to the presidential library this week",
+            "how Toby is adjusting to being blind",
+        ])
+
+    def test_shapes(self):
+        rx = self.ot.CURIOSITY_RE
+        for t in ("whether Bret has any favorite quotes from Clinton",
+                  "which quotes Bret likes", "if PJ prefers the old mic",
+                  "Bret's opinion on the captain", "whether Rex should do another impression",
+                  "whether Bret wants Rex to impersonate Trump again",
+                  "how Bret and JT met"):
+            self.assertTrue(rx.search(t), t)
+        for t in ("whether the dentist appointment happened",
+                  "how the trip to Atlanta went",
+                  "what mounting scheme Bret decided on for the sensors",
+                  "whether the motor swap happened",
+                  "how long they will stay in Huntsville"):
+            self.assertFalse(rx.search(t), t)

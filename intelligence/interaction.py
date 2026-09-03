@@ -1059,16 +1059,28 @@ def _over_here_phrase(text: str) -> bool:
 
 
 def _start_over_here_reflex(text: str) -> Optional[threading.Thread]:
-    """"Over here" (owner spec 2026-09-02): turn toward the voice that said it,
-    using the bearing already stamped for this segment. Runs off the interaction
-    thread; the spoken reply proceeds as usual."""
-    if not bool(getattr(config, "OVER_HERE_REFLEX_ENABLED", True)):
-        return None
-    if not _over_here_phrase(text):
+    """"Over here" (owner spec 2026-09-02) — and a bare transcribed "Hey Rex" —
+    turn toward the voice that said it, using the bearing already stamped for
+    this segment. Runs off the interaction thread; the spoken reply proceeds
+    as usual."""
+    if _over_here_phrase(text):
+        if not bool(getattr(config, "OVER_HERE_REFLEX_ENABLED", True)):
+            return None
+        tag, reason = "over_here", "over_here"
+    elif _is_bare_wake_address(text):
+        # A bare "Hey Rex" that arrived as a TRANSCRIPT (the wake-word model
+        # missed it, or was quiet) must still turn him: field 2026-09-03 11:44:45,
+        # "Hey Rex" from behind (+168°) was fast-acked with "I'm listening" and
+        # the base never moved, because only the model path had the reflex.
+        # orient_to_voice's cooldown keeps this from doubling a model-path turn.
+        if not bool(getattr(config, "WAKE_ORIENT_REFLEX_ENABLED", True)):
+            return None
+        tag, reason = "wake_orient", "wake:transcribed"
+    else:
         return None
     voice = _recent_voice_bearing(max_age=6.0)
     if voice is None:
-        _log.info("[over_here] %r — no usable voice bearing for this turn", text)
+        _log.info("[%s] %r — no usable voice bearing for this turn", tag, text)
         return None
 
     def _run() -> None:
@@ -1078,13 +1090,18 @@ def _start_over_here_reflex(text: str) -> Optional[threading.Thread]:
             bearing, note = motion_agency.resolve_voice_bearing(voice)
             outcome = motion_agency.orient_to_voice(
                 bearing, share=voice.get("share"), samples=voice.get("cluster_n"),
-                reason="over_here",
+                reason=reason,
             )
-            _log.info("[over_here] %r heard at %+.0f° (%d/%d samples agree; groups %s%s) → %s",
-                      text, bearing, voice.get("cluster_n") or 0, voice.get("n") or 0,
+            _log.info("[%s] %r heard at %+.0f° (%d/%d samples agree; groups %s%s) → %s",
+                      tag, text, bearing, voice.get("cluster_n") or 0, voice.get("n") or 0,
                       _fd.describe_clusters(voice), note, outcome)
+            if tag == "wake_orient":
+                try:
+                    conv_log.log_wake("transcribed", f"heard at {bearing:+.0f}° ({voice.get('cluster_n') or 0}/{voice.get('n') or 0}) → {outcome}")
+                except Exception:
+                    pass
         except Exception as exc:
-            _log.debug("[over_here] reflex failed: %s", exc)
+            _log.debug("[%s] reflex failed: %s", tag, exc)
 
     worker = threading.Thread(target=_run, daemon=True, name="over-here")
     worker.start()
