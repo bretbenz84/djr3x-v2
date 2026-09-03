@@ -340,11 +340,22 @@ against the voice (`--fit`, `perception.voice_bearing_match.fit_camera_model`):
 **14.6 px/deg (half-frame ≈ 66°), yaw offset +14.8°, rms 0.8°** — i.e. a
 face's angle off the camera axis is nearly linear in pixels (equidistant
 fisheye), and there is a constant ~15° between the camera axis and the mic's
-0°. Adopted: `VOICE_BEARING_CAM_PX_PER_DEG = 14.6`. The +14.8° is left at
-`VOICE_BEARING_CAM_YAW_OFFSET_DEG = 0` until the owner confirms whether the
-head was centred during the takes — if it was, that constant is a camera/mic
-mount offset and belongs in the knob; if the head was turned toward him, the
-live app already adds the neck readback and the knob must stay 0.
+0°. Adopted: `VOICE_BEARING_CAM_PX_PER_DEG = 14.6` and, after the owner confirmed
+the head yaw was centred (7° pitch down only), `VOICE_BEARING_CAM_YAW_OFFSET_DEG
+= 14.8` — a mount offset between the camera axis and the mic's 0°.
+
+Lens spec (ELP-USBFHD01M-L21, 2.1 mm fixed focus, 1/2.7" CMOS): f ≈ 2.1 mm /
+~3 µm ≈ 700 px, so an equidistant fisheye gives ~12 px/deg and ~150° across
+1920 px — the fit is within 20 % of the nominal optics and 3× away from the
+old 25° half-FOV. With the corrected scale the two right-side takes read
+17° and 26° off the camera axis, matching the owner's own "20 / 30 right" —
+i.e. the 15° constant sits between the camera axis and the mic's 0° (either
+the head's mechanical straight-ahead is not at the neck's 5472 neutral, or the
+ring on the hero-arm section is rotated). The four-direction DoA check earlier
+(front 359, left 90, back 171, right ~270, by-eye placement) leans toward the
+mic being aligned and the camera axis sitting ~15° right of the body's nose —
+which would also mean come-here alignment carries the same bias. A taped
+body-front line and one more `front` DoA run would settle which side owns it.
 
 **Follow-up flag:** come-here alignment still uses `MOTION_COME_CAM_HALF_FOV_DEG
 = 25` (≈38 px/deg) for the fused neck+face bearing; the voice-referenced fit

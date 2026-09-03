@@ -4235,7 +4235,12 @@ VOICE_BEARING_CONTRADICTION_DEG = 45.0     # nearest face farther than this = of
 # offset — the yaw offset below is that constant ONLY if the head was truly
 # centred during the fit. 0 px/deg = fall back to the fraction × half-FOV model.
 VOICE_BEARING_CAM_PX_PER_DEG = 14.6      # --fit 2026-09-02 over 3 takes, rms 0.8° (half-frame ≈ 66°)
-VOICE_BEARING_CAM_YAW_OFFSET_DEG = 0.0
+# Lens spec cross-check (ELP-USBFHD01M-L21: 2.1 mm, 1/2.7" sensor ⇒ f ≈ 700 px ⇒
+# ~12 px/deg equidistant, ~150° across the frame): the fit is within 20 % of it.
+# The +14.8° constant IS a mount offset — the owner confirms the head yaw was
+# centred (7° pitch down, which does not touch the horizontal bearing) — so it
+# lives here, not in the neck readback. A frame-centre take pins it directly.
+VOICE_BEARING_CAM_YAW_OFFSET_DEG = 14.8
 
 # ── Audio playback QoS ────────────────────────────────────────────────────────
 # Playback runs through a Python-level PortAudio callback that must grab the GIL for
