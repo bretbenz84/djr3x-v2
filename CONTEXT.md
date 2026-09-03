@@ -2791,4 +2791,10 @@ surfaced five distinct failures; each is fixed at its own layer:
   from every face is the mouth-still veto (off-camera talker). Knobs
   `VOICE_BEARING_*`; `tools/voice_face_test.py` benches it;
   `tests/test_voice_bearing_match.py`.
+- Name-call reflex (owner spec, same day): "hey Rex" from off camera turns him
+  toward the voice — `interaction._start_wake_orient_reflex` reads the Flex
+  DoA over the phrase and `motion_agency.orient_to_voice` glances with the
+  neck within 40°, turns the base beyond it (about-face for a call from
+  behind), or glances full-throw when the base may not drive. Skipped when the
+  caller is already on camera. Knobs `WAKE_ORIENT_*`; `tests/test_wake_orient.py`.
 

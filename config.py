@@ -9661,6 +9661,25 @@ MOTION_RADAR_ORIENT_COOLDOWN_SECS = 30.0   # between orients
 # the TTL (field 2026-08-19 22:49: three +60° chases of the same rear return in
 # three minutes, each spinning him away from the owner). World-frame via IMU yaw.
 MOTION_RADAR_ORIENT_VISITED_TTL_SECS = 150.0
+
+# ── Name-call reflex (owner spec 2026-09-02) ────────────────────────────────────
+# "Hey Rex" from off camera: turn toward the voice the way a person turns toward
+# their name — the head first when the neck can cover it, the base when the
+# angle is beyond the neck (a call from behind gets a full about-face). The
+# bearing is the Flex XVF3800's direction of arrival over the phrase itself
+# (hardware/flex_doa.py, the LOOKBACK window before the wake-word fire). Skipped
+# when the caller is already on camera (voice bearing lands on a visible face) or
+# nearly dead ahead. When the base may not turn (no-drive room, "don't move",
+# no traction, base busy, swing refused) the neck still glances that way at full
+# throw — the over-the-shoulder look.
+WAKE_ORIENT_REFLEX_ENABLED = True
+WAKE_ORIENT_LOOKBACK_SECS = 2.5      # DoA window before the fire: the wake phrase + detector lag
+WAKE_ORIENT_MIN_SHARE = 0.5          # dominant-cluster share the bearing needs
+WAKE_ORIENT_MIN_BEARING_DEG = 15.0   # closer than this = already facing the caller
+WAKE_ORIENT_NECK_MAX_DEG = 40.0      # within the neck's reach = glance; beyond = base turn
+WAKE_ORIENT_NECK_HOLD_SECS = 6.0     # directed-gaze hold after the glance (face tracking runs)
+WAKE_ORIENT_TURN_MAX_DEG = 180.0     # base turn cap — a call from behind is a real about-face
+WAKE_ORIENT_COOLDOWN_SECS = 3.0
 MOTION_RADAR_ORIENT_VISITED_DEG = 30.0
 
 # ── Idle base wander ("weight shift", owner spec 2026-08-19) ────────────────────

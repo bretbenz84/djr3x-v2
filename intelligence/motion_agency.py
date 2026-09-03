@@ -110,6 +110,7 @@ _state = {
     "last_approach_at": 0.0,
     "last_flinch_at": 0.0,
     "orient_last_at": 0.0,   # radar-orient cooldown stamp
+    "wake_orient_at": 0.0,   # name-call reflex cooldown stamp
     "orient_visited": [],    # (world_bearing_deg, at) — bodies already looked at
     "wander_pending": None,  # in-flight weight-shift pair (out leg + inverse)
     "wander_next_at": 0.0,   # randomized idle-wander cooldown stamp
@@ -1770,6 +1771,133 @@ def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
             bearing, best["range_m"], deg,
         )
     return True
+
+
+# ── Name-call reflex ─────────────────────────────────────────────────────────────
+# "Hey Rex" from off camera (owner spec 2026-09-02): turn toward the voice the
+# way a person turns toward their name. Same shape as radar orient — neck first,
+# wheels only beyond the neck — but ONE SHOT and synchronous (the wake-word
+# thread spawns it), driven by the Flex XVF3800's direction of arrival over the
+# phrase itself rather than a persistent radar body.
+
+
+def _voice_lands_on_visible_face(bearing_deg: float) -> bool:
+    """True when a face on camera sits within the voice-bearing tolerance of the
+    bearing — the caller is already in view, so the reflex has nothing to do
+    (face tracking owns the head)."""
+    try:
+        from world_state import world_state
+        people = [p for p in (world_state.get("people") or [])
+                  if isinstance(p, dict)
+                  and not (p.get("face_visible") is False or p.get("face_missing"))]
+    except Exception:
+        return False
+    if not people:
+        return False
+    try:
+        from perception import voice_bearing_match as vbm
+        res = vbm.match_faces_to_voice(
+            people, float(bearing_deg), float(_come_neck_bearing_deg() or 0.0),
+            frame_width=float(getattr(config, "CAMERA_WIDTH", 1920) or 1920),
+            half_fov_deg=_num("MOTION_COME_CAM_HALF_FOV_DEG", 25.0),
+            tolerance_deg=_num("VOICE_BEARING_FACE_TOLERANCE_DEG", 30.0),
+            margin_deg=_num("VOICE_BEARING_FACE_MARGIN_DEG", 10.0),
+            contradiction_deg=_num("VOICE_BEARING_CONTRADICTION_DEG", 60.0),
+            px_per_deg=_num("VOICE_BEARING_CAM_PX_PER_DEG", 0.0),
+            yaw_offset_deg=_num("VOICE_BEARING_CAM_YAW_OFFSET_DEG", 0.0),
+        )
+    except Exception:
+        return False
+    nearest = res.get("nearest_delta_deg")
+    return nearest is not None and float(nearest) <= _num("VOICE_BEARING_FACE_TOLERANCE_DEG", 30.0)
+
+
+def _orient_glance(bearing_deg: float, *, fraction: "float | None" = None) -> bool:
+    """Neck glance toward a base-frame bearing (+ = left) with a directed-gaze
+    hold so face tracking gets still frames there. fraction None = scaled to
+    the bearing; 1.0 = full throw (the over-the-shoulder look)."""
+    side = "left" if bearing_deg > 0 else "right"
+    if fraction is None:
+        fraction = min(1.0, abs(float(bearing_deg)) / _num("MOTION_COME_NECK_HALF_SPAN_DEG", 45.0))
+    _clear_idle_wander("name-call reflex")
+    try:
+        from sequences import animations
+        from intelligence import consciousness
+        animations.travel_glance_pose(side, "level", fraction=float(fraction))
+        consciousness.hold_directed_gaze(side, secs=_num("WAKE_ORIENT_NECK_HOLD_SECS", 6.0))
+    except Exception as exc:
+        _log.debug("[wake_orient] glance failed: %s", exc)
+        return False
+    return True
+
+
+def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
+                    reason: str = "wake") -> str:
+    """Turn toward a voice bearing (base frame, + = left) once. Returns a machine
+    key: ``glanced`` (neck), ``turned`` (base), ``facing`` (already), ``on_camera``
+    (the caller is in view), or why nothing/less happened — ``disabled``,
+    ``weak``, ``cooldown``, ``come_active``, ``base_busy``, ``unavailable``, and
+    the glance-instead fallbacks ``no_drive_glance`` / ``held_glance`` /
+    ``traction_glance`` / ``turn_refused_glance``."""
+    if not _flag("WAKE_ORIENT_REFLEX_ENABLED", True):
+        return "disabled"
+    if share is not None and float(share) < _num("WAKE_ORIENT_MIN_SHARE", 0.5):
+        return "weak"
+    now = time.monotonic()
+    bearing = _wrap180(float(bearing_deg))
+    if (now - float(_state.get("wake_orient_at") or 0.0)) < _num("WAKE_ORIENT_COOLDOWN_SECS", 3.0):
+        return "cooldown"
+    if abs(bearing) < _num("WAKE_ORIENT_MIN_BEARING_DEG", 15.0):
+        return "facing"
+    if _voice_lands_on_visible_face(bearing):
+        return "on_camera"
+    _state["wake_orient_at"] = now
+
+    if abs(bearing) <= _num("WAKE_ORIENT_NECK_MAX_DEG", 40.0):
+        ok = _orient_glance(bearing)
+        _log.info("[motion_agency] name-call reflex (%s): voice at %+.0f° — neck glance %s",
+                  reason, bearing, "left" if bearing > 0 else "right")
+        return "glanced" if ok else "glance_failed"
+
+    # Beyond the neck: the base turns — unless something forbids driving, in
+    # which case the head still goes as far as it can that way.
+    if requested_come_active():
+        return "come_active"
+    if not motion_controller.available():
+        _orient_glance(bearing, fraction=1.0)
+        return "unavailable"
+    if no_drive_room() is not None:
+        _orient_glance(bearing, fraction=1.0)
+        _log.info("[motion_agency] name-call reflex (%s): voice at %+.0f° but the room is "
+                  "no-drive — full neck glance instead", reason, bearing)
+        return "no_drive_glance"
+    if _user_hold_active(now):
+        _orient_glance(bearing, fraction=1.0)
+        _log.info("[motion_agency] name-call reflex (%s): voice at %+.0f° but he was told "
+                  "not to move — full neck glance instead", reason, bearing)
+        return "held_glance"
+    if _traction_lost(now):
+        _orient_glance(bearing, fraction=1.0)
+        return "traction_glance"
+    try:
+        base_idle = motion.state() == "idle"
+    except Exception:
+        base_idle = False
+    if not base_idle:
+        _orient_glance(bearing, fraction=1.0)
+        return "base_busy"
+    max_deg = _num("WAKE_ORIENT_TURN_MAX_DEG", 180.0)
+    deg = max(-max_deg, min(max_deg, bearing))
+    seq = motion_controller.turn(deg, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
+    if seq is None:
+        _orient_glance(bearing, fraction=1.0)
+        _log.info("[motion_agency] name-call reflex (%s): base turn %+.0f° refused — "
+                  "full neck glance instead", reason, deg)
+        return "turn_refused_glance"
+    _state["last_turn_at"] = now
+    _log.info("[motion_agency] name-call reflex (%s): voice at %+.0f°, beyond the neck — "
+              "base turn %+.0f°", reason, bearing, deg)
+    return "turned"
 
 
 # ── Object step ─────────────────────────────────────────────────────────────────

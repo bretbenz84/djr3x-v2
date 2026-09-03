@@ -1020,6 +1020,7 @@ def _on_wake_word(model_name: str) -> None:
         _last_wake_word = model_name
 
     _wake_word_recognition_gesture(model_name)
+    _start_wake_orient_reflex(model_name, current_state)
 
     if speech_queue.is_speaking():
         if _response_wait_active():
@@ -1030,6 +1031,47 @@ def _on_wake_word(model_name: str) -> None:
             _interrupted.set()
 
     _wake_word_fired.set()
+
+
+def _start_wake_orient_reflex(model_name: str, current_state) -> Optional[threading.Thread]:
+    """Name-call reflex (owner spec 2026-09-02): read where the wake phrase came
+    from (Flex DoA over the last WAKE_ORIENT_LOOKBACK_SECS) and turn toward it —
+    neck if the neck can cover it, base beyond that — off the wake-word thread.
+    The bearing is also stashed as the turn's voice bearing so the words that
+    follow are attributed and any "come here" aims the same way."""
+    if not bool(getattr(config, "WAKE_ORIENT_REFLEX_ENABLED", True)):
+        return None
+    if current_state not in (State.IDLE, State.ACTIVE):
+        return None
+    fired_at = time.monotonic()
+
+    def _run() -> None:
+        global _last_voice_bearing
+        try:
+            from hardware import flex_doa
+            if not flex_doa.available():
+                return
+            time.sleep(0.15)   # let the last DoA polls of the phrase land
+            res = flex_doa.bearing_between(
+                fired_at - float(getattr(config, "WAKE_ORIENT_LOOKBACK_SECS", 2.5)), fired_at,
+            )
+            if res is None:
+                _log.info("[wake_orient] %s: no usable voice bearing over the phrase", model_name)
+                return
+            res["at"] = time.monotonic()
+            _last_voice_bearing = res
+            from intelligence import motion_agency
+            outcome = motion_agency.orient_to_voice(
+                res["bearing_deg"], share=res.get("share"), reason=f"wake:{model_name}",
+            )
+            _log.info("[wake_orient] %s heard at %+.0f° (%d/%d samples agree) → %s",
+                      model_name, res["bearing_deg"], res["cluster_n"], res["n"], outcome)
+        except Exception as exc:
+            _log.debug("[wake_orient] reflex failed: %s", exc)
+
+    worker = threading.Thread(target=_run, daemon=True, name="wake-orient")
+    worker.start()
+    return worker
 
 
 def _wake_word_recognition_gesture(model_name: str) -> bool:

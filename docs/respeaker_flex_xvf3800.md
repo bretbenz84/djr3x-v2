@@ -371,6 +371,33 @@ More takes sharpen the fit: one at the frame CENTRE (pins the offset alone),
 one near each EDGE. Placement accuracy does not matter — the voice is the
 reference, the face box is the measurement.
 
+## Name-call reflex (shipped 2026-09-02, live test owed)
+
+Owner spec: "If I say hey-rex from off camera, I'd like him to try to turn to
+what he heard (first his head, if that is sufficient, then the body …)".
+
+`interaction._on_wake_word` → `_start_wake_orient_reflex` (a daemon thread, so
+the wake-word thread is never blocked) → `flex_doa.bearing_between(fire −
+WAKE_ORIENT_LOOKBACK_SECS, fire)` (the phrase itself, 2.5 s) →
+`motion_agency.orient_to_voice(bearing, share)`:
+
+| condition | action | outcome key |
+|---|---|---|
+| \|bearing\| < 15° | nothing — already facing | `facing` |
+| a visible face within the voice tolerance (30°) | nothing — face tracking owns the head | `on_camera` |
+| \|bearing\| ≤ 40° (neck reach) | neck glance scaled to the bearing + 6 s directed-gaze hold | `glanced` |
+| beyond the neck, base allowed | base turn by the full bearing (cap 180° — a call from behind is an about-face), scan rate | `turned` |
+| beyond the neck but no-drive room / "don't move" / no traction / base busy / swing refused | full-throw neck glance that way (the over-the-shoulder look) | `no_drive_glance` / `held_glance` / `traction_glance` / `base_busy` / `turn_refused_glance` |
+| weak cluster (< 0.5), cooldown (3 s), come-here running, disabled | nothing | `weak` / `cooldown` / `come_active` / `disabled` |
+
+The bearing is also stashed as the turn's voice bearing, so the words that
+follow the wake word are attributed with it and a "come here" aims the same way.
+Only fires in IDLE/ACTIVE (not SLEEP/QUIET) and, since
+`WAKE_WORD_ALLOW_DURING_TTS=false`, never while Rex is speaking. Log lines:
+`[wake_orient] Hey_rex heard at ±N° (k/n samples agree) → <outcome>` and
+`[motion_agency] name-call reflex (wake:Hey_rex): …`. Knobs `WAKE_ORIENT_*`;
+tests `tests/test_wake_orient.py`.
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is
