@@ -125,8 +125,14 @@ stays 1.5 meanwhile.
 true cancellation is higher and would need louder playback to measure; ch0
 residual −74.1 = 29.4 dB. Logged in `logs/mic_check/aec_history.jsonl`.
 
-Still owed: `score` from 6 ft (Lite: 0.964–0.971), and a live session with a
-talk-over attempt and a "come here" from 9 ft.
+`score` (19:45, ch1, gain 1.5, floor −59.2): **8/8 sentences word-perfect,
+mean accuracy 1.00** at segment levels of −47 to −52 dBFS — including the
+1–2 word lines ("Halt.", "Come here.") that were the Lite's weak spot. Lite
+best was 0.971 / 0.964 at −31 to −39 dBFS. Transcription does not need the
+level lifted; the only open level question is whether VAD / wake word trigger
+reliably at −45 dBFS speech, which the live session answers.
+
+Still owed: a live session with a talk-over attempt and a "come here" from 9 ft.
 
 ### AGC trial (pending owner go for two volatile writes)
 
