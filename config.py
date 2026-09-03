@@ -4218,13 +4218,17 @@ FLEX_DOA_RECONNECT_SECS = 30.0
 # confirmed as the talker (and, if no other face is within MARGIN of it, picked
 # as THE visible speaker among several); a voice farther than CONTRADICTION from
 # every visible face is positive evidence the talker is off camera (folded into
-# the same mouth-still veto the lip detector feeds). Camera geometry reuses
+# the same mouth-still veto the lip detector feeds). Owner call 2026-09-02: the
+# goal is WHICH person / WHICH side, not a surveyed angle — margins are wide on
+# purpose (a ~15° constant between camera axis and mic 0° is still unresolved,
+# and the face MARGIN between two candidates is relative, so it cancels there).
+# Camera geometry reuses
 # MOTION_COME_CAM_HALF_FOV_DEG / CAMERA_WIDTH; neck yaw from the servo readback.
 VOICE_BEARING_ATTRIBUTION_ENABLED = True
 VOICE_BEARING_MIN_SHARE = 0.5              # dominant-cluster share the bearing needs
-VOICE_BEARING_FACE_TOLERANCE_DEG = 20.0    # face this close to the voice = confirmed talker
+VOICE_BEARING_FACE_TOLERANCE_DEG = 30.0    # face this close to the voice = confirmed talker
 VOICE_BEARING_FACE_MARGIN_DEG = 10.0       # next face must be this much farther to SELECT
-VOICE_BEARING_CONTRADICTION_DEG = 45.0     # nearest face farther than this = off-camera talker
+VOICE_BEARING_CONTRADICTION_DEG = 60.0     # nearest face farther than this = off-camera talker
 # Lens model for the face's angle off the camera axis, used ONLY by the voice
 # bearing matcher (come-here alignment keeps its own field-tuned
 # MOTION_COME_CAM_HALF_FOV_DEG). The camera is a fisheye, so pixels off centre
@@ -9634,7 +9638,7 @@ MOTION_COME_RADAR_WAIT_SECS = 3.0        # max wait for a full post-settle sampl
 # visited first; with no agreeing body the voice bearing is the opening turn (like
 # side_deg), and a fruitless dwell there marks the spot visited like any radar body.
 MOTION_COME_VOICE_BEARING_ENABLED = True
-MOTION_COME_VOICE_RADAR_MATCH_DEG = 30.0   # radar body within this of the voice = them
+MOTION_COME_VOICE_RADAR_MATCH_DEG = 40.0   # radar body within this of the voice = them
 MOTION_COME_VOICE_TURN_MIN_DEG = 15.0      # voice this close to dead ahead needs no opening turn
 MOTION_COME_VOICE_MIN_SHARE = 0.4          # ignore a bearing whose dominant cluster is weaker
 

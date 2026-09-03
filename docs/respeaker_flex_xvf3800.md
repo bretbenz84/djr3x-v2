@@ -354,8 +354,12 @@ the head's mechanical straight-ahead is not at the neck's 5472 neutral, or the
 ring on the hero-arm section is rotated). The four-direction DoA check earlier
 (front 359, left 90, back 171, right ~270, by-eye placement) leans toward the
 mic being aligned and the camera axis sitting ~15° right of the body's nose —
-which would also mean come-here alignment carries the same bias. A taped
-body-front line and one more `front` DoA run would settle which side owns it.
+which would also mean come-here alignment carries the same bias. Owner call: the camera WAS pointed straight at the body's front (pitched
+down), and precision is not the goal — "get speaker bearing, not a precise
+angle". So the constant may well be on the mic side, and rather than chase it
+the margins are wide: face tolerance 30°, contradiction 60°, come-here
+radar∩voice match 40°. The between-faces margin (10°) is relative, so a
+constant offset cannot flip which of two faces wins.
 
 **Follow-up flag:** come-here alignment still uses `MOTION_COME_CAM_HALF_FOV_DEG
 = 25` (≈38 px/deg) for the fused neck+face bearing; the voice-referenced fit
