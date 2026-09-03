@@ -16,6 +16,7 @@ same window, grabs a camera frame mid-utterance, then reports side by side:
     ./venv/bin/python tools/voice_face_test.py                 # 6 s take, neck centred
     ./venv/bin/python tools/voice_face_test.py --secs 8 --neck-deg 0
     ./venv/bin/python tools/voice_face_test.py --label "bret 20deg right"
+    ./venv/bin/python tools/voice_face_test.py --fit      # calibrate the lens from every take so far
 
 Run it YOURSELF from a terminal (it waits for Enter, then counts down, then
 records — start talking at "RECORDING"). Rex must be stopped (camera + mic).
@@ -61,6 +62,56 @@ def _countdown(msg: str, secs: int = 3) -> None:
     print("   RECORDING — talk now      ")
 
 
+def _lens_kwargs() -> dict:
+    return {
+        "px_per_deg": float(getattr(config, "VOICE_BEARING_CAM_PX_PER_DEG", 0.0) or 0.0),
+        "yaw_offset_deg": float(getattr(config, "VOICE_BEARING_CAM_YAW_OFFSET_DEG", 0.0) or 0.0),
+    }
+
+
+def _fit() -> int:
+    """Calibrate the camera's angular model against the voice bearing using every
+    logged take with exactly one face. The voice is the reference (±3° on a
+    steady talker), the face box gives pixels — the fit returns px/deg and the
+    constant yaw offset. Do takes at the frame CENTRE and near BOTH EDGES."""
+    path = _ROOT / "logs" / "mic_check" / "voice_face.jsonl"
+    if not path.exists():
+        print("no takes logged yet")
+        return 1
+    samples = []
+    print(f"{'ts':>15} {'label':<18} {'px':>6} {'voice':>7} {'neck':>5}")
+    for line in path.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        voice = r.get("voice") or {}
+        faces = r.get("faces") or []
+        if not voice or len(faces) != 1 or voice.get("bearing_deg") is None:
+            continue
+        x, _y, w, _h = faces[0]["box"]
+        width = float(getattr(config, "CAMERA_WIDTH", 1920) or 1920)
+        px = (float(x) + float(w) / 2.0) - width / 2.0
+        neck = float(r.get("neck_deg") or 0.0)
+        samples.append((px, float(voice["bearing_deg"]), neck))
+        print(f"{r['ts']:>15} {str(r.get('label') or '')[:18]:<18} {px:6.0f} {float(voice['bearing_deg']):+7.1f} {neck:+5.0f}")
+    fit = vbm.fit_camera_model(samples)
+    if fit is None:
+        print("\nnot enough spread to fit (need ≥2 one-face takes at different frame positions)")
+        return 1
+    print(f"\n  fit over {fit['n']} takes: {fit['px_per_deg']:.1f} px/deg "
+          f"(half-frame ≈ {960.0 / fit['px_per_deg']:.0f}°), yaw offset {fit['yaw_offset_deg']:+.1f}° "
+          f"(+ = camera axis right of the mic's 0°), rms residual {fit['rms_deg']:.1f}°")
+    print("  residuals per take (deg): " + ", ".join(f"{r:+.1f}" for r in fit["residuals"]))
+    if fit["n"] < 4:
+        print("  ! fewer than 4 takes — add one at the frame centre and one near each edge before trusting this")
+    print("\n  to adopt: in config.py set")
+    print(f"    VOICE_BEARING_CAM_PX_PER_DEG = {fit['px_per_deg']:.1f}")
+    print(f"    VOICE_BEARING_CAM_YAW_OFFSET_DEG = {fit['yaw_offset_deg']:.1f}   # ONLY if the head was centred in every take;")
+    print("                                             # otherwise this is the neck yaw the live app reads itself")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--secs", type=float, default=6.0, help="recording length")
@@ -68,7 +119,11 @@ def main() -> int:
                     help="head yaw off the body during the take, + = Rex's right (default 0 = centred)")
     ap.add_argument("--frame-at", type=float, default=1.5, help="seconds into the take to grab the frame")
     ap.add_argument("--label", default="", help="tag for the log record")
+    ap.add_argument("--fit", action="store_true",
+                    help="no recording: fit px-per-degree + yaw offset from logs/mic_check/voice_face.jsonl")
     args = ap.parse_args()
+    if args.fit:
+        return _fit()
 
     from tools import mic_check
     from hardware import flex_doa
@@ -79,6 +134,9 @@ def main() -> int:
     print("─" * 68)
     print("Voice ↔ face bearing test")
     print(f"  take {args.secs:.0f}s, frame at {args.frame_at:.1f}s, neck yaw {args.neck_deg:+.0f}° (+ = right)")
+    lens = _lens_kwargs()
+    print(f"  lens model: {lens['px_per_deg']:.1f} px/deg, yaw offset {lens['yaw_offset_deg']:+.1f}°"
+          if lens["px_per_deg"] > 0 else "  lens model: fraction × half-FOV (uncalibrated)")
     print(f"  mic channel {getattr(config, 'AUDIO_AEC_INPUT_CHANNEL', -1)}, gain "
           f"{getattr(config, 'AUDIO_INPUT_GAIN', 1.0)}x, camera half-FOV "
           f"{getattr(config, 'MOTION_COME_CAM_HALF_FOV_DEG', 25.0):.0f}°, frame width "
@@ -163,9 +221,10 @@ def main() -> int:
     half_fov = float(getattr(config, "MOTION_COME_CAM_HALF_FOV_DEG", 25.0))
     print(f"\n  faces in frame: {len(dets)}")
     for p in people_rows:
-        b = vbm.face_bearing_deg(p, args.neck_deg, frame_width=width, half_fov_deg=half_fov)
+        b = vbm.face_bearing_deg(p, args.neck_deg, frame_width=width, half_fov_deg=half_fov, **_lens_kwargs())
         x, y, w, h = p["face_box"]
-        print(f"    {p['face_id']:<20} box ({x},{y}) {w}x{h}  bearing {b:+.0f}° base frame")
+        px = (x + w / 2.0) - width / 2.0
+        print(f"    {p['face_id']:<20} box ({x},{y}) {w}x{h}  {px:+.0f} px off centre  bearing {b:+.0f}° base frame")
 
     # ── voice id ─────────────────────────────────────────────────────────────
     ranked = []
@@ -188,6 +247,7 @@ def main() -> int:
             tolerance_deg=float(getattr(config, "VOICE_BEARING_FACE_TOLERANCE_DEG", 20.0)),
             margin_deg=float(getattr(config, "VOICE_BEARING_FACE_MARGIN_DEG", 10.0)),
             contradiction_deg=float(getattr(config, "VOICE_BEARING_CONTRADICTION_DEG", 45.0)),
+            **_lens_kwargs(),
         )
         print(f"\n  matcher: {vbm.describe(result, names)}")
         top_voice_pid = ranked[0][0] if ranked else None
@@ -217,7 +277,7 @@ def main() -> int:
             img = frame.copy()
             for p in people_rows:
                 x, y, w, h = p["face_box"]
-                b = vbm.face_bearing_deg(p, args.neck_deg, frame_width=width, half_fov_deg=half_fov)
+                b = vbm.face_bearing_deg(p, args.neck_deg, frame_width=width, half_fov_deg=half_fov, **_lens_kwargs())
                 cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 cv2.putText(img, f"{p['face_id']} {b:+.0f}", (x, max(20, y - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -233,7 +293,7 @@ def main() -> int:
         "ts": stamp, "label": args.label, "neck_deg": args.neck_deg,
         "voice": voice,
         "faces": [{"pid": p["person_db_id"], "name": p["face_id"], "box": p["face_box"],
-                   "bearing_deg": vbm.face_bearing_deg(p, args.neck_deg, frame_width=width, half_fov_deg=half_fov)}
+                   "bearing_deg": vbm.face_bearing_deg(p, args.neck_deg, frame_width=width, half_fov_deg=half_fov, **_lens_kwargs())}
                   for p in people_rows],
         "voice_id": [{"pid": pid, "name": name, "score": score} for pid, name, score, _ in ranked],
         "match": (None if result is None else

@@ -15407,6 +15407,8 @@ def _voice_bearing_face_match(people: list) -> Optional[dict]:
         tolerance_deg=float(getattr(config, "VOICE_BEARING_FACE_TOLERANCE_DEG", 20.0)),
         margin_deg=float(getattr(config, "VOICE_BEARING_FACE_MARGIN_DEG", 10.0)),
         contradiction_deg=float(getattr(config, "VOICE_BEARING_CONTRADICTION_DEG", 45.0)),
+        px_per_deg=float(getattr(config, "VOICE_BEARING_CAM_PX_PER_DEG", 0.0) or 0.0),
+        yaw_offset_deg=float(getattr(config, "VOICE_BEARING_CAM_YAW_OFFSET_DEG", 0.0) or 0.0),
     )
     if not res.get("faces"):
         return None

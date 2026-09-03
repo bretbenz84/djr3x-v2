@@ -321,6 +321,41 @@ Run with Rex stopped, head centred (`--neck-deg` otherwise). Expected for
 Bret ~20° right of the nose: voice ≈ −20°, face box ≈ 80 % across to the
 right ⇒ face ≈ −20°, verdict "consistent".
 
+### Bench results 2026-09-02 21:41–21:44 and the lens calibration they forced
+
+Three takes, Bret at roughly −20/−30/+30° by his own estimate ("off by a 10°
+margin"), head reported centred, `tools/voice_face_test.py`:
+
+| take | voice bearing (cluster) | face px off centre | face @25° half-FOV | voice ID |
+|---|---|---|---|---|
+| right | −33.1° (48/55, spread 1.9°) | +254 | −6.6° | Bret 0.753 |
+| right, farther | −39.7° (39/46, spread 3.3°) | +378 | −9.9° | Bret 0.810 |
+| left | +33.0° (51/51) | −698 | +18.2° | Bret 0.794 (face unidentified — looking down) |
+
+The voice clusters were tight and the voice ID right every time; the FACE
+bearings were 2–5× too small. The camera is a very wide fisheye (the visor
+edges fill the bottom corners of every frame), so the 25° half-FOV inherited
+from the come-here calibration is wrong for angular work. Fitting the lens
+against the voice (`--fit`, `perception.voice_bearing_match.fit_camera_model`):
+**14.6 px/deg (half-frame ≈ 66°), yaw offset +14.8°, rms 0.8°** — i.e. a
+face's angle off the camera axis is nearly linear in pixels (equidistant
+fisheye), and there is a constant ~15° between the camera axis and the mic's
+0°. Adopted: `VOICE_BEARING_CAM_PX_PER_DEG = 14.6`. The +14.8° is left at
+`VOICE_BEARING_CAM_YAW_OFFSET_DEG = 0` until the owner confirms whether the
+head was centred during the takes — if it was, that constant is a camera/mic
+mount offset and belongs in the knob; if the head was turned toward him, the
+live app already adds the neck readback and the knob must stay 0.
+
+**Follow-up flag:** come-here alignment still uses `MOTION_COME_CAM_HALF_FOV_DEG
+= 25` (≈38 px/deg) for the fused neck+face bearing; the voice-referenced fit
+says the lens is ~14.6 px/deg. If that is right, alignment under-turns toward
+an off-centre face by ~2.5× — worth a field check before touching it, since
+that value was set from a real turn (2026-08-11) and the loop is tuned around it.
+
+More takes sharpen the fit: one at the frame CENTRE (pins the offset alone),
+one near each EDGE. Placement accuracy does not matter — the voice is the
+reference, the face box is the measurement.
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is

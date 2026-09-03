@@ -4225,6 +4225,17 @@ VOICE_BEARING_MIN_SHARE = 0.5              # dominant-cluster share the bearing 
 VOICE_BEARING_FACE_TOLERANCE_DEG = 20.0    # face this close to the voice = confirmed talker
 VOICE_BEARING_FACE_MARGIN_DEG = 10.0       # next face must be this much farther to SELECT
 VOICE_BEARING_CONTRADICTION_DEG = 45.0     # nearest face farther than this = off-camera talker
+# Lens model for the face's angle off the camera axis, used ONLY by the voice
+# bearing matcher (come-here alignment keeps its own field-tuned
+# MOTION_COME_CAM_HALF_FOV_DEG). The camera is a fisheye, so pixels off centre
+# map nearly linearly to degrees; calibrate against the voice with
+# `tools/voice_face_test.py --fit`. 2026-09-02, three takes (Bret at ~-33/-40/+33°):
+# 14.6 px/deg with 0.8° rms residual, plus a +14.8° constant that is EITHER an unread
+# neck yaw (the live app adds the servo readback itself) or a camera/mic mount
+# offset — the yaw offset below is that constant ONLY if the head was truly
+# centred during the fit. 0 px/deg = fall back to the fraction × half-FOV model.
+VOICE_BEARING_CAM_PX_PER_DEG = 14.6      # --fit 2026-09-02 over 3 takes, rms 0.8° (half-frame ≈ 66°)
+VOICE_BEARING_CAM_YAW_OFFSET_DEG = 0.0
 
 # ── Audio playback QoS ────────────────────────────────────────────────────────
 # Playback runs through a Python-level PortAudio callback that must grab the GIL for

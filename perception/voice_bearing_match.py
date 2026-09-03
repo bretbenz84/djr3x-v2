@@ -52,24 +52,43 @@ def face_offset_fraction(person: dict, frame_width: float) -> Optional[float]:
 
 
 def face_bearing_deg(person: dict, neck_yaw_right_deg: float, *,
-                     frame_width: float, half_fov_deg: float) -> Optional[float]:
+                     frame_width: float, half_fov_deg: float,
+                     px_per_deg: Optional[float] = None,
+                     yaw_offset_deg: float = 0.0) -> Optional[float]:
     """A visible face's bearing in the BASE frame (+ = left), or None without a box.
 
     neck_yaw_right_deg: head yaw off the body's nose, + = right.
-    half_fov_deg: degrees from frame centre to the frame edge (~25° on the
-    robot camera — a −33° base turn moved a face 1290 px across 1920).
+    px_per_deg: the lens model — pixels of horizontal offset per degree off the
+      optical axis, treated as linear (the robot camera is a fisheye, whose
+      equidistant projection IS close to linear). Calibrated against the voice
+      bearing with `tools/voice_face_test.py --fit` (2026-09-02: ~16 px/deg).
+      When None/0 the legacy fraction × half_fov_deg model is used.
+    yaw_offset_deg: constant added to the camera's yaw (+ = right) — a mount
+      offset between the camera axis and the body's nose the neck readback does
+      not know about. Also fitted by --fit (it cannot be told apart from an
+      unread neck yaw by a static test; see the doc).
     """
     frac = face_offset_fraction(person, frame_width)
     if frac is None:
         return None
-    right_deg = float(neck_yaw_right_deg or 0.0) + frac * float(half_fov_deg)
+    try:
+        k = float(px_per_deg or 0.0)
+    except (TypeError, ValueError):
+        k = 0.0
+    if k > 0.0:
+        cam_deg = frac * (float(frame_width) / 2.0) / k
+    else:
+        cam_deg = frac * float(half_fov_deg)
+    right_deg = float(neck_yaw_right_deg or 0.0) + float(yaw_offset_deg or 0.0) + cam_deg
     return wrap180(-right_deg)
 
 
 def match_faces_to_voice(people: list, voice_bearing_deg: float, neck_yaw_right_deg: float, *,
                          frame_width: float, half_fov_deg: float,
                          tolerance_deg: float, margin_deg: float,
-                         contradiction_deg: float) -> dict:
+                         contradiction_deg: float,
+                         px_per_deg: Optional[float] = None,
+                         yaw_offset_deg: float = 0.0) -> dict:
     """Rank visible faces by angular distance from the voice bearing.
 
     Faces without a usable box are skipped. Returns
@@ -82,7 +101,8 @@ def match_faces_to_voice(people: list, voice_bearing_deg: float, neck_yaw_right_
         if not isinstance(person, dict):
             continue
         bearing = face_bearing_deg(person, neck_yaw_right_deg,
-                                   frame_width=frame_width, half_fov_deg=half_fov_deg)
+                                   frame_width=frame_width, half_fov_deg=half_fov_deg,
+                                   px_per_deg=px_per_deg, yaw_offset_deg=yaw_offset_deg)
         if bearing is None:
             continue
         pid = person.get("person_db_id")
@@ -129,3 +149,39 @@ def describe(result: Optional[dict], names: Optional[dict] = None) -> str:
     else:
         verdict = "→ inconclusive"
     return f"voice {result.get('voice_deg', 0.0):+.0f}° vs faces {' | '.join(parts) or 'none'} {verdict}"
+
+
+def fit_camera_model(samples: list) -> Optional[dict]:
+    """Calibrate the lens against the voice: least squares for px_per_deg and
+    yaw_offset_deg from takes where ONE face was on camera while its owner talked.
+
+    samples: [(px_offset, voice_bearing_deg, neck_yaw_right_deg), ...] with
+      px_offset = face centre − frame centre in pixels (+ = right).
+    Model: voice = −(neck + offset + px / k)  ⇒  −voice − neck = offset + px · (1/k).
+    Returns {"px_per_deg", "yaw_offset_deg", "rms_deg", "n", "residuals"} or
+    None with fewer than two usable samples. Two samples give an exact fit;
+    the rms only means something from three up, and a spread of positions
+    (centre, both edges) is what makes the two unknowns separable.
+    """
+    rows = []
+    for px, voice, neck in samples or []:
+        try:
+            rows.append((float(px), -float(voice) - float(neck or 0.0)))
+        except (TypeError, ValueError):
+            continue
+    n = len(rows)
+    if n < 2:
+        return None
+    sx = sum(px for px, _ in rows); sy = sum(y for _, y in rows)
+    sxx = sum(px * px for px, _ in rows); sxy = sum(px * y for px, y in rows)
+    denom = n * sxx - sx * sx
+    if abs(denom) < 1e-9:
+        return None                       # every face at the same x — no scale information
+    slope = (n * sxy - sx * sy) / denom   # degrees per pixel
+    offset = (sy - slope * sx) / n
+    if slope <= 0.0:
+        return None                       # a face moving right must read more right
+    residuals = [y - (offset + slope * px) for px, y in rows]
+    rms = (sum(r * r for r in residuals) / n) ** 0.5
+    return {"px_per_deg": 1.0 / slope, "yaw_offset_deg": offset, "rms_deg": rms,
+            "n": n, "residuals": residuals}

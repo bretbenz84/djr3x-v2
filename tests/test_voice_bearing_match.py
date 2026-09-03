@@ -109,3 +109,52 @@ class MatchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LensModelTest(unittest.TestCase):
+    """The fisheye model: pixels off centre / px_per_deg, plus a constant yaw offset."""
+
+    def test_px_per_deg_replaces_the_fraction_model(self):
+        # 320 px right of centre at 16 px/deg = 20° right = -20 in the base frame.
+        b = vbm.face_bearing_deg(_face(1, W / 2 + 320), 0.0, frame_width=W, half_fov_deg=FOV,
+                                 px_per_deg=16.0)
+        self.assertAlmostEqual(b, -20.0)
+
+    def test_yaw_offset_adds_like_neck_yaw(self):
+        b = vbm.face_bearing_deg(_face(1, W / 2), 0.0, frame_width=W, half_fov_deg=FOV,
+                                 px_per_deg=16.0, yaw_offset_deg=14.0)
+        self.assertAlmostEqual(b, -14.0)
+
+    def test_zero_px_per_deg_falls_back(self):
+        b = vbm.face_bearing_deg(_face(1, W), 0.0, frame_width=W, half_fov_deg=FOV, px_per_deg=0.0)
+        self.assertAlmostEqual(b, -25.0)
+
+    def test_fit_recovers_a_known_model(self):
+        k, c = 16.0, 14.0
+        samples = []
+        for px in (-700.0, -300.0, 0.0, 250.0, 600.0):
+            voice = -(c + px / k)
+            samples.append((px, voice, 0.0))
+        fit = vbm.fit_camera_model(samples)
+        self.assertAlmostEqual(fit["px_per_deg"], k, places=6)
+        self.assertAlmostEqual(fit["yaw_offset_deg"], c, places=6)
+        self.assertAlmostEqual(fit["rms_deg"], 0.0, places=6)
+
+    def test_fit_takes_the_neck_into_account(self):
+        # Same geometry, but the head was panned 10° right during every take:
+        # the fitted constant must exclude that (the live app reads the neck).
+        samples = [(px, -(14.0 + 10.0 + px / 16.0), 10.0) for px in (-600.0, 0.0, 500.0)]
+        fit = vbm.fit_camera_model(samples)
+        self.assertAlmostEqual(fit["yaw_offset_deg"], 14.0, places=6)
+
+    def test_fit_needs_spread(self):
+        self.assertIsNone(vbm.fit_camera_model([(100.0, -20.0, 0.0), (100.0, -25.0, 0.0)]))
+        self.assertIsNone(vbm.fit_camera_model([(100.0, -20.0, 0.0)]))
+
+    def test_tonights_three_takes_fit_within_a_few_degrees(self):
+        # 2026-09-02 21:41-21:44, neck reported centred: (px, voice)
+        samples = [(253.5, -33.1, 0.0), (378.5, -39.7, 0.0), (-698.0, 33.0, 0.0)]
+        fit = vbm.fit_camera_model(samples)
+        self.assertGreater(fit["px_per_deg"], 12.0)
+        self.assertLess(fit["px_per_deg"], 22.0)
+        self.assertLess(fit["rms_deg"], 5.0)
