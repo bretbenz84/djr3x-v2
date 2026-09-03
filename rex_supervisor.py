@@ -76,6 +76,14 @@ _DEBUG = os.environ.get("REX_SUPERVISOR_DEBUG", "").strip() in ("1", "true", "Tr
 # Play the startup chime on wake (instant feedback before the robot boots).
 # Set REX_SUPERVISOR_CHIME=0 to disable.
 _CHIME_ENABLED = os.environ.get("REX_SUPERVISOR_CHIME", "1").strip() not in ("0", "false", "False")
+# The same chime also plays ONCE when the supervisor first becomes ready to
+# listen (mic open, no controller holding the lock), so a fresh login / relaunch
+# gives audible "I'm ready" feedback without anyone having to say the phrase.
+# The auto-updater restarts this process by exec; that is the same supervisor
+# carrying on, not a new arrival, so _restart_supervisor() hands the "already
+# chimed" fact to its replacement through this env marker.
+_READY_CHIME_MARKER = "REX_SUPERVISOR_READY_CHIMED"
+_ready_chime_played = os.environ.get(_READY_CHIME_MARKER, "").strip() == "1"
 
 # Make utils.single_instance importable without importing the heavy project config.
 if str(_PROJECT_ROOT) not in sys.path:
@@ -117,6 +125,10 @@ def _update_interval_secs() -> float:
 def _restart_supervisor() -> None:
     """Replace this process with the supervisor code currently on disk."""
     log.info("[auto_update] Restarting supervisor to load the updated code.")
+    if _ready_chime_played:
+        # The replacement is the same always-on listener resuming after a code
+        # refresh, so it must not announce itself as newly ready.
+        os.environ[_READY_CHIME_MARKER] = "1"
     os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON), str(Path(__file__).resolve())])
 
 
@@ -394,6 +406,26 @@ def _play_chime() -> None:
     threading.Thread(
         target=_play_blocking, args=(None,), daemon=True, name="rex-chime"
     ).start()
+
+
+def _play_ready_chime() -> None:
+    """Play the wake chime once, the first time this supervisor is ready to listen.
+
+    Called at the first "no controller running — listening" transition, so it
+    fires only when the mic is actually open and the wake word can be heard: not
+    while dormant behind a running controller, and not if the mic failed to open.
+    Later resumes (a controller shutting down) stay silent — the chime means
+    "the listener just came up", not "the listener is idle again". Honors
+    REX_SUPERVISOR_CHIME=0 through _play_chime.
+    """
+    global _ready_chime_played
+    if _ready_chime_played:
+        return
+    _ready_chime_played = True
+    if not _CHIME_ENABLED:
+        return
+    log.info("Ready to listen — playing the wake chime as startup feedback.")
+    _play_chime()
 
 
 def _play_charger_effect(charging: bool) -> None:
@@ -744,6 +776,11 @@ def run() -> int:
             if not listening:
                 log.info("No controller running — listening for 'wake up rex'.")
                 listening = True
+                # First time the listener is genuinely up: audible "ready"
+                # feedback. The chime routes out the pinned output (Flex speaker
+                # path) and its on-chip AEC holds the reference, and a chime is
+                # nothing like "wake up rex", so it cannot self-trigger.
+                _play_ready_chime()
 
             try:
                 audio, _ = stream.read(_CHUNK_SAMPLES)
@@ -914,7 +951,7 @@ def _print_usage() -> None:
         "  (no args)        run the supervisor (listen + launch on wake)\n"
         "  --list-devices   list input devices and show which mic is selected\n"
         "  --meter [secs]   live mic level + wakeuprex score to confirm detection\n"
-        "  --test-chime     play the wake chime once and exit\n"
+        "  --test-chime     play the wake/ready chime once and exit\n"
         "  --help           this message\n"
     )
 

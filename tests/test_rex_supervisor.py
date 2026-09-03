@@ -248,6 +248,63 @@ class SupervisorChimeTest(unittest.TestCase):
             self.sup._play_chime()  # must not raise
         popen.assert_not_called()
 
+    def test_ready_chime_plays_once_per_supervisor(self):
+        """Startup feedback: the first time the listener is up we chime, and only
+        then — a controller shutting down later must not re-chime."""
+        with (
+            mock.patch.object(self.sup, "_CHIME_ENABLED", True),
+            mock.patch.object(self.sup, "_ready_chime_played", False),
+            mock.patch.object(self.sup, "_play_chime") as play,
+        ):
+            self.sup._play_ready_chime()
+            self.sup._play_ready_chime()
+            self.sup._play_ready_chime()
+        play.assert_called_once()
+
+    def test_ready_chime_respects_disable_switch(self):
+        with (
+            mock.patch.object(self.sup, "_CHIME_ENABLED", False),
+            mock.patch.object(self.sup, "_ready_chime_played", False),
+            mock.patch.object(self.sup, "_play_chime") as play,
+        ):
+            self.sup._play_ready_chime()
+        play.assert_not_called()
+
+    def test_ready_chime_suppressed_after_auto_update_restart(self):
+        """An exec'd replacement inherits the marker and stays silent; a fresh
+        login (no marker) chimes."""
+        with mock.patch.dict(os.environ, {self.sup._READY_CHIME_MARKER: "1"}):
+            restarted = _load_supervisor()
+        self.assertTrue(restarted._ready_chime_played)
+        with (
+            mock.patch.object(restarted, "_CHIME_ENABLED", True),
+            mock.patch.object(restarted, "_play_chime") as play,
+        ):
+            restarted._play_ready_chime()
+        play.assert_not_called()
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop(self.sup._READY_CHIME_MARKER, None)
+            fresh = _load_supervisor()
+        self.assertFalse(fresh._ready_chime_played)
+
+    def test_restart_hands_chimed_marker_to_replacement_only_after_chiming(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop(self.sup._READY_CHIME_MARKER, None)
+            with (
+                mock.patch.object(self.sup, "_ready_chime_played", False),
+                mock.patch.object(self.sup.os, "execv"),
+            ):
+                self.sup._restart_supervisor()
+            self.assertNotIn(self.sup._READY_CHIME_MARKER, os.environ)
+
+            with (
+                mock.patch.object(self.sup, "_ready_chime_played", True),
+                mock.patch.object(self.sup.os, "execv"),
+            ):
+                self.sup._restart_supervisor()
+            self.assertEqual(os.environ.get(self.sup._READY_CHIME_MARKER), "1")
+
     def test_charger_effect_selects_connected_and_disconnected_files(self):
         import shutil
         with (

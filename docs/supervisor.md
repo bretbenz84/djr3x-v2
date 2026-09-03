@@ -7,6 +7,15 @@ wake); saying **"shut down"** powers it back
 down — while the listener keeps running. Test the chime any time with
 `venv/bin/python rex_supervisor.py --test-chime`.
 
+The same chime also plays **once when the supervisor first becomes ready to
+listen** — at login, or after you relaunch it by hand — so you know it is up
+without having to say the phrase and see whether anything happens. It fires at
+the first "no controller running — listening" transition, i.e. only once the
+mic is actually open: if `main.py` is already running when the supervisor
+starts, it stays silent and does not chime later when that controller shuts
+down. A self-restart for an auto-update (below) is the same listener carrying
+on, so it does not chime again. `REX_SUPERVISOR_CHIME=0` silences both chimes.
+
 ## The two processes
 
 | Process | What it is | Lifetime |
@@ -277,7 +286,7 @@ ports are his either way. Opening a port reboots that Arduino, so the app waits
 | `REX_SUPERVISOR_WAKE_THRESHOLD` | `0.7` | `wakeuprex.onnx` confidence required to trigger. A clean "wake up rex" scores ~0.99 and background TV/ambient tops out around 0.12, so 0.7 has wide margin both ways. Lower it only if your real phrase won't cross it (`--meter` shows your live score); raise it if anything still false-triggers. |
 | `REX_SUPERVISOR_WAKE_CONSECUTIVE` | `3` | How many consecutive 80 ms frames must clear the threshold before firing. A real phrase holds the score near 1.0 for ~10 frames in a row; a TV phonetic near-miss is a 1-2 frame spike, so this rejects background-audio false triggers. Raise toward 4-5 if a noisy room still trips it; 1 disables the debounce. |
 | `REX_SUPERVISOR_DEBUG` | unset | Set to `1` for verbose per-frame logging |
-| `REX_SUPERVISOR_CHIME` | `1` | Play `startup_chime.mp3` the instant a wake is accepted (instant feedback before the robot boots). Set `0` to disable. |
+| `REX_SUPERVISOR_CHIME` | `1` | Play `startup_chime.mp3` the instant a wake is accepted (instant feedback before the robot boots) and once when the supervisor first starts listening (ready feedback). Set `0` to disable both. |
 | `REX_AUTO_UPDATE_ENABLED` | `1` | Fetch and fast-forward `origin/main` at supervisor startup, periodically, and before controller launch. Set `0` to disable. |
 | `REX_AUTO_UPDATE_INTERVAL_SECS` | `14400` | Periodic update-check interval (four hours; minimum 60 seconds). |
 | `REX_AUTO_UPDATE_TIMEOUT_SECS` | `45` | Maximum time allowed for each individual Git operation before startup falls back to installed code. |
