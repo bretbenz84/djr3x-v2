@@ -4209,6 +4209,22 @@ FLEX_DOA_CLUSTER_DEG = 20.0            # samples within this agree (one talker)
 FLEX_DOA_MIN_SAMPLES = 3               # speech-flagged samples a segment needs
 FLEX_DOA_MIN_CLUSTER_SHARE = 0.4       # dominant cluster must hold this share of them
 FLEX_DOA_SEGMENT_PAD_SECS = 0.3        # window padding around the captured segment
+# The chip HOLDS the previous talker's direction for the first ~1-2 s after a
+# voice starts from a new spot (bench 2026-09-02: the "right" run read the old
+# left position for 1.2 s, then snapped). Over a one-second "over here" that
+# stale hold can outvote the truth (field 22:34:48: −1° from 7/13 while Bret
+# stood 90° right). So the bearing is decided from the LAST part of the
+# speech-flagged samples: the trailing share below, but never fewer than
+# FLEX_DOA_MIN_SAMPLES. The earlier samples only break ties.
+FLEX_DOA_TAIL_SHARE = 0.5
+FLEX_DOA_TAIL_MIN_SAMPLES = 5          # the tail never shrinks below this (a 0.6 s phrase is ~6 samples)
+# Per-sample source: the auto-selected BEAM azimuth (AEC_AZIMUTH_VALUES[3])
+# swings to a new talker ~1 s before DOA_VALUE follows (bench 2026-09-02: beam
+# 270° while DOA still 86° for 1.2 s; beam 359° while DOA still 264°), so it is
+# the sample whenever the chip reports speech energy on that beam above this
+# floor (real speech scored 1e5-2.5e6; between-word flickers mostly 0-3e4).
+# Below the floor the sample is DOA_VALUE with its own speech flag.
+FLEX_DOA_BEAM_ENERGY_MIN = 50000.0
 FLEX_DOA_MAX_AGE_SECS = 12.0           # a stored voice bearing older than this is stale
 FLEX_DOA_RECONNECT_SECS = 30.0
 # Samples taken while the base is turning/driving (and a settle after) are

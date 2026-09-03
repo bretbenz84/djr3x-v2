@@ -478,6 +478,25 @@ yaw step per poll (`FLEX_DOA_MOTION_YAW_STEP_DEG` 1°/poll ≈ 10°/s), settle
 0.4 s; a heard voice drops any in-flight wander and blocks a new one for
 `MOTION_RADAR_ORIENT_VOICE_DEFER_SECS` (20 s).
 
+### The chip holds the last talker's direction (fix after run 3)
+
+Owner: the last one or two "over here" calls were from **90° right**; the log
+read −1° (7/13) and +6° (10/17). The bench data explains it: `DOA_VALUE`
+keeps reporting the PREVIOUS talker position for ~1–2 s after a voice starts
+from a new spot (right run: old left position for 1.2 s, then a snap; front
+run: old right position for 0.5 s), and the auto-selected beam azimuth
+(`AEC_AZIMUTH_VALUES[3]`) swings ~1 s ahead of it. A one-second "over here"
+can end before the register moves — and the stale hold then wins the vote.
+
+Two changes in `hardware/flex_doa.py`: (1) the per-sample source is the beam
+azimuth whenever the chip reports speech energy on it above
+`FLEX_DOA_BEAM_ENERGY_MIN` (5e4; real speech 1e5–2.5e6, flickers ~0–3e4),
+`DOA_VALUE` otherwise; (2) the bearing is decided from the TAIL of the
+speech-flagged samples (`FLEX_DOA_TAIL_SHARE` 0.5, never fewer than
+`FLEX_DOA_TAIL_MIN_SAMPLES` 5) — the converged part. The `[voice_doa]` line
+now prints the groups it saw (`groups −1°×7, −90°×6 — earlier samples pointed
+elsewhere (chip hold)`), so this shape is visible at a glance.
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is

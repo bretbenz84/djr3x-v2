@@ -355,5 +355,68 @@ class RotationDetectorTest(unittest.TestCase):
         self.assertIsNone(MA._state.get("wander_pending"))
 
 
+class _FakeFlex:
+    """A chip whose DOA_VALUE lags the beam azimuth, like the real one."""
+
+    def __init__(self, doa, beam_deg, energy, speech=1):
+        self.doa, self.beam_deg, self.energy, self.speech = doa, beam_deg, energy, speech
+
+    def read(self, name):
+        import math as _m
+        if name == "DOA_VALUE":
+            return (self.doa, self.speech)
+        if name == "AEC_SPENERGY_VALUES":
+            return (0.0, 0.0, 0.0, self.energy)
+        if name == "AEC_AZIMUTH_VALUES":
+            return (0.0, 0.0, 0.0, _m.radians(self.beam_deg))
+        raise KeyError(name)
+
+
+class StaleHoldTest(unittest.TestCase):
+    """The chip holds the previous talker's direction for ~1 s: the tail of the
+    phrase decides, and the beam azimuth (which leads) is the sample while it
+    carries speech energy. Field 2026-09-02 22:34:48: −1° from 7/13 while Bret
+    stood 90° right."""
+
+    def setUp(self):
+        flex_doa._reset_for_tests()
+        flex_doa._last_yaw = None
+
+    def tearDown(self):
+        flex_doa._reset_for_tests()
+
+    def test_tail_of_the_phrase_outvotes_the_stale_head(self):
+        now = time.monotonic()
+        rows = [(now - 1.3 + 0.1 * i, 359.0, -1.0, True, 1.0, False) for i in range(7)]
+        rows += [(now - 0.6 + 0.1 * i, 270.0, -90.0, True, 1.0, False) for i in range(6)]
+        flex_doa._inject_for_tests(rows)
+        res = flex_doa.bearing_between(now - 1.4, now)
+        self.assertAlmostEqual(res["bearing_deg"], -90.0, delta=1.0)
+        self.assertTrue(res["head_disagrees"])
+        self.assertEqual(res["window_n"], 13)
+        self.assertEqual([k for _, k in res["clusters"]], [7, 6])
+
+    def test_beam_with_energy_is_the_sample(self):
+        with mock.patch.object(flex_doa, "_dev", _FakeFlex(doa=359, beam_deg=270.0, energy=500000.0)), \
+             mock.patch.object(flex_doa, "_base_moving", return_value=False), \
+             mock.patch.object(flex_doa, "_self_speaking", return_value=False):
+            self.assertTrue(flex_doa._poll_once())
+        with flex_doa._lock:
+            t, raw, bearing, speech, energy, moving = flex_doa._samples[-1]
+        self.assertAlmostEqual(raw, 270.0)
+        self.assertAlmostEqual(bearing, -90.0)
+        self.assertTrue(speech)
+
+    def test_beam_without_energy_falls_back_to_the_doa_register(self):
+        with mock.patch.object(flex_doa, "_dev", _FakeFlex(doa=90, beam_deg=236.0, energy=0.0)), \
+             mock.patch.object(flex_doa, "_base_moving", return_value=False), \
+             mock.patch.object(flex_doa, "_self_speaking", return_value=False):
+            self.assertTrue(flex_doa._poll_once())
+        with flex_doa._lock:
+            _t, raw, bearing, speech, _e, _m = flex_doa._samples[-1]
+        self.assertAlmostEqual(raw, 90.0)
+        self.assertAlmostEqual(bearing, 90.0)
+
+
 if __name__ == "__main__":
     unittest.main()

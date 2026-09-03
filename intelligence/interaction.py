@@ -15470,10 +15470,12 @@ def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
         _ma.note_voice_bearing(res["bearing_deg"])
     except Exception:
         pass
-    _log.info("[voice_doa] bearing %+.0f° (chip %s°, %d/%d samples agree, spread %.0f°)",
+    _log.info("[voice_doa] bearing %+.0f° (chip %s°, %d/%d tail samples agree of %d, spread %.0f°; groups %s%s)",
               res["bearing_deg"],
               "?" if res.get("raw_deg") is None else f"{res['raw_deg']:.0f}",
-              res["cluster_n"], res["n"], res["spread_deg"])
+              res["cluster_n"], res["n"], res.get("window_n", res["n"]), res["spread_deg"],
+              flex_doa.describe_clusters(res),
+              " — earlier samples pointed elsewhere (chip hold)" if res.get("head_disagrees") else "")
     return res
 
 

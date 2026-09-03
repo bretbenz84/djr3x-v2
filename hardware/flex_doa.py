@@ -215,10 +215,24 @@ def _poll_once() -> bool:
             energy = float(dev.read("AEC_SPENERGY_VALUES")[3])
         except Exception:
             energy = 0.0
+        beam_deg = None
+        try:
+            az = dev.read("AEC_AZIMUTH_VALUES")
+            if len(az) >= 4:
+                beam_deg = math.degrees(float(az[3])) % 360.0
+        except Exception:
+            beam_deg = None
     except Exception as exc:
         _status["errors"] += 1
         _status["last_error"] = str(exc)
         return False
+    # The beam azimuth leads the DoA register by ~1 s when the talker moved;
+    # trust it while the chip reports speech energy on it.
+    raw_deg = float(doa)
+    speech_flag = bool(speech)
+    if beam_deg is not None and energy >= _num("FLEX_DOA_BEAM_ENERGY_MIN", 50000.0):
+        raw_deg = float(beam_deg)
+        speech_flag = True
     neck = None
     if _neck_yaw_provider is not None:
         try:
@@ -226,7 +240,7 @@ def _poll_once() -> bool:
         except Exception:
             neck = None
     now = time.monotonic()
-    bearing = chip_to_base_bearing(float(doa), neck)
+    bearing = chip_to_base_bearing(raw_deg, neck)
     moving = _base_moving()
     if moving:
         _last_moving_at = now
@@ -239,7 +253,7 @@ def _poll_once() -> bool:
         moving = True                      # the room is still ringing with him
     keep = _num("FLEX_DOA_HISTORY_SECS", 20.0)
     with _lock:
-        _samples.append((now, float(doa), bearing, bool(speech), energy, moving))
+        _samples.append((now, raw_deg, bearing, speech_flag, energy, moving))
         while _samples and (now - _samples[0][0]) > keep:
             _samples.popleft()
     _status["reads"] += 1
@@ -340,15 +354,51 @@ def bearing_between(t0: float, t1: float) -> "Optional[dict]":
     lo, hi = float(t0) - pad, float(t1) + pad
     with _lock:
         rows = [s for s in _samples if lo <= s[0] <= hi and s[3] and not (len(s) > 5 and s[5])]
-    if len(rows) < int(_num("FLEX_DOA_MIN_SAMPLES", 3)):
+    min_n = int(_num("FLEX_DOA_MIN_SAMPLES", 3))
+    if len(rows) < min_n:
         return None
-    cluster = dominant_cluster([r[2] for r in rows], _num("FLEX_DOA_CLUSTER_DEG", 20.0))
+    cluster_deg = _num("FLEX_DOA_CLUSTER_DEG", 20.0)
+    # The chip's direction register lags a talker who moved: decide from the
+    # TAIL of the phrase (the converged part), never fewer than min_n samples.
+    tail_n = max(min_n, int(_num("FLEX_DOA_TAIL_MIN_SAMPLES", 5)),
+                 int(round(len(rows) * _num("FLEX_DOA_TAIL_SHARE", 0.5))))
+    tail = rows[-tail_n:]
+    cluster = dominant_cluster([r[2] for r in tail], cluster_deg)
     if cluster is None or cluster["share"] < _num("FLEX_DOA_MIN_CLUSTER_SHARE", 0.4):
         return None
-    raw = dominant_cluster([r[1] for r in rows], _num("FLEX_DOA_CLUSTER_DEG", 20.0))
-    cluster.update({"raw_deg": (raw["bearing_deg"] % 360.0) if raw else None,
-                    "t0": float(t0), "t1": float(t1)})
+    cluster["n"] = len(rows)            # n = every speech sample in the window; share is within the tail
+    raw = dominant_cluster([r[1] for r in tail], cluster_deg)
+    whole = dominant_cluster([r[2] for r in rows], cluster_deg)
+    cluster.update({
+        "raw_deg": (raw["bearing_deg"] % 360.0) if raw else None,
+        "t0": float(t0), "t1": float(t1),
+        "window_n": len(rows),
+        "tail_n": len(tail),
+        "clusters": cluster_summary([r[2] for r in rows], cluster_deg),
+        "head_disagrees": bool(whole and abs(_wrap180(whole["bearing_deg"] - cluster["bearing_deg"])) > cluster_deg),
+    })
     return cluster
+
+
+def cluster_summary(bearings: "list[float]", cluster_deg: float, top: int = 3) -> "list[tuple[float, int]]":
+    """[(centre_deg, count), ...] of the largest distinct groups, for the logs —
+    'chip 359×7, 270×6' says at a glance that a stale hold nearly won."""
+    remaining = list(bearings)
+    out = []
+    while remaining and len(out) < top:
+        c = dominant_cluster(remaining, cluster_deg)
+        if c is None:
+            break
+        members = [b for b in remaining if abs(_wrap180(b - c["bearing_deg"])) <= cluster_deg]
+        out.append((c["bearing_deg"], len(members)))
+        remaining = [b for b in remaining if abs(_wrap180(b - c["bearing_deg"])) > cluster_deg]
+    return out
+
+
+def describe_clusters(res: "Optional[dict]") -> str:
+    if not res or not res.get("clusters"):
+        return ""
+    return ", ".join(f"{c:+.0f}°×{k}" for c, k in res["clusters"])
 
 
 def latest(max_age_secs: float = 1.0) -> "Optional[dict]":
