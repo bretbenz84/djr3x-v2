@@ -9704,6 +9704,12 @@ WAKE_ORIENT_MIN_SAMPLES = 4          # speech-flagged DoA samples the phrase mus
                                      # at 10 Hz); the −65° spin of 22:04 (4/7) is now caught by the
                                      # self-speech / base-motion exclusions and the share floor instead.
 WAKE_ORIENT_BASE_WAIT_SECS = 2.5     # a base mid-maneuver (idle wander shuffle) is waited out, not skipped
+# "Over here" (owner spec 2026-09-02): the same reflex for a spoken location cue
+# with no direction word — the DoA on that very utterance is the direction. Fires
+# on the transcribed turn, alongside the normal reply. Mid come-here search the
+# turn is adopted as a search leg (like "I'm behind you"). A utterance that also
+# says "come" is a come command and is left to that path.
+OVER_HERE_REFLEX_ENABLED = True
 MOTION_RADAR_ORIENT_VISITED_DEG = 30.0
 
 # ── Idle base wander ("weight shift", owner spec 2026-08-19) ────────────────────

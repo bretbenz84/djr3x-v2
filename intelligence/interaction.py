@@ -1033,6 +1033,61 @@ def _on_wake_word(model_name: str) -> None:
     _wake_word_fired.set()
 
 
+# "Over here" / "I'm over here" / "here I am" / "this way" — a location cue
+# without a direction word. Anything with "come" is a come command (its own
+# path, which already aims at the voice); "over there" / "look over here" are
+# not the speaker placing themselves.
+_OVER_HERE_RE = re.compile(
+    r"^(?:(?:hey|yo|hi|ok|okay)[,\s]+)?(?:rex[,\s]+)?"
+    r"(?:i(?:'m| am)\s+)?(?:over\s+here|right\s+here|here\s+i\s+am|this\s+way|"
+    r"i(?:'m| am)\s+(?:right\s+)?here)"
+    r"(?:[,\s]+rex)?[\s.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def _over_here_phrase(text: str) -> bool:
+    """True when the utterance is the speaker placing themselves ("over here")."""
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned or "come" in cleaned.lower():
+        return False
+    for frag in re.split(r"[.!?;]+", cleaned):
+        frag = frag.strip()
+        if frag and _OVER_HERE_RE.match(frag):
+            return True
+    return False
+
+
+def _start_over_here_reflex(text: str) -> Optional[threading.Thread]:
+    """"Over here" (owner spec 2026-09-02): turn toward the voice that said it,
+    using the bearing already stamped for this segment. Runs off the interaction
+    thread; the spoken reply proceeds as usual."""
+    if not bool(getattr(config, "OVER_HERE_REFLEX_ENABLED", True)):
+        return None
+    if not _over_here_phrase(text):
+        return None
+    voice = _recent_voice_bearing(max_age=6.0)
+    if voice is None:
+        _log.info("[over_here] %r — no usable voice bearing for this turn", text)
+        return None
+
+    def _run() -> None:
+        try:
+            from intelligence import motion_agency
+            outcome = motion_agency.orient_to_voice(
+                voice["bearing_deg"], share=voice.get("share"), samples=voice.get("cluster_n"),
+                reason="over_here",
+            )
+            _log.info("[over_here] %r heard at %+.0f° (%d/%d samples agree) → %s",
+                      text, voice["bearing_deg"], voice.get("cluster_n") or 0, voice.get("n") or 0, outcome)
+        except Exception as exc:
+            _log.debug("[over_here] reflex failed: %s", exc)
+
+    worker = threading.Thread(target=_run, daemon=True, name="over-here")
+    worker.start()
+    return worker
+
+
 def _start_wake_orient_reflex(model_name: str, current_state) -> Optional[threading.Thread]:
     """Name-call reflex (owner spec 2026-09-02): read where the wake phrase came
     from (Flex DoA over the last WAKE_ORIENT_LOOKBACK_SECS) and turn toward it —
@@ -28150,6 +28205,13 @@ def _handle_speech_segment(
                 "[interaction] speech segment — speaker=%r person_id=%s text=%r",
                 speaker_label, person_id, text,
             )
+            # "Over here": turn toward the voice that said it (owner spec
+            # 2026-09-02) — off-thread, the reply proceeds as usual.
+            if not text_input:
+                try:
+                    _start_over_here_reflex(text)
+                except Exception as exc:
+                    _log.debug("[over_here] launch failed: %s", exc)
             # [identity_decision]: the full record of this turn's speaker decision
             # (measurement first — see _identity_decision_payload). Read the
             # previous speaker BEFORE _note_last_speaker_turn overwrites it.

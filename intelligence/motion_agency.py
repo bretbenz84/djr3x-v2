@@ -1890,7 +1890,15 @@ def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
     # Beyond the neck: the base turns — unless something forbids driving, in
     # which case the head still goes as far as it can that way.
     if requested_come_active():
-        return "come_active"
+        # Mid come-here search, "over here" IS the localization: the turn
+        # becomes the search's own leg (dwell + neck sweep at the new heading),
+        # exactly like a spoken "I'm behind you" (_adopt_voice_bearing_turn).
+        seq = _issue_come_turn(bearing, now, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
+        if seq is None:
+            return "come_active"
+        _adopt_voice_bearing_turn(seq, f"over here — voice at {bearing:+.0f}°")
+        _requested_come["scan_sign"] = 1.0 if bearing > 0 else -1.0
+        return "come_leg"
     if not motion_controller.available():
         _orient_glance(bearing, fraction=1.0)
         return "unavailable"

@@ -445,6 +445,20 @@ off the body while the head is parked elsewhere still gets a glance;
 come-here); the conversation log gets a `WAKE  | Hey rex — heard at ±N° (k/n)
 → outcome` line per fire.
 
+### "Over here" (shipped 2026-09-02)
+
+Owner spec: "be able to say 'over here' and him turn for that phrase towards
+the speaker". `interaction._over_here_phrase` matches the speaker placing
+themselves — "over here", "I'm over here", "Over here, Rex", "here I am",
+"this way", "I'm right here" — and NOT "come over here" (a come command, its
+own path, already voice-aimed), "over there", "put it over here". On a heard
+turn it launches `_start_over_here_reflex`, which hands the bearing already
+stamped for that segment (fresh within 6 s) to `motion_agency.orient_to_voice`
+(reason `over_here`); the spoken reply proceeds as usual. Mid come-here
+search the turn is adopted as the search's own leg (`come_leg`), like a spoken
+"I'm behind you". Kill switch `OVER_HERE_REFLEX_ENABLED`. Log: `[over_here]
+'Over here.' heard at ±N° (k/n samples agree) → outcome`.
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is

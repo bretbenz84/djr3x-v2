@@ -248,5 +248,61 @@ class FieldFixes20260902Test(unittest.TestCase):
             self.assertEqual(MA.orient_to_voice(-120.0, share=0.9, samples=12), "turned")
             turn.assert_called_once()
 
+
+class OverHereTest(unittest.TestCase):
+    """"Over here" turns him toward the voice that said it (owner spec 2026-09-02)."""
+
+    def setUp(self):
+        flex_doa._reset_for_tests()
+        from intelligence import interaction as I
+        I._last_voice_bearing = None
+        MA._state.update(wake_orient_at=0.0)
+
+    def tearDown(self):
+        flex_doa._reset_for_tests()
+
+    def test_phrases(self):
+        from intelligence import interaction as I
+        for text in ("Over here.", "over here", "I'm over here", "Over here, Rex.",
+                     "Hey Rex, over here!", "Here I am.", "This way.", "I'm right here",
+                     "Rex, I'm over here."):
+            self.assertTrue(I._over_here_phrase(text), text)
+        for text in ("Come over here.", "come here", "Look over there.", "over there",
+                     "Put it over here.", "I was over here yesterday.", ""):
+            self.assertFalse(I._over_here_phrase(text), text)
+
+    def test_reflex_uses_this_turns_bearing(self):
+        from intelligence import interaction as I
+        I._last_voice_bearing = {"bearing_deg": 120.0, "share": 0.9, "cluster_n": 9, "n": 10,
+                                 "at": time.monotonic()}
+        with mock.patch("intelligence.motion_agency.orient_to_voice", return_value="turned") as orient:
+            worker = I._start_over_here_reflex("Over here, Rex.")
+            self.assertIsNotNone(worker)
+            worker.join(timeout=5.0)
+        orient.assert_called_once()
+        self.assertAlmostEqual(orient.call_args[0][0], 120.0)
+        self.assertEqual(orient.call_args[1]["reason"], "over_here")
+
+    def test_stale_bearing_or_other_phrase_does_nothing(self):
+        from intelligence import interaction as I
+        I._last_voice_bearing = {"bearing_deg": 120.0, "share": 0.9, "cluster_n": 9, "n": 10,
+                                 "at": time.monotonic() - 30.0}
+        self.assertIsNone(I._start_over_here_reflex("Over here."))
+        I._last_voice_bearing = {"bearing_deg": 120.0, "share": 0.9, "cluster_n": 9, "n": 10,
+                                 "at": time.monotonic()}
+        self.assertIsNone(I._start_over_here_reflex("What time is it?"))
+
+    def test_mid_come_search_the_turn_becomes_a_search_leg(self):
+        with mock.patch.object(MA, "requested_come_active", return_value=True), \
+             mock.patch.object(MA, "_issue_come_turn", return_value=7) as leg, \
+             mock.patch.object(MA, "_adopt_voice_bearing_turn") as adopt, \
+             mock.patch.object(MA, "_come_neck_bearing_deg", return_value=0.0), \
+             mock.patch("world_state.world_state.get", return_value=[]):
+            self.assertEqual(MA.orient_to_voice(150.0, share=0.9, samples=8, reason="over_here"),
+                             "come_leg")
+            leg.assert_called_once()
+            self.assertAlmostEqual(leg.call_args[0][0], 150.0)
+            adopt.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()
