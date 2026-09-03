@@ -59,7 +59,7 @@ after `SAVE_CONFIGURATION`.
 AUDIO_DEVICE_NAME=ReSpeaker          # substring-matches the Flex's name
 AUDIO_OUTPUT_DEVICE_NAME=ReSpeaker   # playback THROUGH the Flex = AEC reference
 AUDIO_AEC_INPUT_CHANNEL=1            # ASR beam (was blank on the Lite)
-AUDIO_INPUT_GAIN=4.0                 # measured 2026-09-02; matches the Lite's absolute levels
+AUDIO_INPUT_GAIN=1.5                 # owner: no host gain — trial the board's AGC instead
 WAKE_WORD_ALLOW_DURING_TTS=false     # unchanged; a separate talk-over decision
 ```
 
@@ -115,9 +115,9 @@ fine, the amp is not driving the capsules into clipping.
 Lite at 5–7 ft was 12.7–15.1 dB. So: +8–10 dB SNR at the usual spot, and 9 ft
 on the Flex ≈ 6 ft on the Lite. Speech level falls only ~3 dB from 3 to 9 ft
 (the beam output holds level); the whole curve is ~10 dB quieter than the
-Lite's, so `AUDIO_INPUT_GAIN` went 1.5 → **4.0**, which reproduces the Lite's
-absolute speech/floor levels (~−34 / ~−49) that the VAD, wake word and startle
-detector were tuned on.
+Lite's. Host gain 4.0 would reproduce the Lite's absolute levels, but the owner
+call is to use the board's own AGC instead — see "AGC trial" below. Host gain
+stays 1.5 meanwhile.
 
 `aec` (20 s of Rex's voice at −12 dBFS peak): converged at ~10 s, chip flag
 `AEC_AECCONVERGED=1`. Last 5 s: raw echo −44.7 dBFS; ch1 residual −59.9 (floor
@@ -127,6 +127,34 @@ residual −74.1 = 29.4 dB. Logged in `logs/mic_check/aec_history.jsonl`.
 
 Still owed: `score` from 6 ft (Lite: 0.964–0.971), and a live session with a
 talk-over attempt and a "come here" from 9 ft.
+
+### AGC trial (pending owner go for two volatile writes)
+
+The XVF3800's AGC (`PP_AGC*`) lives in the post-processing block, which only
+feeds the **Conference** output (USB ch0). The ASR output (ch1) has a fixed
+`AEC_ASROUTGAIN` and no AGC — our captures confirm it: with `PP_AGCONOFF=1`
+and the gain pinned at its 32× max, ch0 sat at −26 dBFS in silence AND while
+talking (the AGC hits its target both ways), while ch1 tracked the raw
+capsules +5 dB. So "turn AGC on" means "read ch0", and as shipped ch0 pumps
+the room floor up to the speech target whenever nobody talks
+(`PP_ATTNS_MODE=0` = no extra attenuation during non-speech).
+
+Proposed trial, both writes volatile (a power cycle restores defaults; nothing
+persists without `SAVE_CONFIGURATION`):
+
+    tools/flex_ctl.py --write PP_ATTNS_MODE 1      # pull gain down when no speech
+    tools/flex_ctl.py --write PP_AGCMAXGAIN 8      # cap at +18 dB instead of +30
+
+then measure ch0 without touching .env:
+
+    tools/mic_check.py noise  --channel 0 --gain 1.0
+    tools/mic_check.py speech --channel 0 --gain 1.0     # at 3 / 6 / 9 ft
+
+and compare speech level, floor and SNR against the ch1 table above. Switching
+the pipeline to ch0 also means the residual-echo suppressor and NS gain floors
+(`PP_ECHOONOFF`, `PP_MIN_NS/NN`) are in the ASR path — the artifacts those add
+are why vendors ship a separate ASR output, so `score` has to be run on both
+channels before the decision.
 
 ## Re-test plan (needs Bret at the keyboard, TV off, Rex stopped)
 

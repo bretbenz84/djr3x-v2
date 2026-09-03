@@ -134,10 +134,19 @@ def _record(secs: float, *, channels: int | None = None) -> np.ndarray:
     return np.asarray(buf, dtype=np.float32).reshape(frames, ch)
 
 
+# Set by --channel: measure a DIFFERENT mic channel than .env's AUDIO_AEC_INPUT_CHANNEL
+# (e.g. the Flex's AGC'd Conference output on ch0 vs the ASR beam on ch1) without
+# editing .env between runs. --gain likewise overrides AUDIO_INPUT_GAIN for the run.
+_CHANNEL_OVERRIDE: "int | None" = None
+_GAIN_OVERRIDE: "float | None" = None
+
+
 def _as_pipeline_mono(raw: np.ndarray) -> np.ndarray:
     """Apply exactly what audio/stream.py._callback does: channel select (or mix),
     then AUDIO_INPUT_GAIN with hard clipping. This is what Whisper sees."""
     ch_cfg = getattr(config, "AUDIO_AEC_INPUT_CHANNEL", -1)
+    if _CHANNEL_OVERRIDE is not None:
+        ch_cfg = _CHANNEL_OVERRIDE
     try:
         ch_cfg = int(ch_cfg)
     except (TypeError, ValueError):
@@ -148,6 +157,8 @@ def _as_pipeline_mono(raw: np.ndarray) -> np.ndarray:
     else:
         mono = raw[:, 0].copy()
     gain = float(getattr(config, "AUDIO_INPUT_GAIN", 1.0) or 1.0)
+    if _GAIN_OVERRIDE is not None:
+        gain = _GAIN_OVERRIDE
     if gain != 1.0:
         mono = (mono * gain).clip(-1.0, 1.0)
     return mono
@@ -176,8 +187,10 @@ def _config_banner() -> None:
     except Exception as exc:
         print(f"  device query failed     : {exc}")
     print(f"  AUDIO_AEC_INPUT_CHANNEL : {ch_cfg!r}"
-          f"{'  (blank/-1 => MIX all channels)' if str(ch_cfg).strip() in ('', '-1', 'None') else ''}")
-    print(f"  AUDIO_INPUT_GAIN        : {gain}x")
+          f"{'  (blank/-1 => MIX all channels)' if str(ch_cfg).strip() in ('', '-1', 'None') else ''}"
+          f"{f'   OVERRIDDEN this run: --channel {_CHANNEL_OVERRIDE}' if _CHANNEL_OVERRIDE is not None else ''}")
+    print(f"  AUDIO_INPUT_GAIN        : {gain}x"
+          f"{f'   OVERRIDDEN this run: --gain {_GAIN_OVERRIDE}' if _GAIN_OVERRIDE is not None else ''}")
     try:
         from audio import hardware_aec
         print(f"  hardware_aec.is_active(): {hardware_aec.is_active()}")
@@ -942,10 +955,17 @@ def main() -> None:
                     help="capture through a different input device (name substring or "
                          "index) instead of the robot's .env mic — for A/B'ing the "
                          "ReSpeaker against e.g. the MacBook mic from the same spot")
+    ap.add_argument("--channel", type=int, default=None,
+                    help="measure this mic channel instead of .env's AUDIO_AEC_INPUT_CHANNEL "
+                         "(Flex: 0 = AGC'd Conference, 1 = ASR beam); -1 = mix")
+    ap.add_argument("--gain", type=float, default=None,
+                    help="use this makeup gain instead of .env's AUDIO_INPUT_GAIN for the run")
     args = ap.parse_args()
 
-    global _DEVICE_OVERRIDE
+    global _DEVICE_OVERRIDE, _CHANNEL_OVERRIDE, _GAIN_OVERRIDE
     _DEVICE_OVERRIDE = args.device
+    _CHANNEL_OVERRIDE = args.channel
+    _GAIN_OVERRIDE = args.gain
 
     _config_banner()
     try:
