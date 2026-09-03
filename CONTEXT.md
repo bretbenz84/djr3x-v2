@@ -2827,3 +2827,26 @@ base turn). Three things the run exposed, all host-side:
   canonical in `intelligence/open_threads.py` (favourites / preferences /
   opinions / performance requests added), imported by the diary write side, and
   applied at read time so stored ones die too.
+
+### A refused move is the answer, never "On it" (2026-09-03, field 2026-09-02 22:58–23:04)
+
+Stacked commands near an obstacle: "Turn slight right, then go forward one
+foot" → "Can't swing that way — I'd clip something behind me" … "On it — 2
+moves" … nothing. Three defects, one rule (owner: if he declines a move for
+safety, he must not repeat the commands as if about to do them):
+
+- `motion_sequence.start` issued every leg in a background thread and returned
+  True the moment the thread existed, so the caller confirmed "On it — N moves"
+  while the swing check was refusing leg 1. The FIRST leg is now issued on the
+  caller's thread; refused = `start` returns False = no sequence.
+- A refused single turn returned None from `_handle_router_motion_action`, the
+  takeover returned None, and the utterance fell through to the reply model —
+  which live-routed the same turn a second later and drove it (22:58:35: the
+  refusal, then "Turning right"). `motion_controller.last_refusal()` now records
+  each refusal (reason, spoken line, whether `_suppressed` already queued it);
+  a refused turn/route returns that line as ITS answer, and `_speak_blocking`
+  says it once even when motion_controller already queued it.
+- A compass CORRECTION of a completed turn hit the swing check and announced
+  "Can't swing that way" after the turn he had just made, then "Turning left"
+  (22:59:43); it also could have stepped forward to earn room for a 13° trim.
+  Corrections that the swing check refuses are now logged and dropped, silently.

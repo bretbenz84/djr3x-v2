@@ -3062,6 +3062,15 @@ def _speak_blocking(
     text = llm.clean_response_text(text)
     if not text:
         return True
+    try:
+        _refusal = motion_controller.last_refusal(max_age=8.0)
+    except Exception:
+        _refusal = None
+    if _refusal and _refusal.get("spoke") and _refusal.get("line") == text:
+        # motion_controller already queued this exact refusal for the command
+        # it just declined; the caller is reporting the same refusal as its
+        # line. Once is enough.
+        return True
 
     # Post-punchline beat: a brief silence after a normal-priority response so
     # the line lands. Skipped for urgent acks (priority >= 2), filler, etc.
@@ -22983,7 +22992,11 @@ def _handle_router_motion_action(
         if seq is not None:
             _remember_motion_continuation(decision)
             return line
-        return None
+        # Refused for safety: return the refusal as THIS turn's line so the
+        # takeover does not return None and hand the utterance to the reply
+        # model — which live-routed the same turn a second later and drove it
+        # (field 2026-09-02 22:58:35: "Can't swing that way", then "Turning right").
+        return _motion_refusal_line()
 
     if action == "motion.move":
         if args.get("compass"):
@@ -23117,8 +23130,24 @@ def _handle_motion_route(
         )
         return line, bool(line)
     if not _start_motion_sequence(decisions):
-        return None, False
+        # The first leg was refused on this thread (motion_sequence.start issues
+        # it synchronously). Say WHY — never "On it" — and never fall through to
+        # the reply model, which would route the same move again.
+        return _motion_refusal_line(), False
     return "On it — {} moves.".format(len(decisions)), True
+
+
+def _motion_refusal_line() -> Optional[str]:
+    """The line for a command the base just refused for safety (swing / depth
+    sensor), or None when nothing fresh was refused. _speak_blocking says it
+    once even when motion_controller already queued it."""
+    try:
+        r = motion_controller.last_refusal()
+    except Exception:
+        return None
+    if not r or not r.get("line"):
+        return None
+    return str(r["line"])
 
 
 def _handle_face_requester(

@@ -64,6 +64,46 @@ class MotionSequenceTest(unittest.TestCase):
         move_forward.assert_not_called()
         self.assertGreaterEqual(stop.call_count, 1)
 
+    @mock.patch.object(motion_sequence, "_wait_until_settled", return_value=True)
+    @mock.patch.object(motion_sequence.motion, "wait_done")
+    @mock.patch.object(motion_sequence.motion_controller, "stop")
+    @mock.patch.object(motion_sequence.motion_controller, "move_forward", return_value=12)
+    @mock.patch.object(motion_sequence.motion_controller, "turn_right", return_value=None)
+    @mock.patch.object(motion_sequence.motion_controller, "available", return_value=True)
+    def test_refused_first_step_means_no_sequence(
+        self, _available, turn_right, move_forward, _stop, wait_done, _settled
+    ):
+        # Field 2026-09-02 23:04:34: "Turn slight right, then go forward one foot"
+        # — the swing check refused the turn in the background thread while the
+        # caller, told a thread had started, said "On it — 2 moves". The first
+        # step is issued on the caller's thread now: refused = not started.
+        started = motion_sequence.start([
+            _decision("motion.turn", direction="right", deg=15.0),
+            _decision("motion.move", direction="forward", dist_m=0.3),
+        ])
+        self.assertFalse(started)
+        self.assertFalse(motion_sequence.active())
+        turn_right.assert_called_once()
+        move_forward.assert_not_called()
+        wait_done.assert_not_called()
+
+    @mock.patch.object(motion_sequence, "_wait_until_settled", return_value=True)
+    @mock.patch.object(motion_sequence.motion, "wait_done", return_value={"result": "completed"})
+    @mock.patch.object(motion_sequence.motion_controller, "stop")
+    @mock.patch.object(motion_sequence.motion_controller, "move_forward", return_value=12)
+    @mock.patch.object(motion_sequence.motion_controller, "turn_right", return_value=11)
+    @mock.patch.object(motion_sequence.motion_controller, "available", return_value=True)
+    def test_first_step_issued_once_when_it_goes(
+        self, _available, turn_right, move_forward, _stop, _wait_done, _settled
+    ):
+        self.assertTrue(motion_sequence.start([
+            _decision("motion.turn", direction="right", deg=15.0),
+            _decision("motion.move", direction="forward", dist_m=0.3),
+        ]))
+        self._wait_finished()
+        turn_right.assert_called_once()
+        move_forward.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

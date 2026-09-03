@@ -124,6 +124,9 @@ class _MotionTestBase(unittest.TestCase):
         mc._tof_block_reason = "tof_startup"
         mc._tof_cut_for_reason = None
         mc._tof_announced_at = 0.0
+        # The commanded-motion window leaks across tests otherwise: a later test's
+        # refused turn then REALLY enqueues the refusal line (heard on the robot Mac).
+        mc._user_commanded_motion_at = 0.0
         config.INTERACTION_PAUSED = False
         config.MOTION_ENABLED = True
         config.MOTION_HANDSHAKE_TIMEOUT_MS = 400

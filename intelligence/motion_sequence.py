@@ -123,9 +123,19 @@ def start(
         )
         for d in decisions
     ]
+    # The FIRST leg is issued here, on the caller's thread, so a refusal is known
+    # before the caller confirms anything. Issued in the background, the swing
+    # check refused the opening turn ("Can't swing that way") and the caller,
+    # told only that a thread had started, still said "On it — 2 moves" (field
+    # 2026-09-02 23:04:34). A refused first leg is no sequence at all.
+    first = _issue(copied[0])
+    if first[0] is None:
+        _log.info("[motion_sequence] not started — first step %s args=%s was refused",
+                  copied[0].action, copied[0].args)
+        return False
     thread = threading.Thread(
         target=_run,
-        args=(copied, event, on_issued),
+        args=(copied, event, on_issued, first),
         name="motion-sequence",
         daemon=True,
     )
@@ -141,14 +151,20 @@ def _run(
     decisions: list[ActionDecision],
     event: threading.Event,
     on_issued: Optional[Callable[[ActionDecision], None]],
+    first: Optional[tuple[Optional[int], float]] = None,
 ) -> None:
+    """`first` is the already-issued (seq, arc_duration) of step 1 when start()
+    issued it synchronously; later steps are issued here."""
     result = "completed"
     try:
         for index, decision in enumerate(decisions, 1):
             if event.is_set():
                 result = "cancelled"
                 break
-            seq, arc_duration = _issue(decision)
+            if index == 1 and first is not None:
+                seq, arc_duration = first
+            else:
+                seq, arc_duration = _issue(decision)
             if seq is None:
                 result = "suppressed"
                 break

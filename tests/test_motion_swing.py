@@ -183,6 +183,42 @@ class ControllerWiringTest(_MotionTestBase):
         self.assertTrue(enq.called)
         self.assertEqual(enq.call_args.kwargs.get("tag"), "motion_swing_blocked")
 
+    def test_refusal_is_recorded_for_the_caller(self):
+        # Field 2026-09-02 23:04: the caller that issued the refused turn needs to
+        # know it was refused — and whether Rex already said so — to answer with
+        # the refusal instead of "On it — 2 moves".
+        self._connect_posed(CORNERED)
+        mc._tof_announced_at = 0.0
+        mc.note_user_commanded_motion()
+        with mock.patch("audio.speech_queue.enqueue"):
+            self.assertIsNone(mc.turn_left())
+        r = mc.last_refusal()
+        self.assertIsNotNone(r)
+        self.assertTrue(r["reason"].startswith("swing_"))
+        self.assertEqual(r["line"], config.MOTION_SWING_BLOCKED_LINE)
+        self.assertTrue(r["spoke"])
+        # Inside the announce cooldown the line is NOT spoken again, and the
+        # record says so — the caller speaks it itself.
+        with mock.patch("audio.speech_queue.enqueue") as enq:
+            self.assertIsNone(mc.turn_left())
+        self.assertFalse(enq.called)
+        self.assertFalse(mc.last_refusal()["spoke"])
+        self.assertIsNone(mc.last_refusal(max_age=0.0))
+
+    def test_compass_correction_refusal_is_silent_and_does_not_step(self):
+        # Field 2026-09-02 22:59:43: a 13° compass trim after a completed turn was
+        # refused by the swing check and ANNOUNCED ("Can't swing that way"), then
+        # "Turning left" — for a turn he had just made.
+        self._connect_posed(CORNERED)
+        mc.note_user_commanded_motion()
+        with mock.patch("audio.speech_queue.enqueue") as enq, \
+             mock.patch.object(mc, "_try_swing_escape") as escape:
+            self.assertIsNone(mc.turn(15.0, rate=25.0, _verify_attempt=1))
+        self.assertFalse(enq.called)
+        self.assertFalse(escape.called)
+        self.assertIsNone(self._last("turn"))
+        self.assertIsNone(self._last("move"))
+
 
 if __name__ == "__main__":
     unittest.main()

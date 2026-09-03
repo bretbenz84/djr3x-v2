@@ -784,13 +784,43 @@ def _tof_should_cut_inflight() -> bool:
     return True
 
 
+_last_refusal: "dict | None" = None   # the most recent refused command — see last_refusal()
+
+
+def _refusal_line(reason: str) -> "str | None":
+    """The spoken line for a safety refusal reason, or None for the quiet ones."""
+    if reason.startswith("swing_"):
+        return str(getattr(config, "MOTION_SWING_BLOCKED_LINE",
+                           "Can't swing that way — I'd clip something behind me."))
+    if reason.startswith("tof_"):
+        return str(getattr(config, "MOTION_TOF_BLOCKED_LINE",
+                           "My depth sensor is down, sweetheart. I don't drive blind."))
+    return None
+
+
+def last_refusal(max_age: float = 3.0) -> "dict | None":
+    """The most recent refused command, if it was refused within `max_age` s:
+    {"verb", "reason", "line", "spoke", "at"} — `line` is what a human should
+    hear for it (None for quiet reasons), `spoke` whether _suppressed already
+    queued it. Lets a caller that ISSUED the command say why it did not run
+    instead of confirming it ("On it — 2 moves" after "Can't swing that way",
+    field 2026-09-02 23:04), and say it exactly once."""
+    r = _last_refusal
+    if not r or (time.monotonic() - float(r.get("at") or 0.0)) > max_age:
+        return None
+    return dict(r)
+
+
 def _suppressed(verb: str, reason: str) -> None:
     """Log a refused autonomous command, and when a human asked for it out loud,
     let Rex say WHY. A silent no-op reads as "he ignores my commands" (field
     2026-07-23 — the same lesson that produced announce_if_blocked)."""
-    global _tof_announced_at
+    global _tof_announced_at, _last_refusal
     _log.debug("motion %s suppressed: %s", verb, reason)
-    if not reason.startswith(("tof_", "swing_")) or not _user_commanded_fx():
+    line = _refusal_line(reason)
+    _last_refusal = {"verb": verb, "reason": reason, "line": line, "spoke": False,
+                     "at": time.monotonic()}
+    if line is None or not _user_commanded_fx():
         return                       # autonomous legs stay quiet; they retry constantly
     now = time.monotonic()
     cooldown = float(getattr(config, "MOTION_TOF_BLOCKED_ANNOUNCE_COOLDOWN_SECS", 30.0))
@@ -798,17 +828,11 @@ def _suppressed(verb: str, reason: str) -> None:
         if (now - _tof_announced_at) < cooldown:
             return
         _tof_announced_at = now
-    if reason.startswith("swing_"):
-        line = str(getattr(config, "MOTION_SWING_BLOCKED_LINE",
-                           "Can't swing that way — I'd clip something behind me."))
-        tag = "motion_swing_blocked"
-    else:
-        line = str(getattr(config, "MOTION_TOF_BLOCKED_LINE",
-                           "My depth sensor is down, sweetheart. I don't drive blind."))
-        tag = "motion_tof_blocked"
+    tag = "motion_swing_blocked" if reason.startswith("swing_") else "motion_tof_blocked"
     try:
         from audio import speech_queue
         speech_queue.enqueue(line, emotion="neutral", priority=1, tag=tag)
+        _last_refusal["spoke"] = True
     except Exception as exc:
         _log.debug("tof-blocked announce failed: %s", exc)
 
@@ -893,6 +917,14 @@ def turn(
                   deg, send_deg)
         reason = "swing_blocked"
     if reason:
+        if _verify_attempt > 0:
+            # A compass CORRECTION of a turn that already completed. Refusing it is
+            # fine; announcing the refusal is not — "Can't swing that way" right
+            # after the turn he just made, followed by "Turning left" (field
+            # 2026-09-02 22:59:43) — and stepping forward to earn room for a
+            # 13° trim is a move nobody asked for. Leave the heading as it is.
+            _log.info("[swing] compass correction %+.0f° skipped: %s", deg, reason)
+            return None
         if not _escaped:
             seq = _try_swing_escape(deg, rate)
             if seq is not None:

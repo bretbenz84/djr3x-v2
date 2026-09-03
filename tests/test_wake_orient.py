@@ -578,3 +578,63 @@ class EnergyWeightedVoteTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RefusedMotionIsALineTest(unittest.TestCase):
+    """A safety refusal is THIS turn's answer (field 2026-09-02 22:58 / 23:04):
+    never None (which hands the utterance to the reply model, which drove the
+    same turn a second later), never "On it — N moves"."""
+
+    def _refusal(self, spoke):
+        return {"verb": "turn", "reason": "swing_blocked", "spoke": spoke,
+                "line": "Can't swing that way — I'd clip something behind me.",
+                "at": time.monotonic()}
+
+    def test_refused_single_turn_returns_the_refusal(self):
+        from intelligence import interaction as I
+        from intelligence.action_router import ActionDecision
+        d = ActionDecision(action="motion.turn", confidence=0.95,
+                           args={"direction": "right", "deg": 15.0}, reason="t")
+        with mock.patch.object(I.motion_controller, "available", return_value=True), \
+             mock.patch.object(I.motion_controller, "charging", return_value=False), \
+             mock.patch.object(I, "_no_drive_room_decline_line", return_value=None), \
+             mock.patch.object(I.motion_controller, "turn_right", return_value=None), \
+             mock.patch.object(I.motion_controller, "last_refusal", return_value=self._refusal(True)):
+            line = I._handle_router_motion_action(d)
+        self.assertEqual(line, "Can't swing that way — I'd clip something behind me.")
+
+    def test_unrefused_none_stays_none(self):
+        from intelligence import interaction as I
+        from intelligence.action_router import ActionDecision
+        d = ActionDecision(action="motion.turn", confidence=0.95,
+                           args={"direction": "right", "deg": 15.0}, reason="t")
+        with mock.patch.object(I.motion_controller, "available", return_value=True), \
+             mock.patch.object(I.motion_controller, "charging", return_value=False), \
+             mock.patch.object(I, "_no_drive_room_decline_line", return_value=None), \
+             mock.patch.object(I.motion_controller, "turn_right", return_value=None), \
+             mock.patch.object(I.motion_controller, "last_refusal", return_value=None):
+            self.assertIsNone(I._handle_router_motion_action(d))
+
+    def test_refused_route_answers_with_the_refusal_not_on_it(self):
+        from intelligence import interaction as I
+        from intelligence.action_router import ActionDecision
+        steps = [ActionDecision(action="motion.turn", confidence=0.95,
+                                args={"direction": "right", "deg": 15.0}, reason="t"),
+                 ActionDecision(action="motion.move", confidence=0.95,
+                                args={"direction": "forward", "dist_m": 0.3}, reason="t")]
+        with mock.patch.object(I.motion_controller, "available", return_value=True), \
+             mock.patch.object(I.motion_controller, "charging", return_value=False), \
+             mock.patch.object(I, "_no_drive_room_decline_line", return_value=None), \
+             mock.patch.object(I, "_start_motion_sequence", return_value=False), \
+             mock.patch.object(I.motion_controller, "last_refusal", return_value=self._refusal(False)):
+            line, drove = I._handle_motion_route(steps)
+        self.assertFalse(drove)
+        self.assertEqual(line, "Can't swing that way — I'd clip something behind me.")
+
+    def test_already_spoken_refusal_is_not_spoken_twice(self):
+        from intelligence import interaction as I
+        with mock.patch.object(I.motion_controller, "last_refusal", return_value=self._refusal(True)), \
+             mock.patch.object(I, "_can_speak", return_value=True), \
+             mock.patch("audio.speech_queue.enqueue") as enq:
+            self.assertTrue(I._speak_blocking("Can't swing that way — I'd clip something behind me."))
+        self.assertFalse(enq.called)
