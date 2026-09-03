@@ -6880,6 +6880,13 @@ PRESENCE_DEPARTURE_CONFIRM_SECS = 40.0  # was 20.0 — fired while a distracted 
 # silence checks in consciousness.py so speech or likely off-camera presence
 # suppresses the line.
 PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS = 12.0
+# A face that vanished because REX moved his camera is not a departure (field
+# 2026-09-03 12:57: head panned to PJ → "Bret slipped off-camera"; a realign turn →
+# "And off goes you there"). The missing clock holds while the neck yaw or base
+# heading differs from the last sighting by more than these, for at most MAX_HOLD.
+PRESENCE_CAMERA_MOVED_NECK_DEG = 12.0
+PRESENCE_CAMERA_MOVED_BASE_DEG = 15.0
+PRESENCE_CAMERA_MOVED_MAX_HOLD_SECS = 600.0
 
 # Seconds to pause after current TTS finishes before firing a presence reaction.
 PRESENCE_REACTION_DELAY_SECS = 2.0

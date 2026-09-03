@@ -2890,3 +2890,21 @@ lane and pending follow-ups; closing the dated plan closes the absorbed legs
 with it (`mark_followed_up`), so the return greeting asks once. Episode open
 threads about a plan still ahead (shared token, or travel-shaped while a
 travel plan is within `OPEN_THREAD_UPCOMING_PLAN_HOLD_DAYS`) are held, not spent.
+
+### A face gone because Rex moved is not a departure (2026-09-03 12:57)
+
+Two people in the room. Rex panned from Bret to PJ (neck 2384 → 4394 qus) and
+12 s later announced "Bret slipped off-camera like he's being hunted by
+responsibility"; Bret: "I didn't go anywhere, you just turned your head." A
+realign base turn then made an unknown face slot vanish → "And off goes you
+there" (the departure prompt's example 'And off goes {address}...' with the
+address "you there"). Two fixes in `_step_presence_tracking`:
+
+- `_last_seen_pose[key]` = (neck yaw, base gyro yaw) at every sighting.
+  While the camera differs from that pose by more than
+  `PRESENCE_CAMERA_MOVED_NECK_DEG` / `_BASE_DEG`, the person's missing clock is
+  restarted every tick — no staging, no quip, no visit close — bounded by
+  `PRESENCE_CAMERA_MOVED_MAX_HOLD_SECS`. The confirm window counts from the
+  camera's return: "I can only say you left once I looked and you were gone."
+  Unknown slots get the same guard. `tests/test_presence_camera_moved.py`.
+- The unknown-departure examples put the address in vocative position only.

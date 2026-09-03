@@ -449,6 +449,17 @@ _last_presence_reaction_at: dict = {}
 # First-missing-at timestamp per tracking key. A person must be continuously
 # missing for PRESENCE_DEPARTURE_CONFIRM_SECS before a departure is staged.
 _first_missing_at: dict = {}
+# Camera pose (neck yaw deg, base gyro yaw deg) at each person's LAST SIGHTING,
+# and when their absence first coincided with a moved camera. A face that is
+# gone because REX turned his head or base is not a departure — field
+# 2026-09-03 12:57: he panned from Bret to PJ (neck 2384 → 4394 qus), 12 s later
+# "Bret slipped off-camera like he's being hunted by responsibility", and Bret:
+# "I didn't go anywhere, you just turned your head." Then a realign turn made
+# an unknown slot vanish → "And off goes you there". The missing clock only
+# runs while the camera is back near where the person was last seen.
+_last_seen_pose: dict = {}
+_camera_moved_since: dict = {}
+_camera_moved_logged: set = set()
 
 # Confirmed absent keys have passed the absence hysteresis. Return reactions are
 # only eligible for these keys, which prevents recognition flicker from becoming
@@ -9716,6 +9727,46 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
         _relationship_prompt_in_flight.clear()
 
 
+def _camera_pose() -> "tuple[Optional[float], Optional[float]]":
+    """(neck yaw deg, base gyro yaw deg) — either None when not published."""
+    neck = yaw = None
+    try:
+        from intelligence import motion_agency as _ma
+        neck = _ma._come_neck_bearing_deg()
+        yaw = _ma._base_yaw_deg()
+    except Exception:
+        pass
+    return neck, yaw
+
+
+def _camera_moved_since_seen(key, now: float) -> bool:
+    """True while the camera points somewhere else than when `key` was last
+    seen — their absence is Rex's own motion, not theirs. Bounded by
+    PRESENCE_CAMERA_MOVED_MAX_HOLD_SECS so a head parked elsewhere for ten
+    minutes still lets the visit close eventually."""
+    seen = _last_seen_pose.get(key)
+    if not seen:
+        return False
+    neck_then, yaw_then = seen
+    neck_now, yaw_now = _camera_pose()
+    moved = False
+    try:
+        if neck_then is not None and neck_now is not None:
+            moved = abs(float(neck_now) - float(neck_then)) > float(
+                getattr(config, "PRESENCE_CAMERA_MOVED_NECK_DEG", 12.0))
+        if not moved and yaw_then is not None and yaw_now is not None:
+            d = (float(yaw_now) - float(yaw_then) + 180.0) % 360.0 - 180.0
+            moved = abs(d) > float(getattr(config, "PRESENCE_CAMERA_MOVED_BASE_DEG", 15.0))
+    except (TypeError, ValueError):
+        moved = False
+    if not moved:
+        _camera_moved_since.pop(key, None)
+        return False
+    since = _camera_moved_since.setdefault(key, now)
+    max_hold = float(getattr(config, "PRESENCE_CAMERA_MOVED_MAX_HOLD_SECS", 600.0))
+    return (now - since) <= max_hold
+
+
 def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     """
     Compare person visibility against the previous tick for both known and unknown people.
@@ -9776,9 +9827,13 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         elif key not in _first_missing_at:
             _first_missing_at[key] = now
 
-    # Anyone who reappears clears their timer
+    # Anyone who reappears clears their timer — and we remember where the
+    # camera was pointing when we last had them.
+    pose_now = _camera_pose()
     for key in current_keys:
         _first_missing_at.pop(key, None)
+        _last_seen_pose[key] = pose_now
+        _camera_moved_since.pop(key, None)
 
     # ── Stage departures once absence exceeds the confirmation window ─────────
     for key, first_missing in list(_first_missing_at.items()):
@@ -9804,6 +9859,20 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     person_db_id = key
             except Exception:
                 pass
+        if _camera_moved_since_seen(key, now):
+            # Rex looked away, not them: the clock does not run until the camera
+            # is back where they were. Restarting it every tick makes the confirm
+            # window count from the camera's return.
+            if _first_missing_at.get(key) != now and key not in _camera_moved_logged:
+                _camera_moved_logged.add(key)
+                _log.info(
+                    "consciousness: %s is out of frame because the camera moved "
+                    "(not a departure) — holding the missing clock",
+                    person_name or f"key={key}",
+                )
+            _first_missing_at[key] = now
+            continue
+        _camera_moved_logged.discard(key)
         confirm_for_key = _departure_confirm_secs_for(
             key,
             person_db_id,
@@ -10024,8 +10093,10 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 f"React in one short in-character line as Rex — dry, amused, slightly suspicious. "
                 f"Use a generic address like '{address}' (examples: 'hey you', 'you there', "
                 "'mystery organic', 'that one'). Example lines: "
-                f"'And off goes {address}...', 'Huh. The mystery deepens.', "
-                f"'Farewell, {address}. Whoever you are.' One line only.",
+                f"'Well, {address} — off you go.', 'Huh. The mystery deepens.', "
+                f"'Farewell, {address}. Whoever you are.' The address is a form of "
+                "address, never a name or a subject ('off goes you there' is wrong). "
+                "One line only.",
                 label=f"departure for unknown ({key})",
                 tag_key=key,
                 emotion="curious",
