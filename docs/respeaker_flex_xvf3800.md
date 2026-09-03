@@ -132,7 +132,25 @@ best was 0.971 / 0.964 at −31 to −39 dBFS. Transcription does not need the
 level lifted; the only open level question is whether VAD / wake word trigger
 reliably at −45 dBFS speech, which the live session answers.
 
-Still owed: a live session with a talk-over attempt and a "come here" from 9 ft.
+First live session (20:45–20:58, `logs/djr3x-2026-09-02-20-45-24.log`): boot
+lines confirm ch1 / 1.5x / `[hardware_aec] active=True`. 23 heard turns, every
+one transcribed cleanly, no watchdog stalls. Bret's voice score p50 0.696 (p25
+0.60), runner-up p50 0.58 — no drop from the Lite-era numbers. Two off-camera
+short commands after Rex turned away went to 'Jeremy Thomas' (0.58 vs Bret
+0.44) and 'unknown_voice_1' (0.56 vs 0.53) — the pre-existing off-camera
+misattribution pattern, not the mic; nothing was enrolled. **Watch item:** 25
+context-echo hallucination rejections in 13 min (a Lite session the night
+before had 4 in 8 min), all 3–14 s AFTER playback ended, so not AEC residual
+— VAD firing on room sounds (dogs, motor/sfx during the drive) and the decoder
+echoing Rex's last line via context bias. The 4-layer guard dropped every one;
+the cost is a ~2 s decode each. Talk-over was untestable: the config leaves
+`WAKE_WORD_ALLOW_DURING_TTS=false`, so the wake word cannot fire during speech
+regardless of AEC; the three "VAD barge-in suppressed" lines show Bret's
+talk-over was heard and captured after Rex finished. "Come here" turned to the
+radar body, found no face, then the swing check refused every escape turn —
+motion, not audio.
+
+Still owed: a talk-over session with `WAKE_WORD_ALLOW_DURING_TTS=true`.
 
 ### AGC trial (pending owner go for two volatile writes)
 
