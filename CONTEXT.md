@@ -2858,8 +2858,9 @@ Bret 90° to Rex's RIGHT the whole time. Three "over here" calls:
 - **12:16:20 no turn — verdict `weak`.** The chip put every group on the LEFT
   (+85°×7, +114°×10, −167°×1) for a talker at −90°: a mirror. The winning
   group had 7 of 20 samples (share 0.35 < 0.5), so the reflex stood down —
-  correct, since every candidate was wrong. The right side reads badly on this
-  ring (bench 2026-09-02 too); a head-shadow bench is still owed.
+  correct, since every candidate was wrong. Owner: not a weak side — Rex was
+  against a wall (the ring held a front block at 0.06–0.09 m the whole stretch)
+  and the voice reached the mic as an echo. Reflections, not geometry.
 - **12:16:35 turned −177° and swept past him.** Groups −177°×6 at 0.15M vs
   −95°×2 at 0.32M (the truth, low count). Count×energy went to −177°, and the
   radar tie-break BACKED it with a "body" at −139°/0.8 m — a shell ghost or the
