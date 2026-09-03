@@ -10086,17 +10086,19 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 person_db_id, person_name, _visit_arrival, departed_at,
             )
         else:
-            address = random.choice(unknown_addresses)
             _log.info("consciousness: departure reaction firing for unknown (key=%s)", key)
+            # Third person, no address: the stranger is GONE, so there is nobody
+            # to address, and forcing a generic address into the line produced
+            # "And off goes you there" (owner, 2026-09-03: "really weird").
             _generate_and_speak_presence(
-                f"Someone you don't recognize just left your camera view. "
-                f"React in one short in-character line as Rex — dry, amused, slightly suspicious. "
-                f"Use a generic address like '{address}' (examples: 'hey you', 'you there', "
-                "'mystery organic', 'that one'). Example lines: "
-                f"'Well, {address} — off you go.', 'Huh. The mystery deepens.', "
-                f"'Farewell, {address}. Whoever you are.' The address is a form of "
-                "address, never a name or a subject ('off goes you there' is wrong). "
-                "One line only.",
+                "Someone you don't recognize just left your camera view. "
+                "React in one short in-character line as Rex — dry, amused, slightly "
+                "suspicious. Talk ABOUT them in the third person ('the stranger', 'the "
+                "mystery guest', 'whoever that was'); do not address them, and do not use "
+                "'you' or 'you there' at all — they are gone. Example lines: "
+                "'And the mystery guest is gone. Never did introduce themselves.', "
+                "'Huh. The stranger left. Suspicious to the end.', "
+                "'Whoever that was, they're off. I'll allow it.' One line only.",
                 label=f"departure for unknown ({key})",
                 tag_key=key,
                 emotion="curious",
