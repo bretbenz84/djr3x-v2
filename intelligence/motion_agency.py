@@ -1793,6 +1793,9 @@ def note_voice_bearing(bearing_deg: "float | None" = None) -> None:
     down for MOTION_RADAR_ORIENT_VOICE_DEFER_SECS: the ring cannot tell a dog or
     a ghost from the person who is talking, the voice can."""
     _state["voice_bearing_at"] = time.monotonic()
+    # Somebody is talking to him: an idle sway or meander right now swings the
+    # ring under the very voice the reflex needs (field 2026-09-02 22:33).
+    _clear_idle_wander("voice heard")
 
 
 def _voice_bearing_fresh(now: float) -> bool:
@@ -2459,6 +2462,8 @@ def _maybe_idle_wander(profile, now: float) -> bool:
         return False
     if getattr(profile, "interaction_busy", False):
         return False
+    if _voice_bearing_fresh(now):
+        return False                       # someone just spoke: hold still, they may call again
     if _traction_lost(now):
         return False
     try:

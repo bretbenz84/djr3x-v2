@@ -4215,7 +4215,14 @@ FLEX_DOA_RECONNECT_SECS = 30.0
 # marked and excluded from every bearing: the ring rotates with the base, the
 # motors are loud, and the wheel sound effect plays — a segment captured across
 # a turn read +105° with 11/11 "agreement" (field 2026-09-02 22:04:03).
-FLEX_DOA_MOTION_SETTLE_SECS = 0.6
+FLEX_DOA_MOTION_SETTLE_SECS = 0.4
+# "Moving" is judged from the base's own gyro when it publishes one: a poll whose
+# IMU yaw moved more than this since the previous poll (10 Hz ⇒ 1° = 10°/s) is
+# excluded. Judging by `state != idle` blanked whole windows around the idle
+# wander's 5° sways and meander legs (field 2026-09-02 22:33: an "over here" at
+# +96° came back with 3 samples and was refused as thin). Without an IMU the
+# state gate still applies.
+FLEX_DOA_MOTION_YAW_STEP_DEG = 1.0
 # Samples taken while REX is playing (TTS, sfx, the wake ack) are marked and
 # excluded too: the chip flags his own voice as speech from the speaker's
 # direction (~+9° on this build), and a 2.5 s wake window that overlaps his

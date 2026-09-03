@@ -304,5 +304,56 @@ class OverHereTest(unittest.TestCase):
             self.assertAlmostEqual(leg.call_args[0][0], 150.0)
             adopt.assert_called_once()
 
+class RotationDetectorTest(unittest.TestCase):
+    """The DoA poller excludes samples while the base ROTATES — judged from the
+    gyro yaw step, not `state != idle` (which blanked windows around the idle
+    wander's 5° sways, field 2026-09-02 22:33)."""
+
+    def setUp(self):
+        flex_doa._last_yaw = None
+
+    def _tele(self, yaw=None, state="idle", ok=True):
+        t = {"state": state}
+        if yaw is not None:
+            t["imu"] = {"ok": ok, "yaw": yaw}
+        return t
+
+    def test_small_yaw_steps_are_not_motion(self):
+        with mock.patch("hardware.motion.telemetry", side_effect=[self._tele(10.0), self._tele(10.4), self._tele(10.9)]):
+            self.assertFalse(flex_doa._base_moving())   # first sample seeds
+            self.assertFalse(flex_doa._base_moving())   # 0.4° step
+            self.assertFalse(flex_doa._base_moving())   # 0.5° step
+
+    def test_a_real_turn_is_motion_even_if_state_lags(self):
+        with mock.patch("hardware.motion.telemetry", side_effect=[self._tele(10.0, state="idle"), self._tele(14.0, state="idle")]):
+            flex_doa._base_moving()
+            self.assertTrue(flex_doa._base_moving())     # 4° in one poll = 40°/s
+
+    def test_wrap_is_handled(self):
+        with mock.patch("hardware.motion.telemetry", side_effect=[self._tele(179.5), self._tele(-179.8)]):
+            flex_doa._base_moving()
+            self.assertFalse(flex_doa._base_moving())    # 0.7° across the wrap
+
+    def test_without_an_imu_the_state_gate_applies(self):
+        with mock.patch("hardware.motion.telemetry", side_effect=[self._tele(state="turning"), self._tele(state="idle")]):
+            self.assertTrue(flex_doa._base_moving())
+            self.assertFalse(flex_doa._base_moving())
+
+    def test_no_new_wander_right_after_a_voice(self):
+        from tests.test_motion_agency import _profile
+        MA._state.update(wander_pending=None, wander_next_at=0.0, last_turn_at=0.0,
+                         last_approach_at=0.0, last_flinch_at=0.0, no_traction_until=0.0)
+        MA.note_voice_bearing(30.0)
+        with mock.patch.object(MA, "_wander_clearances") as clear:
+            self.assertFalse(MA._maybe_idle_wander(_profile(), time.monotonic()))
+            clear.assert_not_called()        # refused before it even looked at the room
+        MA._state["voice_bearing_at"] = 0.0
+
+    def test_a_voice_drops_an_in_flight_wander(self):
+        MA._state["wander_pending"] = {"at": time.monotonic(), "steps": [], "idx": 0}
+        MA.note_voice_bearing(30.0)
+        self.assertIsNone(MA._state.get("wander_pending"))
+
+
 if __name__ == "__main__":
     unittest.main()

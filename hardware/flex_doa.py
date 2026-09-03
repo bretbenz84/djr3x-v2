@@ -46,6 +46,7 @@ _lock = threading.Lock()
 _samples: deque = deque()          # (t_mono, doa_raw_deg, base_bearing_deg, speech, energy, moving)
 _last_moving_at: float = 0.0       # last poll that saw the base in motion (settle window anchor)
 _last_self_at: float = 0.0         # last poll that saw Rex playing sound (tail window anchor)
+_last_yaw: Optional[float] = None  # base IMU yaw at the previous poll (rotation detector)
 _thread: Optional[threading.Thread] = None
 _stop = threading.Event()
 _dev = None
@@ -149,13 +150,32 @@ def _close() -> None:
 
 
 def _base_moving() -> bool:
-    """True while the drive base reports anything but idle — its turns rotate the
-    ring under the sound field and its motors/sfx are a sound source of their own."""
+    """True while the base is ROTATING — its turns swing the ring under the sound
+    field. Judged from the base's own gyro yaw when telemetry carries one (a
+    yaw step over FLEX_DOA_MOTION_YAW_STEP_DEG since the previous poll); the
+    coarse `state != idle` gate only when there is no IMU, because that gate
+    blanked whole windows around the idle wander's 5° sways."""
+    global _last_yaw
     try:
         from hardware import motion
-        st = str(motion.state() or "unknown").lower()
+        tele = motion.telemetry()
     except Exception:
         return False
+    if not isinstance(tele, dict):
+        return False
+    imu = tele.get("imu")
+    yaw = None
+    if isinstance(imu, dict) and imu.get("ok") and imu.get("yaw") is not None:
+        try:
+            yaw = float(imu["yaw"])
+        except (TypeError, ValueError):
+            yaw = None
+    if yaw is not None:
+        prev, _last_yaw = _last_yaw, yaw
+        if prev is None:
+            return False
+        return abs(_wrap180(yaw - prev)) > _num("FLEX_DOA_MOTION_YAW_STEP_DEG", 1.0)
+    st = str(tele.get("state") or "unknown").lower()
     return st not in ("idle", "unknown", "")
 
 

@@ -459,6 +459,25 @@ search the turn is adopted as the search's own leg (`come_leg`), like a spoken
 "I'm behind you". Kill switch `OVER_HERE_REFLEX_ENABLED`. Log: `[over_here]
 'Over here.' heard at ±N° (k/n samples agree) → outcome`.
 
+### Third live run, 22:32 — "over here" ×5: two turns, one glance, one facing, one miss
+
+| call | bearing | outcome |
+|---|---|---|
+| "I'm over here." | −13° (6/6) | neck glance right |
+| "Over here." | +96° (3/3) | **thin** — the idle wander's 5° sways blanked the window |
+| "Over here." | −122° (7/12) | base turn −122° |
+| "I'm over here, Rex." | +68° (7/9) | base turn +68° → the next call read **+6°**: the turn landed |
+| "Over here." | +6° (10/17) | facing |
+
+The +68 → +6 pair is the first hard proof of sign and magnitude for a
+voice-driven base turn (and it agrees with "only the gyro": the firmware's
+gyro-closed turn was accurate, the compass over-read). The miss: the coarse
+`state != idle` motion gate excluded every sample around the wander's ±5°
+sways and meander legs. Fixes: rotation is now judged from the base's gyro
+yaw step per poll (`FLEX_DOA_MOTION_YAW_STEP_DEG` 1°/poll ≈ 10°/s), settle
+0.4 s; a heard voice drops any in-flight wander and blocks a new one for
+`MOTION_RADAR_ORIENT_VOICE_DEFER_SECS` (20 s).
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is
