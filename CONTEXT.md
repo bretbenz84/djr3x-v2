@@ -2771,3 +2771,16 @@ surfaced five distinct failures; each is fixed at its own layer:
 - Owner rules the same day: no sound / recording / servo motion / firmware
   flash / DSP write without an explicit go from Bret.
 
+### Voice bearing from the Flex's direction of arrival (2026-09-02)
+
+- `hardware/flex_doa.py` polls the XVF3800's `DOA_VALUE` over USB control and
+  turns every captured segment into a base-frame voice bearing (measured: chip
+  0 ahead, 90 LEFT, 180 behind, 270 RIGHT → `wrap180(DoA)`). Dominant cluster
+  over the segment, because the register falls back to another room source
+  between words.
+- Layered into come-here as evidence (camera → spoken direction → radar body
+  agreeing with the voice → voice alone as the opening turn → radar → sweep)
+  and into the off-camera gaze search as the first waypoint. Knobs:
+  `FLEX_DOA_*`, `MOTION_COME_VOICE_*`; `FLEX_DOA_MOUNT=head` for a ring that
+  turns with the neck. `tests/test_flex_doa.py`; live floor test owed.
+

@@ -4193,6 +4193,25 @@ AUDIO_OUTPUT_DEVICE_NAME = os.getenv("AUDIO_OUTPUT_DEVICE_NAME", "").strip()
 # firmware / no hardware AEC). With this set, also set WAKE_WORD_ALLOW_DURING_TTS=True.
 AUDIO_AEC_INPUT_CHANNEL = _env_int("AUDIO_AEC_INPUT_CHANNEL", -1, min_value=-1, max_value=7)
 
+# ── reSpeaker Flex XVF3800 direction of arrival (hardware/flex_doa.py) ────────
+# The chip tracks where speech comes from; a daemon polls DOA_VALUE over USB
+# control and every transcribed segment gets a voice bearing (base frame,
+# + = left/CCW). Consumers: come-here (layered with the radar ring) and the
+# off-camera speaker gaze search. Convention measured 2026-09-02 with the ring's
+# printed 0° edge forward: chip 0 = ahead, 90 = LEFT, 270 = RIGHT, 180 = behind.
+FLEX_DOA_ENABLED = _env_bool("FLEX_DOA_ENABLED", True)
+FLEX_DOA_POLL_HZ = 8.0                 # ~10 ms per read; keep modest next to the audio stream
+FLEX_DOA_MOUNT = os.getenv("FLEX_DOA_MOUNT", "base").strip().lower() or "base"  # "base" | "head"
+FLEX_DOA_SIGN = 1.0                    # +1: chip angle grows toward Rex's LEFT (measured)
+FLEX_DOA_FORWARD_OFFSET_DEG = 0.0      # chip reading for dead ahead (measured 359/0)
+FLEX_DOA_HISTORY_SECS = 20.0
+FLEX_DOA_CLUSTER_DEG = 20.0            # samples within this agree (one talker)
+FLEX_DOA_MIN_SAMPLES = 3               # speech-flagged samples a segment needs
+FLEX_DOA_MIN_CLUSTER_SHARE = 0.4       # dominant cluster must hold this share of them
+FLEX_DOA_SEGMENT_PAD_SECS = 0.3        # window padding around the captured segment
+FLEX_DOA_MAX_AGE_SECS = 12.0           # a stored voice bearing older than this is stale
+FLEX_DOA_RECONNECT_SECS = 30.0
+
 # ── Audio playback QoS ────────────────────────────────────────────────────────
 # Playback runs through a Python-level PortAudio callback that must grab the GIL for
 # EVERY audio block. Heavy work elsewhere (model preloads at boot: Whisper, speaker-ID,
@@ -9578,6 +9597,16 @@ MOTION_COME_RADAR_CLUSTER_DEG = 15.0     # returns within this bearing are one b
 MOTION_COME_RADAR_VISITED_DEG = 25.0     # a body this close to a rejected spot IS that spot
 MOTION_COME_RADAR_FACING_DEG = 12.0      # a body already this close to dead ahead needs no turn
 MOTION_COME_RADAR_WAIT_SECS = 3.0        # max wait for a full post-settle sample before sweeping
+# Voice bearing (owner spec 2026-09-02): the Flex XVF3800's on-chip direction of
+# arrival for the "come here" utterance itself (hardware/flex_doa.py). Layered as
+# EVIDENCE, below the camera and an explicit "I'm behind you", above radar alone:
+# a radar body that agrees with the voice within MATCH_DEG is the requester and is
+# visited first; with no agreeing body the voice bearing is the opening turn (like
+# side_deg), and a fruitless dwell there marks the spot visited like any radar body.
+MOTION_COME_VOICE_BEARING_ENABLED = True
+MOTION_COME_VOICE_RADAR_MATCH_DEG = 30.0   # radar body within this of the voice = them
+MOTION_COME_VOICE_TURN_MIN_DEG = 15.0      # voice this close to dead ahead needs no opening turn
+MOTION_COME_VOICE_MIN_SHARE = 0.4          # ignore a bearing whose dominant cluster is weaker
 
 # ── Radar orient (owner spec 2026-08-19) ────────────────────────────────────────
 # When the camera sees NOBODY but the ring shows a persistent body, face it —

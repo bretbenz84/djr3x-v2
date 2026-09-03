@@ -94,7 +94,7 @@ import soundfile as sf
 import config
 import state
 from state import State
-from hardware import servos, leds_head, leds_chest, motion, radar
+from hardware import servos, leds_head, leds_chest, motion, radar, flex_doa
 from utils.config_loader import (
     SERVOS_ENABLED,
     HEAD_LEDS_ENABLED,
@@ -893,6 +893,7 @@ def _shutdown() -> None:
     leds_chest.disconnect()
     motion_controller.disconnect()   # stops heartbeat + leaves the base stopped
     radar.shutdown()                 # also parks the self-heal monitor
+    flex_doa.stop()
 
     # Release the single-instance lock so the always-on supervisor can relaunch
     # on the next "wake up rex". (The OS would also free it on process exit.)
@@ -1254,6 +1255,13 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.warning("Radar ring: disabled (configured but connect/handshake failed — watching for the board)")
     else:
         logger.info("Radar ring: disabled (RADAR_ESP32_SERIAL/RADAR_ESP32_PORT not set)")
+
+    # Flex XVF3800 direction of arrival: a voice bearing per utterance for the
+    # come-here search and the off-camera gaze. Silent no-op without the Flex.
+    if flex_doa.start():
+        logger.info("Voice DoA: enabled (Flex XVF3800 DOA_VALUE poller, [voice_doa] logs)")
+    else:
+        logger.info("Voice DoA: disabled")
 
     # Wire chest LEDs to state transitions so they stay in sync without
     # scattering leds_chest calls across every module.

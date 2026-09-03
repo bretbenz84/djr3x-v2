@@ -220,6 +220,64 @@ Whisper's usable floor is ~12 dB SNR; the Lite sat right at it from 6 ft. The
 Flex's beamformer is the first lever that can actually raise SNR (rather than
 level) at distance — the `speech`/`distance` numbers are the ones to compare.
 
+## Direction of arrival → voice bearing (shipped 2026-09-02, live test owed)
+
+The XVF3800 tracks where speech comes from and publishes `DOA_VALUE` (0–359°
+plus a speech flag) on the USB control endpoint; `AEC_AZIMUTH_VALUES[3]` is
+the auto-selected beam's azimuth and agrees with it. Reads cost ~10 ms.
+
+**Convention, measured with `tools/flex_doa.py`** (ring mounted with its
+printed 0° edge forward, Bret ~4 ft away, 20 s each):
+
+| Bret stood | DoA median | spread | notes |
+|---|---|---|---|
+| front | 359° | 16° | |
+| left | 90° | 4° | |
+| right | 291° (mode 264–277°) | 82° | a third of samples snapped to ~86° between words |
+| back | 171° (beam 172°) | 28° | competing cluster at ~55° |
+
+So chip 0 = ahead, 90 = Rex's **left**, 180 = behind, 270 = his **right**:
+base bearing (+ = left/CCW) = `wrap180(DoA)`, no sign flip
+(`FLEX_DOA_SIGN=1`, `FLEX_DOA_FORWARD_OFFSET_DEG=0`). Note this is the
+MIRROR of what Seeed's drawing suggests for a mic-side-up ring; the
+measurement wins and the knobs exist for a re-mount. **Between a talker's
+words the register falls back to another source in the room** (86° in two
+runs, 55° in another) — the fusion therefore takes the largest cluster of
+mutually-agreeing samples over the segment, not a median.
+
+**Open question: is the ring on the head or the body?** `FLEX_DOA_MOUNT`
+defaults to `base`. A head-mounted ring turns with the neck, so the poller
+subtracts the neck yaw sampled at each read when `FLEX_DOA_MOUNT=head`
+(the readback is registered by motion_agency). The static tests above cannot
+tell the two apart — the neck was centred.
+
+**Pipeline** (`hardware/flex_doa.py` → `interaction._note_voice_bearing` →
+`motion_agency.request_come_here(voice_bearing_deg=…)` /
+`consciousness.note_speaker_gaze_intent(bearing_deg=…)`):
+
+1. A daemon polls DoA at `FLEX_DOA_POLL_HZ` (8) and keeps 20 s of samples.
+2. Every captured speech segment gets `[voice_doa] bearing ±N° (chip …, k/n
+   samples agree, spread …)` — the dominant cluster over the segment window.
+3. `come here`: evidence order is camera sighting → explicit words ("I'm
+   behind you", "to your left") → radar body agreeing with the voice within
+   `MOTION_COME_VOICE_RADAR_MATCH_DEG` (30°) → the voice bearing alone as the
+   opening turn (off-axis by more than `MOTION_COME_VOICE_TURN_MIN_DEG`, 15°;
+   a fruitless dwell there marks the spot visited like a radar body) → radar
+   alone → blind sweep. Log lines: `voice came from ±N° — leading with a turn
+   toward it`, `… the spoken direction takes precedence`, `… agrees with the
+   voice`, `(no body near the voice at ±N°)`.
+4. Off-camera speaker gaze: the search's first waypoint points the neck at
+   the voice (`_voice_bearing_waypoint`), then the usual scan continues; the
+   hint is spent after one pass.
+
+Kill switches: `FLEX_DOA_ENABLED`, `MOTION_COME_VOICE_BEARING_ENABLED`.
+Tests: `tests/test_flex_doa.py` (convention, clustering, precedence, the sign
+trap, gaze plan). **Live test owed:** a session with "come here" from behind
+and from off-camera left/right, watching the `[voice_doa]` and
+`[motion_agency] requested come:` lines — and the audio stream's health
+(`sounddevice status` / `stream_watchdog`), since the poller shares the USB
+device with the mic stream.
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is

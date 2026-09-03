@@ -276,6 +276,10 @@ _requested_come = {
     "heading_mode": "cmd",  # "imu": world = imu.yaw + bearing (the base publishes
                             # a gyro heading); "cmd": world = sum of commanded turns
     "cmd_heading": 0.0,     # running sum of turns THIS module issued (cmd mode)
+    # ── voice bearing (owner spec 2026-09-02) ───────────────────────────────
+    "voice_bearing_deg": None,  # Flex XVF3800 DoA of the request itself, base frame at request
+    "voice_world": None,        # the same as a world bearing (heading + bearing), for radar matching
+    "voice_used": False,        # the opening voice turn has been issued (or words overrode it)
 }
 
 # Flinch detector state, sampled every idle tick and reset whenever the base is
@@ -319,7 +323,9 @@ def requested_come_active() -> bool:
 
 def request_come_here(person_id: "int | None" = None, *,
                       behind: bool = False,
-                      side_deg: "float | None" = None) -> bool:
+                      side_deg: "float | None" = None,
+                      voice_bearing_deg: "float | None" = None,
+                      voice_share: "float | None" = None) -> bool:
     """Arm a bounded search/align/approach sequence for an explicit voice request.
 
     ``person_id`` is the voice-identified requester (person_db_id). When known, the
@@ -332,7 +338,16 @@ def request_come_here(person_id: "int | None" = None, *,
     immediate about-face instead of sweeping the wrong hemisphere first (owner
     spec 2026-08-11). ``side_deg`` ("I'm to your left, come here") is the sideways
     version: a signed opening swing toward the stated side (+ = left/CCW, the
-    turn() convention); the follow-up sweep also starts on that side."""
+    turn() convention); the follow-up sweep also starts on that side.
+
+    ``voice_bearing_deg`` is where the Flex XVF3800 heard the request come from
+    (hardware/flex_doa.py, base frame, + = left). Evidence, layered: an explicit
+    "behind"/side word outranks it (words win, the bearing still helps radar
+    matching); otherwise it is the opening turn when it points off-axis, and in
+    every case a radar body that agrees with it within
+    MOTION_COME_VOICE_RADAR_MATCH_DEG is visited before a more persistent one.
+    ``voice_share`` is the dominant-cluster share the bearing came with; weak
+    ones (< MOTION_COME_VOICE_MIN_SHARE) are ignored."""
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
         return False
     # "Come here" asks for movement, so it lifts an earlier "don't move" outright
@@ -388,8 +403,18 @@ def request_come_here(person_id: "int | None" = None, *,
         radar_visited=[],
         heading_mode="imu" if _base_yaw_deg() is not None else "cmd",
         cmd_heading=0.0,
+        voice_bearing_deg=None,
+        voice_world=None,
+        voice_used=False,
     )
     _reset("neck_hits", "far_hits")
+    voice = None
+    if (voice_bearing_deg is not None and _flag("MOTION_COME_VOICE_BEARING_ENABLED", True)
+            and (voice_share is None or float(voice_share) >= _num("MOTION_COME_VOICE_MIN_SHARE", 0.4))):
+        voice = _wrap180(float(voice_bearing_deg))
+        heading0 = _come_heading_deg()
+        _requested_come["voice_bearing_deg"] = voice
+        _requested_come["voice_world"] = (_wrap180(heading0 + voice) if heading0 is not None else None)
     if person_id is not None:
         _log.info("[motion_agency] requested come: searching for requester "
                   "person %s (radar-first, heading via %s)", person_id,
@@ -412,6 +437,31 @@ def request_come_here(person_id: "int | None" = None, *,
             _log.info("[motion_agency] requested come: speaker says they're to "
                       "the %s — leading with a %.0f° swing",
                       "left" if float(side_deg) > 0 else "right", abs(float(side_deg)))
+    if voice is not None:
+        if behind or side_deg:
+            # Words win: the human said where they are. The bearing stays for
+            # radar matching only.
+            _requested_come["voice_used"] = True
+            _log.info("[motion_agency] requested come: voice came from %+.0f° "
+                      "(share %.2f) — the spoken direction takes precedence",
+                      voice, float(voice_share) if voice_share is not None else -1.0)
+        elif abs(voice) <= _num("MOTION_COME_VOICE_TURN_MIN_DEG", 15.0):
+            _requested_come["voice_used"] = True
+            _log.info("[motion_agency] requested come: voice came from %+.0f° — "
+                      "nearly dead ahead, holding for the camera", voice)
+        else:
+            seq = _issue_come_turn(voice, now, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
+            _requested_come["voice_used"] = True
+            if seq is not None:
+                _requested_come["scan_sign"] = 1.0 if voice > 0 else -1.0
+                # A fruitless dwell after this turn rules the spot out exactly
+                # like a radar body would.
+                if _requested_come.get("voice_world") is not None:
+                    _requested_come["radar_pending_world"] = _requested_come["voice_world"]
+                    _requested_come["radar_pending_since"] = now
+                _log.info("[motion_agency] requested come: voice came from %+.0f° "
+                          "(share %.2f) — leading with a turn toward it",
+                          voice, float(voice_share) if voice_share is not None else -1.0)
     return True
 
 
@@ -676,6 +726,19 @@ def _step_come_radar(now: float) -> "bool | None":
                   "y" if len(bodies) == 1 else "ies")
         return None
     best = fresh[0]
+    voice_note = ""
+    voice_now = _voice_bearing_now(heading)
+    if voice_now is not None:
+        match_deg = _num("MOTION_COME_VOICE_RADAR_MATCH_DEG", 30.0)
+        agreeing = sorted(fresh, key=lambda b: abs(_wrap180(b["bearing_deg"] - voice_now)))
+        if agreeing and abs(_wrap180(agreeing[0]["bearing_deg"] - voice_now)) <= match_deg:
+            if agreeing[0] is not best:
+                voice_note = f" — the body agreeing with the voice ({voice_now:+.0f}°) over the most persistent"
+            else:
+                voice_note = f" — agrees with the voice ({voice_now:+.0f}°)"
+            best = agreeing[0]
+        else:
+            voice_note = f" (no body near the voice at {voice_now:+.0f}°)"
     turn_deg = float(best["bearing_deg"])
     if abs(turn_deg) <= facing_deg:
         # First decision of the errand with a body already dead ahead: no turn
@@ -687,7 +750,8 @@ def _step_come_radar(now: float) -> "bool | None":
             _requested_come["radar_pending_world"] = _wrap180(heading + turn_deg)
             _requested_come["radar_pending_since"] = now
         _log.info("[motion_agency] requested come: radar body already ahead "
-                  "(%+.0f°, %.1fm) — holding for the camera", turn_deg, best["range_m"])
+                  "(%+.0f°, %.1fm) — holding for the camera%s", turn_deg, best["range_m"],
+                  voice_note)
         return True
     seq = _issue_come_turn(turn_deg, now, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
     if seq is None:
@@ -704,9 +768,27 @@ def _step_come_radar(now: float) -> "bool | None":
         len(bodies), "y" if len(bodies) == 1 else "ies",
         ", ".join(f"{b['bearing_deg']:+.0f}°/{b['range_m']:.1f}m" for b in bodies),
         turn_deg, best["range_m"], best["confidence"], best["hits"], best["frames"],
-        "" if len(fresh) == len(bodies) else f", {len(bodies) - len(fresh)} already checked",
+        ("" if len(fresh) == len(bodies) else f", {len(bodies) - len(fresh)} already checked")
+        + voice_note,
     )
     return True
+
+
+def _voice_bearing_now(heading: Optional[float]) -> Optional[float]:
+    """The request's voice bearing in the CURRENT base frame (from its stored
+    world bearing when a heading is available; the raw request-time bearing
+    only while no turn has been issued since), or None without one."""
+    world = _requested_come.get("voice_world")
+    if world is not None and heading is not None:
+        return _wrap180(float(world) - float(heading))
+    raw = _requested_come.get("voice_bearing_deg")
+    if raw is None:
+        return None
+    if int(_requested_come.get("radar_turns") or 0) == 0 \
+            and int(_requested_come.get("search_turns") or 0) == 0 \
+            and not _requested_come.get("voice_used"):
+        return float(raw)
+    return None
 
 
 # ── Come-search dwell gaze ────────────────────────────────────────────────────
@@ -3010,3 +3092,13 @@ def _step_inner(snapshot: dict, profile) -> None:
     # clear of any maneuver the lanes above just issued.
     if _flag("MOTION_IDLE_WANDER_ENABLED", True):
         _maybe_idle_wander(profile, now)
+
+
+# A head-mounted Flex ring needs the neck yaw to bring its DoA into the base
+# frame; the poller has no business importing this module, so hand it the
+# readback (deg, + = Rex's right — _come_neck_bearing_deg's convention).
+try:
+    from hardware import flex_doa as _flex_doa
+    _flex_doa.set_neck_yaw_provider(_come_neck_bearing_deg)
+except Exception:  # pragma: no cover - optional hardware module
+    pass

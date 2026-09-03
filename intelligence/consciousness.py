@@ -861,8 +861,14 @@ def note_speaker_gaze_intent(
     unknown_voice: bool = False,
     reason: str = "speech",
     force_search: Optional[bool] = None,
+    bearing_deg: Optional[float] = None,
 ) -> None:
-    """Tell the gaze loop that recent speech should guide head target choice."""
+    """Tell the gaze loop that recent speech should guide head target choice.
+
+    ``bearing_deg`` is where the voice came from per the Flex XVF3800's
+    direction of arrival (base frame, + = left). When a search runs, its first
+    waypoint looks THAT way instead of opening with the randomized room scan.
+    """
     if not bool(getattr(config, "SPEAKER_GAZE_ENABLED", True)):
         return
 
@@ -907,14 +913,16 @@ def note_speaker_gaze_intent(
             "waypoint_committed_at": 0.0,
             "waypoint_pose": None,
             "acquired_at": 0.0,
+            "bearing_hint_deg": (float(bearing_deg) if bearing_deg is not None else None),
         })
     _log.info(
-        "[speaker_gaze] intent reason=%s person_id=%s unknown=%s visible=%s search=%s",
+        "[speaker_gaze] intent reason=%s person_id=%s unknown=%s visible=%s search=%s%s",
         reason,
         pid,
         bool(unknown_voice),
         visible,
         search_requested,
+        "" if bearing_deg is None else f" voice_bearing={float(bearing_deg):+.0f}°",
     )
 
 
@@ -12882,8 +12890,22 @@ def _speaker_gaze_candidate(candidates: list[dict], intent: Optional[dict]) -> O
     return None
 
 
-def _build_speaker_gaze_search_plan(reason: str = "startup") -> list[tuple]:
+def _voice_bearing_waypoint(bearing_deg: float) -> tuple:
+    """A search waypoint that points the neck at a voice bearing (base frame,
+    + = left). neck_frac is + = RIGHT, so the sign flips; the neck's half-span
+    (MOTION_COME_NECK_HALF_SPAN_DEG) sets the scale and a bearing beyond it
+    pins the neck at full throw on that side — still the right side to look."""
+    span = float(getattr(config, "MOTION_COME_NECK_HALF_SPAN_DEG", 45.0) or 45.0)
+    neck_frac = max(-1.0, min(1.0, -float(bearing_deg) / span))
+    return (neck_frac, 0.35)
+
+
+def _build_speaker_gaze_search_plan(reason: str = "startup",
+                                    bearing_deg: Optional[float] = None) -> list[tuple]:
     """Build one randomized, two-axis room-scan pass.
+
+    With a ``bearing_deg`` voice hint the pass opens by looking that way (the
+    talker is most likely there), then continues with the usual scan.
 
     Returns a list of ``(neck_frac, vert_frac)`` waypoints, where ``neck_frac`` is in
     ``[-1, 1]`` (full left .. full right, or ``None`` to hold the current heading) and
@@ -12919,7 +12941,10 @@ def _build_speaker_gaze_search_plan(reason: str = "startup") -> list[tuple]:
         lanes.append((neck_frac * neck_scale, vert_frac))
     random.shuffle(lanes)
 
-    plan: list[tuple] = [(None, random.uniform(0.9, 1.0))]  # look down first, no turn
+    plan: list[tuple] = []
+    if bearing_deg is not None:
+        plan.append(_voice_bearing_waypoint(bearing_deg))   # where the voice came from
+    plan.append((None, random.uniform(0.9, 1.0)))  # look down (no turn) — people sit
     plan.extend(lanes)
     plan.append((0.0, 0.0))  # recentre level so the head parks neutral after the pass
     return plan
@@ -13047,7 +13072,13 @@ def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> 
         plan_idx = int(_speaker_gaze_intent.get("search_plan_index") or 0)
         if not plan or plan_idx >= len(plan):
             # Fresh randomized pass (also re-rolls if the search outlasts one pass).
-            plan = _build_speaker_gaze_search_plan(_speaker_gaze_intent.get("reason", "startup"))
+            # The voice-bearing hint opens the FIRST pass only — if that look found
+            # nobody, a re-roll should not stare the same way again.
+            plan = _build_speaker_gaze_search_plan(
+                _speaker_gaze_intent.get("reason", "startup"),
+                bearing_deg=_speaker_gaze_intent.get("bearing_hint_deg"),
+            )
+            _speaker_gaze_intent["bearing_hint_deg"] = None
             _speaker_gaze_intent["search_plan"] = plan
             plan_idx = 0
         neck_frac, vert_frac = plan[plan_idx]

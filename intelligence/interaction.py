@@ -15337,6 +15337,46 @@ def _adopt_probe_transcript(probe: Optional[dict]) -> bool:
     return True
 
 
+# ── Voice bearing (Flex XVF3800 direction of arrival) ────────────────────────
+# Stamped once per captured segment from hardware/flex_doa.py: where the voice
+# came from, in the base frame (+ = left). Read by the come-here dispatch and the
+# off-camera gaze search within FLEX_DOA_MAX_AGE_SECS; a hint, never a decision.
+_last_voice_bearing: Optional[dict] = None
+
+
+def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
+    """Record the dominant direction of arrival over a captured segment."""
+    global _last_voice_bearing
+    try:
+        from hardware import flex_doa
+        if not flex_doa.available():
+            return None
+        res = flex_doa.bearing_between(t0, t1)
+    except Exception as exc:
+        _log.debug("[voice_doa] read failed: %s", exc)
+        return None
+    if res is None:
+        return None
+    res["at"] = time.monotonic()
+    _last_voice_bearing = res
+    _log.info("[voice_doa] bearing %+.0f° (chip %s°, %d/%d samples agree, spread %.0f°)",
+              res["bearing_deg"],
+              "?" if res.get("raw_deg") is None else f"{res['raw_deg']:.0f}",
+              res["cluster_n"], res["n"], res["spread_deg"])
+    return res
+
+
+def _recent_voice_bearing(max_age: Optional[float] = None) -> Optional[dict]:
+    """The last stamped voice bearing if it is fresh enough to describe THIS turn."""
+    res = _last_voice_bearing
+    if res is None:
+        return None
+    limit = float(getattr(config, "FLEX_DOA_MAX_AGE_SECS", 12.0)) if max_age is None else max_age
+    if (time.monotonic() - float(res.get("at") or 0.0)) > limit:
+        return None
+    return res
+
+
 def _accumulate_speech(
     speech_start_mono: float,
     *,
@@ -22685,8 +22725,11 @@ def _handle_router_motion_action(
                 side_deg = float(args["side_deg"]) if args.get("side_deg") else None
             except (TypeError, ValueError):
                 side_deg = None
+            voice = _recent_voice_bearing()
             started = motion_agency.request_come_here(
-                person_id=requester_person_id, behind=behind, side_deg=side_deg
+                person_id=requester_person_id, behind=behind, side_deg=side_deg,
+                voice_bearing_deg=(voice["bearing_deg"] if voice else None),
+                voice_share=(voice.get("share") if voice else None),
             )
             if not started:
                 return None
@@ -27791,10 +27834,12 @@ def _handle_speech_segment(
 
         if not text_input:
             try:
+                _voice = _recent_voice_bearing()
                 consciousness.note_speaker_gaze_intent(
                     person_id,
                     unknown_voice=(person_id is None or off_camera_unknown),
                     reason="off_camera_unknown" if off_camera_unknown else "speech",
+                    bearing_deg=(_voice["bearing_deg"] if _voice else None),
                 )
             except Exception as exc:
                 _log.debug("speaker gaze intent note failed: %s", exc)
@@ -31668,6 +31713,7 @@ def _loop() -> None:
                     continue
 
                 _last_speech_at = time.monotonic()
+                _note_voice_bearing(speech_start, _last_speech_at)
                 # Same gap-speech arming as the ACTIVE path — an idle-activated
                 # turn's reply blinds the loop identically.
                 _arm_gap_watch()
@@ -31982,6 +32028,8 @@ def _loop() -> None:
             # Accumulate the full utterance
             audio_segment = _accumulate_speech(speech_start)
             eager_text = _pop_eager_transcript()
+            if audio_segment is not None and len(audio_segment) > 0:
+                _note_voice_bearing(speech_start, time.monotonic())
             if audio_segment is None or len(audio_segment) == 0:
                 # THE invisible drop (owner 2026-08-05: "he's not hearing my first
                 # line"). VAD accepted this turn and the loop committed to it, then
