@@ -179,7 +179,7 @@ class FieldFixes20260902Test(unittest.TestCase):
         with mock.patch.object(MA.motion_controller, "turn", return_value=7) as turn, \
              mock.patch("sequences.animations.travel_glance_pose"), \
              mock.patch("intelligence.consciousness.hold_directed_gaze"):
-            self.assertEqual(MA.orient_to_voice(-65.0, share=0.57, samples=4), "thin")
+            self.assertEqual(MA.orient_to_voice(-65.0, share=0.57, samples=2), "thin")
             turn.assert_not_called()
 
     def test_radar_orient_stands_down_while_a_voice_bearing_is_fresh(self):
@@ -194,6 +194,7 @@ class FieldFixes20260902Test(unittest.TestCase):
             mock.patch("intelligence.consciousness.hold_directed_gaze"),
             mock.patch.object(MA, "_radar_bodies", return_value=([body], True)),
             mock.patch.object(config, "MOTION_RADAR_ORIENT_VOICE_DEFER_SECS", 20.0, create=True),
+            mock.patch.object(config, "MOTION_RADAR_ORIENT_ENABLED", True, create=True),
         ]
         started = [p.start() for p in patches]
         turn = started[2]
@@ -209,6 +210,31 @@ class FieldFixes20260902Test(unittest.TestCase):
         finally:
             for p in patches:
                 p.stop()
+
+    def test_samples_during_rex_playback_are_ignored(self):
+        now = time.monotonic()
+        # Injected as the poller marks them while Rex plays: the exclusion flag set.
+        flex_doa._inject_for_tests([(now - 1.0 + 0.1 * i, 9.0, 9.0, True, 1.0, True) for i in range(10)])
+        self.assertIsNone(flex_doa.bearing_between(now - 1.2, now))
+
+    def test_facing_is_judged_by_the_head_not_the_body(self):
+        # Voice 9° left of the body while the head is parked 45° to the RIGHT:
+        # the camera is 54° off the caller — glance, do not shrug.
+        with mock.patch.object(MA, "_come_neck_bearing_deg", return_value=45.0), \
+             mock.patch.object(MA.motion_controller, "available", return_value=True), \
+             mock.patch.object(MA.motion, "state", return_value="idle"), \
+             mock.patch.object(MA.motion_controller, "turn", return_value=7) as turn, \
+             mock.patch("sequences.animations.travel_glance_pose") as glance, \
+             mock.patch("intelligence.consciousness.hold_directed_gaze"), \
+             mock.patch.object(MA, "_clear_idle_wander"), \
+             mock.patch("world_state.world_state.get", return_value=[]):
+            self.assertEqual(MA.orient_to_voice(9.0, share=0.9, samples=6), "glanced")
+            glance.assert_called_once()
+            turn.assert_not_called()
+        # Same voice with the head already on it: facing.
+        with mock.patch.object(MA, "_come_neck_bearing_deg", return_value=-9.0):
+            MA._state["wake_orient_at"] = 0.0
+            self.assertEqual(MA.orient_to_voice(9.0, share=0.9, samples=6), "facing")
 
     def test_busy_base_is_waited_out(self):
         states = iter(["turning", "turning", "idle", "idle", "idle"])

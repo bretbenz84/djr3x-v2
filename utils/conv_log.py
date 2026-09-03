@@ -138,6 +138,15 @@ def log_heard(speaker: str | None, text: str) -> None:
     _mirror_to_gui(label if label != "Unknown" else "Unknown speaker", text, "user")
 
 
+def log_wake(model: str, detail: str = "") -> None:
+    """Log a wake-word hit — the acoustic detector fired, before any transcript.
+    Owner 2026-09-02: the acks proved every "hey Rex" registered, but the
+    transcript had no line for it. `detail` carries the bearing/reflex outcome."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    label = str(model or "wake").replace("_", " ")
+    _write(f"{ts} | WAKE  | {label}{(' — ' + detail) if detail else ''}")
+
+
 def log_rex(text: str, *, to_gui: bool = True) -> None:
     """Log something Rex said.
 

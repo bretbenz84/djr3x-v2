@@ -45,6 +45,7 @@ _log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _samples: deque = deque()          # (t_mono, doa_raw_deg, base_bearing_deg, speech, energy, moving)
 _last_moving_at: float = 0.0       # last poll that saw the base in motion (settle window anchor)
+_last_self_at: float = 0.0         # last poll that saw Rex playing sound (tail window anchor)
 _thread: Optional[threading.Thread] = None
 _stop = threading.Event()
 _dev = None
@@ -158,8 +159,32 @@ def _base_moving() -> bool:
     return st not in ("idle", "unknown", "")
 
 
+def _self_speaking() -> bool:
+    """True while Rex's own audio is playing (TTS, sound effects, wake ack): the
+    ring hears the speaker as a talker and the chip tags it as speech."""
+    try:
+        from audio import speech_queue
+        if speech_queue.is_speaking():
+            return True
+    except Exception:
+        pass
+    try:
+        from audio import output_gate
+        if output_gate.is_busy():
+            return True
+    except Exception:
+        pass
+    try:
+        from audio import echo_cancel
+        if echo_cancel.is_suppressed():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _poll_once() -> bool:
-    global _last_moving_at
+    global _last_moving_at, _last_self_at
     with _dev_lock:
         dev = _dev
     if dev is None:
@@ -187,6 +212,11 @@ def _poll_once() -> bool:
         _last_moving_at = now
     elif (now - _last_moving_at) < _num("FLEX_DOA_MOTION_SETTLE_SECS", 0.6):
         moving = True                      # still settling after a maneuver
+    if _self_speaking():
+        _last_self_at = now
+        moving = True                      # Rex's own voice: not a talker
+    elif (now - _last_self_at) < _num("FLEX_DOA_SELF_SPEECH_TAIL_SECS", 0.4):
+        moving = True                      # the room is still ringing with him
     keep = _num("FLEX_DOA_HISTORY_SECS", 20.0)
     with _lock:
         _samples.append((now, float(doa), bearing, bool(speech), energy, moving))

@@ -1870,7 +1870,12 @@ def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
     note_voice_bearing(bearing)
     if (now - float(_state.get("wake_orient_at") or 0.0)) < _num("WAKE_ORIENT_COOLDOWN_SECS", 3.0):
         return "cooldown"
-    if abs(bearing) < _num("WAKE_ORIENT_MIN_BEARING_DEG", 15.0):
+    # "Facing" means the CAMERA is on them, not the body: a voice 9° off the
+    # body's nose while the head is parked 45° the other way still deserves a
+    # glance (field 2026-09-02 22:23). Head axis in the base frame = −neck yaw.
+    neck_right = float(_come_neck_bearing_deg() or 0.0)
+    off_head = _wrap180(bearing + neck_right)
+    if abs(off_head) < _num("WAKE_ORIENT_MIN_BEARING_DEG", 15.0):
         return "facing"
     if _voice_lands_on_visible_face(bearing):
         return "on_camera"

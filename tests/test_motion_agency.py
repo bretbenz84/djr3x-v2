@@ -29,16 +29,21 @@ _WANDER_OFF = mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", False,
                                 create=True)
 _STARTUP_OFF = mock.patch.object(config, "MOTION_STARTUP_APPROACH_ENABLED", False,
                                  create=True)
+# Radar orient is OFF by default since 2026-09-02 (the voice bearing took its
+# job); the fixtures that exercise it opt in for the module.
+_ORIENT_ON = mock.patch.object(config, "MOTION_RADAR_ORIENT_ENABLED", True, create=True)
 
 
 def setUpModule():
     _WANDER_OFF.start()
     _STARTUP_OFF.start()
+    _ORIENT_ON.start()
 
 
 def tearDownModule():
     _WANDER_OFF.stop()
     _STARTUP_OFF.stop()
+    _ORIENT_ON.stop()
 
 
 def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=None,

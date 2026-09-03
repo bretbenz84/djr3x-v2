@@ -4200,7 +4200,7 @@ AUDIO_AEC_INPUT_CHANNEL = _env_int("AUDIO_AEC_INPUT_CHANNEL", -1, min_value=-1, 
 # off-camera speaker gaze search. Convention measured 2026-09-02 with the ring's
 # printed 0° edge forward: chip 0 = ahead, 90 = LEFT, 270 = RIGHT, 180 = behind.
 FLEX_DOA_ENABLED = _env_bool("FLEX_DOA_ENABLED", True)
-FLEX_DOA_POLL_HZ = 8.0                 # ~10 ms per read; keep modest next to the audio stream
+FLEX_DOA_POLL_HZ = 10.0                # ~20 ms per 2-register poll; a 0.6 s "hey Rex" is ~6 samples
 FLEX_DOA_MOUNT = os.getenv("FLEX_DOA_MOUNT", "base").strip().lower() or "base"  # "base" | "head"
 FLEX_DOA_SIGN = 1.0                    # +1: chip angle grows toward Rex's LEFT (measured)
 FLEX_DOA_FORWARD_OFFSET_DEG = 0.0      # chip reading for dead ahead (measured 359/0)
@@ -4216,6 +4216,11 @@ FLEX_DOA_RECONNECT_SECS = 30.0
 # motors are loud, and the wheel sound effect plays — a segment captured across
 # a turn read +105° with 11/11 "agreement" (field 2026-09-02 22:04:03).
 FLEX_DOA_MOTION_SETTLE_SECS = 0.6
+# Samples taken while REX is playing (TTS, sfx, the wake ack) are marked and
+# excluded too: the chip flags his own voice as speech from the speaker's
+# direction (~+9° on this build), and a 2.5 s wake window that overlaps his
+# "what?" ack reads the speaker, not the caller (field 2026-09-02 22:23).
+FLEX_DOA_SELF_SPEECH_TAIL_SECS = 0.4
 
 # ── Voice bearing ↔ face attribution (perception/voice_bearing_match.py) ─────
 # The voice's direction of arrival is a second camera-frame witness next to the
@@ -9653,7 +9658,11 @@ MOTION_COME_VOICE_MIN_SHARE = 0.4          # ignore a bearing whose dominant clu
 # a face appears), base turn only when the body is beyond the neck's reach. Runs
 # in the social lane, so it inherits the mid-sentence freeze, user hold/steering
 # stand-down, no-drive room rule, and idle-base requirement for free.
-MOTION_RADAR_ORIENT_ENABLED = True
+MOTION_RADAR_ORIENT_ENABLED = False   # OFF since 2026-09-02 22:23: it turned him +60° toward a radar
+                                      # return before anyone spoke, and in the 22:02 run spun him seven
+                                      # times toward dogs/ghosts, undoing the name-call reflex. The voice
+                                      # bearing now covers "somebody is calling from off camera"; the ring
+                                      # keeps its role inside the come-here search. Flip on to try again.
 MOTION_RADAR_ORIENT_WINDOW_SECS = 2.5      # fresh-frame sample the decision reads
 MOTION_RADAR_ORIENT_CONFIRM_TICKS = 3      # consecutive no-face ticks with a body
 MOTION_RADAR_ORIENT_MIN_CONFIDENCE = 0.30  # body confidence floor
@@ -9690,8 +9699,10 @@ WAKE_ORIENT_NECK_MAX_DEG = 40.0      # within the neck's reach = glance; beyond 
 WAKE_ORIENT_NECK_HOLD_SECS = 6.0     # directed-gaze hold after the glance (face tracking runs)
 WAKE_ORIENT_TURN_MAX_DEG = 180.0     # base turn cap — a call from behind is a real about-face
 WAKE_ORIENT_COOLDOWN_SECS = 3.0
-WAKE_ORIENT_MIN_SAMPLES = 6          # speech-flagged DoA samples the phrase must have (field
-                                     # 2026-09-02 22:04: a 4/7-sample bearing spun him −65° the wrong way)
+WAKE_ORIENT_MIN_SAMPLES = 4          # speech-flagged DoA samples the phrase must have. 6 refused
+                                     # every "hey Rex" on 2026-09-02 22:23 (a 0.6 s phrase is ~5-6 samples
+                                     # at 10 Hz); the −65° spin of 22:04 (4/7) is now caught by the
+                                     # self-speech / base-motion exclusions and the share floor instead.
 WAKE_ORIENT_BASE_WAIT_SECS = 2.5     # a base mid-maneuver (idle wander shuffle) is waited out, not skipped
 MOTION_RADAR_ORIENT_VISITED_DEG = 30.0
 

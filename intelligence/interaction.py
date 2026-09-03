@@ -1057,6 +1057,10 @@ def _start_wake_orient_reflex(model_name: str, current_state) -> Optional[thread
             )
             if res is None:
                 _log.info("[wake_orient] %s: no usable voice bearing over the phrase", model_name)
+                try:
+                    conv_log.log_wake(model_name, "no usable voice bearing")
+                except Exception:
+                    pass
                 return
             res["at"] = time.monotonic()
             _last_voice_bearing = res
@@ -1067,6 +1071,10 @@ def _start_wake_orient_reflex(model_name: str, current_state) -> Optional[thread
             )
             _log.info("[wake_orient] %s heard at %+.0f° (%d/%d samples agree) → %s",
                       model_name, res["bearing_deg"], res["cluster_n"], res["n"], outcome)
+            try:
+                conv_log.log_wake(model_name, f"heard at {res['bearing_deg']:+.0f}° ({res['cluster_n']}/{res['n']}) → {outcome}")
+            except Exception:
+                pass
         except Exception as exc:
             _log.debug("[wake_orient] reflex failed: %s", exc)
 

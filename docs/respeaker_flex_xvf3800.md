@@ -425,6 +425,26 @@ Also seen: the compass over-reads every turn by ~20 % (+60 → +74.5, −65 →
 voice↔face check worked in the field: `voice +33° vs faces Bret +28° (Δ4)`
 with the neck at −45°.
 
+### Second live run, 22:22 — every wake registered, every bearing "thin"
+
+Four `Hey_rex` fires, outcomes `thin` (4/6, 2/4, 4/4) and "no usable
+bearing". Two causes: a 0.6 s "hey Rex" is only ~5 samples at 8 Hz, and the
+2.5 s window overlapped Rex's own acks ("what?", "what's up?"), which the chip
+flags as speech from the SPEAKER's direction (~+9° on this build). Also: radar
+orient turned him +60° toward a return before anyone spoke; the camera (face
+locked, neck hard left) and the DoA (+9…+13°) then agreed the caller was
+~15° left of the body while the ring insisted on +80…+104° — the ring was
+tracking something else. And the transcript had no line for a wake hit, so
+the calls looked unlogged although every one was acked.
+
+Fixes: DoA samples during Rex's own playback (+0.4 s tail) are excluded like
+base-motion samples; poll rate 10 Hz; `WAKE_ORIENT_MIN_SAMPLES` 6 → 4;
+"facing" is judged against the HEAD axis (voice + neck yaw), so a caller 9°
+off the body while the head is parked elsewhere still gets a glance;
+`MOTION_RADAR_ORIENT_ENABLED = False` (the ring keeps its role inside
+come-here); the conversation log gets a `WAKE  | Hey rex — heard at ±N° (k/n)
+→ outcome` line per fire.
+
 ## Tuning levers (all `flex_ctl.py --write`, all reversible, none applied yet)
 
 - `AUDIO_MGR_MIC_GAIN` (10.0): pre-AEC capsule gain. Raise if ch1 speech is
