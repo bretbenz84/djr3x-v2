@@ -245,11 +245,15 @@ words the register falls back to another source in the room** (86° in two
 runs, 55° in another) — the fusion therefore takes the largest cluster of
 mutually-agreeing samples over the segment, not a median.
 
-**Open question: is the ring on the head or the body?** `FLEX_DOA_MOUNT`
-defaults to `base`. A head-mounted ring turns with the neck, so the poller
-subtracts the neck yaw sampled at each read when `FLEX_DOA_MOUNT=head`
-(the readback is registered by motion_agency). The static tests above cannot
-tell the two apart — the neck was centred.
+**Mount (owner, 2026-09-02): the ring sits on top of the torso**, on the
+section that carries the hero arm, so it is body-frame — `FLEX_DOA_MOUNT=base`
+(the default) is correct and the neck does not enter the conversion. The hero
+arm servo swings that section a little; at the servo's midpoint the ring's 0°
+is straight ahead, and the arm's travel is too small to throw off the opening
+bearing of a "come here" (owner's judgement). If a hero-arm pose ever shows up
+as a consistent DoA offset, `FLEX_DOA_FORWARD_OFFSET_DEG` is the knob, or a
+per-sample correction from the heroarm servo position would be the fix.
+`FLEX_DOA_MOUNT=head` stays available for a ring that turns with the neck.
 
 **Pipeline** (`hardware/flex_doa.py` → `interaction._note_voice_bearing` →
 `motion_agency.request_come_here(voice_bearing_deg=…)` /
