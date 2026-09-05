@@ -265,8 +265,10 @@ class LadderPriorityTests(_CueTestCase):
         # _winning_kind drives the drop-cooldown bookkeeping; a cue missing from that
         # tuple silently can't be benched when its line gets dropped.
         import inspect
-        src = inspect.getsource(I._maybe_lean_impulse)
-        self.assertIn('("mood_share", mood_share)', src)
+        # Phase 3: the ladder became _collect_lean_cue_candidates (spec table) and
+        # the spend site binds the chosen kind by string in _maybe_lean_impulse.
+        self.assertIn('("mood_share",', inspect.getsource(I._collect_lean_cue_candidates))
+        self.assertIn('chosen == "mood_share"', inspect.getsource(I._maybe_lean_impulse))
 
 
 class GreetingAsideTests(_CueTestCase):

@@ -57,7 +57,9 @@ against clean HEAD the same day:
 - `tests/test_lean_memory_musing.py` — `test_spoken_musing_sets_once_per_session_flag`
   (was FIXED 2026-08-27 by the never-met recall floor in
   `memory/episodic_recall.py`; BACK as of 2026-08-30, verified against clean HEAD
-  that day — something between those dates re-broke the flag, or it is date-rot)
+  that day — something between those dates re-broke the flag, or it is date-rot;
+  PASSING again as of 2026-09-04 after the phase-3 impulse menu — the module is
+  fully green, so treat a failure here as new)
 - `tests/test_proactive_discipline.py` — `test_idle_monologue_is_excluded_from_the_cooldown`
 - `tests/test_pose_face_guard.py` — `test_no_pose_anchor_keeps_all`
 - `tests/test_rfdetr_backend.py` — `test_object_records_apply_exclusions`
@@ -75,6 +77,21 @@ Two more appeared between then and 2026-08-20 (the tree is 284 modules now, not
   `test_caps_the_spoken_length`)
 - `tests/test_review_regressions.py` —
   `test_router_keeps_known_named_person_topic_as_memory_query`
+
+Three more surfaced in the 2026-09-05 sweep (300 modules, 466 s, servo/audio-device
+modules skipped) and were verified pre-existing that day by swapping the 16 changed
+source files back to 333106b and re-running — they fail identically there:
+
+- `tests/test_tts_network_resilience.py` — 2 failures in `NoSecondTimeoutTests`
+  (`test_speak_goes_local_instead_of_paying_a_second_timeout`,
+  `test_falls_through_to_the_api_when_the_local_voice_is_missing`; speak() never
+  reaches `_speak_streaming` on this machine — likely environmental)
+- `tests/test_conversation_revamp.py` — `test_one_word_passion_answer_drives_engaged_curiosity`
+  (slim contract lacks "ENGAGE-FIRST")
+- `tests/test_field_2026_08_03.py` — `test_stored_bookkeeping_threads_filtered_at_read`
+  (the camping-trip thread is filtered too — suspect date-rot in open_threads)
+
+`test_lean_memory_musing` is OFF the list (green since the phase-3 impulse menu).
 
 **A full sweep should now come back with exactly these 12 modules and nothing
 else** (sweep of all 300 modules, 2026-08-30, 448s — `test_lean_memory_musing`
@@ -99,6 +116,18 @@ timeout (macOS has no `timeout(1)`), skipping `test_local_tts`. Budget ~12 minut
 first** (`git stash -u && venv/bin/python -m unittest tests.<module> && git
 stash pop`). If it fails there too, it is pre-existing — note it, move on, and
 do not spend time on it unless the user asks.
+
+### Lean Brain restructuring state (2026-09-04/05)
+
+`docs/lean_brain_restructuring_plan.md` phases 0–5 shipped as flagged/shadow slices
+(see CONTEXT.md "Conversation Voice"). Session-scoped state now also lives in
+`intelligence/conversation_state.py` (corrections, body-action results, speaker
+resolution) — it clears with `topic_thread.clear()`, and a test that records into it
+should call `conversation_state.clear()` in setUp/cleanup. `audio/speech_queue.py`
+has a process-wide speech generation counter; tests that assert on `_speak_blocking`
+call args must accept `generation=mock.ANY`. `add_to_transcript` entries carry
+`turn_id`, `ts`, `uncertain` — never compare an entry against a literal dict.
+Physical flags still OFF pending floor tests: `MOTION_HEADING_ALTERNATIVES_ENABLED`.
 
 ### Date-rot
 

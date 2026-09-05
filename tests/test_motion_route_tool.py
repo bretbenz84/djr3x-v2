@@ -643,7 +643,7 @@ class SequencePaceTest(unittest.TestCase):
     def test_paced_steps_use_the_signed_primitives_with_rate_and_speed(self):
         calls = {}
         with mock.patch.object(motion_sequence.motion_controller, "turn",
-                               side_effect=lambda d, rate=None: calls.setdefault(
+                               side_effect=lambda d, rate=None, **kw: calls.setdefault(
                                    "turn", (d, rate)) or 1) as _t, \
                 mock.patch.object(motion_sequence.motion_controller, "move",
                                   side_effect=lambda d, speed=None: calls.setdefault(

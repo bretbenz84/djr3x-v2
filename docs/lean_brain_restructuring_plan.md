@@ -1,6 +1,9 @@
 # Lean Brain restructuring plan
 
-Code review: 2026-09-04. Status: proposal; no runtime changes made.
+Code review: 2026-09-04. Status (2026-09-05): IMPLEMENTED in shadow/flagged
+slices through phases 0–5 — see the "Status" paragraphs under each phase and
+CONTEXT.md "Conversation Voice". Owner's direction: behavior over measurement;
+live validation on the robot is the next step (no session has run this code yet).
 
 Sources: README.md, CONTEXT.md, CLAUDE.md, and the implementation seams cited
 below. CLAUDE.md adds important test-isolation and real-hardware constraints;
