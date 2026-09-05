@@ -444,6 +444,8 @@ _current_turn_anonymous: Optional[dict] = None
 # raw_best_* are not in scope — without this the handler always took its
 # "nothing matched" branch. {raw_best_id, raw_best_name, raw_best_score}.
 _current_turn_speaker_evidence: Optional[dict] = None
+# Phase 2B third decision: whom this turn's line was aimed at (intelligence/addressee.py).
+_current_turn_addressee = None
 
 # Monotonic deadline before which VAD speech-onset detections are discarded.
 # Set at the end of each TTS utterance; prevents Rex's own voice tail from
@@ -14454,6 +14456,66 @@ def _resolve_turn_attribution(
     return _attr.resolve(ev)
 
 
+def _assess_turn_addressee(text: str, *, person_id: Optional[int], text_input: bool,
+                           recent_engagement: Optional[dict]):
+    """Build the addressee hint for this turn (see intelligence/addressee.py)."""
+    from intelligence import addressee as _addr
+    if text_input:
+        return _addr.AddresseeHint("to_rex", ["typed input"])
+    humans: set[str] = set()
+    try:
+        rows = conv_memory.get_session_transcript() or []
+        for r in rows[-12:]:
+            sp = str(r.get("speaker") or "").strip()
+            if sp and sp.lower() not in conv_memory._REX_SPEAKERS and sp.lower() != "user":
+                humans.add(sp)
+    except Exception:
+        pass
+    # Count the current speaker too, whether or not they have a transcript line yet.
+    if person_id is not None:
+        try:
+            from memory import people
+            nm = str((people.get_person(int(person_id)) or {}).get("name") or "").strip()
+            if nm:
+                humans.add(nm)
+        except Exception:
+            pass
+    else:
+        humans.add("<unknown>")
+    newest = None
+    try:
+        frames = list(getattr(dialogue_act, "_frames", []) or [])
+        if frames and frames[-1].active():
+            newest = frames[-1]
+    except Exception:
+        newest = None
+    target_pid = getattr(newest, "target_person_id", None) if newest else None
+    target_name = getattr(newest, "target_name", None) if newest else None
+    if target_pid is not None and not target_name:
+        try:
+            from memory import people
+            nm = str((people.get_person(int(target_pid)) or {}).get("name") or "")
+            target_name = nm.split()[0] if nm else None
+        except Exception:
+            target_name = None
+    try:
+        command_parsed = command_parser.parse(text) is not None
+    except Exception:
+        command_parsed = False
+    return _addr.assess(
+        text,
+        speaker_pid=_safe_int(person_id),
+        speaker_known=person_id is not None,
+        speaker_uncertain=_turn_speaker_uncertain(),
+        humans_in_window=len(humans),
+        engaged_pid=_safe_int((recent_engagement or {}).get("person_id")) if recent_engagement else None,
+        last_frame_target_pid=_safe_int(target_pid),
+        last_frame_target_name=target_name,
+        last_frame_is_question=bool(newest and "?" in (newest.text or "")),
+        command_parsed=command_parsed,
+    )
+
+
 def _turn_speaker_uncertain() -> bool:
     """True when this turn's attribution resolver said 'ambiguous' (phase 2B)."""
     try:
@@ -16119,6 +16181,22 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
     # object-scoped/negated/hypothetical phrasings — but unlike the
     # deterministic path it ACCEPTS polite requests ("Can you shut down,
     # please?"), which is exactly the phrasing class this live tool exists for.
+    if action == "conversation.stay_quiet":
+        # The model judged the line was the humans talking to each other and
+        # nothing was worth adding (intelligence/addressee.py). Say nothing; the
+        # heard line is already in the transcript, so the conversation state
+        # still follows it. An empty reply means no Rex turn is recorded.
+        _log.info("[addressee] stayed quiet — side conversation: %r", text)
+        try:
+            from intelligence import decision_ledger as _ledger
+            _ledger.record("stayed_quiet",
+                           "that sounded like them talking to each other, not to me, so I kept listening",
+                           detail={"text": str(text)[:120]})
+        except Exception:
+            pass
+        _tool_routed_path.append(f"tool_router.{action}")
+        return ""
+
     if action == "web.search":
         # The LLM judged this turn needs live data (field 2026-08-01: "What's
         # going on with the Iran War?" fell to conversation and Rex refused
@@ -17334,6 +17412,7 @@ def _reply_token_stream(
                 world=_lean_world(),
                 turn_directive=lean_turn_directive or None,
                 speaker_uncertain=_turn_speaker_uncertain(),
+                addressee=_current_turn_addressee,
             )
         except Exception as exc:
             _log.error("[lean] live reply init failed, using classic path: %s", exc)
@@ -28348,6 +28427,20 @@ def _handle_speech_segment(
                           "name, no learning this turn", _res.basis, "; ".join(_res.conflicts))
         except Exception as exc:
             _log.debug("[attribution] resolver skipped: %s", exc)
+        # Whom was this said TO? (intelligence/addressee.py). A cheap hint now; the
+        # Lean call decides with the stay-quiet tool when the hint leaves it open.
+        global _current_turn_addressee
+        _current_turn_addressee = None
+        try:
+            _current_turn_addressee = _assess_turn_addressee(
+                text, person_id=person_id, text_input=bool(text_input),
+                recent_engagement=recent_engagement,
+            )
+            if _current_turn_addressee is not None and _current_turn_addressee.offer_stay_quiet:
+                _log.info("[addressee] %s — %s", _current_turn_addressee.status,
+                          "; ".join(_current_turn_addressee.reasons))
+        except Exception as exc:
+            _log.debug("[addressee] hint skipped: %s", exc)
         short_clip = (
             bool(getattr(config, "SHORT_CLIP_CONTINUITY_ENABLED", True))
             and transcribed_text is None

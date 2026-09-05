@@ -221,6 +221,11 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
         "live camera frame including objects in someone's hand, so call it rather "
         "than saying you cannot tell.", {}, []),
     "vision.snapshot": ("An explicit request to take a picture.", {}, []),
+    # Offered ONLY when interaction's addressee hint says the line may not have
+    # been aimed at Rex (intelligence/addressee.py) — never in a one-on-one room.
+    "conversation.stay_quiet": (
+        "The last line was side conversation between the humans, not addressed to "
+        "Rex, and nothing is worth adding — stay quiet and keep listening.", {}, []),
     "time.query": ("Asking the current clock time.", {}, []),
     "date.query": ("Asking today's date/day (NOT holiday explanations).", {}, []),
     "weather.query": (
@@ -445,6 +450,9 @@ _DEFAULT_LIVE_ACTIONS = (
     "performance.dj_bit", "performance.body_beat", "performance.mood_pose",
     "performance.impersonate",
     "memory.forget_specific", "memory.recent_discard", "emotional.boundary",
+    # conversation.stay_quiet (2026-09-05): live, but OPTIONAL — attached to the
+    # reply call only when the addressee hint asks for it (see live_reply_tools).
+    "conversation.stay_quiet",
     # Phase 2 games (2026-08-13): game.start is the win — command_parser was
     # the only thing that ever started a game and it is blind to "quiz me",
     # "game time", "fire up trivia", "deal me in". game.stop is live for the
@@ -513,15 +521,25 @@ def tool_schema_for(action: str) -> "dict | None":
     return None
 
 
-def live_reply_tools() -> "list[dict] | None":
+# Live tools that are attached to a reply call only when the caller asks for
+# them (situational, not every turn). conversation.stay_quiet must never be on
+# offer in a one-on-one conversation — see intelligence/addressee.py.
+_OPTIONAL_LIVE = frozenset({"conversation.stay_quiet"})
+
+
+def live_reply_tools(optional: "set[str] | None" = None) -> "list[dict] | None":
     """Tool schemas for the LIVE subset only, or None when cutover is off.
     Attached to the lean reply call — routing rides the call that already
-    happens, so a live tool costs zero extra LLM round-trips."""
+    happens, so a live tool costs zero extra LLM round-trips. Tools in
+    _OPTIONAL_LIVE are included only when named in `optional`."""
     live = live_actions()
     if not live:
         return None
+    wanted = set(optional or ())
     tools = [t for t in tool_schemas()
-             if _NAME_TO_KEY.get(t["function"]["name"]) in live]
+             if (_NAME_TO_KEY.get(t["function"]["name"]) in live
+                 and (_NAME_TO_KEY.get(t["function"]["name"]) not in _OPTIONAL_LIVE
+                      or _NAME_TO_KEY.get(t["function"]["name"]) in wanted))]
     return tools or None
 
 

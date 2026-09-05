@@ -58,6 +58,12 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "conversation.stay_quiet",
+        "conversation",
+        "The line was humans talking to EACH OTHER, not to Rex, and nothing is worth adding — keep listening silently.",
+        executable=True,
+    ),
+    ActionSpec(
         "memory.query",
         "memory",
         "User asks what Rex remembers or knows about a person, relationship, or themselves. Not for general topic knowledge.",

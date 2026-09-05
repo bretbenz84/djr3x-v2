@@ -709,6 +709,7 @@ def _messages(
     label_current_speaker: bool = True,
     turn_directive: Optional[str] = None,
     speaker_uncertain: bool = False,
+    addressee_note: Optional[str] = None,
 ) -> list[dict]:
     """System = persona + small context. History = the recent turns as REAL user/assistant
     messages (not a text blob shoved in the system prompt — leaner and more natural for the
@@ -778,6 +779,10 @@ def _messages(
         # Keep it in system context rather than disguising it as something the
         # human said. Ordinary Lean replies still carry no agenda/menu stack.
         extra_lines = (extra_lines or []) + [turn_directive.strip()]
+    if addressee_note and addressee_note.strip():
+        # Phase 2B third decision (intelligence/addressee.py): the line may not
+        # have been aimed at Rex; the stay-quiet tool rides this same call.
+        extra_lines = (extra_lines or []) + [addressee_note.strip()]
 
     msgs: list[dict] = [
         {
@@ -842,6 +847,7 @@ def stream_reply(
     world: Optional[dict] = None,
     turn_directive: Optional[str] = None,
     speaker_uncertain: bool = False,
+    addressee=None,
 ) -> Generator[str, None, None]:
     """Stream raw reply chunks from the one lean call. Reuses the shared OpenAI client +
     llm_compat param contract (so gpt-5.4-mini gets reasoning-off / max_completion_tokens).
@@ -853,9 +859,17 @@ def stream_reply(
     # Lean Brain phase 0: the context assembly cost (the plan's <50 ms p95
     # target) and its size, measured where they actually happen.
     _turn_trace.stamp("context_build_start")
+    _addr_note = ""
+    _addr_offer = False
+    try:
+        if addressee is not None and getattr(addressee, "offer_stay_quiet", False):
+            _addr_note = str(addressee.prompt_line() or "")
+            _addr_offer = bool(_addr_note)
+    except Exception:
+        _addr_note, _addr_offer = "", False
     messages = _messages(
         user_text, person_id, transcript, world, turn_directive=turn_directive,
-        speaker_uncertain=speaker_uncertain,
+        speaker_uncertain=speaker_uncertain, addressee_note=_addr_note or None,
     )
     _turn_trace.stamp("context_built")
     _turn_trace.set_value(
@@ -882,7 +896,8 @@ def stream_reply(
     tool_extra = None
     try:
         from intelligence import tool_router
-        live_tools = tool_router.live_reply_tools()
+        live_tools = tool_router.live_reply_tools(
+            optional={"conversation.stay_quiet"} if _addr_offer else None)
         if live_tools:
             tool_extra = {"tools": live_tools, "tool_choice": "auto"}
     except Exception as exc:

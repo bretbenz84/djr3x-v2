@@ -242,6 +242,19 @@ def classify(
     context = context or {}
     pending = context.get("pending") or {}
     frame = active_frame(person_id=person_id)
+    # Rex's NEWEST frame aimed at a specific person, when the current speaker is
+    # someone else (or unknown): that question is not this speaker's to answer.
+    # Without this the lookup fell back to an older, untargeted frame and bound a
+    # third party's question as "the answer to Rex" (field 2026-09-05 00:41: Rex
+    # asked Bret which room this is; JT asked Bret about the movies; Rex answered
+    # JT's question as his own). The frame stays open for its real target.
+    newest = active_frame(person_id=None) if not _frames else (
+        _frames[-1] if _frames[-1].active() else None)
+    targeted_elsewhere = (
+        newest is not None
+        and newest.target_person_id is not None
+        and not newest.for_person(person_id)
+    )
     direct_kind = _direct_control_kind(cleaned, frame)
 
     if pending.get("identity_prompt_active") or pending.get("prompted_name_confirmation"):
@@ -264,6 +277,11 @@ def classify(
         return _answer_decision(frame, "reply to pending question", confidence=0.93)
 
     if frame is not None and _looks_like_contextual_reply(cleaned, frame):
+        if targeted_elsewhere and frame is not newest:
+            return DialogueActDecision(
+                "general_chat", 0.6,
+                "Rex's last question was aimed at someone else; not binding this speaker",
+            )
         return _answer_decision(frame, "reply to last Rex turn", confidence=0.90)
 
     return DialogueActDecision("general_chat", 0.55, "no active reply frame claimed turn")

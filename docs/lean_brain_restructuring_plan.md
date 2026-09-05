@@ -268,6 +268,10 @@ First concrete slice: utterance IDs on bearing/visual evidence and no reuse of t
 previous person's DoA when a current read fails. (Shipped 2026-09-04: `_note_voice_bearing`
 clears the stored bearing on a failed read and stamps `utterance_t0`.)
 
+Status 2026-09-05 (later) — the THIRD decision (whom they addressed) shipped:
+`intelligence/addressee.py` hint + optional `conversation.stay_quiet` live tool on the
+reply call + the dialogue-act targeted-frame fix. See CONTEXT.md "Whom was that said to?".
+
 Status 2026-09-05 — shipped in shadow: `intelligence/attribution.py`
 (`UtteranceEvidence`, `resolve()` → known/unknown/ambiguous + conflicts), wired at the
 end of the ladder; ambiguous turns reach Lean as no-name instructions, mark the

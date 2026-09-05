@@ -6058,7 +6058,17 @@ TOOL_ROUTER_LIVE_ACTIONS = (
     # back until live decoy numbers land. The RESCUE path (the tri-state None arm) does
     # not go through this set at all and is governed by MOTION_ROUTE_ENABLED.
     "motion.route",
+    # conversation.stay_quiet (2026-09-05): the addressee decision. Attached to
+    # the reply call ONLY when intelligence/addressee.py says the line may not
+    # have been aimed at Rex (two humans talking, an unknown voice while a known
+    # person is engaged, a question from someone other than the person Rex just
+    # asked). Never offered one-on-one. Field 2026-09-05 00:41: JT asked Bret
+    # "are you gonna watch both movies?" and Rex answered it as his own question.
+    "conversation.stay_quiet",
 )
+# Master switch for the addressee hint + stay-quiet tool. False = the old
+# behavior (every line is treated as addressed to Rex).
+ADDRESSEE_JUDGMENT_ENABLED = _env_bool("ADDRESSEE_JUDGMENT_ENABLED", True)
 
 # Seconds the "say yes, remember this scene" confirmation slot stays open.
 SCENE_SNAPSHOT_CONFIRM_TIMEOUT_SECS = 30.0

@@ -396,6 +396,25 @@ and sets `suppress_memory_learning` for the turn. The verdict is also in the
 now separate, as the plan asks; the resolver extraction (making it authoritative) is
 still owed and needs live labeled sessions.
 
+**Whom was that said to? (2B third decision, 2026-09-05.)** Field 00:41 that night: Rex
+asked Bret "Which room is this?", JT (no voice ID on that DB) asked Bret "Are you gonna
+watch both movies?", the dialogue act bound JT's line as the answer to Rex's question and
+Rex answered it as his own. Two fixes. `intelligence/addressee.py` gives every audio turn
+a cheap deterministic hint — to_rex / uncertain / likely_side — from: a name mention or a
+parsed command (to Rex), a one-on-one room (to Rex, always), two humans in the recent
+transcript window, an unknown voice while a known person is engaged, an ambiguous
+speaker verdict, and a question from someone OTHER than the person Rex's newest frame
+targeted (likely_side). When the hint is not to_rex, the Lean reply call gets one
+`ADDRESSEE CHECK` line and one extra live tool, `conversation.stay_quiet` (optional in
+`tool_router.live_reply_tools(optional=...)`, never attached one-on-one): the model
+stays quiet, chimes in with a short aside that shows it is jumping in, or just answers.
+The executor returns "" (no Rex turn recorded, the heard line stays in the transcript,
+`[decision_ledger] stayed_quiet`). `dialogue_act.classify` no longer falls back to an
+older untargeted frame when Rex's newest frame targeted someone else than the speaker,
+so the agenda stops claiming "they just answered your question". Master switch
+`ADDRESSEE_JUDGMENT_ENABLED`. Log: `[addressee] likely_side — …`. Tests:
+`tests/test_addressee.py`.
+
 Kill switch `LEAN_CONTEXT_STATE_ENABLED`. Phase 1 pieces in the same batch:
 `SURPRISE_STREAM_JOIN_SECS` is 0 (never wait for the surprise classifier before the
 first word), the plan-intent local qwen confirm is skipped under Lean (its directive
