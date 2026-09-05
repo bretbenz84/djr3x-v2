@@ -183,6 +183,8 @@ def generate(
     if system:
         payload["system"] = system
 
+    from utils import turn_trace as _tt
+    _tt.count("local.generate")
     resp = requests.post(
         f"{_base_url()}/api/generate",
         json=payload,
@@ -229,6 +231,8 @@ def stream_chat(
     if _is_thinking_model(use_model):
         payload["think"] = False
     import json as _json
+    from utils import turn_trace as _tt
+    _tt.count("local.chat")
     with requests.post(
         f"{_base_url()}/api/chat", json=payload, stream=True,
         timeout=max(1.0, float(timeout_secs)),

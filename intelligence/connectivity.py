@@ -205,13 +205,49 @@ class OfflineError(RuntimeError):
     30s timeout x retries per background call."""
 
 
+def _count_client(client, label: str):
+    """Count every request the client makes (utils.turn_trace), per turn and in
+    the process totals, keyed "hosted.<label>" for chat completions and
+    "hosted.<label>.responses" for the Responses API. Lean Brain phase 0: the
+    per-turn call inventory has to include EVERY hosted request, and every
+    module's client passes through guard_client, so this is the one chokepoint.
+    Applied regardless of the offline-mode flag. Skips any attribute the client
+    (or a test double) does not have."""
+    from utils import turn_trace as _tt
+    for path, suffix in ((("chat", "completions"), ""), (("responses",), ".responses")):
+        try:
+            target = client
+            for part in path:
+                target = getattr(target, part)
+            real = target.create
+        except Exception:
+            continue
+        kind = f"hosted.{label}{suffix}"
+
+        def _counted(*args, _real=real, _kind=kind, **kwargs):
+            _tt.count(_kind)
+            return _real(*args, **kwargs)
+
+        try:
+            target.create = _counted
+        except Exception as exc:
+            _log.debug("[connectivity] count wrapper for %s skipped: %s", kind, exc)
+    return client
+
+
 def guard_client(client, label: str = "openai"):
     """Wrap an OpenAI client's chat.completions.create so that:
       * while OFFLINE it raises OfflineError immediately (no timeout burned);
       * any transport failure reports note_failure(label) — automatic outage
-        detection from every call site, no per-caller wiring.
+        detection from every call site, no per-caller wiring;
+      * every request is counted for the turn telemetry (_count_client — this
+        part is applied even when offline mode is disabled).
     Returns the same client (instance-attribute shadowing). Inert when the
     feature is disabled or the client shape is unexpected."""
+    try:
+        client = _count_client(client, label)
+    except Exception as exc:
+        _log.debug("[connectivity] call counting for %s skipped: %s", label, exc)
     if not _enabled():
         return client
     try:

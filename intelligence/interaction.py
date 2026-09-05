@@ -91,6 +91,7 @@ from awareness import address_mode
 from awareness.situation import assessor as _situation_assessor
 from world_state import world_state
 from utils import conv_log, phrase_cycler
+from utils import turn_trace as _turn_trace
 from utils.audio_tags import strip_audio_tags
 
 _log = logging.getLogger(__name__)
@@ -174,6 +175,9 @@ class _CharacterLoopTrace:
     first_response_audio_started_at: Optional[float] = None
     first_response_priority: Optional[int] = None
     first_response_preview: Optional[str] = None
+    # Stage stamps + model-call counts for this turn (utils.turn_trace); folded
+    # into the [character_loop] line as "stages" / "calls" / "context".
+    turn_trace: Optional[Any] = None
     emitted: bool = False
 
 
@@ -651,6 +655,8 @@ def _mark_first_response_queued(
         trace.first_response_queued_at = queued_at if queued_at is not None else time.monotonic()
         trace.first_response_priority = int(priority)
         trace.first_response_preview = _preview_trace_text(text)
+    if trace.turn_trace is not None:
+        trace.turn_trace.stamp("first_response_queued", trace.first_response_queued_at)
     _log_ttfs_event(trace, "first_response_queued")
     return True
 
@@ -668,6 +674,8 @@ def _mark_first_response_audio_started(
         trace.first_response_audio_started_at = (
             started_at if started_at is not None else time.monotonic()
         )
+    if trace.turn_trace is not None:
+        trace.turn_trace.stamp("audio_started", trace.first_response_audio_started_at)
     _log_ttfs_event(trace, "first_response_audio_started")
     return True
 
@@ -1001,6 +1009,7 @@ def _on_wake_word(model_name: str) -> None:
             _last_wake_word = model_name
         try:
             _interrupted.set()  # cut off any in-progress speech immediately
+            _turn_trace.cancel("shutdown_wake_word")
         except Exception:
             pass
         state_module.set_state(State.SHUTDOWN)
@@ -1029,6 +1038,7 @@ def _on_wake_word(model_name: str) -> None:
             )
         else:
             _interrupted.set()
+            _turn_trace.cancel("wake_word_barge")
 
     _wake_word_fired.set()
 
@@ -2981,6 +2991,14 @@ def _log_character_loop_trace(
         },
         "timing": _ttfs_timing_payload(trace),
     }
+    if trace.turn_trace is not None:
+        # Stage offsets are ms from the segment handler's entry (turn_start),
+        # the same origin the "timing" block uses.
+        snap = trace.turn_trace.snapshot(trace.turn_start)
+        payload["stages"] = snap["stages"]
+        payload["calls"] = snap["calls"]
+        payload["context"] = snap["values"]
+        payload["cancel_reason"] = snap["cancel_reason"]
     trace.emitted = True
     _log.info("[character_loop] %s", json.dumps(payload, sort_keys=True))
 
@@ -14545,13 +14563,18 @@ def _process_audio(
 
     def _transcribe() -> None:
         if pretranscribed is not None:
+            _turn_trace.stamp("asr_pretranscribed")
             text_box[0] = pretranscribed
         else:
+            _turn_trace.stamp("asr_start")
             text_box[0] = transcription.transcribe(audio_array)
+            _turn_trace.stamp("asr_done")
 
     def _identify() -> None:
         global _last_scan_ranked
+        _turn_trace.stamp("speaker_id_start")
         ranked = speaker_id.rank_speakers(audio_array)
+        _turn_trace.stamp("speaker_id_done")
         _last_scan_ranked = list(ranked or [])
         if not ranked:
             return
@@ -17348,6 +17371,7 @@ def _stream_and_speak_sentences(
     streaming disabled) while chunk 2 synthesizes during chunk 1's playback.
     """
     trace = _current_character_loop_trace.get()
+    tt = _turn_trace.current()
     priority = 1
     min_chars = int(getattr(config, "LLM_STREAMING_MIN_SENTENCE_CHARS", 12) or 1)
     prefetch_enabled = bool(getattr(config, "LLM_STREAMING_PREFETCH_ENABLED", True))
@@ -17431,6 +17455,7 @@ def _stream_and_speak_sentences(
         if state["first"] and gap_check_enabled:
             gap_onset = _reply_gap_speech_onset()
             if gap_onset is not None:
+                _turn_trace.stamp("gap_speech")
                 raise _GapSpeechDetected(gap_onset, _gap_watch_started_at)
         prepared = _prepare_stream_sentence(raw_sentence, frame, comedy_mode)
         if not prepared:
@@ -17470,6 +17495,7 @@ def _stream_and_speak_sentences(
 
         pre_beat_ms = empathy_pre_beat_ms
         on_start = None
+        on_synth_start = None
         # Request stitching: hand this sentence the reply's already-spoken text so v3 continues one
         # performance across the per-sentence API calls (empty for the first sentence). Captured as a
         # string now so the background prefetch thread and the live enqueue below key identically.
@@ -17497,6 +17523,9 @@ def _stream_and_speak_sentences(
                     except Exception as exc:
                         _log.debug("[interaction] surprise beat skipped: %s", exc)
             _start_self_emotion_classify(prepared)
+            if tt is not None:
+                tt.stamp("first_sentence")
+                on_synth_start = lambda: tt.stamp("tts_request")
             _mark_first_response_queued(trace, text=prepared, priority=priority)
             if trace is not None:
                 on_start = lambda: _mark_first_response_audio_started(trace)
@@ -17517,6 +17546,7 @@ def _stream_and_speak_sentences(
             post_beat_ms=0,
             voice_settings=sentence_voice,
             on_start=on_start,
+            on_synth_start=on_synth_start,
             log_text=False,  # the whole turn is logged once below
             # One v3 audio tag per reply, on the FIRST sentence only (from the comedy stance +
             # emotion); later sentences suppress it so [sarcastic] doesn't repeat every sentence.
@@ -26954,6 +26984,14 @@ def _handle_speech_segment(
     # transcription; that made the logs look like user speech was captured
     # while playback suppression was active and encouraged premature filler.
     sequence_started = False
+    # Lean Brain phase 0: one stage/call ledger per turn, begun right before the
+    # try whose finally ends it (an early return above must not leak a trace into
+    # the loop thread's context) and BEFORE ASR, so the transcription + speaker-ID
+    # threads (and the surprise classifier later) are attributed to it.
+    _tt, _tt_token = _turn_trace.begin(started_at=turn_start)
+    _tt.set_value("text_input", bool(text_input))
+    _tt.set_value("endpoint_silence_secs",
+                  float(getattr(config, "SILENCE_TIMEOUT_SECS", 0.0) or 0.0))
     try:
         # Concurrent transcription + speaker identification, unless the GUI
         # supplied text directly.
@@ -27048,6 +27086,9 @@ def _handle_speech_segment(
             speaker_score=speaker_score,
         )
         character_trace.transcript_ready_at = transcript_ready_at
+        character_trace.turn_trace = _tt
+        _tt.turn_id = character_trace.turn_id
+        _tt.stamp("transcript_ready", transcript_ready_at)
         trace_context_token = _current_character_loop_trace.set(character_trace)
 
         heard_log_text = text
@@ -31760,8 +31801,11 @@ def _handle_speech_segment(
                 intent=intent,
             )
         finally:
-            if trace_context_token is not None:
-                _current_character_loop_trace.reset(trace_context_token)
+            try:
+                if trace_context_token is not None:
+                    _current_character_loop_trace.reset(trace_context_token)
+            finally:
+                _turn_trace.end(_tt_token)
 
 
 def submit_text(
@@ -32233,6 +32277,7 @@ def _loop() -> None:
             if _is_interruptible_game_audio_path(direct_audio_path):
                 game_barge_onset = speech_start
                 _interrupted.set()
+                _turn_trace.cancel("game_barge")
                 try:
                     import sounddevice as sd
                     echo_cancel.request_cancel()
@@ -32282,6 +32327,7 @@ def _loop() -> None:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
             _interrupted.set()
+            _turn_trace.cancel("vad_barge")
             try:
                 import sounddevice as sd
                 echo_cancel.request_cancel()

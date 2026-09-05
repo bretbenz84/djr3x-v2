@@ -1666,11 +1666,17 @@ def stream_response(
             return
     except ImportError:
         pass
+    from utils import turn_trace as _tt
+    _tt.stamp("context_build_start")
     system_prompt = assemble_system_prompt(person_id, agenda_directive=agenda_directive)
+    _tt.stamp("context_built")
+    _tt.set_value("context_chars", len(system_prompt or "") + len(user_text or ""))
     try:
         # Routed through llm_compat so a GPT-5-class conversation model gets the right
         # param contract (max_completion_tokens, reasoning_effort, temperature handling).
         # Behavior-neutral while LLM_CONVERSATION_MODEL is gpt-4o-mini. See docs.
+        _tt.stamp("model_request")
+        _tt.count("purpose.classic_reply")
         stream = llm_compat.create(
             _client,
             model=llm_compat.conversation_model(),
@@ -1689,6 +1695,7 @@ def stream_response(
         for chunk in stream:
             delta = chunk.choices[0].delta
             if delta.content:
+                _tt.stamp("model_first_token")
                 yield delta.content
     except Exception as exc:
         _log.error("stream_response failed (%s): %s", type(exc).__name__, exc)
@@ -1727,6 +1734,8 @@ def classify_surprise(text: str) -> bool:
         f'Utterance: "{text}"'
     )
     try:
+        from utils import turn_trace as _tt
+        _tt.count("purpose.surprise")
         resp = _client.chat.completions.create(
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
@@ -1770,6 +1779,8 @@ def classify_self_emotion(text: str) -> str:
     try:
         from intelligence import local_llm
         if local_llm.enabled():
+            from utils import turn_trace as _tt
+            _tt.count("purpose.self_emotion")
             raw = local_llm.generate(
                 f'Line: "{cleaned}"\nOne word:',
                 system=_SELF_EMOTION_SYS,
@@ -1878,6 +1889,8 @@ def summarize_conversation_arc(
     caller can retain the previous summary. Non-streaming, low temperature.
     """
     model = getattr(config, "CONVERSATION_ARC_OPENAI_MODEL", None) or config.LLM_MODEL
+    from utils import turn_trace as _tt
+    _tt.count("purpose.arc")
     resp = _client.chat.completions.create(
         model=model,
         messages=[

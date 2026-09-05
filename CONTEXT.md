@@ -418,6 +418,40 @@ Key logs:
 - `[character_loop]`: full per-turn summary: speaker, interpretation, execution, output, memory suppression, timing.
 - `[action_router_audit]`: final action routing result.
 
+**Per-turn stage ledger (Lean Brain phase 0, 2026-09-04).** `utils/turn_trace.py`
+gives every turn one ledger of stage stamps and model-call counts, begun in
+`_handle_speech_segment` BEFORE ASR and folded into the `[character_loop]` line as
+three extra blocks, all offsets in ms from the segment handler's entry:
+
+- `stages`: `asr_start`/`asr_done` (or `asr_pretranscribed`), `speaker_id_start`/
+  `speaker_id_done`, `transcript_ready`, `context_build_start`/`context_built`
+  (prompt assembly — the plan's <50 ms p95 target), `model_request`,
+  `model_first_token`, `first_sentence`, `first_response_queued`, `tts_request`
+  (the speech-queue worker handing the first sentence to TTS — queue wait is
+  `tts_request − first_response_queued`, synthesis is `audio_started − tts_request`),
+  `audio_started`, `gap_speech`, `cancelled`.
+- `calls`: every model request made during the turn, including from threads the
+  turn spawned. `hosted.<client label>` is counted at `connectivity.guard_client`
+  (the one chokepoint every module's OpenAI client passes through; `.responses`
+  suffix for the Responses API), `local.generate` / `local.chat` at
+  `intelligence/local_llm.py`, `embed` at `memory/semantic._request_embedding`, and
+  `purpose.*` (lean_reply, lean_directive, lean_impulse, classic_reply, surprise,
+  self_emotion, arc) at the call sites so a hosted count can be attributed.
+- `context`: `context_chars` / `context_messages` of the prompt actually sent,
+  `text_input`, `endpoint_silence_secs` (subtract from the segment start to
+  approximate the last voiced sample).
+- `cancel_reason`: `wake_word_barge`, `vad_barge`, `game_barge`, `shutdown_wake_word`.
+
+Background threads find the turn through a single-active-turn fallback (they do
+not inherit the contextvar), so overlapping turns would mis-attribute counts —
+telemetry, not truth. `turn_trace.totals()` keeps process-wide counts so idle
+work (the arc refresh, proactive lines) is visible too. Transcript entries from
+`memory/conversations.add_to_transcript` now carry a per-process monotonic
+`turn_id` (never reset by `clear_transcript`) and a `ts`, the correlation key the
+arc's covered-through cursor and generation IDs will use. Tokens are NOT counted
+yet: streamed replies do not return usage without `stream_options`; that is the
+next phase-0 item. Tests: `tests/test_turn_trace.py`.
+
 Recent latency architecture:
 
 - `audio.speaker_id.preload()` runs at startup when `config.SPEAKER_ID_PRELOAD_ON_STARTUP` is true, removing first-turn encoder load cost (ECAPA ~1.3s, Resemblyzer ~0.6s).

@@ -178,6 +178,10 @@ def _request_embedding(text: str, *, timeout: Optional[float] = None) -> np.ndar
     keep_alive = _cfg("MEMORY_SEMANTIC_EMBED_KEEP_ALIVE", -1)
     if keep_alive is not None:
         payload["keep_alive"] = keep_alive
+    # Lean Brain phase 0: every inline embedding round trip is counted against
+    # the turn, so a cold candidate cache shows up as N calls, not as mystery ms.
+    from utils import turn_trace as _tt
+    _tt.count("embed")
     resp = requests.post(
         f"{base}/api/embeddings",
         json=payload,

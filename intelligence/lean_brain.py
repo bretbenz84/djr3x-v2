@@ -32,6 +32,7 @@ import time
 from typing import Generator, Optional
 
 import config
+from utils import turn_trace as _turn_trace
 from intelligence import llm, llm_compat
 
 _log = logging.getLogger(__name__)
@@ -785,11 +786,18 @@ def _stream_local(messages: list[dict]) -> Generator[str, None, None]:
                 "see) still works. Keep replies SHORT: 1-2 sentences."
             ),
         }
-    yield from local_llm.stream_chat(
+    _turn_trace.stamp("model_request")
+    _turn_trace.count("purpose.lean_local")
+    first = True
+    for chunk in local_llm.stream_chat(
         msgs,
         max_tokens=int(getattr(config, "OFFLINE_LLM_MAX_TOKENS", 90)),
         timeout_secs=float(getattr(config, "OFFLINE_LLM_TIMEOUT_SECS", 45.0)),
-    )
+    ):
+        if first:
+            _turn_trace.stamp("model_first_token")
+            first = False
+        yield chunk
 
 
 def stream_reply(
@@ -806,9 +814,16 @@ def stream_reply(
     the local model instead — degraded, but alive. A hosted-call failure mid-turn
     triggers one probe and, if the link is genuinely down, retries THIS turn locally
     (no more 55-second retry storms ending in a hiccup line)."""
+    # Lean Brain phase 0: the context assembly cost (the plan's <50 ms p95
+    # target) and its size, measured where they actually happen.
+    _turn_trace.stamp("context_build_start")
     messages = _messages(
         user_text, person_id, transcript, world, turn_directive=turn_directive
     )
+    _turn_trace.stamp("context_built")
+    _turn_trace.set_value(
+        "context_chars", sum(len(str(m.get("content") or "")) for m in messages))
+    _turn_trace.set_value("context_messages", len(messages))
     try:
         from intelligence import connectivity
     except Exception:
@@ -839,7 +854,10 @@ def stream_reply(
     # keyed rather than a single pair of strings.
     tool_calls: dict[int, dict[str, str]] = {}
     tc_name, tc_args, yielded = "", "", False
+    first_delta = True
     try:
+        _turn_trace.stamp("model_request")
+        _turn_trace.count("purpose.lean_reply")
         stream = llm_compat.create(
             llm._client,
             model=_model(),
@@ -854,6 +872,11 @@ def stream_reply(
                 delta = chunk.choices[0].delta
             except (AttributeError, IndexError):
                 continue
+            if first_delta:
+                # First content OR tool-call fragment — either way the model
+                # has started answering; that is the time-to-first-token.
+                _turn_trace.stamp("model_first_token")
+                first_delta = False
             for tc in (getattr(delta, "tool_calls", None) or []):
                 fn = getattr(tc, "function", None)
                 if fn is None:
@@ -948,6 +971,7 @@ def stream_directive(
     if offline:
         yield from _stream_local(messages)
         return
+    _turn_trace.count("purpose.lean_directive")
     stream = llm_compat.create(
         llm._client,
         model=_model(),
@@ -1859,6 +1883,7 @@ def consider_initiating(
             for chunk in _stream_local(messages):
                 parts.append(chunk)
         else:
+            _turn_trace.count("purpose.lean_impulse")
             stream = llm_compat.create(
                 llm._client,
                 model=_model(),

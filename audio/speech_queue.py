@@ -131,6 +131,7 @@ class _Item:
         "done", "tag", "pre_beat_ms", "post_beat_ms", "voice_settings",
         "on_start", "log_text", "on_audio_end",
         "comedy_mode", "suppress_audio_tag", "previous_text", "voice_ref",
+        "on_synth_start",
     )
 
     def __init__(
@@ -152,6 +153,7 @@ class _Item:
         suppress_audio_tag: bool = False,
         previous_text: Optional[str] = None,
         voice_ref: Optional[object] = None,
+        on_synth_start: Optional[Callable[[], None]] = None,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -170,6 +172,11 @@ class _Item:
         self.suppress_audio_tag = suppress_audio_tag
         self.previous_text = previous_text
         self.voice_ref = voice_ref
+        # Fired the instant the worker hands this item to TTS — the "synthesis
+        # requested" stamp that separates queue wait from synthesis time in the
+        # turn telemetry (Lean Brain phase 0). Distinct from on_start, which
+        # fires when audio actually begins.
+        self.on_synth_start = on_synth_start
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -217,6 +224,7 @@ class _SpeechQueue:
         suppress_audio_tag: bool = False,
         previous_text: Optional[str] = None,
         voice_ref: Optional[object] = None,
+        on_synth_start: Optional[Callable[[], None]] = None,
     ) -> threading.Event:
         """Enqueue text for TTS. Returns an Event set when playback finishes.
 
@@ -236,11 +244,16 @@ class _SpeechQueue:
 
         log_text=False suppresses the per-item conversation-log/GUI write — used
         by streaming so a reply split across sentences is logged once as a turn.
+
+        on_synth_start fires right before the worker calls tts.speak for this
+        item (telemetry: when synthesis was requested). Never fires when audio
+        output is suppressed — nothing is synthesized then.
         """
         return self._add(
             text, emotion, None, priority, tag,
             pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
             on_audio_end, comedy_mode, suppress_audio_tag, previous_text, voice_ref,
+            on_synth_start=on_synth_start,
         )
 
     def enqueue_audio_file(
@@ -349,6 +362,7 @@ class _SpeechQueue:
         suppress_audio_tag: bool = False,
         previous_text: Optional[str] = None,
         voice_ref: Optional[object] = None,
+        on_synth_start: Optional[Callable[[], None]] = None,
     ) -> threading.Event:
         done = threading.Event()
         if _state_suppresses_output():
@@ -387,7 +401,7 @@ class _SpeechQueue:
                 _Item(priority, seq, text, emotion, audio_path, done, tag,
                       pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
                       on_audio_end, comedy_mode, suppress_audio_tag, previous_text,
-                      voice_ref),
+                      voice_ref, on_synth_start=on_synth_start),
             )
             self._not_empty.notify()
 
@@ -518,6 +532,11 @@ class _SpeechQueue:
                     self._play_file(item.audio_path, on_start=_fire_item_start)
                 elif item.text:
                     from audio import tts
+                    if item.on_synth_start is not None:
+                        try:
+                            item.on_synth_start()
+                        except Exception:
+                            pass
                     tts.speak(
                         item.text,
                         item.emotion,
@@ -707,12 +726,13 @@ def enqueue(
     suppress_audio_tag: bool = False,
     previous_text: Optional[str] = None,
     voice_ref: Optional[object] = None,
+    on_synth_start: Optional[Callable[[], None]] = None,
 ) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
     return _queue.enqueue(
         text, emotion, priority, tag, pre_beat_ms, post_beat_ms,
         voice_settings, on_start, log_text, on_audio_end, comedy_mode, suppress_audio_tag,
-        previous_text, voice_ref,
+        previous_text, voice_ref, on_synth_start=on_synth_start,
     )
 
 

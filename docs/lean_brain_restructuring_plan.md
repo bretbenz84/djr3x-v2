@@ -133,6 +133,14 @@ Acceptance: reproducible stage attribution and prompt capture sufficient to expl
 what the model knew on a failed turn. Existing behavior is unchanged. Historical
 timings in comments are hypotheses, not the baseline.
 
+Status 2026-09-04 — first slice shipped: `utils/turn_trace.py` stage stamps and
+per-turn model-call counts in `[character_loop]` (`stages` / `calls` / `context` /
+`cancel_reason`), transcript entries carry `turn_id` + `ts`. See CONTEXT.md
+"Latency And Telemetry". Still owed in this phase: token counts (needs
+`stream_options` on streamed calls), the effective-config / loaded-model report,
+process memory and pressure sampling, and the injected-sink replay harness on
+`submit_text`.
+
 ### 1. Remove avoidable waiting before adding richer behavior
 
 - Change optional surprise delivery to consume a result only if already available;

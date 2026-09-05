@@ -5,8 +5,10 @@ The transcript buffer (add_to_transcript / get_session_transcript / clear_transc
 is module-level in-memory state and is never persisted to the database.
 """
 
+import itertools
 import logging
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -21,6 +23,11 @@ _log = logging.getLogger(__name__)
 
 # In-memory session transcript — cleared between sessions, never written to DB
 _transcript: list[dict] = []
+# Monotonic per-process turn IDs for transcript entries (Lean Brain phase 0). NOT
+# reset by clear_transcript(): a consumer that remembers "covered through turn N"
+# (the conversation arc, generation IDs) must never see an old ID come back after
+# a session reset — length-based cursors cannot tell a reset from a race.
+_turn_seq = itertools.count(1)
 
 
 def _now() -> str:
@@ -93,8 +100,28 @@ def add_to_transcript(speaker: str, text: str, *, learnable: bool = True) -> Non
     already does — otherwise a suppressed turn ("China", a misheard command) would be
     re-extracted as a permanent fact at teardown.
     """
-    _transcript.append({"speaker": speaker, "text": text, "learnable": bool(learnable)})
+    _transcript.append({
+        "speaker": speaker,
+        "text": text,
+        "learnable": bool(learnable),
+        # Correlation keys (Lean Brain phase 0): a per-process monotonic turn id
+        # and a wall-clock stamp. Readers that copy entries into their own dicts
+        # (the lean transcript builder) may drop them; nothing should compare an
+        # entry against a literal dict.
+        "turn_id": next(_turn_seq),
+        "ts": time.time(),
+    })
     _log_turn(speaker, text)
+
+
+def last_turn_id() -> int:
+    """The turn_id of the most recent transcript entry, or 0 when empty."""
+    if not _transcript:
+        return 0
+    try:
+        return int(_transcript[-1].get("turn_id") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def mark_last_human_turn_unlearnable() -> bool:
