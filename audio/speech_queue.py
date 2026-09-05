@@ -82,8 +82,20 @@ def _complete_text_without_audio(
         except Exception:
             pass
         logger.info("[speech_queue] audio suppressed — emitted text only: %r", text)
+    try:
+        done.played = True          # the text went out; that is the delivery here
+    except Exception:
+        pass
     done.set()
     return done
+
+
+def _drop_item(item, reason: str) -> None:
+    """Set an item's done event as DROPPED (never played)."""
+    try:
+        item.done.drop(reason)
+    except AttributeError:
+        item.done.set()
 
 
 def _playback_handoff_options(text: Optional[str]) -> dict:
@@ -125,13 +137,61 @@ def _playback_handoff_options(text: Optional[str]) -> dict:
 
 # ── Queue item ─────────────────────────────────────────────────────────────────
 
+class DoneEvent(threading.Event):
+    """The Event enqueue() returns, with the truth of what happened to the item:
+    `played` is True only when the audio (or the no-audio text emit) actually
+    went out; a dropped item is set with `dropped_reason`. Lean Brain phase 5:
+    "what Rex actually said" must be separable from what was drafted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.played: bool = False
+        self.dropped_reason: Optional[str] = None
+
+    def drop(self, reason: str) -> None:
+        if not self.is_set():
+            self.dropped_reason = str(reason or "dropped")
+        self.set()
+
+
+# ── Speech generations (Lean Brain phase 5) ───────────────────────────────────
+# A proactive line is DECIDED, then spends 1-3 s in generation, pre-cache, and
+# queue wait before it plays. If the human starts a turn in that window the line
+# is stale, and the checks at decision/pre-cache time cannot see a turn that
+# begins while the item is already waiting in the heap. Items may carry the
+# generation current when they were decided; the worker drops any item whose
+# generation is no longer current at POP time. The interaction layer bumps the
+# generation on every human turn start and every barge-in. Reply sentences pass
+# no generation (None) — they are never dropped by this mechanism, since the
+# reply belongs to the turn that just began.
+_generation_lock = threading.Lock()
+_generation: int = 0
+
+
+def generation() -> int:
+    with _generation_lock:
+        return _generation
+
+
+def invalidate_pending(reason: str = "") -> int:
+    """Start a new speech generation; items stamped with an older one are dropped
+    when the worker reaches them. Returns the new generation."""
+    global _generation
+    with _generation_lock:
+        _generation += 1
+        gen = _generation
+    if reason:
+        logger.debug("speech_queue: generation %d (%s)", gen, reason)
+    return gen
+
+
 class _Item:
     __slots__ = (
         "neg_priority", "seq", "text", "emotion", "audio_path",
         "done", "tag", "pre_beat_ms", "post_beat_ms", "voice_settings",
         "on_start", "log_text", "on_audio_end",
         "comedy_mode", "suppress_audio_tag", "previous_text", "voice_ref",
-        "on_synth_start",
+        "on_synth_start", "generation",
     )
 
     def __init__(
@@ -154,6 +214,7 @@ class _Item:
         previous_text: Optional[str] = None,
         voice_ref: Optional[object] = None,
         on_synth_start: Optional[Callable[[], None]] = None,
+        generation: Optional[int] = None,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -177,6 +238,8 @@ class _Item:
         # turn telemetry (Lean Brain phase 0). Distinct from on_start, which
         # fires when audio actually begins.
         self.on_synth_start = on_synth_start
+        # Speech generation this item belongs to (None = never stale-dropped).
+        self.generation = generation
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -225,8 +288,10 @@ class _SpeechQueue:
         previous_text: Optional[str] = None,
         voice_ref: Optional[object] = None,
         on_synth_start: Optional[Callable[[], None]] = None,
+        generation: Optional[int] = None,
     ) -> threading.Event:
-        """Enqueue text for TTS. Returns an Event set when playback finishes.
+        """Enqueue text for TTS. Returns a DoneEvent set when playback finishes
+        (``.played`` tells whether it actually went out).
 
         If tag is given, any waiting items with the same tag are dropped first —
         useful for coalescing stale presence/idle reactions.
@@ -248,12 +313,17 @@ class _SpeechQueue:
         on_synth_start fires right before the worker calls tts.speak for this
         item (telemetry: when synthesis was requested). Never fires when audio
         output is suppressed — nothing is synthesized then.
+
+        generation: the speech generation this line was DECIDED in
+        (speech_queue.generation() at decision time). If a newer generation has
+        begun by the time the worker reaches the item (a human turn started, a
+        barge-in), it is dropped unplayed. None = never stale-dropped.
         """
         return self._add(
             text, emotion, None, priority, tag,
             pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
             on_audio_end, comedy_mode, suppress_audio_tag, previous_text, voice_ref,
-            on_synth_start=on_synth_start,
+            on_synth_start=on_synth_start, generation=generation,
         )
 
     def enqueue_audio_file(
@@ -277,7 +347,7 @@ class _SpeechQueue:
             keep = []
             for item in self._heap:
                 if item.tag == tag:
-                    item.done.set()
+                    _drop_item(item, "dropped_by_tag")
                     dropped += 1
                 else:
                     keep.append(item)
@@ -297,7 +367,7 @@ class _SpeechQueue:
             keep = []
             for item in self._heap:
                 if item.priority < n:
-                    item.done.set()
+                    _drop_item(item, "cleared_below_priority")
                 else:
                     keep.append(item)
             if len(keep) != len(self._heap):
@@ -310,7 +380,7 @@ class _SpeechQueue:
             pending = list(self._heap)
             self._heap.clear()
             for item in pending:
-                item.done.set()
+                _drop_item(item, "cancel_all")
             speaking = self._speaking
         if speaking:
             try:
@@ -363,11 +433,17 @@ class _SpeechQueue:
         previous_text: Optional[str] = None,
         voice_ref: Optional[object] = None,
         on_synth_start: Optional[Callable[[], None]] = None,
+        generation: Optional[int] = None,
     ) -> threading.Event:
-        done = threading.Event()
+        done = DoneEvent()
         if _state_suppresses_output():
             logger.info("speech_queue: output suppressed while Rex is asleep")
-            done.set()
+            done.drop("output_suppressed")
+            return done
+        if generation is not None and generation != _generation:
+            logger.info("speech_queue: stale line dropped at enqueue (generation %d < %d): %r",
+                        generation, _generation, (text or "")[:80])
+            done.drop("stale_generation")
             return done
         if _audio_output_suppressed():
             return _complete_text_without_audio(text, done, on_start)
@@ -380,7 +456,7 @@ class _SpeechQueue:
             keep = []
             for item in self._heap:
                 if item.priority < priority or (tag is not None and item.tag == tag):
-                    item.done.set()
+                    _drop_item(item, "preempted" if item.priority < priority else "coalesced")
                 else:
                     keep.append(item)
             if len(keep) != len(self._heap):
@@ -401,7 +477,7 @@ class _SpeechQueue:
                 _Item(priority, seq, text, emotion, audio_path, done, tag,
                       pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
                       on_audio_end, comedy_mode, suppress_audio_tag, previous_text,
-                      voice_ref, on_synth_start=on_synth_start),
+                      voice_ref, on_synth_start=on_synth_start, generation=generation),
             )
             self._not_empty.notify()
 
@@ -470,7 +546,13 @@ class _SpeechQueue:
                 while not self._heap:
                     self._not_empty.wait()
                 item = heapq.heappop(self._heap)
+            self._process_item(item)
 
+    def _process_item(self, item: "_Item") -> None:
+        """Play (or drop) ONE popped item — the worker loop's body, split out so
+        the stale-generation / played bookkeeping can be tested without a
+        blocking worker thread."""
+        if True:
             with self._lock:
                 self._speaking = True
                 self._current_priority = item.priority
@@ -505,7 +587,15 @@ class _SpeechQueue:
                 # after the power-down sequence has begun.
                 if _state_suppresses_output():
                     logger.info("speech_queue: popped item suppressed by shutdown state")
-                    continue
+                    _drop_item(item, "output_suppressed")
+                    return
+                # Stale generation: a human turn or barge-in began after this line
+                # was decided — it must not speak (Lean Brain phase 5).
+                if item.generation is not None and item.generation != generation():
+                    logger.info("speech_queue: stale line dropped at playback (generation %d < %d): %r",
+                                item.generation, generation(), (item.text or "")[:80])
+                    _drop_item(item, "stale_generation")
+                    return
                 try:
                     from awareness.situation import assessor as _sit
                     _sit.set_rex_speaking(True)
@@ -560,6 +650,10 @@ class _SpeechQueue:
                         item.on_audio_end()
                     except Exception:
                         pass
+                try:
+                    item.done.played = True
+                except Exception:
+                    pass
 
                 if item.post_beat_ms > 0:
                     import time as _t
@@ -727,12 +821,13 @@ def enqueue(
     previous_text: Optional[str] = None,
     voice_ref: Optional[object] = None,
     on_synth_start: Optional[Callable[[], None]] = None,
+    generation: Optional[int] = None,
 ) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
     return _queue.enqueue(
         text, emotion, priority, tag, pre_beat_ms, post_beat_ms,
         voice_settings, on_start, log_text, on_audio_end, comedy_mode, suppress_audio_tag,
-        previous_text, voice_ref, on_synth_start=on_synth_start,
+        previous_text, voice_ref, on_synth_start=on_synth_start, generation=generation,
     )
 
 

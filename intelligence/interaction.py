@@ -543,6 +543,11 @@ def _begin_user_turn() -> None:
     # Fresh silent stretch → fresh attempts to voice any due celebration.
     _celebration_unvoiced_attempts.clear()
     _last_user_turn_started_at = time.monotonic()
+    # A human turn began: any proactive line decided before this is stale.
+    try:
+        speech_queue.invalidate_pending("user_turn")
+    except Exception:
+        pass
     try:
         _situation_assessor.set_interaction_busy(True)
     except Exception:
@@ -1010,6 +1015,7 @@ def _on_wake_word(model_name: str) -> None:
         try:
             _interrupted.set()  # cut off any in-progress speech immediately
             _turn_trace.cancel("shutdown_wake_word")
+            speech_queue.invalidate_pending("shutdown_wake_word")
         except Exception:
             pass
         state_module.set_state(State.SHUTDOWN)
@@ -1039,6 +1045,7 @@ def _on_wake_word(model_name: str) -> None:
         else:
             _interrupted.set()
             _turn_trace.cancel("wake_word_barge")
+            speech_queue.invalidate_pending("wake_word_barge")
 
     _wake_word_fired.set()
 
@@ -3061,10 +3068,14 @@ def _speak_blocking(
     log_text: bool = True,
     on_audio_end=None,
     comedy_mode: Optional[str] = None,
+    generation: Optional[int] = None,
 ) -> bool:
     """
     Enqueue text for speech and block until playback finishes, monitoring for
     wake-word interruption.  Returns True on normal completion, False if cut short.
+
+    `generation` (speech_queue.generation() at DECISION time) marks a line that
+    must not play if a human turn / barge-in began after it was decided.
 
     priority 1 = normal response; priority 2 = urgent acknowledgment.
     Enqueueing drops all waiting items of lower priority and preempts any
@@ -3118,6 +3129,7 @@ def _speak_blocking(
         log_text=log_text,
         on_audio_end=on_audio_end,
         comedy_mode=comedy_mode,
+        generation=generation,
     )
 
     while not done.wait(timeout=0.05):
@@ -3134,6 +3146,10 @@ def _speak_blocking(
             done.wait(timeout=0.5)
             return False
 
+    if isinstance(done, speech_queue.DoneEvent) and done.dropped_reason:
+        # Never played (stale generation, preempted, cleared). Not a completion.
+        _log.info("[interaction] line not spoken (%s): %r", done.dropped_reason, text[:80])
+        return False
     # Normal completion — arm the post-TTS handoff. Any spoken Rex line may
     # receive an immediate human reply, so preserve the rolling mic buffer.
     _apply_post_tts_handoff(text, source="blocking")
@@ -3169,6 +3185,13 @@ def _speak_proactive(
     """
     if not text or not text.strip():
         return False
+    # Speech generation at decision time (Lean Brain phase 5): the worker drops
+    # this line unplayed if a human turn or barge-in begins while it waits in the
+    # queue — the window the two checks below (decided_at, mic) cannot see.
+    try:
+        _gen = speech_queue.generation()
+    except Exception:
+        _gen = None
     # Speak-time re-validation: if a user turn began AFTER this line was decided
     # (during the LLM+TTS generation gap), the line is stale — drop it instead of
     # talking over the turn the user just took. The audio-level check below only
@@ -3235,6 +3258,7 @@ def _speak_proactive(
         pre_beat_ms=pre_beat_ms,
         post_beat_ms_override=post_beat_ms_override,
         voice_settings=voice_settings,
+        generation=_gen,
     )
     if completed:
         global _last_proactive_line_at
@@ -17737,20 +17761,35 @@ def _stream_and_speak_sentences(
                 return fallback
 
     full_text = " ".join(part for part in spoken if part).strip()
+    if turn_start is not None:
+        _latency_log(turn_start, "llm_response", llm_started)
+
+    completed = _await_streamed_speech(done_events, priority)
+
+    # What Rex ACTUALLY said (Lean Brain phase 5): when playback was cut short,
+    # only the sentences whose audio went out count — the transcript, the memory
+    # extractor, and the post-TTS handoff all see the delivered text, never a
+    # drafted continuation nobody heard.
+    if not completed and full_text:
+        delivered = [
+            part for part, ev in zip(spoken, done_events)
+            if part and bool(getattr(ev, "played", False))
+        ]
+        delivered_text = " ".join(delivered).strip()
+        if delivered_text != full_text:
+            _log.info("[interaction] reply cut short — delivered %d of %d sentences: %r",
+                      len(delivered), len([p for p in spoken if p]), delivered_text[:120])
+            full_text = delivered_text
     if full_text:
         # The GUI bubble was already filled sentence-by-sentence via log_rex_stream
         # (read-along), so write the on-disk transcript once here WITHOUT re-mirroring
         # to the GUI (to_gui=False, else the whole reply re-appears as a duplicate),
-        # then finalize the streamed bubble to the canonical text.
+        # then finalize the streamed bubble to the canonical (delivered) text.
         try:
             conv_log.log_rex(full_text, to_gui=False)
             conv_log.finish_rex_stream(full_text)
         except Exception as exc:
             _log.debug("[interaction] stream conversation log failed: %s", exc)
-    if turn_start is not None:
-        _latency_log(turn_start, "llm_response", llm_started)
-
-    completed = _await_streamed_speech(done_events, priority)
 
     if full_text:
         if completed:
@@ -32299,6 +32338,7 @@ def _loop() -> None:
                 game_barge_onset = speech_start
                 _interrupted.set()
                 _turn_trace.cancel("game_barge")
+                speech_queue.invalidate_pending("game_barge")
                 try:
                     import sounddevice as sd
                     echo_cancel.request_cancel()
@@ -32349,6 +32389,7 @@ def _loop() -> None:
                 continue
             _interrupted.set()
             _turn_trace.cancel("vad_barge")
+            speech_queue.invalidate_pending("vad_barge")
             try:
                 import sounddevice as sd
                 echo_cancel.request_cancel()

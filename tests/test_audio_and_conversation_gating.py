@@ -1371,6 +1371,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             pre_beat_ms=0,
             post_beat_ms_override=0,
             voice_settings=None,
+            generation=mock.ANY,   # speech generation stamp (Lean Brain phase 5)
         )
         transcript.assert_called_once_with("Rex", "Nobody talking now.")
         log_rex.assert_called_once_with("Nobody talking now.")
@@ -1432,6 +1433,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             pre_beat_ms=0,
             post_beat_ms_override=0,
             voice_settings=None,
+            generation=mock.ANY,   # speech generation stamp (Lean Brain phase 5)
         )
         transcript.assert_called_once_with("Rex", spoken)
         log_rex.assert_called_once_with(spoken)

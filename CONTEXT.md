@@ -348,6 +348,21 @@ transcript revision that changed while deciding (`conv_memory.last_turn_id`) or 
 target no longer present drops it. `LEAN_IMPULSE_MENU_ENABLED=False` restores the
 ladder (first survivor only). Tests: `tests/test_lean_impulse_menu.py`.
 
+**Stale proactive lines never play; cut replies report what was said (phase 5 first
+slice, 2026-09-04).** `audio/speech_queue.py` has speech GENERATIONS: `generation()`
+/ `invalidate_pending(reason)`. `_begin_user_turn` and every barge-in site
+(`wake_word_barge`, `vad_barge`, `game_barge`, `shutdown_wake_word`) bump it;
+`_speak_proactive` stamps its line with the generation current at decision time and
+the worker drops any stamped item whose generation is no longer current — at enqueue
+or at POP — so a lull line decided before you spoke cannot play after you did, even
+from behind another item in the heap. Reply sentences carry no generation (they
+belong to the turn that just began; the existing barge-in handling covers them).
+`enqueue()` now returns a `DoneEvent` with `.played` / `.dropped_reason`;
+`_speak_blocking` treats a dropped line as not completed, and
+`_stream_and_speak_sentences` returns ONLY the delivered sentences when playback
+was cut short, so the transcript, memory extraction and the post-TTS handoff see
+what Rex actually said. Tests: `tests/test_speech_generations.py`.
+
 Kill switch `LEAN_CONTEXT_STATE_ENABLED`. Phase 1 pieces in the same batch:
 `SURPRISE_STREAM_JOIN_SECS` is 0 (never wait for the surprise classifier before the
 first word), the plan-intent local qwen confirm is skipped under Lean (its directive

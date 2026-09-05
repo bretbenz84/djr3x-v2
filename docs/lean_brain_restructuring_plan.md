@@ -352,6 +352,12 @@ late callbacks, own-echo rejection, two speakers, shutdown, and no-audio mode pa
 the same production-path replay suite. Retire gap-recovery branches only when the
 replacement demonstrates equivalent capture behavior.
 
+Status 2026-09-04 — first slice shipped: speech generations on proactive items
+(dropped at enqueue or pop once a human turn / barge-in began), `DoneEvent`
+played/dropped truth, delivered-text return on cut-short streamed replies. NOT
+done, deliberately: the turn-coordinator extraction and concurrent input/response
+processing — those need live sessions to validate and stay as designed here.
+
 ## Budget and release gates
 
 Numeric values below are proposed engineering targets, not measured promises.
