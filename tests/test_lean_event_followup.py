@@ -253,8 +253,9 @@ class SpokenEventFollowupWiringTest(_FollowupStateCase):
         arm.assert_called_once_with(7, 55, "kitchen remodel")
         purge.assert_called_once_with(7, 55)
         # The event cue won → callback / visual-riff cues were never consulted.
-        cb.assert_not_called()
-        riff.assert_not_called()
+        # Phase 3 (menu): the callback/riff builders may be consulted as candidates;
+        # only the chosen event follow-up is spent (asserted above).
+        del cb, riff
         # Registered with the memory_followup FRAME (not the generic lean_impulse one).
         self.assertEqual(register.call_count, 1)
         _args, kwargs = register.call_args
@@ -496,8 +497,10 @@ class UndatedEventClauseTest(unittest.TestCase):
 
             self.assertTrue(I._maybe_lean_impulse(idle_for=5.0, effective_idle_timeout=60.0))
 
-        # Holiday won → the event cue is never even looked up, and nothing is armed.
-        event_cue.assert_not_called()
+        # Holiday won (first offered; the stubbed model reports no choice) → the
+        # event cue may be OFFERED alongside it under the phase-3 menu, but it is
+        # never SPENT: nothing is armed.
+        del event_cue
         arm.assert_not_called()
 
 

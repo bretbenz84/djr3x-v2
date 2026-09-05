@@ -244,7 +244,9 @@ class SpokenMemoryMusingWiringTest(unittest.TestCase):
 
             self.assertTrue(I._maybe_lean_impulse(idle_for=5.0, effective_idle_timeout=60.0))
 
-        musing.assert_not_called()
+        # Phase-3 menu: the musing builder may be consulted as a candidate, but the
+        # celebration (first offered) is the one spent — the musing flag stays clear.
+        del musing
         self.assertFalse(I._lean_memory_mused_this_session)
 
 

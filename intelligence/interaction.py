@@ -6822,6 +6822,85 @@ def _lean_impulse_why(kind: Optional[str], quiet: float, long_silence: bool) -> 
     return f"{quiet_txt} and I filled the silence with whatever came to mind"
 
 
+# Cue families for the phase-3 menu: at most ONE candidate per family is offered,
+# so three "ask about your life" cues can't crowd out a remembered follow-up.
+_LEAN_CUE_FAMILY = {
+    "workday_checkin": "personal_ask", "weekend_plans": "personal_ask",
+    "interest_discovery": "personal_ask",
+    "place_question": "room_ask", "room_question": "room_ask",
+}
+
+
+def _collect_lean_cue_candidates(
+    person_id: Optional[int], *, world: Optional[dict], transcript: list,
+    long_silence: bool, low_energy: bool, no_questions: bool,
+) -> "list[tuple[str, dict]]":
+    """Every ELIGIBLE lull cue, in the old ladder's priority order, as (kind, cue).
+
+    Gates are the ladder's own: the bench (`_lean_cue_blocked`) is consulted BEFORE
+    a builder runs (several builders arm pacing/probability state at lookup, and a
+    benched lookup would silently spend it), the question-shaped cues stay off at a
+    low-energy user or an exhausted question budget, and the celebration offer is
+    counted so a never-voiced celebration eventually steps aside. What changed:
+    a higher cue no longer HIDES the lower ones — the survivors are offered
+    together (capped at LEAN_IMPULSE_CANDIDATES_MAX, one per family) and the model
+    picks. Any single builder failing skips only that cue."""
+    global _celebration_unvoiced_attempts
+    asks_ok = not low_energy and not no_questions
+    spec = (
+        # (kind, builder, eligible-now)
+        ("celebration", lambda: _lean_celebration_cue(person_id), True),
+        ("holiday_plan", lambda: consciousness._next_holiday_plan_for_person(person_id), True),
+        ("event_followup", lambda: _lean_event_followup_cue(person_id), True),
+        ("open_thread", lambda: _lean_open_thread_cue(person_id), True),
+        ("callback_premise",
+         lambda: _lean_callback_lull_cue(person_id, transcript, long_silence=long_silence), True),
+        ("workday_checkin", lambda: _lean_workday_checkin_cue(person_id), asks_ok),
+        ("place_question", lambda: _lean_place_question_cue(), asks_ok),
+        ("room_question", lambda: _lean_room_question_cue(), asks_ok),
+        ("visual_riff", lambda: _lean_visual_riff_cue(person_id, world), True),
+        ("weekend_plans", lambda: _lean_weekend_plans_cue(person_id), asks_ok),
+        ("interest_discovery", lambda: _lean_interest_discovery_cue(person_id), asks_ok),
+        ("mood_share", lambda: _lean_mood_share_cue(person_id), True),
+        ("news_story", lambda: _lean_news_cue(person_id), True),
+        ("memory_musing", lambda: _lean_memory_musing_cue(person_id), True),
+    )
+    menu = bool(getattr(config, "LEAN_IMPULSE_MENU_ENABLED", True))
+    cap = int(getattr(config, "LEAN_IMPULSE_CANDIDATES_MAX", 3)) if menu else 1
+    out: list[tuple[str, dict]] = []
+    families: set[str] = set()
+    for kind, build, eligible in spec:
+        if len(out) >= cap:
+            break
+        if not eligible or _lean_cue_blocked(kind):
+            continue
+        fam = _LEAN_CUE_FAMILY.get(kind)
+        if fam and fam in families:
+            continue
+        try:
+            cue = build()
+        except Exception as exc:
+            _log.debug("[lean] %s cue lookup failed: %s", kind, exc)
+            continue
+        if not cue:
+            continue
+        if kind == "celebration":
+            # Count this offer; if the model never voices it, the cap in
+            # _lean_celebration_cue eventually steps aside so lower cues aren't
+            # starved. Cleared on the next user turn, popped on a voicing.
+            try:
+                _cid = int(cue.get("event_id"))
+                _celebration_unvoiced_attempts[_cid] = _celebration_unvoiced_attempts.get(_cid, 0) + 1
+            except (TypeError, ValueError, AttributeError):
+                pass
+        out.append((kind, cue))
+        if fam:
+            families.add(fam)
+    if out:
+        _log.info("[lean] lull cues eligible: %s", ", ".join(k for k, _ in out))
+    return out
+
+
 def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bool:
     """Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, let Rex DECIDE — via the
     lean brain, grounded in perception + memory + mood — to say ONE motivated thing or just watch
@@ -7091,134 +7170,28 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     news_story = None
     world = _lean_world()
     transcript = _lean_recent_transcript("")
-    # Remembered GOOD NEWS is the most meaningful thing Rex can open a lull with, so it
-    # outranks every other cue. Restores the symmetry the lean rework broke — console
-    # check-ins kept firing while celebrations went dark. Shares the emotional-check-in
-    # session gate so it never stacks on a console.
+    # Phase 3 (Lean Brain plan): Python decides ELIGIBILITY, the model decides
+    # RELEVANCE. Every cue builder runs behind its own gates, cooldowns and
+    # benches (the old ladder's, unchanged) and the survivors — in the old
+    # priority order, one per family, capped — are offered to the ONE impulse
+    # call as a short menu; the model picks one, goes freeform, or PASSes. With
+    # LEAN_IMPULSE_MENU_ENABLED=False the first survivor is the only cue offered,
+    # which is exactly the old ladder.
+    candidates = _collect_lean_cue_candidates(
+        person_id, world=world, transcript=transcript, long_silence=long_silence,
+        low_energy=low_energy, no_questions=no_questions,
+    )
+    offered = {kind: cue for kind, cue in candidates}
+    # Conversation revision at decision time: a human turn that lands while the
+    # line is being generated makes the proposal stale (revalidated before speaking).
     try:
-        celebration = _lean_celebration_cue(person_id)
-        if celebration and _lean_cue_blocked("celebration"):
-            celebration = None
-    except Exception as exc:
-        _log.debug("celebration Lean cue lookup failed: %s", exc)
-    if celebration:
-        # Count this offer; if the model never voices it, the cap in _lean_celebration_cue
-        # eventually steps aside so lower cues aren't starved. Cleared on the next user turn
-        # and popped below on a successful voicing.
-        try:
-            _cid = int(celebration.get("event_id"))
-            _celebration_unvoiced_attempts[_cid] = _celebration_unvoiced_attempts.get(_cid, 0) + 1
-        except (TypeError, ValueError):
-            pass
-    if not celebration:
-        try:
-            # Calendar questions are a one-shot Lean cue, not a second proactive
-            # speaker. The helper owns per-person/per-date de-dupe shared with the
-            # classic consciousness fallback.
-            holiday_plan = consciousness._next_holiday_plan_for_person(person_id)
-            if holiday_plan and _lean_cue_blocked("holiday_plan"):
-                holiday_plan = None
-        except Exception as exc:
-            _log.debug("holiday-plan Lean cue lookup failed: %s", exc)
-    # A remembered plan that has come due ("how did the interview go?") beats a callback
-    # or visual riff — it's time-sensitive and specifically attentive. Allowed in both the
-    # quick lull and the long-silence re-engagement (a real follow-up is a great restart).
-    if not celebration and not holiday_plan:
-        try:
-            event_followup = _lean_event_followup_cue(person_id)
-            if event_followup and _lean_cue_blocked("event_followup"):
-                event_followup = None
-        except Exception as exc:
-            _log.debug("event-followup Lean cue lookup failed: %s", exc)
-    # Diary open threads sit right after event follow-ups: same "friend who
-    # remembered" register, sourced from the session-summary extractor.
-    if not celebration and not holiday_plan and not event_followup:
-        open_thread = _lean_open_thread_cue(person_id)
-        if open_thread and _lean_cue_blocked("open_thread"):
-            open_thread = None
-    if not celebration and not holiday_plan and not event_followup and not open_thread:
-        callback_premise = _lean_callback_lull_cue(
-            person_id, transcript, long_silence=long_silence
-        )
-        if callback_premise and _lean_cue_blocked("callback_premise"):
-            callback_premise = None
-    _no_higher = not (celebration or holiday_plan or event_followup or open_thread
-                      or callback_premise)
-    # Evening workday check-in ("how was work today?" / "how was your day?") is
-    # PERSONAL and time-bound, so it outranks the environment cues below —
-    # but a real memory follow-up above still beats it.
-    if _no_higher and not low_energy and not no_questions:
-        try:
-            workday_checkin = _lean_workday_checkin_cue(person_id)
-            if workday_checkin and _lean_cue_blocked("workday_checkin"):
-                workday_checkin = None
-        except Exception as exc:
-            _log.debug("[lean] workday check-in cue failed: %s", exc)
-    # Lower-tier cues honor the drop-bench too (review find 2026-08-05: only the
-    # top-tier cues consulted _lean_cue_blocked, so _strike_lean_cue recorded a bench
-    # for these kinds that nothing read, and the ladder could regenerate the same
-    # doomed line on the very next consult). Checked BEFORE the builder runs — unlike
-    # the top-tier lookup-then-discard shape — because some of these builders arm
-    # their own pacing/probability state at lookup time, and a benched lookup would
-    # silently spend it.
-    # Not recognizing the ROOM outranks object curiosity — knowing where he is comes
-    # first. place_questions gates itself (only when the belief is unknown + paced).
-    if _no_higher and not workday_checkin and not low_energy and not no_questions:
-        if not _lean_cue_blocked("place_question"):
-            place_question = _lean_place_question_cue()
-    # Room curiosity beats a generic visual riff (it LEARNS something), but only
-    # when the person has energy for a question.
-    if _no_higher and not workday_checkin and not place_question and not low_energy and not no_questions:
-        if not _lean_cue_blocked("room_question"):
-            room_question = _lean_room_question_cue()
-    if _no_higher and not workday_checkin and not place_question and not room_question:
-        try:
-            if not _lean_cue_blocked("visual_riff"):
-                visual_riff = _lean_visual_riff_cue(person_id, world)
-        except Exception as exc:
-            _log.debug("visual-riff Lean cue lookup failed: %s", exc)
-    # LOWEST-priority cue: a low-stakes "since I was last on" diary musing, only when nothing
-    # richer fires. Data-driven (the model can't invent a memory it wasn't given), once/session.
-    # Weekend-plans discovery beats news (it's personal and time-bound), but
-    # never fires at a tired user or with the question budget spent.
-    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not low_energy and not no_questions:
-        try:
-            if not _lean_cue_blocked("weekend_plans"):
-                weekend_plans = _lean_weekend_plans_cue(person_id)
-        except Exception as exc:
-            _log.debug("weekend-plans Lean cue lookup failed: %s", exc)
-    # Interest discovery ("what are you into that you haven't told me?") is
-    # personal like weekend plans — it beats news, loses to everything richer,
-    # and never fires at a tired user or with the question budget spent.
-    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not low_energy and not no_questions:
-        try:
-            if not _lean_cue_blocked("interest_discovery"):
-                interest_discovery = _lean_interest_discovery_cue(person_id)
-        except Exception as exc:
-            _log.debug("[lean] interest-discovery cue failed: %s", exc)
-    # Rex volunteering his OWN day ("ugh, what a day") beats generic news — it's the
-    # more human thing to reach for in a lull — but loses to everything about THEM,
-    # because asking after someone's weekend always beats talking about yourself.
-    # It's a STATEMENT, so unlike the question cues above it stays available at a
-    # low-energy user; own-day-in-passing is exactly what fits a winding-down room.
-    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery:
-        try:
-            mood_share = _lean_mood_share_cue(person_id)
-        except Exception as exc:
-            _log.debug("[lean] mood-share cue lookup failed: %s", exc)
-    # News beats the diary musing (fresher material) but loses to everything
-    # personal. Its own session cap + spend-once live in the cue/bookkeeping.
-    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not mood_share:
-        if not _lean_cue_blocked("news_story"):
-            news_story = _lean_news_cue(person_id)
-    if _no_higher and not workday_checkin and not place_question and not room_question and not visual_riff and not weekend_plans and not interest_discovery and not mood_share and not news_story:
-        try:
-            if not _lean_cue_blocked("memory_musing"):
-                memory_musing = _lean_memory_musing_cue(person_id)
-        except Exception as exc:
-            _log.debug("memory-musing Lean cue lookup failed: %s", exc)
+        conversation_rev = conv_memory.last_turn_id()
+    except Exception:
+        conversation_rev = None
+    chosen: Optional[str] = None
     try:
         from intelligence import lean_brain
+        lean_brain._last_choice_kind = None
         line = lean_brain.consider_initiating(
             person_id,
             transcript=transcript,
@@ -7226,46 +7199,41 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             quiet_secs=quiet,
             mood=mood,
             long_silence=long_silence,
-            holiday_plan=holiday_plan,
-            visual_riff=visual_riff,
-            callback_premise=callback_premise,
-            event_followup=event_followup,
-            celebration=celebration,
-            memory_musing=memory_musing,
-            open_thread=open_thread,
-            place_question=place_question,
-            room_question=room_question,
-            workday_checkin=workday_checkin,
-            weekend_plans=weekend_plans,
-            interest_discovery=interest_discovery,
-            mood_share=mood_share,
-            news_story=news_story,
             low_energy=low_energy,
             no_questions=no_questions,
             rejected_lines=list(_lean_rejected_lines),
+            candidates=[{"kind": k, "cue": c} for k, c in candidates],
+            **offered,
         )
+        chosen = getattr(lean_brain, "_last_choice_kind", None)
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)
         _impulse_outcome("generation_failed")
         return False
     _mode = "reengage" if long_silence else "lull"
-    # Which cue fed the instruction (mirrors lean_brain's dispatch priority) —
-    # a dropped line benches ITS cue so the next consult reaches lower cues
-    # instead of regenerating the same doomed line forever.
-    _winning_kind = next(
-        (kind for kind, cue in (
-            ("celebration", celebration), ("holiday_plan", holiday_plan),
-            ("event_followup", event_followup), ("open_thread", open_thread),
-            ("callback_premise", callback_premise),
-            ("workday_checkin", workday_checkin),
-            ("place_question", place_question),
-            ("room_question", room_question), ("visual_riff", visual_riff),
-            ("weekend_plans", weekend_plans), ("interest_discovery", interest_discovery),
-            ("mood_share", mood_share),
-            ("news_story", news_story), ("memory_musing", memory_musing),
-        ) if cue),
-        None,
-    )
+    if chosen is None:
+        # The call did not report a choice (stubbed in tests, or an older path):
+        # the highest-priority offered cue is the one spent — the old semantics.
+        chosen = candidates[0][0] if candidates else "freeform"
+    # Bind ONLY the chosen cue so the spend/bookkeeping below is exactly the old
+    # per-cue code; every other offered cue stays unspent for a later lull.
+    celebration = offered.get("celebration") if chosen == "celebration" else None
+    holiday_plan = offered.get("holiday_plan") if chosen == "holiday_plan" else None
+    event_followup = offered.get("event_followup") if chosen == "event_followup" else None
+    open_thread = offered.get("open_thread") if chosen == "open_thread" else None
+    callback_premise = offered.get("callback_premise") if chosen == "callback_premise" else None
+    workday_checkin = offered.get("workday_checkin") if chosen == "workday_checkin" else None
+    place_question = offered.get("place_question") if chosen == "place_question" else None
+    room_question = offered.get("room_question") if chosen == "room_question" else None
+    visual_riff = offered.get("visual_riff") if chosen == "visual_riff" else None
+    weekend_plans = offered.get("weekend_plans") if chosen == "weekend_plans" else None
+    interest_discovery = offered.get("interest_discovery") if chosen == "interest_discovery" else None
+    mood_share = offered.get("mood_share") if chosen == "mood_share" else None
+    news_story = offered.get("news_story") if chosen == "news_story" else None
+    memory_musing = offered.get("memory_musing") if chosen == "memory_musing" else None
+    # Which cue fed the line — a dropped line benches ITS cue so the next consult
+    # offers the others instead of regenerating the same doomed line forever.
+    _winning_kind = None if chosen in (None, "freeform") else str(chosen)
     if not line:
         _impulse_outcome("watched_pass")
         # A PASS must not buy a FULL pacing window (owner 2026-08-05: chained
@@ -7328,6 +7296,21 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _note_lean_rejected(line)
         return False
 
+    # Revalidate the proposal against the room as it is NOW, not as it was when
+    # the consult began (phase 3): a human turn that landed meanwhile, or the
+    # target having left, makes the line stale. _speak_proactive's own
+    # decided_at check covers a turn that STARTED; this covers one that landed.
+    try:
+        if conversation_rev is not None and conv_memory.last_turn_id() != conversation_rev:
+            _log.info("[lean] impulse dropped — conversation moved on while deciding: %r", line)
+            _impulse_outcome("stale_conversation")
+            return False
+    except Exception:
+        pass
+    if not _lean_impulse_person_present(person_id):
+        _log.info("[lean] impulse dropped — target no longer present: %r", line)
+        _impulse_outcome("target_gone")
+        return False
     completed = _speak_proactive(
         line, emotion="curious", priority=1, label="lean_impulse", decided_at=decided_at,
         why=_lean_impulse_why(_winning_kind, quiet, long_silence),

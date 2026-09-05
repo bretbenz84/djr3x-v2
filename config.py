@@ -399,6 +399,14 @@ LEAN_CELEBRATION_MAX_UNVOICED_ATTEMPTS = 2
 # EPISODIC_RECALL_ENABLED switch + EPISODIC_RECALL_SESSION_RECAP_PROBABILITY.
 LEAN_MEMORY_MUSING_ENABLED = True
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
+# Lean Brain plan phase 3 (2026-09-04): instead of Python picking ONE cue by a fixed
+# priority ladder, every eligible cue (same gates, same order) is offered to the one
+# impulse call as a short menu — up to this many, one per family — and the MODEL
+# picks the one that fits the moment, goes freeform, or passes. False restores the
+# old ladder (first eligible cue only).
+LEAN_IMPULSE_MENU_ENABLED   = _env_bool("LEAN_IMPULSE_MENU_ENABLED", True)
+LEAN_IMPULSE_CANDIDATES_MAX = _env_int("LEAN_IMPULSE_CANDIDATES_MAX", 3, min_value=1, max_value=6)
+LEAN_IMPULSE_MENU_MAX_TOKENS = 90     # the menu reply carries a CHOICE line + the line itself
 # Flat-answer follow-up (reply-side, owner spec 2026-07-06): when a flat
 # half-answer ("it's okay", "not much", "meh") ANSWERS a question Rex asked, the
 # reply itself carries ONE gentle probe at what's underneath — quip plus "what's

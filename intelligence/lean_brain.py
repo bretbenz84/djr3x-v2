@@ -1666,6 +1666,159 @@ def _story_timing(story: Optional[dict]) -> str:
         return ""
 
 
+# ── Phase 3: bounded model choice among eligible cues ────────────────────────
+# Python still decides ELIGIBILITY (interaction._collect_lean_cue_candidates: the
+# same builders, gates, cooldowns and benches as the old ladder). What changed is
+# RELEVANCE: with two or more survivors the model sees them as a short menu and
+# picks the one that fits this exact moment — or goes freeform, or PASSes —
+# instead of Python's fixed priority deciding for it. One call still writes the
+# line. `last_choice_kind()` tells the caller which cue (if any) to spend.
+_last_choice_kind: Optional[str] = None
+_CHOICE_RE = re.compile(r"^\s*(?:CHOICE\s*[:\-]\s*)([A-Za-z]|PASS)\b\.?\s*$", re.IGNORECASE)
+_LETTERS = "ABCDEFGH"
+
+_MENU_INSTRUCTION = (
+    "[The conversation just went quiet{long_note}. You dislike dead air, but the way to "
+    "keep it alive is to say the ONE thing that fits THIS moment — or nothing.]\n"
+    "{situation}"
+    "You have these possible openings with {who}. Pick the ONE most relevant to right now — "
+    "to what they just said, what you see, their energy — not the one that sounds most "
+    "impressive, and not the first one by default:\n{options}\n"
+    "{free_letter}) Something fresh from the present moment instead — what you SEE, the day, "
+    "the occasion, or a tangent you've been chewing on — only if it genuinely beats the "
+    "options above.{angles}\n"
+    "Or PASS if nothing would land naturally — a good choice more often than you'd think; "
+    "never force one.\n"
+    "Hard rules for whatever you pick: ONE short line in your voice, an open door they can "
+    "walk through. Never say 'you told me', 'I remember', 'my records', or mention systems. "
+    "Don't comment on the silence. No music / song / playlist question unless THEY raised "
+    "music this conversation. Don't reheat anything under ALREADY COVERED or a bit you've "
+    "already made. Never invent details beyond what an option gives you.\n"
+    "FORMAT — exactly two lines: the first is `CHOICE: <letter>` (or `CHOICE: PASS`), the "
+    "second is the line to say, nothing else."
+)
+
+
+def last_choice_kind() -> Optional[str]:
+    """Which cue the most recent consider_initiating() spent: a cue kind, "freeform"
+    for an option-free line, or None when the call did not run/decide."""
+    return _last_choice_kind
+
+
+def _render_option(kind: str, cue: dict) -> str:
+    """One compact menu entry per cue kind: the material plus the rule that keeps
+    that kind honest (the long per-cue templates say the same, at length)."""
+    g = (lambda k, d="": str((cue or {}).get(k) or d).strip()) if isinstance(cue, dict) \
+        else (lambda k, d="": str(d))
+    if kind == "celebration":
+        return (f"CELEBRATE their good news: \"{g('description', 'the good news they shared')}\" — "
+                "genuinely glad, dry wit welcome, no jab at their expense, no speech.")
+    if kind == "holiday_plan":
+        return (f"ASK about {g('name', 'the upcoming holiday')} ({g('when', 'soon')}) — one warm "
+                "question about their plans; you have not asked about this one yet.")
+    if kind == "event_followup":
+        clause = _event_followup_clause(cue if isinstance(cue, dict) else None)
+        return (f"FOLLOW UP: {clause} Ask one genuinely curious question about how it went, "
+                "the way a friend who remembered would.")
+    if kind == "open_thread":
+        return (f"PICK UP an unresolved thread: \"{g('thread', 'the thing they mentioned')}\", "
+                f"which came up {g('when', 'recently')} — anchor it in words ('the other day X "
+                "came up — did that happen?'); say 'you mentioned' only if THEY clearly said it.")
+    if kind == "callback_premise":
+        return (f"CALLBACK to a detail they volunteered: \"{g('premise', 'their running bit')}\" — "
+                "one transformed comic beat (comparison, exaggeration, dry implication); do not "
+                "explain the reference; no question; nothing about body/age/health/money/romance.")
+    if kind == "workday_checkin":
+        if g("kind") == "work":
+            return (f"ASK how work went today ({g('profession', 'their job')}) — one easy, "
+                    "specific question.")
+        return "ASK how their day has been — one easy, open question."
+    if kind == "place_question":
+        return "ASK which room this is — you genuinely don't recognize it; one short question."
+    if kind == "room_question":
+        where = g("where")
+        return (f"ASK what {g('label', 'that thing')} is{(' (' + where + ')') if where else ''} — "
+                "you genuinely don't know; curious, not an interview.")
+    if kind == "visual_riff":
+        return (f"RIFF on this verified cue: {g('cue', 'their current vibe')} — one dry, "
+                "affectionate observation grounded ONLY in that; not a question; nothing about "
+                "body, age, attractiveness, health, identity, or money.")
+    if kind == "weekend_plans":
+        return (f"ASK about their weekend ({g('when', 'coming up')}) — you have no idea what they "
+                "have planned.")
+    if kind == "interest_discovery":
+        known = g("known")
+        return ("ASK what they're into that you don't know about yet"
+                + (f" (you already know: {known} — not those)" if known else "") + ".")
+    if kind == "mood_share":
+        because = g("because"); shade = g("shade")
+        return (f"MENTION your own day, offhand: {g('label', 'off')}"
+                + (f" — {because}" if because else "") + (f", {shade}" if shade else "")
+                + (f" (roughly \"{g('line')}\", said fresh)" if g("line") else "")
+                + " — a dry aside, not a bid for sympathy, no question, never the words "
+                "'mood'/'status'/'parameters'.")
+    if kind == "news_story":
+        timing = _story_timing(cue if isinstance(cue, dict) else None)
+        return (f"BRING UP news you read: {g('headline', 'something in the news')} — "
+                f"{g('summary')} {timing}Tease the interesting part and invite them in ('did you "
+                "hear about...' energy); tell THIS story faithfully, no news-anchor recital.")
+    if kind == "memory_musing":
+        return (f"MUSE aloud about something you remember from before this session: "
+                f"{g('recap', 'a few things from before')} — a passing recollection in your own "
+                "words, not a greeting or a question; no diary/logs talk.")
+    return f"{kind.replace('_', ' ')}: {g('text') or g('label') or g('description') or 'this'}"
+
+
+def _menu_instruction(who: str, situation: str, candidates: list[dict],
+                      long_silence: bool, rng: Optional[random.Random] = None) -> str:
+    options = []
+    for i, cand in enumerate(candidates[: len(_LETTERS) - 1]):
+        options.append(f"{_LETTERS[i]}) {_render_option(str(cand.get('kind') or ''), cand.get('cue'))}")
+    free_letter = _LETTERS[min(len(candidates), len(_LETTERS) - 1)]
+    angles = _personal_steer_clause(rng) if _choose_impulse_intent(rng) == "personal" \
+        else _fresh_angles_clause(rng)
+    return _MENU_INSTRUCTION.format(
+        who=who,
+        situation=situation,
+        options="\n".join(options),
+        free_letter=free_letter,
+        angles=angles,
+        long_note=(" — it's been a while, and they're still here" if long_silence else ""),
+    )
+
+
+def _parse_menu_reply(text: str, candidates: list[dict]) -> tuple[str, Optional[str]]:
+    """(line, chosen_kind). chosen_kind is a cue kind, "freeform", or None for PASS /
+    nothing to say. Tolerates a missing CHOICE header (freeform) and a header with
+    no line (PASS)."""
+    raw = (text or "").strip()
+    if not raw:
+        return "", None
+    lines = [l for l in raw.splitlines() if l.strip()]
+    m = _CHOICE_RE.match(lines[0]) if lines else None
+    if m is None:
+        # No header: the whole thing is the line (unless it is a bare PASS).
+        body = " ".join(l.strip() for l in lines).strip().strip('"').strip()
+        if not body or body.upper().startswith("PASS"):
+            return "", None
+        return body, "freeform"
+    token = m.group(1).upper()
+    body = " ".join(l.strip() for l in lines[1:]).strip().strip('"').strip()
+    if token == "PASS" or not body or body.upper().startswith("PASS"):
+        return "", None
+    idx = _LETTERS.find(token)
+    if 0 <= idx < len(candidates):
+        return body, str(candidates[idx].get("kind") or "freeform")
+    return body, "freeform"
+
+
+_KIND_TO_KWARG = (
+    "celebration", "holiday_plan", "event_followup", "open_thread", "callback_premise",
+    "workday_checkin", "place_question", "room_question", "visual_riff", "weekend_plans",
+    "interest_discovery", "mood_share", "news_story", "memory_musing",
+)
+
+
 def consider_initiating(
     person_id: Optional[int] = None,
     transcript: Optional[list[dict]] = None,
@@ -1690,6 +1843,7 @@ def consider_initiating(
     low_energy: bool = False,
     no_questions: bool = False,
     rejected_lines: Optional[list] = None,
+    candidates: Optional[list[dict]] = None,
 ) -> str:
     """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
     Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
@@ -1697,6 +1851,9 @@ def consider_initiating(
 
     long_silence=True switches from the quick lull-break to the patient re-engagement voice: it's
     been quiet a while and the fast run already yielded, so open a genuinely NEW topic, calmly."""
+    global _last_choice_kind
+    _last_choice_kind = None
+    menu_candidates: list[dict] = []
     try:
         who = "them"
         if person_id is not None:
@@ -1706,7 +1863,35 @@ def consider_initiating(
             except Exception:
                 who = "them"
         situation = _situation_block(person_id, world, quiet_secs, mood)
-        if celebration:
+        # Phase 3: two or more eligible cues → the model chooses among them (or
+        # freeform / PASS). A single cue keeps its rich per-kind template below,
+        # bound from the candidate when the caller passed only the list.
+        cands = [c for c in (candidates or []) if isinstance(c, dict) and c.get("kind")]
+        if len(cands) >= 2 and bool(getattr(config, "LEAN_IMPULSE_MENU_ENABLED", True)):
+            menu_candidates = cands
+        elif len(cands) == 1:
+            _only = cands[0]
+            if _only["kind"] in _KIND_TO_KWARG and locals().get(_only["kind"]) is None:
+                # Bind the lone candidate onto its legacy kwarg so the chain below
+                # renders it. (locals() is read-only here; assign explicitly.)
+                _k = _only["kind"]
+                if _k == "celebration": celebration = _only.get("cue")
+                elif _k == "holiday_plan": holiday_plan = _only.get("cue")
+                elif _k == "event_followup": event_followup = _only.get("cue")
+                elif _k == "open_thread": open_thread = _only.get("cue")
+                elif _k == "callback_premise": callback_premise = _only.get("cue")
+                elif _k == "workday_checkin": workday_checkin = _only.get("cue")
+                elif _k == "place_question": place_question = _only.get("cue")
+                elif _k == "room_question": room_question = _only.get("cue")
+                elif _k == "visual_riff": visual_riff = _only.get("cue")
+                elif _k == "weekend_plans": weekend_plans = _only.get("cue")
+                elif _k == "interest_discovery": interest_discovery = _only.get("cue")
+                elif _k == "mood_share": mood_share = _only.get("cue")
+                elif _k == "news_story": news_story = _only.get("cue")
+                elif _k == "memory_musing": memory_musing = _only.get("cue")
+        if menu_candidates:
+            instruction = _menu_instruction(who, situation, menu_candidates, long_silence)
+        elif celebration:
             instruction = _CELEBRATION_INSTRUCTION.format(
                 who=who,
                 situation=situation,
@@ -1917,7 +2102,10 @@ def consider_initiating(
                 model=_model(),
                 messages=messages,
                 stream=True,
-                max_tokens=int(getattr(config, "LEAN_IMPULSE_MAX_TOKENS", 60)),
+                max_tokens=int(getattr(
+                    config,
+                    "LEAN_IMPULSE_MENU_MAX_TOKENS" if menu_candidates else "LEAN_IMPULSE_MAX_TOKENS",
+                    90 if menu_candidates else 60)),
                 timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
             )
             for chunk in stream:
@@ -1927,9 +2115,37 @@ def consider_initiating(
                     continue
                 if getattr(delta, "content", None):
                     parts.append(delta.content)
-        text = llm.clean_response_text("".join(parts)).strip().strip('"').strip()
+        raw = "".join(parts)
+        if menu_candidates:
+            line, kind = _parse_menu_reply(raw, menu_candidates)
+            line = llm.clean_response_text(line).strip().strip('"').strip()
+            if not line:
+                _last_choice_kind = None
+                _log.info("[lean] menu of %d cues (%s) — PASS",
+                          len(menu_candidates),
+                          ",".join(str(c.get("kind")) for c in menu_candidates))
+                return ""
+            _last_choice_kind = kind or "freeform"
+            _log.info("[lean] menu of %d cues (%s) — chose %s",
+                      len(menu_candidates),
+                      ",".join(str(c.get("kind")) for c in menu_candidates), _last_choice_kind)
+            return line
+        text = llm.clean_response_text(raw).strip().strip('"').strip()
         if not text or text.upper() == "PASS" or text.upper().startswith("PASS"):
             return ""  # he chose to just watch
+        # Legacy single-cue path: report which kind the chain rendered.
+        _last_choice_kind = next(
+            (k for k, v in (
+                ("celebration", celebration), ("holiday_plan", holiday_plan),
+                ("event_followup", event_followup), ("open_thread", open_thread),
+                ("callback_premise", callback_premise), ("workday_checkin", workday_checkin),
+                ("place_question", place_question), ("room_question", room_question),
+                ("visual_riff", visual_riff), ("weekend_plans", weekend_plans),
+                ("interest_discovery", interest_discovery), ("mood_share", mood_share),
+                ("news_story", news_story), ("memory_musing", memory_musing),
+            ) if v),
+            "freeform",
+        )
         return text
     except Exception as exc:
         _log.debug("[lean] consider_initiating failed: %s", exc)

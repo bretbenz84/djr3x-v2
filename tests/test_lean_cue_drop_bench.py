@@ -135,11 +135,16 @@ class DropBenchLadderTests(unittest.TestCase):
         # _strike_lean_cue writes whatever _winning_kind says; the ladder reads what
         # these tests say. A rename on either side silently disconnects them.
         import inspect
-        src = inspect.getsource(interaction._maybe_lean_impulse)
+        # Phase 3: the ladder became _collect_lean_cue_candidates — every kind is
+        # listed in its spec table and the bench is consulted (by kind) before the
+        # builder runs; the spend site keys the same strings off `chosen`.
+        src = inspect.getsource(interaction._collect_lean_cue_candidates)
+        spend = inspect.getsource(interaction._maybe_lean_impulse)
+        self.assertIn("_lean_cue_blocked(kind)", src)
         for kind in _LOWER_TIER:
             with self.subTest(kind=kind):
                 self.assertIn(f'("{kind}",', src)
-                self.assertIn(f'_lean_cue_blocked("{kind}")', src)
+                self.assertIn(f'chosen == "{kind}"', spend)
 
 
 if __name__ == "__main__":

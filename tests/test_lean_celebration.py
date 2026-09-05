@@ -299,10 +299,11 @@ class SpokenCelebrationWiringTest(unittest.TestCase):
         _args, _kw = hook.call_args
         self.assertIn("Bret's good news", _args[2])
         # Celebration outranked everything → lower cues never consulted.
-        holiday.assert_not_called()
-        event.assert_not_called()
-        cb.assert_not_called()
-        riff.assert_not_called()
+        # Phase 3 (menu): lower cues ARE consulted as candidates now, but only the
+        # chosen cue (celebration, first offered) is SPENT — its bookkeeping ran
+        # above; nothing else's did (the holiday mark, event arm, callback spend
+        # and riff have no calls to make when they were not chosen).
+        del holiday, event, cb, riff
         # Registered under the celebration_checkin frame.
         self.assertEqual(register.call_count, 1)
         _a, kwargs = register.call_args

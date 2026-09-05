@@ -291,6 +291,12 @@ thinking, new speaker arrival, stale news/event cues, interrupted generation, an
 ordinary playful silence. The new chooser replaces both existing winning-cue ladders
 and their duplicated bookkeeping; it does not run alongside them.
 
+Status 2026-09-04 — shipped: `_collect_lean_cue_candidates` (eligibility in Python,
+same gates) + `lean_brain` menu (`CHOICE:` reply, `last_choice_kind()`), spend of the
+chosen cue only, conversation-revision + target revalidation before playback. The
+classic consciousness proactive path is unchanged (it is suppressed under Lean
+except for perception reactors).
+
 ### 4. Introduce action outcomes, then bounded heading alternatives
 
 - Add correlated `ActionResult` records keyed by request/goal ID. Wrap existing

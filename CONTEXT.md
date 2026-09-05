@@ -331,6 +331,23 @@ owner of the deterministic facts (cleared with `topic_thread.clear()`):
 - **Presence notes** (`consciousness.presence_notes`): a known face gone because REX
   moved the camera, versus a reported departure, versus plain "not on camera for N s".
 
+**Lull cues are a menu the model chooses from (phase 3, 2026-09-04).** The old
+`_maybe_lean_impulse` ladder ran cue builders in priority order and STOPPED at the
+first hit, so Python picked the topic and the model only wrote the line. Now
+`_collect_lean_cue_candidates` runs every builder behind the SAME gates (bench before
+builder, question cues off at a low-energy user or a spent question budget, celebration
+offer counted) and offers the survivors — old priority order, one per family
+(`_LEAN_CUE_FAMILY`), capped at `LEAN_IMPULSE_CANDIDATES_MAX` (3) — to the one
+`consider_initiating` call as lettered options plus a freeform option and PASS
+(`lean_brain._MENU_INSTRUCTION`, reply `CHOICE: <letter>` + the line, parsed by
+`_parse_menu_reply`). `lean_brain.last_choice_kind()` reports the pick; ONLY the chosen
+cue is bound and spent by the unchanged per-cue bookkeeping (a stubbed/legacy call that
+reports no choice spends the first offered cue — the old semantics). A single survivor
+still gets its rich per-kind template. Before playback the line is revalidated: a
+transcript revision that changed while deciding (`conv_memory.last_turn_id`) or a
+target no longer present drops it. `LEAN_IMPULSE_MENU_ENABLED=False` restores the
+ladder (first survivor only). Tests: `tests/test_lean_impulse_menu.py`.
+
 Kill switch `LEAN_CONTEXT_STATE_ENABLED`. Phase 1 pieces in the same batch:
 `SURPRISE_STREAM_JOIN_SECS` is 0 (never wait for the surprise classifier before the
 first word), the plan-intent local qwen confirm is skipped under Lean (its directive
