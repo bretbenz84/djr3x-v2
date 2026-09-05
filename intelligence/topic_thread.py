@@ -132,6 +132,12 @@ def clear() -> None:
     global _current
     _current = None
     _clear_arc()
+    # The session's deterministic conversation facts share this lifecycle.
+    try:
+        from intelligence import conversation_state
+        conversation_state.clear()
+    except Exception:
+        pass
 
 
 def snapshot() -> Optional[dict]:
@@ -468,7 +474,7 @@ def _is_polar_or_tag_question(question: str) -> bool:
 
 _arc_lock = threading.Lock()
 _arc_summary: str = ""          # running summary text (read into the system prompt)
-_arc_cursor: int = 0            # transcript length summarized through (new-material gate)
+_arc_cursor: int = 0            # highest transcript turn_id summarized through (new-material gate)
 _arc_refreshing: bool = False   # a background worker is currently summarizing
 _arc_dirty: bool = False        # new material arrived while a worker was running
 _arc_thread: Optional[threading.Thread] = None  # most recent worker (tests join it)
@@ -569,6 +575,29 @@ def arc_summary() -> str:
         return _arc_summary
 
 
+def arc_covered_through() -> int:
+    """The transcript turn_id the current summary covers through (0 = none).
+    Lean widens its verbatim window to every turn after this, so the summary
+    carries the gist and the recent messages carry the exact words."""
+    with _arc_lock:
+        return int(_arc_cursor)
+
+
+def _entry_turn_id(entry: dict, index: int) -> int:
+    """A transcript entry's turn_id (memory/conversations stamps one); entries
+    without it (older fixtures) fall back to their 1-based position, which keeps
+    the cursor arithmetic identical to the old length-based bookkeeping."""
+    try:
+        tid = (entry or {}).get("turn_id")
+        return int(tid) if tid is not None else index + 1
+    except (TypeError, ValueError):
+        return index + 1
+
+
+def _latest_turn_id(transcript: list[dict]) -> int:
+    return max((_entry_turn_id(e, i) for i, e in enumerate(transcript)), default=0)
+
+
 def _arc_field(summary: str, label: str) -> str:
     """Pull one labelled line's value out of the arc summary (e.g. 'Mood')."""
     m = re.search(rf"(?mi)^\s*{re.escape(label)}\s*:\s*(.+)$", summary or "")
@@ -652,13 +681,13 @@ def _trigger_arc_refresh() -> None:
         return
     try:
         from memory import conversations
-        transcript_len = len(conversations.get_session_transcript())
+        latest = _latest_turn_id(conversations.get_session_transcript())
     except Exception:
         return
     with _arc_lock:
-        if _arc_cursor > transcript_len:
+        if _arc_cursor > latest:
             _arc_cursor = 0  # transcript was reset/cleared underneath us
-        if transcript_len <= _arc_cursor:
+        if latest <= _arc_cursor:
             return  # nothing new to fold
         _arc_dirty = True
         if _arc_refreshing:
@@ -700,10 +729,11 @@ def _arc_refresh_core() -> bool:
     except Exception:
         return False
 
+    latest = _latest_turn_id(transcript)
     with _arc_lock:
-        if _arc_cursor > len(transcript):
+        if _arc_cursor > latest:
             _arc_cursor = 0  # transcript reset under us
-        if len(transcript) <= _arc_cursor:
+        if latest <= _arc_cursor:
             return False  # nothing new since the last summary
         committed_cursor = _arc_cursor
 
@@ -735,14 +765,13 @@ def _arc_refresh_core() -> bool:
     if not updated:
         return False
 
-    new_len = len(transcript)
     with _arc_lock:
         # Commit only if no clear()/reset slipped in while we were generating.
         if _arc_cursor != committed_cursor:
             _log.debug("[arc] discarding stale summary (cursor moved)")
             return False
         _arc_summary = updated
-        _arc_cursor = new_len
+        _arc_cursor = latest
     preview = re.sub(r"\s*\n\s*", " | ", updated).strip()
     _log.info(
         "[arc] summary updated in %.2fs (window %d lines): %s",

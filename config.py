@@ -275,6 +275,19 @@ LEAN_BRAIN_ENABLED          = True    # ON for live GUI testing — set False to
 LEAN_BRAIN_MODEL            = ""      # "" → the standard conversation model (gpt-5.4-mini, reasoning off)
 LEAN_BRAIN_MAX_TOKENS       = 120     # keep replies short + first audio fast
 LEAN_BRAIN_TRANSCRIPT_TURNS = 8       # recent turns passed as real user/assistant messages
+# Lean Brain plan phase 2: the verbatim window widens to every turn the running
+# conversation arc has NOT summarized yet (so a reference beyond 8 turns still
+# lands), capped here. The arc covers the rest as a compact note.
+LEAN_BRAIN_TRANSCRIPT_TURNS_MAX = _env_int("LEAN_BRAIN_TRANSCRIPT_TURNS_MAX", 20, min_value=8, max_value=60)
+# intelligence/brain_context.py + conversation_state.py: arc, corrections, body-action
+# outcomes, unanswered questions, presence notes in every Lean call. Kill switch.
+LEAN_CONTEXT_STATE_ENABLED = _env_bool("LEAN_CONTEXT_STATE_ENABLED", True)
+CONVERSATION_STATE_CORRECTION_TTL_SECS = 900.0   # a correction stays in the prompt this long
+CONVERSATION_STATE_ACTION_TTL_SECS = 90.0        # a body-action outcome stays this long
+# memory/semantic.py: total wall-clock budget for INLINE embedding work during one
+# retrieval (topic vector + any uncached candidates). Past it, candidates fall back
+# to keyword relevance immediately and are embedded in the background for next time.
+MEMORY_RETRIEVAL_BUDGET_SECS = _env_float("MEMORY_RETRIEVAL_BUDGET_SECS", 0.25, min_value=0.0, max_value=5.0)
 # Multi-party awareness: when 2+ distinct humans appear in the recent window, history
 # turns carry speaker labels ("JT: ..."), the current turn names its speaker, and the
 # system context gains a room block + other-participant lines — so Rex answers the
@@ -4950,7 +4963,11 @@ SURPRISE_PAUSE_MS_MAX = 500
 # resolve BEFORE the first sentence so the surprise pre-beat can land (the fast first
 # token otherwise wins the race). Bounded — at most this is added to time-to-first-word,
 # and only when the classifier hasn't already finished.
-SURPRISE_STREAM_JOIN_SECS = 0.25
+# 0.25 → 0.0 (Lean Brain plan phase 1, 2026-09-04): never wait for it before the
+# first word. The classifier still runs in parallel; its result is used only if it
+# is already in when the first sentence is ready (it usually is on a 2+ sentence
+# reply's later beats via the emotion state), otherwise the beat is skipped.
+SURPRISE_STREAM_JOIN_SECS = 0.0
 
 # Self-emotion classifier: read the emotional tone of REX'S OWN reply (excited /
 # happy / curious / neutral) so the body actually expresses it — eye colour, speech

@@ -307,6 +307,40 @@ Tests: `tests/test_tool_router.py` (contracts + coverage-enforcement: a new
 
 ### Conversation Voice (lean brain primary, classic prompt as fallback)
 
+**Conversation state reaches Lean (Lean Brain plan phases 1/2/2B, 2026-09-04).**
+`intelligence/brain_context.py` adapts what Rex already knows about THIS conversation
+into a few lines in every Lean call (`_system_prompt` for replies, the impulse's
+system content), and `intelligence/conversation_state.py` is the small session-scoped
+owner of the deterministic facts (cleared with `topic_thread.clear()`):
+
+- The **conversation arc** (`topic_thread`, hosted gpt-4o-mini, background) now
+  reaches the LIVE voice, not just the classic fallback. Its cursor is the highest
+  transcript `turn_id` covered (`arc_covered_through()`), and Lean's verbatim window
+  widens from `LEAN_BRAIN_TRANSCRIPT_TURNS` (8) to every turn after that point,
+  capped by `LEAN_BRAIN_TRANSCRIPT_TURNS_MAX` (20) — the arc carries the gist, the
+  recent messages carry the exact words, so a reference beyond eight turns lands.
+- **Corrections** the person made and Rex acted on (tool-routed name correction,
+  memory forget/discard/boundary, grounding and "I'm still here, you moved" lines
+  detected by the agenda) are stated as OVERRIDING older memory and the arc.
+- **Body-action outcomes**: `motion_controller` records refusals (`_suppressed`,
+  with the reason spelled out), issued turn/move/come commands by seq, and the
+  firmware's done result, so "did you turn?" is answered from the record.
+- **Pending questions**: Rex's own unanswered questions from the dialogue-act frames,
+  rendered only when aimed at someone other than the current speaker ("someone else
+  replying does not answer it for JT").
+- **Presence notes** (`consciousness.presence_notes`): a known face gone because REX
+  moved the camera, versus a reported departure, versus plain "not on camera for N s".
+
+Kill switch `LEAN_CONTEXT_STATE_ENABLED`. Phase 1 pieces in the same batch:
+`SURPRISE_STREAM_JOIN_SECS` is 0 (never wait for the surprise classifier before the
+first word), the plan-intent local qwen confirm is skipped under Lean (its directive
+never reaches the Lean model), and `memory/semantic.py` runs under ONE inline budget
+per retrieval (`MEMORY_RETRIEVAL_BUDGET_SECS`, 0.25 s): past it, uncached candidates
+score by keyword immediately and are embedded by a background prewarm thread for the
+next turn. Phase 2B first slice: `_note_voice_bearing` CLEARS the stored bearing when
+this utterance's read fails — missing DoA is missing evidence, never the previous
+person's bearing. Tests: `tests/test_lean_context_state.py`.
+
 `intelligence/lean_brain.py` is Rex's PRIMARY conversational voice (`LEAN_BRAIN_ENABLED`).
 One streaming model call per turn: the coherent persona (`config.REX_CORE_PROMPT`, via the
 `LEAN_BRAIN_PERSONA` override hook) as the system message + a small live situation block

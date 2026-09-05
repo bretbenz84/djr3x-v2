@@ -767,6 +767,16 @@ def build_turn_plan(
         return _finish(plan, lines)
 
     if _looks_like_offscreen_correction(text):
+        try:
+            from intelligence import conversation_state as _cstate
+            _cstate.note_correction(
+                "presence",
+                "They said they are still here, just out of camera view — "
+                "do not treat them as having left",
+                person_id=person_id,
+            )
+        except Exception:
+            pass
         lines.append(
             "Primary purpose: acknowledge the correction that the person is still "
             "present but out of camera view. Briefly say you have them / there "
@@ -776,6 +786,15 @@ def build_turn_plan(
         return _finish(plan, lines)
 
     if _looks_like_grounding_correction(text):
+        try:
+            from intelligence import conversation_state as _cstate
+            _cstate.note_correction(
+                "grounding",
+                f"They corrected something you got wrong: \"{text}\" — drop the bad guess",
+                person_id=person_id,
+            )
+        except Exception:
+            pass
         # Safety net for corrections that reach llm.stream instead of the
         # deterministic repair path: make the "drop the bad guess, don't
         # re-litigate" contract reach the LLM. Must sit ABOVE the

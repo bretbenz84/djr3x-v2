@@ -73,6 +73,95 @@ _warned = False
 # investigation started in the wrong place.
 _last_error: str = ""
 
+# ── Inline budget + background prewarm (Lean Brain plan phase 1) ─────────────
+# retrieval.retrieve_person_memory wraps its scoring in turn_budget(): the topic
+# vector and any UNCACHED candidate may be embedded inline only while the budget
+# has time left; past the deadline a miss falls back to keyword relevance at once
+# and the text is queued for a background embed, so the NEXT turn finds it cached.
+# No candidate-by-candidate stall inside the prompt build.
+_budget_deadline: Optional[float] = None     # monotonic; None = no budget active
+_prewarm_pending: dict[str, None] = {}       # ordered set of texts to embed later
+_prewarm_thread: Optional[threading.Thread] = None
+_prewarm_wake = threading.Event()
+
+
+class turn_budget:
+    """Context manager: bound the inline embedding time for one retrieval."""
+
+    def __init__(self, secs: Optional[float] = None) -> None:
+        self.secs = float(_cfg("MEMORY_RETRIEVAL_BUDGET_SECS", 0.25) if secs is None else secs)
+
+    def __enter__(self):
+        global _budget_deadline
+        _budget_deadline = time.monotonic() + max(0.0, self.secs)
+        return self
+
+    def __exit__(self, *exc):
+        global _budget_deadline
+        _budget_deadline = None
+        return False
+
+
+def _budget_remaining() -> Optional[float]:
+    """Seconds left in the active retrieval budget; None when no budget is set."""
+    if _budget_deadline is None:
+        return None
+    return _budget_deadline - time.monotonic()
+
+
+def prewarm_texts(texts) -> int:
+    """Queue candidate texts for a background embed (cache fill). Returns how
+    many were newly queued. Safe to call from the reply path: it never blocks."""
+    queued = 0
+    with _state_lock:
+        for t in texts or []:
+            t = (t or "").strip()
+            if t and t not in _cand_cache and t not in _prewarm_pending:
+                _prewarm_pending[t] = None
+                queued += 1
+    if queued:
+        _ensure_prewarm_worker()
+        _prewarm_wake.set()
+    return queued
+
+
+def _ensure_prewarm_worker() -> None:
+    global _prewarm_thread
+    if _prewarm_thread is not None and _prewarm_thread.is_alive():
+        return
+    _prewarm_thread = threading.Thread(
+        target=_prewarm_loop, name="semantic-prewarm", daemon=True)
+    _prewarm_thread.start()
+
+
+def _prewarm_loop() -> None:
+    """One text at a time, only while the breaker is healthy, with a short pause
+    between requests so it never competes hard with a live turn's inference."""
+    while True:
+        _prewarm_wake.wait(timeout=30.0)
+        _prewarm_wake.clear()
+        while True:
+            with _state_lock:
+                if not _prewarm_pending:
+                    break
+                text = next(iter(_prewarm_pending))
+                _prewarm_pending.pop(text, None)
+            if text in _cand_cache:
+                continue
+            if not _healthy():
+                # Breaker open: drop the backlog quietly; a later retrieval re-queues.
+                with _state_lock:
+                    _prewarm_pending.clear()
+                break
+            vec = _embed(text)
+            if vec is not None:
+                with _state_lock:
+                    cap = int(_cfg("MEMORY_SEMANTIC_CACHE_SIZE", 1024))
+                    if len(_cand_cache) >= max(16, cap):
+                        _cand_cache.clear()
+                    _cand_cache[text] = vec
+            time.sleep(0.05)
+
 
 def _cfg(name: str, default):
     try:
@@ -195,6 +284,22 @@ def _request_embedding(text: str, *, timeout: Optional[float] = None) -> np.ndar
     return vec / norm
 
 
+# Request-timeout cap for the embed in flight (set by _embed_within, read by
+# _embed). A module variable rather than a new _embed parameter so tests and
+# callers that swap _embed(text) keep working.
+_timeout_cap: Optional[float] = None
+
+
+def _embed_within(text: str, budget_secs: float) -> Optional[np.ndarray]:
+    """_embed with the request timeout capped to the remaining retrieval budget."""
+    global _timeout_cap
+    _timeout_cap = min(_inline_timeout(), max(0.05, float(budget_secs)))
+    try:
+        return _embed(text)
+    finally:
+        _timeout_cap = None
+
+
 def _embed(text: str) -> Optional[np.ndarray]:
     """Return an L2-normalized embedding for `text`, or None on any failure.
     Never blocks while the breaker is open."""
@@ -203,7 +308,7 @@ def _embed(text: str) -> Optional[np.ndarray]:
     if not text or not _healthy():
         return None
     try:
-        vec = _request_embedding(text)
+        vec = _request_embedding(text, timeout=_timeout_cap)
     except Exception as exc:
         _last_error = f"{type(exc).__name__}: {exc}"
         _note_failure()
@@ -321,7 +426,12 @@ def warmup() -> bool:
 def _embed_candidate(text: str) -> Optional[np.ndarray]:
     if text in _cand_cache:
         return _cand_cache[text]
-    vec = _embed(text)
+    remaining = _budget_remaining()
+    if remaining is not None and remaining <= 0.0:
+        # Budget spent: keyword relevance for this one NOW, embed it for next time.
+        prewarm_texts([text])
+        return None
+    vec = _embed(text) if remaining is None else _embed_within(text, remaining)
     # Cache SUCCESSES only. A None memoized during an outage is never retried —
     # _cand_cache is cleared only on overflow (1024 entries) — so a transient
     # endpoint blip permanently demoted those exact candidate texts to keyword
@@ -343,7 +453,10 @@ def _topic_vector(topic_tokens) -> Optional[np.ndarray]:
         return None
     if _topic_cache[0] == key:
         return _topic_cache[1]
-    vec = _embed(key)
+    remaining = _budget_remaining()
+    if remaining is not None and remaining <= 0.0:
+        return None
+    vec = _embed(key) if remaining is None else _embed_within(key, remaining)
     if vec is None:
         # Same negative-caching trap as _embed_candidate, and worse here: the topic
         # key holds until the conversation's topic tokens change, so one failure
@@ -370,10 +483,12 @@ def relevance(topic_tokens, text: str, cap: int) -> float:
 def reset_cache() -> None:
     """Test/diagnostic hook: clear caches + circuit breaker."""
     global _cand_cache, _topic_cache, _fail_count, _disabled_until, _warned
-    global _open, _cooldown_secs, _probe_in_flight, _last_error
+    global _open, _cooldown_secs, _probe_in_flight, _last_error, _budget_deadline
     with _state_lock:
         _cand_cache = {}
         _topic_cache = ("", None)
+        _prewarm_pending.clear()
+        _budget_deadline = None
         _fail_count = 0
         _disabled_until = 0.0
         _warned = False

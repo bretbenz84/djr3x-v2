@@ -352,6 +352,11 @@ def _on_motion_done(msg: dict) -> None:
         global _last_come_result
         if _last_come_seq is not None and msg.get("seq") == _last_come_seq:
             _last_come_result = result or None
+        try:
+            from intelligence import conversation_state
+            conversation_state.note_action_result(msg.get("seq"), result)
+        except Exception:
+            pass
         if result == "blocked":
             _fx("slow_down")
             _maybe_announce_blocked(msg or {})
@@ -811,6 +816,15 @@ def last_refusal(max_age: float = 3.0) -> "dict | None":
     return dict(r)
 
 
+def _note_issued(seq: "int | None", verb: str, detail: str = "") -> None:
+    """Record an accepted command for the conversation state (see _suppressed)."""
+    try:
+        from intelligence import conversation_state
+        conversation_state.note_action_issued(seq, verb, detail)
+    except Exception:
+        pass
+
+
 def _suppressed(verb: str, reason: str) -> None:
     """Log a refused autonomous command, and when a human asked for it out loud,
     let Rex say WHY. A silent no-op reads as "he ignores my commands" (field
@@ -820,6 +834,13 @@ def _suppressed(verb: str, reason: str) -> None:
     line = _refusal_line(reason)
     _last_refusal = {"verb": verb, "reason": reason, "line": line, "spoke": False,
                      "at": time.monotonic()}
+    # Lean Brain phase 2/4 seed: the refusal is a conversation fact the reply
+    # model must see, so "did you turn?" is answered from the record.
+    try:
+        from intelligence import conversation_state
+        conversation_state.note_action_refused(verb, reason)
+    except Exception:
+        pass
     if line is None or not _user_commanded_fx():
         return                       # autonomous legs stay quiet; they retry constantly
     now = time.monotonic()
@@ -937,6 +958,7 @@ def turn(
     _cancel_arc()
     seq = motion.send({"cmd": "turn", "deg": deg, "rate": rate})
     if seq is not None:
+        _note_issued(seq, "turn", f"{'left' if deg > 0 else 'right'} {abs(deg):.0f}°")
         _remember_turn_verification(
             seq,
             desired_deg=deg,
@@ -962,6 +984,8 @@ def move(dist: float, speed: "float | None" = None) -> "int | None":
     _invalidate_turn_verification()
     _cancel_arc()
     seq = motion.send({"cmd": "move", "dist": dist, "speed": speed})
+    if seq is not None:
+        _note_issued(seq, "move", f"{'forward' if dist > 0 else 'back'} {abs(dist):.2f} m")
     if seq is not None:
         _fx_drive_loop_start("motion_move", seq)
     return seq
@@ -1033,6 +1057,8 @@ def come(heading: float = 0.0, stop_at: "float | None" = None,
         payload["speed"] = _clampf(abs(speed), 0.0,
                                    _get_float("MOTION_MAX_LINEAR_MS", 0.40))
     seq = motion.send(payload)
+    if seq is not None:
+        _note_issued(seq, "come here")
     if seq is not None:
         global _last_come_seq, _last_come_result
         _last_come_seq = seq

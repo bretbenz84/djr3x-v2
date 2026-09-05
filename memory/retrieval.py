@@ -109,6 +109,21 @@ def _cfg(name: str, default):
         return default
 
 
+def _inline_budget():
+    """One total wall-clock budget for the semantic backend's inline embedding
+    during this retrieval (memory.semantic.turn_budget); a no-op context when the
+    semantic layer is off or unavailable."""
+    import contextlib
+    try:
+        import config
+        if not getattr(config, "MEMORY_SEMANTIC_RECALL_ENABLED", False):
+            return contextlib.nullcontext()
+        from memory import semantic
+        return semantic.turn_budget()
+    except Exception:
+        return contextlib.nullcontext()
+
+
 def retrieve_person_memory(
     person_id: int,
     *,
@@ -142,12 +157,13 @@ def retrieve_person_memory(
     )
 
     items: list[MemoryItem] = []
-    for f in facts_list:
-        rel = _relevance(topic_tokens, _fact_text(f), cap)
-        items.append(MemoryItem("fact", _fact_base(f) * fw + boost * rel, rel, f))
-    for it in interests_list:
-        rel = _relevance(topic_tokens, _interest_text(it), cap)
-        items.append(MemoryItem("interest", _interest_base(it) * iw + boost * rel, rel, it))
+    with _inline_budget():
+        for f in facts_list:
+            rel = _relevance(topic_tokens, _fact_text(f), cap)
+            items.append(MemoryItem("fact", _fact_base(f) * fw + boost * rel, rel, f))
+        for it in interests_list:
+            rel = _relevance(topic_tokens, _interest_text(it), cap)
+            items.append(MemoryItem("interest", _interest_base(it) * iw + boost * rel, rel, it))
 
     items.sort(key=lambda m: m.score, reverse=True)
     budget = max(0, int(budget))

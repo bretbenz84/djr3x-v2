@@ -141,7 +141,16 @@ def classify(text: str) -> dict:
 
 
 def _qwen_confirm_enabled() -> bool:
-    return bool(getattr(config, "PLAN_INTENT_QWEN_CONFIRM_ENABLED", True))
+    """The local sparse-vs-specific confirm runs on the reply hot path (up to
+    PLAN_INTENT_QWEN_TIMEOUT_SECS before the first token). Under the Lean brain
+    the plan directive it refines never reaches the model — Lean consumes only
+    the callback directive — so the call is pure latency there (Lean Brain plan,
+    phase 1). It still runs for the classic prompt path."""
+    if not bool(getattr(config, "PLAN_INTENT_QWEN_CONFIRM_ENABLED", True)):
+        return False
+    if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
+        return False
+    return True
 
 
 def _qwen_is_specific(text: str) -> bool:

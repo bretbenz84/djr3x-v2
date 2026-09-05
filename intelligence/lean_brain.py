@@ -464,11 +464,38 @@ def _system_prompt(
         + _taste_lines(user_text)
         + _reaction_lines(person_id)
         + _cadence_lines(person_id)
+        + _context_lines(person_id, for_reply=True)
         + list(extra_lines or [])
     )
     if not ctx:
         return persona
     return persona + "\n\nRight now:\n" + "\n".join("- " + line for line in ctx)
+
+
+def _context_lines(person_id: Optional[int], *, for_reply: bool) -> list[str]:
+    """Conversation state for this call (intelligence/brain_context.py): the
+    running arc, corrections, body-action outcomes, unanswered questions,
+    presence notes. Fail-safe to []."""
+    try:
+        from intelligence import brain_context
+        return brain_context.lines(person_id, for_reply=for_reply)
+    except Exception as exc:
+        _log.debug("[lean] context lines skipped: %s", exc)
+        return []
+
+
+def _transcript_window(transcript: Optional[list[dict]]) -> list[dict]:
+    """Recent turns to pass verbatim: LEAN_BRAIN_TRANSCRIPT_TURNS at least, widened
+    to every turn the arc has not summarized yet (phase 2 — follow a reference
+    beyond eight messages), capped at LEAN_BRAIN_TRANSCRIPT_TURNS_MAX."""
+    keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))
+    if not keep:
+        return []
+    try:
+        from intelligence import brain_context
+        return brain_context.transcript_window(transcript, base_keep=keep)
+    except Exception:
+        return list(transcript or [])[-keep:]
 
 
 # ── Multi-party awareness ────────────────────────────────────────────────────
@@ -691,10 +718,9 @@ def _messages(
     the system context gains a room block + a line about the other participant(s). A
     1-on-1 session carries none of this weight. ``label_current_speaker=False`` is the
     directive path (proactive lines), whose final message is an instruction, not speech."""
-    keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))
     turns: list[tuple[str, str, str]] = []   # (role, raw_speaker, text)
     raw_speakers: list[str] = []
-    for turn in (transcript or [])[-keep:] if keep else []:
+    for turn in _transcript_window(transcript):
         text = str(turn.get("text") or "").strip()
         if not text:
             continue
@@ -1856,14 +1882,16 @@ def consider_initiating(
         # just caused, the spent how-are-you ask) rides along, same as replies.
         _self_lines = (
             _mood_lines() + _reaction_lines(person_id) + _cadence_lines(person_id)
+            # Phase 2: the impulse also sees the arc, corrections, what the body
+            # did, and which of its own questions are still unanswered.
+            + _context_lines(person_id, for_reply=False)
         )
         _sys_content = _persona() if not _self_lines else (
             _persona() + "\n\nRight now:\n"
             + "\n".join("- " + line for line in _self_lines)
         )
         messages: list[dict] = [{"role": "system", "content": _sys_content}]
-        keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))
-        for turn in (transcript or [])[-keep:] if keep else []:
+        for turn in _transcript_window(transcript):
             text = str(turn.get("text") or "").strip()
             if not text:
                 continue

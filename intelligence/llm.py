@@ -1592,7 +1592,7 @@ def _one_voice_transcript() -> Optional[list[dict]]:
         from intelligence import conv_memory
         rows = conv_memory.get_session_transcript() or []
         return [
-            {"speaker": r.get("speaker"), "text": r.get("text")}
+            {"speaker": r.get("speaker"), "text": r.get("text"), "turn_id": r.get("turn_id")}
             for r in rows if str(r.get("text") or "").strip()
         ]
     except Exception:

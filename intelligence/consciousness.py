@@ -9739,6 +9739,47 @@ def _camera_pose() -> "tuple[Optional[float], Optional[float]]":
     return neck, yaw
 
 
+def presence_notes(now: Optional[float] = None) -> list[str]:
+    """Prompt lines for KNOWN people currently off camera (Lean Brain phase 2,
+    intelligence/brain_context.py): whether their absence is Rex's own camera
+    motion, a departure someone reported, or plain "not on camera for a while".
+    Nothing here decides a departure — that stays with the presence step; this
+    only tells the reply model which of the three it is looking at."""
+    now = time.monotonic() if now is None else float(now)
+    lines: list[str] = []
+    try:
+        missing = list(_first_missing_at.items())
+    except Exception:
+        return lines
+    for key, first_missing in missing:
+        if not isinstance(key, int):
+            continue                          # unknown slots: nothing to name
+        try:
+            from memory import people
+            person = people.get_person(int(key)) or {}
+        except Exception:
+            person = {}
+        name = str(person.get("name") or "").strip().split()[0] if person.get("name") else None
+        if not name:
+            continue
+        gone = max(0.0, now - float(first_missing or now))
+        if _camera_moved_since_seen(key, now):
+            lines.append(
+                f"{name} is out of frame because YOU moved the camera (head or base), "
+                f"not because they left — do not say they slipped off or disappeared."
+            )
+        elif recent_reported_departure(key):
+            lines.append(f"{name} left the room (someone said so) — they are gone, not hiding.")
+        elif gone >= 8.0:
+            lines.append(
+                f"{name} has not been on camera for ~{int(gone)}s — maybe stepped out, "
+                f"maybe just out of view; don't assert either."
+            )
+        if len(lines) >= 3:
+            break
+    return lines
+
+
 def _camera_moved_since_seen(key, now: float) -> bool:
     """True while the camera points somewhere else than when `key` was last
     seen — their absence is Rex's own motion, not theirs. Bounded by

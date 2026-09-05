@@ -15513,17 +15513,28 @@ _last_voice_bearing: Optional[dict] = None
 def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
     """Record the dominant direction of arrival over a captured segment."""
     global _last_voice_bearing
+    # Phase 2B, first slice: a read that fails or returns nothing for THIS
+    # utterance is MISSING evidence. The previous person's bearing must not be
+    # reused to pick a face or aim a turn for the words that just arrived, so
+    # the stored bearing is cleared here rather than left to age out (12 s).
     try:
         from hardware import flex_doa
         if not flex_doa.available():
+            _last_voice_bearing = None
             return None
         res = flex_doa.bearing_between(t0, t1)
     except Exception as exc:
         _log.debug("[voice_doa] read failed: %s", exc)
+        _last_voice_bearing = None
         return None
     if res is None:
+        if _last_voice_bearing is not None:
+            _log.info("[voice_doa] no usable bearing for this utterance — "
+                      "dropping the previous one rather than reusing it")
+        _last_voice_bearing = None
         return None
     res["at"] = time.monotonic()
+    res["utterance_t0"] = float(t0)
     _last_voice_bearing = res
     try:
         from intelligence import motion_agency as _ma
@@ -16059,6 +16070,17 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
             resp = None
         if resp:
             _tool_routed_path.append(f"tool_router.{action}")
+            try:
+                from intelligence import conversation_state as _cstate
+                _new = str((args or {}).get("new_name") or (args or {}).get("name") or "").strip()
+                _cstate.note_correction(
+                    "name",
+                    (f"They corrected their name to {_new}" if _new
+                     else "They corrected their name") + f" (they said: \"{text}\")",
+                    person_id=person_id,
+                )
+            except Exception:
+                pass
             return resp
 
     if action == "memory.forget_person":
@@ -16170,6 +16192,22 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
                 resp = None
         if resp:
             _tool_routed_path.append(f"tool_router.{action}")
+            if resp:
+                try:
+                    from intelligence import conversation_state as _cstate
+                    _kind = {"memory.forget_specific": "forget",
+                             "memory.recent_discard": "discard",
+                             "emotional.boundary": "boundary"}.get(action, "correction")
+                    _cstate.note_correction(
+                        _kind,
+                        {"forget": "They asked you to forget something you had stored",
+                         "discard": "They said something you just took as fact was wrong — you dropped it",
+                         "boundary": "They set a boundary: do not bring that topic up"}[
+                            _kind] + f" (they said: \"{text}\")",
+                        person_id=person_id,
+                    )
+                except Exception:
+                    pass
             return resp
         # Declined (guard, no resolvable target, nothing recent to discard) — answer
         # as conversation so the turn is never silent, same tail as event.cancel.
@@ -17172,7 +17210,7 @@ def _lean_recent_transcript(user_text: str) -> list[dict]:
     except Exception:
         return []
     turns = [
-        {"speaker": r.get("speaker"), "text": r.get("text")}
+        {"speaker": r.get("speaker"), "text": r.get("text"), "turn_id": r.get("turn_id")}
         for r in rows if str(r.get("text") or "").strip()
     ]
     if turns and str(turns[-1].get("text") or "").strip() == str(user_text or "").strip():

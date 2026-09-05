@@ -161,6 +161,11 @@ process memory and pressure sampling, and the injected-sink replay harness on
   work, expire stale jobs, and avoid launching it while ASR or local TTS needs the
   machine. Do not claim a Python thread can preempt an already-running GPU request.
 
+Status 2026-09-04 — shipped: surprise join → 0 s, plan-intent local confirm off
+under Lean, one inline embedding budget per retrieval with background prewarm
+(`memory/semantic.turn_budget`). Not done: the Lean-specific minimal agenda path
+(frame/comedy mode are still built; they feed TTS voice settings and the audio tag).
+
 Acceptance: no new model calls on ordinary replies; before/after p50 and p95 show
 no regression and identify actual savings. No degradation of recall, safety gates,
 first-sentence voice, or interruption recovery. Do not blindly shorten endpoint
@@ -185,6 +190,12 @@ silence: the history records a tradeoff with cutting people off.
 Acceptance: Rex can follow a reference beyond eight messages, acknowledge a recent
 correction, know which question remains unanswered, and distinguish “I looked away”
 from “they left,” without waiting for a fresh summary or adding a serial call.
+
+Status 2026-09-04 — shipped: `intelligence/brain_context.py` +
+`intelligence/conversation_state.py` (arc with covered-through turn_id, widened
+verbatim window, corrections, body-action outcomes, pending questions per target,
+presence notes) in both Lean calls. See CONTEXT.md "Conversation Voice". Owner's
+call: skip further measurement; behavior first.
 
 ### 2B. Make group attribution a first-class contract
 
@@ -251,7 +262,8 @@ every group turn. Add tests around `test_voice_primary_identity`,
 `test_game_roster_identity` in separate processes per CLAUDE.md.
 
 First concrete slice: utterance IDs on bearing/visual evidence and no reuse of the
-previous person's DoA when a current read fails. Follow with the unified resolver
+previous person's DoA when a current read fails. (Shipped 2026-09-04: `_note_voice_bearing`
+clears the stored bearing on a failed read and stamps `utterance_t0`.) Follow with the unified resolver
 and learning gates, then measured segmentation improvements. Live labeled capture
 requires the owner's explicit go; this planning pass neither records nor moves Rex.
 
