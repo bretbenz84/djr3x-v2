@@ -314,6 +314,15 @@ def _try_swing_escape(deg: float, rate: float) -> "int | None":
         if seq is None:
             return None
         _swing_escape = {"seq": seq, "deg": deg, "rate": rate}
+    try:
+        from intelligence import conversation_state
+        rec = conversation_state.last_action_for_seq(seq)
+        if rec is not None:
+            conversation_state.note_action_issued(
+                None, "plan", f"the {'left' if deg > 0 else 'right'} {abs(deg):.0f}° turn was "
+                "blocked behind, so you stepped forward first to earn room and will turn on arrival")
+    except Exception:
+        pass
     _log.info("[swing] %+.0f° turn blocked behind — stepping %.2f m forward first (seq %d)",
               deg, step, seq)
     return seq
@@ -413,6 +422,7 @@ def _remember_turn_verification(
         return  # shortest-angle comparison is ambiguous at/above a half turn
     with _turn_verify_lock:
         _pending_turn_verify[int(seq)] = {
+            "seq": int(seq),
             "desired_deg": float(desired_deg),
             "rate": float(rate),
             "start_yaw": float(start_yaw),
@@ -463,6 +473,14 @@ def _verify_completed_turn(record: dict) -> None:
     while error <= -180.0:
         error += 360.0
     tolerance = _get_float("MOTION_COMPASS_TURN_TOLERANCE_DEG", 4.0)
+    # The measured rotation is the action's truth (Lean Brain phase 4): a turn
+    # that "completed" 30° short is recorded as partial, not as done.
+    try:
+        from intelligence import conversation_state
+        conversation_state.note_action_verified(
+            record.get("seq"), requested_deg=desired, measured_deg=float(actual))
+    except Exception:
+        pass
     if abs(error) <= tolerance:
         _log.info(
             "[motion] compass verified turn: requested=%+.1f actual=%+.1f error=%+.1f deg",
@@ -790,6 +808,9 @@ def _tof_should_cut_inflight() -> bool:
 
 
 _last_refusal: "dict | None" = None   # the most recent refused command — see last_refusal()
+# verb -> human detail of the command being refused right now ("left 90°"),
+# stamped by the command before it can be refused so the record names the ask.
+_refusal_detail: dict = {}
 
 
 def _refusal_line(reason: str) -> "str | None":
@@ -816,13 +837,36 @@ def last_refusal(max_age: float = 3.0) -> "dict | None":
     return dict(r)
 
 
-def _note_issued(seq: "int | None", verb: str, detail: str = "") -> None:
-    """Record an accepted command for the conversation state (see _suppressed)."""
+def _note_issued(seq: "int | None", verb: str, detail: str = "", **kw) -> None:
+    """Record an accepted command for the conversation state (see _suppressed).
+    kw: requested_deg / attempted_deg / alternative — the ActionResult fields."""
     try:
         from intelligence import conversation_state
-        conversation_state.note_action_issued(seq, verb, detail)
+        conversation_state.note_action_issued(seq, verb, detail, **kw)
     except Exception:
         pass
+
+
+def _heading_alternative(deg: float, tof: "dict | None") -> "float | None":
+    """For a HEADING goal ("turn around", "face north") blocked by the swing
+    check, the equivalent spin the other way — deg - sign*360 — if the whole
+    sweep clears the swing check. Cheap geometry, no model call. None when the
+    alternative is refused or shrunk too (unknown coverage is not clearance).
+    Physical use is gated by MOTION_HEADING_ALTERNATIVES_ENABLED (default off
+    until an authorized floor test verifies it on the real robot)."""
+    if not bool(getattr(config, "MOTION_HEADING_ALTERNATIVES_ENABLED", False)):
+        return None
+    if not deg:
+        return None
+    alt = deg - (360.0 if deg > 0 else -360.0)
+    limit = _get_float("MOTION_HEADING_ALTERNATIVE_MAX_DEG", 360.0)
+    if abs(alt) < 1.0 or abs(alt) > limit:
+        return None
+    from intelligence import motion_swing
+    send, reason = motion_swing.check_turn(alt, tof)
+    if reason or abs(send) < abs(alt) - 1.0:
+        return None
+    return alt
 
 
 def _suppressed(verb: str, reason: str) -> None:
@@ -838,7 +882,7 @@ def _suppressed(verb: str, reason: str) -> None:
     # model must see, so "did you turn?" is answered from the record.
     try:
         from intelligence import conversation_state
-        conversation_state.note_action_refused(verb, reason)
+        conversation_state.note_action_refused(verb, reason, _refusal_detail.get(verb, ""))
     except Exception:
         pass
     if line is None or not _user_commanded_fx():
@@ -905,12 +949,21 @@ def turn(
     *,
     _verify_attempt: int = 0,
     _escaped: bool = False,
+    allow_reverse: bool = False,
 ) -> "int | None":
     """Spin in place by `deg` (+ = left/CCW). Closed loop on the ESP32.
 
     If the swing would sweep the body/arms into something (usually behind him),
     he first steps forward to earn the room and turns on arrival; `_escaped`
-    marks that second attempt so it can't step again."""
+    marks that second attempt so it can't step again.
+
+    allow_reverse: the request is a HEADING goal ("turn around", "face north"),
+    not a direction ("turn left") — so when the swing check blocks this way and
+    MOTION_HEADING_ALTERNATIVES_ENABLED is on, the equivalent spin the other way
+    may be sent instead (validated over its whole sweep). A directional request
+    never silently becomes a long turn the other way (Lean Brain plan, phase 4)."""
+    requested_deg = float(deg)
+    _refusal_detail["turn"] = f"{'left' if deg > 0 else 'right'} {abs(deg):.0f}°"
     reason = _autonomous_allowed()
     if reason:
         _suppressed("turn", reason)
@@ -921,8 +974,9 @@ def turn(
     deg = _clampf(deg, -360.0, 360.0)
     from intelligence import motion_swing
     tele = motion.telemetry()
-    send_deg, reason = motion_swing.check_turn(
-        deg, tele.get("tof_mm") if isinstance(tele, dict) else None)
+    tof_now = tele.get("tof_mm") if isinstance(tele, dict) else None
+    send_deg, reason = motion_swing.check_turn(deg, tof_now)
+    alternative = ""
     spin_floor = _get_float("MOTION_SPIN_ALL_OR_NOTHING_DEG", 270.0)
     if (not reason and spin_floor > 0.0 and abs(deg) >= spin_floor
             and abs(send_deg) < abs(deg) - 1.0):
@@ -937,6 +991,15 @@ def turn(
         _log.info("[motion] %+.0f° spin refused rather than shrunk to %+.0f°",
                   deg, send_deg)
         reason = "swing_blocked"
+    if reason == "swing_blocked" and allow_reverse and _verify_attempt == 0:
+        alt = _heading_alternative(deg, tof_now)
+        if alt is not None:
+            _log.info("[motion] %+.0f° heading turn blocked this way — going %+.0f° the other "
+                      "way instead (same final heading)", deg, alt)
+            alternative = (f"asked {'left' if deg > 0 else 'right'} {abs(deg):.0f}°, went "
+                           f"{'left' if alt > 0 else 'right'} {abs(alt):.0f}° because the swing "
+                           "that way was blocked")
+            deg, send_deg, reason = alt, alt, None
     if reason:
         if _verify_attempt > 0:
             # A compass CORRECTION of a turn that already completed. Refusing it is
@@ -958,7 +1021,9 @@ def turn(
     _cancel_arc()
     seq = motion.send({"cmd": "turn", "deg": deg, "rate": rate})
     if seq is not None:
-        _note_issued(seq, "turn", f"{'left' if deg > 0 else 'right'} {abs(deg):.0f}°")
+        _note_issued(seq, "turn", f"{'left' if deg > 0 else 'right'} {abs(deg):.0f}°",
+                     requested_deg=requested_deg, attempted_deg=float(deg),
+                     alternative=alternative)
         _remember_turn_verification(
             seq,
             desired_deg=deg,
@@ -973,6 +1038,7 @@ def turn(
 
 def move(dist: float, speed: "float | None" = None) -> "int | None":
     """Drive straight `dist` metres (+ = forward, - = back). ToF-gated."""
+    _refusal_detail["move"] = f"{'forward' if dist > 0 else 'back'} {abs(dist):.2f} m"
     reason = _autonomous_allowed()
     if reason:
         _suppressed("move", reason)
@@ -1022,7 +1088,7 @@ def turn_to_compass(target_deg: float) -> "int | None":
         _log.info("motion compass turn: already facing %.0f° (off by %.1f°)", target_deg, rel)
         return 0
     _log.info("motion compass turn: target=%.0f° -> relative %+.1f°", target_deg, rel)
-    return turn(rel)
+    return turn(rel, allow_reverse=True)
 
 
 def come(heading: float = 0.0, stop_at: "float | None" = None,

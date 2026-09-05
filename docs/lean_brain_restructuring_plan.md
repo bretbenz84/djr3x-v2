@@ -263,7 +263,15 @@ every group turn. Add tests around `test_voice_primary_identity`,
 
 First concrete slice: utterance IDs on bearing/visual evidence and no reuse of the
 previous person's DoA when a current read fails. (Shipped 2026-09-04: `_note_voice_bearing`
-clears the stored bearing on a failed read and stamps `utterance_t0`.) Follow with the unified resolver
+clears the stored bearing on a failed read and stamps `utterance_t0`.)
+
+Status 2026-09-05 — shipped in shadow: `intelligence/attribution.py`
+(`UtteranceEvidence`, `resolve()` → known/unknown/ambiguous + conflicts), wired at the
+end of the ladder; ambiguous turns reach Lean as no-name instructions, mark the
+transcript `uncertain`, stand passive voiceprint growth down, and suppress per-turn
+memory learning. NOT done: making the resolver authoritative (replacing the ladder),
+mixed-segment detection / sequential splitting, per-target pending-question
+bookkeeping beyond the dialogue-act frames — those need live labeled captures. Follow with the unified resolver
 and learning gates, then measured segmentation improvements. Live labeled capture
 requires the owner's explicit go; this planning pass neither records nor moves Rex.
 
@@ -328,6 +336,13 @@ loss/staleness, partial turn, heading mismatch, stop, manual takeover, and stale
 results. Physical alternative-turn behavior stays disabled until explicitly
 authorized floor tests verify the real robot. No firmware bypass or weakened guard.
 
+Status 2026-09-05 — shipped: `intelligence/action_result.py` records issued /
+refused / done / compass-verified (partial) outcomes; `turn(allow_reverse=True)`
+heading alternatives behind `MOTION_HEADING_ALTERNATIVES_ENABLED` (default OFF).
+Not done: a single narration owner (motion_controller still speaks user-commanded
+refusals, the reply path consults `last_refusal`), the optional one-call LLM
+replan, and the decision about the existing forward swing-escape (left as is,
+now recorded).
 ### 5. Separate continuous listening from cancellable reply work
 
 This is the largest risk and is deliberately isolated from the context improvement.

@@ -708,6 +708,7 @@ def _messages(
     *,
     label_current_speaker: bool = True,
     turn_directive: Optional[str] = None,
+    speaker_uncertain: bool = False,
 ) -> list[dict]:
     """System = persona + small context. History = the recent turns as REAL user/assistant
     messages (not a text blob shoved in the system prompt — leaner and more natural for the
@@ -718,7 +719,7 @@ def _messages(
     the system context gains a room block + a line about the other participant(s). A
     1-on-1 session carries none of this weight. ``label_current_speaker=False`` is the
     directive path (proactive lines), whose final message is an instruction, not speech."""
-    turns: list[tuple[str, str, str]] = []   # (role, raw_speaker, text)
+    turns: list[tuple[str, str, str, bool]] = []   # (role, raw_speaker, text, uncertain)
     raw_speakers: list[str] = []
     for turn in _transcript_window(transcript):
         text = str(turn.get("text") or "").strip()
@@ -728,7 +729,7 @@ def _messages(
         role = "assistant" if raw.lower() in _REX_SPEAKERS else "user"
         if role == "user" and raw and raw not in raw_speakers:
             raw_speakers.append(raw)
-        turns.append((role, raw, text))
+        turns.append((role, raw, text, bool(turn.get("uncertain"))))
 
     current_display = _current_speaker_display(person_id)
     displays: list[str] = []
@@ -747,9 +748,9 @@ def _messages(
     # Reply path only (label_current_speaker=True): a directive's final message is
     # an instruction, not a user answer — no flatness to probe.
     if label_current_speaker:
-        probe = _flat_answer_probe_line(user_text, turns)
+        probe = _flat_answer_probe_line(user_text, [t[:3] for t in turns])
         if not probe:
-            probe = _rich_share_followup_line(user_text, turns)
+            probe = _rich_share_followup_line(user_text, [t[:3] for t in turns])
         if probe:
             extra_lines = [probe]
     if multi:
@@ -765,6 +766,12 @@ def _messages(
                 f"stories, and jokes stay THEIRS."
             )
         ] + _other_participant_lines(raw_speakers, current_display)
+        if speaker_uncertain or any(t[3] for t in turns):
+            multi_lines.append(
+                "A '?' after a speaker's name means you were NOT sure it was them (weak "
+                "voice match or the camera/microphones disagreed) — treat those lines as "
+                "'probably them', never as proof of who said what."
+            )
         extra_lines = (extra_lines or []) + multi_lines
     if turn_directive and turn_directive.strip():
         # A narrowly-scoped per-turn cue (currently banked callback humor).
@@ -783,13 +790,15 @@ def _messages(
             ),
         }
     ]
-    for role, raw, text in turns:
+    for role, raw, text, uncertain in turns:
         if multi and role == "user":
-            text = f"{_display_speaker(raw)}: {text}"
+            # A "?" after the name = the attribution was not sure (phase 2B); the
+            # room block explains the mark so the model reads it as a hedge.
+            text = f"{_display_speaker(raw)}{'?' if uncertain else ''}: {text}"
         msgs.append({"role": role, "content": text})
     final = str(user_text or "").strip()
     if multi and label_current_speaker:
-        final = f"{current_display}: {final}"
+        final = f"{current_display}{'?' if speaker_uncertain else ''}: {final}"
     msgs.append({"role": "user", "content": final})
     return msgs
 
@@ -832,6 +841,7 @@ def stream_reply(
     transcript: Optional[list[dict]] = None,
     world: Optional[dict] = None,
     turn_directive: Optional[str] = None,
+    speaker_uncertain: bool = False,
 ) -> Generator[str, None, None]:
     """Stream raw reply chunks from the one lean call. Reuses the shared OpenAI client +
     llm_compat param contract (so gpt-5.4-mini gets reasoning-off / max_completion_tokens).
@@ -844,7 +854,8 @@ def stream_reply(
     # target) and its size, measured where they actually happen.
     _turn_trace.stamp("context_build_start")
     messages = _messages(
-        user_text, person_id, transcript, world, turn_directive=turn_directive
+        user_text, person_id, transcript, world, turn_directive=turn_directive,
+        speaker_uncertain=speaker_uncertain,
     )
     _turn_trace.stamp("context_built")
     _turn_trace.set_value(

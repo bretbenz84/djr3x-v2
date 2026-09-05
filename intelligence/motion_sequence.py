@@ -241,9 +241,11 @@ def _issue(decision: ActionDecision) -> tuple[Optional[int], float]:
         rate = _pace_value(args, "rate")
         if rate is not None:
             signed = deg if direction in ("left", "around") else -deg
-            return motion_controller.turn(signed, rate=rate), 0.0
+            return motion_controller.turn(signed, rate=rate,
+                                          allow_reverse=(direction == "around")), 0.0
         if direction == "around":
-            return motion_controller.turn(deg), 0.0
+            # A heading goal: the other way round is an acceptable alternative.
+            return motion_controller.turn(deg, allow_reverse=True), 0.0
         if direction == "right":
             return motion_controller.turn_right(deg), 0.0
         return motion_controller.turn_left(deg), 0.0

@@ -12644,6 +12644,11 @@ def _maybe_passive_voice_enroll(
         return
     if audio_array is None:
         return
+    # Phase 2B learning gate: reply permission is not learning permission. A turn
+    # whose speaker the resolver called ambiguous never grows anyone's voiceprint.
+    if _turn_speaker_uncertain():
+        _log.info("[passive_enroll] skipped — speaker attribution ambiguous this turn")
+        return
     # A pending capture flow owns this audio — never double-consume it.
     if _pending_voice_sample_capture is not None or _pending_impersonation_capture is not None:
         return
@@ -14376,6 +14381,86 @@ _last_scan_secs: dict = {"buffer": 0.0, "voiced": 0.0}
 
 # Final attribution of the last accepted human turn: who "has the floor".
 _last_speaker_turn: Optional[dict] = None
+
+
+def _resolve_turn_attribution(
+    *,
+    turn_id: Optional[int],
+    text: str,
+    text_input: bool,
+    raw_best_id: Optional[int],
+    raw_best_name: Optional[str],
+    speaker_score: float,
+    speaker_margin: float,
+    required_margin: float,
+    accept_tier: Optional[str],
+    identity_resolution: Optional[str],
+    person_id: Optional[int],
+    person_name: Optional[str],
+    off_camera_unknown: bool,
+    visible_known_ids: list,
+    bearing_match: Optional[dict],
+    engaged: Optional[dict],
+    previous_speaker: Optional[dict],
+):
+    """Build this utterance's evidence record and run the SHADOW resolver
+    (intelligence/attribution.py). Never changes the ladder's decision; the
+    verdict feeds the [identity_decision] log, Lean's context, the transcript's
+    uncertainty flag, and the learning gates. Returns a Resolution."""
+    from intelligence import attribution as _attr
+    latch_pid = None
+    try:
+        from vision import active_speaker as _asp
+        _latch = _asp.recent_visual_speaker()
+        latch_pid = _safe_int((_latch or {}).get("person_db_id")) if _latch else None
+    except Exception:
+        latch_pid = None
+    sel_pid = None
+    contradiction = False
+    if bearing_match:
+        try:
+            sel = bearing_match.get("selected")
+            sel_pid = _safe_int(sel.get("person_db_id")) if isinstance(sel, dict) else None
+            contradiction = bool(bearing_match.get("contradicts"))
+        except Exception:
+            sel_pid, contradiction = None, False
+    ev = _attr.UtteranceEvidence(
+        turn_id=turn_id,
+        text=str(text or ""),
+        text_input=bool(text_input),
+        words=len(re.findall(r"[A-Za-z0-9']+", str(text or ""))),
+        voiced_secs=float((_last_scan_secs or {}).get("voiced") or 0.0) if not text_input else 0.0,
+        raw_best_id=_safe_int(raw_best_id),
+        raw_best_name=raw_best_name,
+        raw_best_score=float(speaker_score or 0.0),
+        margin=float(speaker_margin or 0.0),
+        required_margin=float(required_margin or 0.0),
+        hard_threshold=float(getattr(config, "SPEAKER_ID_SIMILARITY_THRESHOLD", 0.75)),
+        soft_threshold=float(getattr(config, "SPEAKER_ID_SOFT_THRESHOLD", 0.60)),
+        known_floor=float(getattr(config, "SPEAKER_ID_KNOWN_SPEAKER_FLOOR", 0.45)),
+        scoreboard=[(_safe_int(p), n, float(sc), int(k)) for p, n, sc, k in (_last_scan_ranked or [])],
+        accept_tier=accept_tier,
+        identity_resolution=identity_resolution,
+        final_person_id=_safe_int(person_id),
+        final_name=person_name,
+        off_camera_unknown=bool(off_camera_unknown),
+        visible_known_ids=[int(x) for x in (visible_known_ids or [])],
+        visual_latch_pid=latch_pid,
+        bearing_selected_pid=sel_pid,
+        bearing_contradiction=contradiction,
+        engaged_pid=_safe_int((engaged or {}).get("person_id")) if engaged else None,
+        previous_speaker_pid=_safe_int((previous_speaker or {}).get("person_id")) if previous_speaker else None,
+    )
+    return _attr.resolve(ev)
+
+
+def _turn_speaker_uncertain() -> bool:
+    """True when this turn's attribution resolver said 'ambiguous' (phase 2B)."""
+    try:
+        res = (_current_turn_speaker_evidence or {}).get("resolution") or {}
+        return str(res.get("status") or "") == "ambiguous"
+    except Exception:
+        return False
 
 
 def _identity_decision_payload(
@@ -17217,7 +17302,8 @@ def _lean_recent_transcript(user_text: str) -> list[dict]:
     except Exception:
         return []
     turns = [
-        {"speaker": r.get("speaker"), "text": r.get("text"), "turn_id": r.get("turn_id")}
+        {"speaker": r.get("speaker"), "text": r.get("text"), "turn_id": r.get("turn_id"),
+         "uncertain": bool(r.get("uncertain"))}
         for r in rows if str(r.get("text") or "").strip()
     ]
     if turns and str(turns[-1].get("text") or "").strip() == str(user_text or "").strip():
@@ -17247,6 +17333,7 @@ def _reply_token_stream(
                 transcript=_lean_recent_transcript(user_text),
                 world=_lean_world(),
                 turn_directive=lean_turn_directive or None,
+                speaker_uncertain=_turn_speaker_uncertain(),
             )
         except Exception as exc:
             _log.error("[lean] live reply init failed, using classic path: %s", exc)
@@ -23055,8 +23142,11 @@ def _handle_router_motion_action(
         # motion_sequence._issue was reading the key.
         rate = _f("rate")
         if direction == "around":
-            seq = (motion_controller.turn(180.0 if deg is None else deg, rate=rate)
-                   if rate else motion_controller.turn(180.0 if deg is None else deg))
+            # A heading goal (not "left"/"right"): the other way round is an
+            # acceptable alternative when the swing is blocked (phase 4, flagged).
+            seq = motion_controller.turn(180.0 if deg is None else deg, rate=rate,
+                                         allow_reverse=True) if rate else \
+                motion_controller.turn(180.0 if deg is None else deg, allow_reverse=True)
             line = "Spinning around."
             if seq is not None and args.get("behind"):
                 # "I'm behind you" mid-come-search: the search adopts this turn
@@ -28230,6 +28320,34 @@ def _handle_speech_segment(
             "raw_best_name": raw_best_name,
             "raw_best_score": float(speaker_score or 0.0),
         }
+        # Phase 2B: the shadow attribution verdict for this utterance. The ladder
+        # above stays authoritative; this only says how SURE it is, and an
+        # 'ambiguous' verdict (a) reaches Lean as a no-name instruction, (b) marks
+        # the transcript line, (c) stands passive voiceprint growth down, and
+        # (d) suppresses durable personal-fact learning from this turn.
+        try:
+            from intelligence import conversation_state as _cstate
+            _res = _resolve_turn_attribution(
+                turn_id=getattr(character_trace, "turn_id", None),
+                text=str(text), text_input=bool(text_input),
+                raw_best_id=raw_best_id, raw_best_name=raw_best_name,
+                speaker_score=speaker_score, speaker_margin=speaker_margin,
+                required_margin=required_margin, accept_tier=identity_accept_tier,
+                identity_resolution=identity_resolution_override,
+                person_id=person_id, person_name=person_name,
+                off_camera_unknown=off_camera_unknown,
+                visible_known_ids=list(visible_known_by_id.keys()),
+                bearing_match=_bearing_match, engaged=recent_engagement,
+                previous_speaker=_last_speaker_turn,
+            )
+            _current_turn_speaker_evidence["resolution"] = _res.as_dict()
+            _cstate.note_speaker_resolution(_res.as_dict())
+            if _res.status == "ambiguous":
+                suppress_memory_learning = True
+                _log.info("[attribution] speaker AMBIGUOUS (%s): %s — replying without a "
+                          "name, no learning this turn", _res.basis, "; ".join(_res.conflicts))
+        except Exception as exc:
+            _log.debug("[attribution] resolver skipped: %s", exc)
         short_clip = (
             bool(getattr(config, "SHORT_CLIP_CONTINUITY_ENABLED", True))
             and transcribed_text is None
@@ -28362,7 +28480,8 @@ def _handle_speech_segment(
             heard_turn_recorded = True
             speaker_label = person_name or anonymous_speaker_label or "user"
             heard_speaker_name = person_name or anonymous_speaker_label
-            conv_memory.add_to_transcript(speaker_label, heard_log_text)
+            conv_memory.add_to_transcript(
+                speaker_label, heard_log_text, uncertain=_turn_speaker_uncertain())
             conv_log.log_heard(heard_speaker_name, heard_log_text)
             print(f"[HEARD] {speaker_label}: {heard_log_text}", flush=True)
             _log.info(
@@ -28416,6 +28535,7 @@ def _handle_speech_segment(
                     anonymous_score=anonymous_speaker_match_score,
                     off_camera_unknown=off_camera_unknown,
                 )
+                _payload["resolver"] = (_current_turn_speaker_evidence or {}).get("resolution")
                 _log.info("[identity_decision] %s", json.dumps(_payload, ensure_ascii=False, default=str))
             except Exception as exc:
                 _log.debug("[identity_decision] log failed: %s", exc)

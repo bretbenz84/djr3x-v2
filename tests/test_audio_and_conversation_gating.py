@@ -2050,7 +2050,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 pre_beat_ms=100,
                 post_beat_ms_override=200,
             )
-            add_transcript.assert_any_call("JT", "JT")
+            add_transcript.assert_any_call("JT", "JT", uncertain=mock.ANY)
             add_transcript.assert_any_call("Rex", expected_ack)
             log_heard.assert_called_once_with("JT", "JT")
             log_rex.assert_called_once_with(expected_ack)
@@ -2487,7 +2487,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 pre_beat_ms=100,
                 post_beat_ms_override=200,
             )
-            add_transcript.assert_any_call("Bret Benziger", "Bret Benziger")
+            add_transcript.assert_any_call("Bret Benziger", "Bret Benziger", uncertain=mock.ANY)
             add_transcript.assert_any_call("Rex", expected_ack)
             log_heard.assert_called_once_with("Bret Benziger", "Bret Benziger")
             log_rex.assert_called_once_with(expected_ack)
@@ -2666,7 +2666,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
             prompt.assert_called_once()
             log_heard.assert_called_once_with("Bret", "Nice to meet you too")
-            add_transcript.assert_any_call("Bret", "Nice to meet you too")
+            add_transcript.assert_any_call("Bret", "Nice to meet you too", uncertain=mock.ANY)
             speak.assert_called_once_with(
                 "Bret. Last name, before the directory panics?",
                 emotion="curious",

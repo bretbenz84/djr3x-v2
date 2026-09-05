@@ -363,6 +363,39 @@ belong to the turn that just began; the existing barge-in handling covers them).
 was cut short, so the transcript, memory extraction and the post-TTS handoff see
 what Rex actually said. Tests: `tests/test_speech_generations.py`.
 
+**Body actions have one record (phase 4, 2026-09-05).** `intelligence/action_result.py`
+`ActionResult` is created by `motion_controller` when a command is issued (with
+`requested_deg` vs `attempted_deg` after the swing check) or refused (with the reason
+AND the ask, "left 90°"), finished by the firmware's done frame, and annotated by the
+compass check (`note_action_verified`: a turn that completed but measured short is
+`partial`, not done). `conversation_state.render_lines` shows all of that to Lean.
+Bounded heading alternatives: `motion_controller.turn(..., allow_reverse=True)` marks a
+HEADING goal ("turn around", compass turns, a route's "around" leg — never "turn
+left/right"); when the swing check blocks that way and
+`MOTION_HEADING_ALTERNATIVES_ENABLED` is on, the equivalent spin the other way
+(deg − 360°) is sent instead if its WHOLE sweep passes the swing check
+(`_heading_alternative`), and the record says "asked left 180°, went right 180°".
+Deterministic geometry, no model call. **The flag is OFF** until an authorized floor
+test; the existing forward swing-escape step is unchanged and now also recorded as an
+action ("stepped forward first to earn room"). Tests:
+`tests/test_action_results_and_attribution.py`.
+
+**Speaker attribution has a verdict (phase 2B, 2026-09-05).** `intelligence/attribution.py`
+holds one `UtteranceEvidence` per turn (voice argmax/score/margin/required margin,
+accept tier, ladder override, visible faces, active-speaker latch, DoA face pick and
+contradiction, engaged/previous speaker, words, voiced seconds) and `resolve()` returns
+known / unknown / ambiguous with the conflicts it saw. It runs in SHADOW at the point
+the identity ladder finishes (`interaction._resolve_turn_attribution`) and never
+changes the ladder's `person_id`. An `ambiguous` verdict: reaches Lean as a
+"SPEAKER UNCERTAIN — answer without a name, file nothing personal" line
+(`conversation_state.speaker_lines`), marks the transcript entry `uncertain=True`
+(rendered as `Bret?:` in multi-party history, with the current turn labeled the same
+way via `stream_reply(speaker_uncertain=...)`), stands passive voiceprint growth down,
+and sets `suppress_memory_learning` for the turn. The verdict is also in the
+`[identity_decision]` line as `resolver`. Reply permission and learning permission are
+now separate, as the plan asks; the resolver extraction (making it authoritative) is
+still owed and needs live labeled sessions.
+
 Kill switch `LEAN_CONTEXT_STATE_ENABLED`. Phase 1 pieces in the same batch:
 `SURPRISE_STREAM_JOIN_SECS` is 0 (never wait for the surprise classifier before the
 first word), the plan-intent local qwen confirm is skipped under Lean (its directive

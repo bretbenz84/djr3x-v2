@@ -88,7 +88,8 @@ def delete_conversations(person_id: int) -> None:
 _REX_SPEAKERS = {"rex", "dj-r3x", "djr3x"}
 
 
-def add_to_transcript(speaker: str, text: str, *, learnable: bool = True) -> None:
+def add_to_transcript(speaker: str, text: str, *, learnable: bool = True,
+                      uncertain: bool = False) -> None:
     """Append a speaker/text entry to the in-memory session transcript.
 
     ``learnable`` marks whether this turn may feed session-end memory extraction.
@@ -110,6 +111,9 @@ def add_to_transcript(speaker: str, text: str, *, learnable: bool = True) -> Non
         # entry against a literal dict.
         "turn_id": next(_turn_seq),
         "ts": time.time(),
+        # Phase 2B: the attribution resolver was not sure this speaker label is
+        # right (weak voice, contradicting camera/bearing). Readers may hedge.
+        "uncertain": bool(uncertain),
     })
     _log_turn(speaker, text)
 

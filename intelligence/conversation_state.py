@@ -33,12 +33,16 @@ from collections import deque
 from typing import Optional
 
 import config
+from intelligence.action_result import ActionResult
 
 _log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _corrections: "deque[dict]" = deque(maxlen=12)
-_actions: "deque[dict]" = deque(maxlen=12)
+_actions: "deque[ActionResult]" = deque(maxlen=12)
+# Phase 2B: how sure the current turn's speaker identity is (set per turn by the
+# attribution resolver, rendered for Lean, cleared with the session).
+_speaker_resolution: Optional[dict] = None
 
 
 def _cfg(name: str, default):
@@ -49,9 +53,11 @@ def _cfg(name: str, default):
 
 
 def clear() -> None:
+    global _speaker_resolution
     with _lock:
         _corrections.clear()
         _actions.clear()
+        _speaker_resolution = None
 
 
 # ── Corrections ──────────────────────────────────────────────────────────────
@@ -94,47 +100,69 @@ def recent_corrections(*, max_age_secs: Optional[float] = None, limit: int = 4,
 
 # ── Action outcomes ──────────────────────────────────────────────────────────
 
-def note_action_issued(seq: Optional[int], verb: str, detail: str = "") -> None:
-    """A body command was accepted by the host and sent (status 'running')."""
-    entry = {
-        "at": time.monotonic(),
-        "seq": seq,
-        "verb": str(verb or "move"),
-        "detail": " ".join(str(detail or "").split()),
-        "status": "running",
-        "reason": "",
-    }
+def note_action_issued(seq: Optional[int], verb: str, detail: str = "", *,
+                       requested_deg: Optional[float] = None,
+                       attempted_deg: Optional[float] = None,
+                       alternative: str = "") -> ActionResult:
+    """A body command was accepted by the host and sent (status 'running').
+    Returns the ActionResult so the issuer can annotate it further."""
+    rec = ActionResult(
+        verb=str(verb or "move"),
+        detail=" ".join(str(detail or "").split()),
+        seq=seq,
+        requested_deg=requested_deg,
+        attempted_deg=attempted_deg,
+        alternative=" ".join(str(alternative or "").split()),
+    )
     with _lock:
-        _actions.append(entry)
+        _actions.append(rec)
+    return rec
 
 
-def note_action_result(seq: Optional[int], result: str) -> None:
+def note_action_result(seq: Optional[int], result: str, *, reason: str = "") -> None:
     """The firmware reported how a sent command ended (completed / blocked /
-    aborted / timeout ...). Unknown seqs are ignored."""
+    aborted / superseded ...) or the host gave up on it (timeout / cancelled).
+    Unknown seqs are ignored."""
     if seq is None:
         return
-    result = str(result or "").strip().lower() or "unknown"
     with _lock:
-        for e in reversed(_actions):
-            if e.get("seq") == seq:
-                e["status"] = result
-                e["ended_at"] = time.monotonic()
+        for rec in reversed(_actions):
+            if rec.seq == seq:
+                rec.finish(result, reason=reason)
                 return
 
 
-def note_action_refused(verb: str, reason: str, detail: str = "") -> None:
+def note_action_verified(seq: Optional[int], *, requested_deg: float,
+                         measured_deg: float) -> None:
+    """The compass check measured how far a completed turn actually rotated.
+    A mismatch beyond tolerance marks the record 'partial' — done, but not the
+    heading that was asked for."""
+    if seq is None:
+        return
+    with _lock:
+        for rec in reversed(_actions):
+            if rec.seq == seq:
+                rec.measured_deg = float(measured_deg)
+                if rec.requested_deg is None:
+                    rec.requested_deg = float(requested_deg)
+                tol = float(_cfg("MOTION_COMPASS_TURN_TOLERANCE_DEG", 4.0))
+                if rec.status == "completed" and abs(float(requested_deg) - float(measured_deg)) > tol:
+                    rec.status = "partial"
+                return
+
+
+def note_action_refused(verb: str, reason: str, detail: str = "", *,
+                        requested_deg: Optional[float] = None) -> ActionResult:
     """The host refused to send a command (swing check, sensor fault, charging,
     manual override...). The reason is the code's, not the model's."""
-    entry = {
-        "at": time.monotonic(),
-        "seq": None,
-        "verb": str(verb or "move"),
-        "detail": " ".join(str(detail or "").split()),
-        "status": "refused",
-        "reason": str(reason or ""),
-    }
+    rec = ActionResult(verb=str(verb or "move"),
+                       detail=" ".join(str(detail or "").split()),
+                       seq=None, status="refused", reason=str(reason or ""),
+                       requested_deg=requested_deg)
+    rec.ended_at = time.monotonic()
     with _lock:
-        _actions.append(entry)
+        _actions.append(rec)
+    return rec
 
 
 def recent_actions(*, max_age_secs: Optional[float] = None, limit: int = 3) -> list[dict]:
@@ -144,13 +172,64 @@ def recent_actions(*, max_age_secs: Optional[float] = None, limit: int = 3) -> l
     with _lock:
         items = list(_actions)
     out = []
-    for e in reversed(items):
-        if now - e["at"] > max_age:
+    for rec in reversed(items):
+        if now - rec.at > max_age:
             continue
-        out.append(dict(e))
+        out.append(rec.as_dict())
         if len(out) >= limit:
             break
     return out
+
+
+def last_action_for_seq(seq: Optional[int]) -> Optional[dict]:
+    if seq is None:
+        return None
+    with _lock:
+        for rec in reversed(_actions):
+            if rec.seq == seq:
+                return rec.as_dict()
+    return None
+
+
+# ── Speaker resolution (phase 2B) ────────────────────────────────────────────
+
+def note_speaker_resolution(resolution: Optional[dict]) -> None:
+    """The attribution resolver's verdict for the CURRENT turn (see
+    intelligence/attribution.py): {"status": known|unknown|ambiguous, "person_id",
+    "name", "conflicts": [...], "note": str}. Replaces the previous turn's."""
+    global _speaker_resolution
+    with _lock:
+        _speaker_resolution = dict(resolution) if resolution else None
+
+
+def speaker_resolution() -> Optional[dict]:
+    with _lock:
+        return dict(_speaker_resolution) if _speaker_resolution else None
+
+
+def speaker_lines() -> list[str]:
+    res = speaker_resolution()
+    if not res:
+        return []
+    status = str(res.get("status") or "")
+    name = str(res.get("name") or "").split()[0] if res.get("name") else ""
+    if status == "ambiguous":
+        why = "; ".join(str(c) for c in (res.get("conflicts") or [])[:2])
+        return [
+            "SPEAKER UNCERTAIN: you are not sure who is talking right now"
+            + (f" (best guess {name})" if name else "")
+            + (f" — {why}" if why else "")
+            + ". Answer them, but do NOT address them by name, do not treat stored personal "
+            "memories as theirs, and do not file anything personal from this turn. If you "
+            "genuinely need to know who it is, ONE short natural check ('is that you, "
+            + (name or "friend") + "?') is fine — not on every line."
+        ]
+    if status == "unknown":
+        return [
+            "The current speaker is NOT someone you recognize (no known voice or face). "
+            "Talk to them as a new person; don't guess a name."
+        ]
+    return []
 
 
 _REASON_WORDS = {
@@ -252,6 +331,11 @@ def render_lines(current_person_id: Optional[int]) -> list[str]:
         now = time.monotonic()
         for a in actions:
             what = a["verb"] + (f" {a['detail']}" if a.get("detail") else "")
+            if a.get("alternative"):
+                what += f" ({a['alternative']})"
+            elif a.get("shrunk"):
+                what += (f" (asked {abs(a['requested_deg']):.0f}°, only {abs(a['attempted_deg']):.0f}° "
+                         "was clear so that is what was sent)")
             status = a.get("status") or "running"
             if status == "refused":
                 phrase = f"{what} → you REFUSED it ({_reason_phrase(a.get('reason'))})"
@@ -259,6 +343,12 @@ def render_lines(current_person_id: Optional[int]) -> list[str]:
                 phrase = f"{what} → still in progress"
             elif status == "completed":
                 phrase = f"{what} → done"
+                if a.get("measured_deg") is not None:
+                    phrase += f" (compass measured {abs(a['measured_deg']):.0f}°)"
+            elif status == "partial":
+                phrase = (f"{what} → finished but landed short/long: compass measured "
+                          f"{abs(a.get('measured_deg') or 0):.0f}° of the "
+                          f"{abs(a.get('requested_deg') or 0):.0f}° asked")
             else:
                 phrase = f"{what} → ended '{status}' ({_reason_phrase(status)})"
             parts.append(f"{phrase}, {_age(now - a['at'])}")
@@ -267,4 +357,5 @@ def render_lines(current_person_id: Optional[int]) -> list[str]:
             "move happened if it says refused or blocked): " + "; ".join(parts)
         )
     out.extend(pending_question_lines(current_person_id))
+    out.extend(speaker_lines())
     return out

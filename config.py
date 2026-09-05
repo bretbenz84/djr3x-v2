@@ -10827,6 +10827,14 @@ MOTION_SWING_MIN_TURN_DEG = 10.0
 # 147° reports `completed` at a heading nobody asked for, and anything sequenced
 # behind it drives off that wrong heading. 0 disables (shrink everything).
 MOTION_SPIN_ALL_OR_NOTHING_DEG = 270.0
+# Lean Brain plan phase 4 — bounded heading alternatives. When a HEADING goal
+# ("turn around", "face north", never "turn left") is swing-blocked one way, the
+# equivalent spin the other way (deg − 360°) may be sent instead if its WHOLE sweep
+# passes the swing check. Deterministic geometry, no model call. OFF until an
+# authorized floor test verifies it on the real robot; the record still says what
+# was asked vs sent either way (intelligence/action_result.py).
+MOTION_HEADING_ALTERNATIVES_ENABLED = _env_bool("MOTION_HEADING_ALTERNATIVES_ENABLED", False)
+MOTION_HEADING_ALTERNATIVE_MAX_DEG = 360.0
 # Before refusing, try to EARN the room: if the front ToF shows at least
 # CLEARANCE_M of floor (the step plus stop zone plus margin), drive forward
 # STEP_M and re-check the swing on arrival — a blocked-behind turn usually just
