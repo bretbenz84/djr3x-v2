@@ -505,7 +505,9 @@ def play_for_speech(emotion: str, tag: Optional[str] = None) -> bool:
 
 
 def _play_path(path: Path, key: str, mode: str = "gated",
-               gain: float = 1.0) -> None:
+               gain: float = 1.0, abort=None) -> None:
+    if abort is not None and abort.is_set():
+        return
     try:
         import sounddevice as sd
     except ImportError:
@@ -523,12 +525,14 @@ def _play_path(path: Path, key: str, mode: str = "gated",
     # motion accents duck to half a commanded move's level (owner 2026-08-19).
     audio = audio * (max(0.0, min(1.0, vol)) * max(0.0, min(1.0, float(gain))))
 
+    if abort is not None and abort.is_set():
+        return
     if mode == "overlay":
         _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key)
     elif mode == "concurrent":
         _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key)
     else:
-        _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key)
+        _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key, abort=abort)
 
 
 def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
@@ -805,6 +809,31 @@ class LoopHandle:
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+
+def start_file(path, *, key: str = "thinking") -> Optional[LoopHandle]:
+    """Play a file once in the background; stop_loop interrupts it before speech.
+
+    Uses the same output gate, echo suppression, volume, and preemption as effects.
+    The handle is shared with loops for cancellation only; this never repeats.
+    """
+    if not _enabled() or not _family_allowed(_family(key)):
+        return None
+    path = Path(path)
+    if not path.is_file():
+        _log.warning("[sfx] startup file missing: %s", path)
+        return None
+    handle = LoopHandle(key)
+
+    def _run():
+        try:
+            _play_path(path, key, mode="gated", abort=handle._stop)
+        except Exception as exc:
+            _log.warning("[sfx] file playback failed for %s: %s", path, exc)
+
+    handle._thread = threading.Thread(target=_run, daemon=True, name="sfx-file-" + key)
+    handle._thread.start()
+    return handle
 
 
 def start_loop(key: str, *, mode: str = "gated", gap_secs: float = 0.15,

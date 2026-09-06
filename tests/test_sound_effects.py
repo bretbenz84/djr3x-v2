@@ -356,6 +356,40 @@ class SoundEffectsTest(unittest.TestCase):
         self.assertTrue(peaks)
         self.assertTrue(all(abs(pk - 0.5) < 1e-5 for pk in peaks))
 
+    def test_startup_file_plays_once_and_is_interruptible(self):
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1] / "assets/audio/startup/droid_startup.mp3"
+        # A long synthetic clip would block for 15 seconds if cancellation broke.
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(720000, np.float32), 48000)):
+            handle = sfx.start_file(path)
+            self.assertIsNotNone(handle)
+            deadline = time.monotonic() + 1.0
+            while not self.sd.play_calls and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertEqual(len(self.sd.play_calls), 1)
+            sfx.stop_loop(handle)
+            self.assertFalse(handle.running)
+            self.assertGreater(self.sd.stop_calls, 0)
+            self.assertFalse(output_gate.is_busy())
+            self.assertEqual(len(self.sd.play_calls), 1)
+
+    def test_startup_file_natural_end_does_not_repeat(self):
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1] / "assets/audio/startup/droid_startup.mp3"
+        with mock.patch.object(sfx, "_decode", return_value=(np.zeros(48, np.float32), 48000)):
+            handle = sfx.start_file(path)
+            handle._thread.join(timeout=1.0)
+            self.assertFalse(handle.running)
+            self.assertEqual(len(self.sd.play_calls), 1)
+
+    def test_startup_file_respects_muting_and_missing_file(self):
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1] / "assets/audio/startup/droid_startup.mp3"
+        with mock.patch.object(config, "NO_AUDIO_MODE", True):
+            self.assertIsNone(sfx.start_file(path))
+        self.assertIsNone(sfx.start_file(path.with_name("absent-startup.mp3")))
+        self.assertEqual(self.sd.play_calls, [])
+
     # ── looping effects ──
     def test_loop_repeats_until_stopped(self):
         # A clip shorter than the activity must keep going: the startup "thinking"
