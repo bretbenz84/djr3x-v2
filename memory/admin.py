@@ -213,6 +213,9 @@ def clear_biometrics(person_id: int, kind: str) -> bool:
     Useful to wipe a mis-enrolled biometric that's causing wrong recognition."""
     if kind not in ("face", "voice"):
         return False
+    if kind == "voice":
+        from audio import voice_score
+        kind = voice_score.biometric_type()
     db.execute(
         "DELETE FROM biometrics WHERE person_id = ? AND type = ?",
         (int(person_id), kind),

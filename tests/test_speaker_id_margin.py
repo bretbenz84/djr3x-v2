@@ -19,11 +19,14 @@ from unittest import mock
 import numpy as np
 
 import config
-from audio import speaker_id
+from audio import speaker_id, voice_score
 
 
 class IdentifySpeakerAcceptanceTest(unittest.TestCase):
     def setUp(self):
+        backend = mock.patch.object(voice_score, "_active_backend", "ecapa")
+        backend.start()
+        self.addCleanup(backend.stop)
         self._thr = config.SPEAKER_ID_SIMILARITY_THRESHOLD
         self._margin = config.SPEAKER_ID_KNOWN_MARGIN
         config.SPEAKER_ID_SIMILARITY_THRESHOLD = 0.50
@@ -62,6 +65,9 @@ class ThinChallengerReliefTest(unittest.TestCase):
     """required_ambiguity_margin — the scoreboard-specific ambiguity bar."""
 
     def setUp(self):
+        backend = mock.patch.object(voice_score, "_active_backend", "ecapa")
+        backend.start()
+        self.addCleanup(backend.stop)
         self._saved = {}
         for key, val in {
             "SPEAKER_ID_SIMILARITY_THRESHOLD": 0.50,

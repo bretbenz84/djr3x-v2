@@ -184,7 +184,7 @@ def _all_people() -> list[dict]:
         """
         SELECT p.*,
                SUM(CASE WHEN b.type = 'face' THEN 1 ELSE 0 END) AS face_count,
-               SUM(CASE WHEN b.type = 'voice' THEN 1 ELSE 0 END) AS voice_count
+               SUM(CASE WHEN b.type IN ('voice', 'voice_campplus_zh_en_v1') THEN 1 ELSE 0 END) AS voice_count
         FROM people p
         LEFT JOIN biometrics b ON b.person_id = p.id
         GROUP BY p.id

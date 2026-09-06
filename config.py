@@ -3945,21 +3945,19 @@ FACE_UNKNOWN_MIN_CONFIDENCE = _env_float(
 )
 
 # ── Voice embedder backend ────────────────────────────────────────────────────
-# "ecapa": ECAPA-TDNN (SpeechBrain, 192-dim) — far wider genuine/impostor
-#   separation than Resemblyzer (whose weak separation was the root cause of the
-#   recurring ambiguity incidents: JT's single print sat 0.45-0.49 cosine from
-#   ALL of Bret's prints). ~20ms per embedding on CPU. Models in ECAPA_MODEL_DIR
-#   (downloaded by setup_assets.py, ~80MB).
-# "resemblyzer": legacy 256-dim embedder. Also the automatic runtime fallback if
-#   the ECAPA model fails to load.
-# The two embeddings are INCOMPATIBLE (192 vs 256 dim): stored voice prints and
-# voice signatures from one embedder are skipped by the other — people must
-# RE-ENROLL their voice after switching (tools/test_voice_id.py --enroll).
-# SCORE SCALE: all SPEAKER_ID_* thresholds below stay on the Resemblyzer-
-# calibrated scale; ECAPA cosines are mapped onto it by audio/voice_score.py
-# (+VOICE_SCORE_OFFSET_ECAPA, clamped). A constant offset preserves score GAPS,
-# so every margin knob keeps its meaning.
-VOICE_EMBEDDER = (os.getenv("VOICE_EMBEDDER", "").strip().lower() or "ecapa")
+# CAM++ Chinese/English ONNX runs on CPU; download via tools/download_campplus.py.
+# Select "ecapa" or "resemblyzer" to roll back, then restart Rex.
+# CAM++ prints/signatures live in separate storage; legacy prints are preserved.
+# Missing CAM++ profiles seed automatically from interval active-speaker evidence
+# or an explicit self-identification. See docs/campplus_voice_id.md.
+VOICE_EMBEDDER = (os.getenv("VOICE_EMBEDDER", "").strip().lower() or "campplus")
+CAMPPLUS_MODEL_PATH = "assets/models/campplus/campplus.onnx"
+CAMPPLUS_CPU_THREADS = 2
+CAMPPLUS_AUTO_ENROLL_ENABLED = True
+CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS = 1.0
+# Raw cosine thresholds, initial deployment defaults pending live calibration.
+CAMPPLUS_MATCH_THRESHOLD = 0.50
+CAMPPLUS_MATCH_MARGIN = 0.07
 ECAPA_MODEL_DIR = "assets/models/ecapa"
 # ECAPA genuine matches run ~0.30-0.75 raw (vs Resemblyzer 0.45-0.93); impostors
 # ~0.0-0.2 (vs 0.3-0.5). +0.25 lines the bands up with the thresholds below:

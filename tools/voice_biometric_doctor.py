@@ -18,6 +18,7 @@ import sys
 from collections import defaultdict
 
 import numpy as np
+from audio import voice_score
 
 # A pair of DIFFERENT people should sit well below this; at/above it they collide in recognition.
 OVERLAP_WARN = 0.45
@@ -42,7 +43,7 @@ def main() -> int:
     from memory import people as P, admin
     from memory import database as memdb
 
-    rows = memdb.fetchall("SELECT id, person_id, encoding, created_at FROM biometrics WHERE type='voice' ORDER BY person_id, id")
+    rows = memdb.fetchall("SELECT id, person_id, encoding, created_at FROM biometrics WHERE type=? AND LENGTH(encoding)=? ORDER BY person_id, id", (voice_score.biometric_type(), voice_score.embedding_dim()*4))
     names = {r["id"]: r["name"] for r in memdb.fetchall("SELECT id, name FROM people")}
 
     by_pid = defaultdict(list)

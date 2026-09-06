@@ -1,24 +1,9 @@
-"""
-audio/voice_score.py — voice-similarity score mapping between embedder backends.
+"""Model-specific voice storage and score policy.
 
-Every speaker-ID threshold in config (accept 0.50, confident 0.70, floors, the
-intro/signature bars, ~20 keys in all) was field-tuned on RESEMBLYZER cosine
-scores. ECAPA-TDNN produces cosines on a different scale: genuine matches land
-roughly 0.3-0.75 (vs Resemblyzer's 0.45-0.93) and impostors 0.0-0.2 (vs 0.3-0.5).
-Rather than re-tuning twenty thresholds blind, ECAPA scores are shifted onto the
-Resemblyzer-calibrated scale by a constant offset:
-
-    mapped = raw + VOICE_SCORE_OFFSET_ECAPA (0.25), clamped to [-1, 0.99]
-
-A constant offset preserves ORDER and — critically — GAPS: every margin threshold
-(SPEAKER_ID_KNOWN_MARGIN 0.07, thin-challenger relief, etc.) works unchanged
-because offsets cancel in score differences. ECAPA's much wider genuine/impostor
-separation is what retires the ambiguity bugs; the offset just lets the existing
-decision logic read it.
-
-This module is import-light on purpose (config only): it's shared by
-audio/speaker_id.py, memory/people.py, memory/voice_signatures.py, and
-intelligence/interaction.py without creating import cycles.
+CAM++ uses raw cosine and its own acceptance/margin settings. ECAPA retains
+its historical offset for rollback compatibility. Equal embedding dimensions
+never imply compatible models: CAM++ storage is explicitly namespaced.
+This module stays import-light to avoid audio/memory import cycles.
 """
 
 import logging
@@ -52,7 +37,21 @@ def map_similarity(raw: float) -> float:
 
 
 def embedding_dim() -> int:
-    """Embedding dimension of the active backend (192 ECAPA / 256 Resemblyzer).
-    Lets matchers and print-counters distinguish native rows from stale
+    """Embedding dimension (192 CAM++/ECAPA, 256 Resemblyzer).
+    Use biometric_type as well to distinguish native rows from stale
     other-backend enrollments during migration."""
-    return 192 if _active_backend == "ecapa" else 256
+    return 192 if _active_backend in {"ecapa", "campplus"} else 256
+
+
+def biometric_type() -> str:
+    # CAM++ and ECAPA both output 192 floats: dimension alone is NOT identity.
+    return "voice_campplus_zh_en_v1" if _active_backend == "campplus" else "voice"
+
+
+def signature_table() -> str:
+    return "voice_signatures_campplus" if _active_backend == "campplus" else "voice_signatures"
+
+
+def match_threshold() -> float:
+    key = "CAMPPLUS_MATCH_THRESHOLD" if _active_backend == "campplus" else "SPEAKER_ID_SIMILARITY_THRESHOLD"
+    return float(getattr(config, key, .50))

@@ -58,7 +58,7 @@ _RELATIONSHIP_TABLE = "person_relationships"
 # orphans: voice_signatures (a person's persisted voiceprint) and the proactive-ask
 # ledger. Kept separate from _PERSON_TABLES because voice_signatures legitimately holds
 # NULL-person rows (unnamed voices) that a blanket wipe must not touch.
-_EXTRA_PERSON_TABLES = ["voice_signatures", "proactive_topics_asked"]
+_EXTRA_PERSON_TABLES = ["voice_signatures", "voice_signatures_campplus", "proactive_topics_asked"]
 
 
 def _purge_episodes_for_person(person_id: int) -> None:
@@ -219,7 +219,7 @@ def find_by_voice(embedding: np.ndarray) -> Optional[dict]:
     SPEAKER_ID_SIMILARITY_THRESHOLD (default 0.75).
     """
     rows = db.fetchall(
-        "SELECT person_id, encoding FROM biometrics WHERE type = 'voice'"
+        "SELECT person_id, encoding FROM biometrics WHERE type = ?", (_voice_score.biometric_type(),)
     )
     query = embedding.astype(np.float32)
     query_norm = query / (np.linalg.norm(query) + 1e-10)
@@ -238,7 +238,7 @@ def find_by_voice(embedding: np.ndarray) -> Optional[dict]:
             best_sim = sim
             best_id = row["person_id"]
 
-    if best_id is not None and best_sim >= config.SPEAKER_ID_SIMILARITY_THRESHOLD:
+    if best_id is not None and best_sim >= _voice_score.match_threshold():
         return get_person(best_id)
     return None
 
@@ -309,7 +309,7 @@ def find_person_by_name(name: str) -> Optional[dict]:
         """
         SELECT p.*,
                SUM(CASE WHEN b.type = 'face' THEN 1 ELSE 0 END) AS face_count,
-               SUM(CASE WHEN b.type = 'voice' THEN 1 ELSE 0 END) AS voice_count
+               SUM(CASE WHEN b.type IN ('voice', 'voice_campplus_zh_en_v1') THEN 1 ELSE 0 END) AS voice_count
         FROM people p
         LEFT JOIN biometrics b ON b.person_id = p.id
         GROUP BY p.id
@@ -380,7 +380,7 @@ def find_potential_person_match(name: str) -> Optional[dict]:
         """
         SELECT p.*,
                SUM(CASE WHEN b.type = 'face' THEN 1 ELSE 0 END) AS face_count,
-               SUM(CASE WHEN b.type = 'voice' THEN 1 ELSE 0 END) AS voice_count
+               SUM(CASE WHEN b.type IN ('voice', 'voice_campplus_zh_en_v1') THEN 1 ELSE 0 END) AS voice_count
         FROM people p
         LEFT JOIN biometrics b ON b.person_id = p.id
         GROUP BY p.id
@@ -528,6 +528,8 @@ def find_or_create_person(name: str) -> tuple[Optional[int], bool]:
 
 def add_biometric(person_id: int, type: str, encoding: np.ndarray) -> Optional[int]:
     """Store a face or voice encoding as a BLOB. type must be 'face' or 'voice'."""
+    if type == "voice":
+        type = _voice_score.biometric_type()
     return db.execute(
         "INSERT INTO biometrics (person_id, type, encoding, created_at) VALUES (?, ?, ?, ?)",
         (person_id, type, _to_blob(encoding), _now()),
@@ -536,6 +538,8 @@ def add_biometric(person_id: int, type: str, encoding: np.ndarray) -> Optional[i
 
 def latest_biometric_id(person_id: int, type: str) -> Optional[int]:
     """Row id of the most recently stored face/voice biometric for a person."""
+    if type == "voice":
+        type = _voice_score.biometric_type()
     row = db.fetchone(
         "SELECT id FROM biometrics WHERE person_id = ? AND type = ? "
         "ORDER BY id DESC LIMIT 1",
@@ -1102,8 +1106,8 @@ def has_voice_biometric(person_id: int) -> bool:
     if person_id is None:
         return False
     row = db.fetchone(
-        "SELECT 1 FROM biometrics WHERE person_id = ? AND type = 'voice' LIMIT 1",
-        (person_id,),
+        "SELECT 1 FROM biometrics WHERE person_id = ? AND type = ? LIMIT 1",
+        (person_id, _voice_score.biometric_type()),
     )
     return row is not None
 
@@ -1112,6 +1116,8 @@ def count_biometrics(person_id: int, type_: str) -> int:
     """Return the number of biometric rows of a given type stored for a person."""
     if person_id is None:
         return 0
+    if type_ == "voice":
+        type_ = _voice_score.biometric_type()
     row = db.fetchone(
         "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type = ?",
         (person_id, type_),
@@ -1133,8 +1139,8 @@ def count_native_voice_prints(person_id: int) -> int:
     n_bytes = _voice_score.embedding_dim() * 4  # float32
     row = db.fetchone(
         "SELECT COUNT(*) AS n FROM biometrics "
-        "WHERE person_id = ? AND type = 'voice' AND LENGTH(encoding) = ?",
-        (person_id, n_bytes),
+        "WHERE person_id = ? AND type = ? AND LENGTH(encoding) = ?",
+        (person_id, _voice_score.biometric_type(), n_bytes),
     )
     return int(row["n"]) if row else 0
 

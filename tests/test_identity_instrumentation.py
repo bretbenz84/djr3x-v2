@@ -66,7 +66,7 @@ class EnrollProvenanceTest(unittest.TestCase):
              mock.patch.object(speaker_id, "rank_embedding",
                                return_value=[(1, "Bret Benziger", 0.604, 8), (7, "PJ Thomas", 0.552, 5)]), \
              mock.patch.object(speaker_id.people, "add_biometric",
-                               side_effect=lambda *a, **k: order.append("stored")), \
+                               side_effect=lambda *a, **k: (order.append("stored") or 123)), \
              mock.patch.object(speaker_id.logger, "info",
                                side_effect=lambda msg, *a: order.append(msg % a)):
             ok = speaker_id.enroll_voice(7, _burst(1.5, 0.5), source="introduction",

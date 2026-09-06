@@ -17,13 +17,14 @@ from unittest import mock
 
 import numpy as np
 
+from audio import voice_score
 from memory import database as db
 from memory import voice_signatures as vs
 
 
 def _unit(*idx) -> np.ndarray:
     """A normalized basis-ish vector that is distinct per index set."""
-    v = np.zeros(256, dtype=np.float32)
+    v = np.zeros(voice_score.embedding_dim(), dtype=np.float32)
     for i in idx:
         v[i] = 1.0
     return v / np.linalg.norm(v)

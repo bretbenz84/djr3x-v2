@@ -246,6 +246,15 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_convlog_person ON conversation_log(person_id)",
 ]
 
+# CAM++ has the same dimension as ECAPA, but an incompatible embedding space.
+_MIGRATIONS.append("""
+CREATE TABLE IF NOT EXISTS voice_signatures_campplus (
+    id INTEGER PRIMARY KEY, embedding BLOB NOT NULL, turns INTEGER DEFAULT 1,
+    person_id INTEGER REFERENCES people(id), label TEXT,
+    created_at DATETIME, last_seen_at DATETIME
+)
+""")
+
 
 def _safe_exec(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> None:
     """Run one migration statement, isolating its failure. A single bad ALTER/UPDATE

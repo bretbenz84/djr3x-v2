@@ -12046,6 +12046,13 @@ def _maybe_auto_refresh_voice(
     AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES), where Guard 1 is relaxed and the once-per-session
     budget is not consumed, so the print can build across several camera-confirmed turns.
     """
+    if speaker_id.active_backend() == "campplus":
+        from intelligence.voice_bootstrap import target
+        if (not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
+                or not _turn_transcript_trusted() or target(
+                observations=_utterance_observations.get("visual") or [],
+                windows=_last_scan_windows) != person_id):
+            return
     if person_id is None:
         return
     # SAMPLE-QUALITY gate: a refresh sample becomes part of the centroid FOREVER — a
@@ -12660,6 +12667,13 @@ def _maybe_passive_voice_enroll(
     speaker_score: float,
 ) -> None:
     """Silently grow the voiceprint of the solo visible person. Never speaks."""
+    if speaker_id.active_backend() == "campplus":
+        from intelligence.voice_bootstrap import target
+        if (not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
+                or not _turn_transcript_trusted() or target(
+                observations=_utterance_observations.get("visual") or [],
+                windows=_last_scan_windows) != person_id):
+            return
     now = time.monotonic()
     pid = _safe_int(person_id)
     if pid is not None:
@@ -14472,7 +14486,7 @@ def _resolve_turn_attribution(
         raw_best_score=float(speaker_score or 0.0),
         margin=float(speaker_margin or 0.0),
         required_margin=float(required_margin or 0.0),
-        hard_threshold=float(getattr(config, "SPEAKER_ID_SIMILARITY_THRESHOLD", 0.75)),
+        hard_threshold=speaker_id.voice_score.match_threshold(),
         soft_threshold=float(getattr(config, "SPEAKER_ID_SOFT_THRESHOLD", 0.60)),
         known_floor=float(getattr(config, "SPEAKER_ID_KNOWN_SPEAKER_FLOOR", 0.45)),
         scoreboard=[(_safe_int(p), n, float(sc), int(k)) for p, n, sc, k in (_last_scan_ranked or [])],
@@ -14717,6 +14731,38 @@ def _short_clip_last_speaker() -> Optional[dict]:
 # Concurrent transcription + speaker identification
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _maybe_bootstrap_campplus(audio_array, text):
+    """Seed a missing model-specific print before this turn's identity decision.
+
+    Recognition runs normally after enrollment. There is no fallback guess to
+    the previous speaker and no copying of incompatible legacy embeddings.
+    """
+    if (audio_array is None or speaker_id.active_backend() != "campplus"
+            or not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
+            or not text or not bool(getattr(text, "confident", True))
+            or _is_non_speech_vocalization(str(text))):
+        return False
+    if _last_scan_secs.get("voiced", 0) < float(getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0)):
+        return False
+    from intelligence.voice_bootstrap import target
+    explicit_id = None
+    name = _extract_self_identified_name(str(text))
+    if name:
+        person = people_memory.find_person_by_name(name)
+        if person:
+            explicit_id = person["id"]
+    pid = target(observations=_utterance_observations.get("visual") or [],
+                 windows=_last_scan_windows, explicit_person_id=explicit_id)
+    if pid is None or speaker_id.comparable_print_count(pid) > 0:
+        return False
+    ok = _safe_enroll_voice(pid, audio_array, transcript_text=str(text),
+                            source="campplus_first_voice", confirmed=True)
+    if ok:
+        _log.info("[campplus] automatically enrolled first CAM++ voice for person_id=%s (%s)",
+                  pid, "self-identification" if explicit_id is not None else "interval active speaker")
+    return ok
+
+
 def _process_audio(
     audio_array: np.ndarray,
     pretranscribed: Optional[str] = None,
@@ -14765,7 +14811,7 @@ def _process_audio(
         _turn_trace.stamp("speaker_id_start")
         ranked = speaker_id.rank_speakers(audio_array)
         _last_scan_ranked = list(ranked or [])
-        if ranked and bool(getattr(config, "SPEAKER_ID_SEGMENT_CHECK_ENABLED", True)):
+        if bool(getattr(config, "SPEAKER_ID_SEGMENT_CHECK_ENABLED", True)):
             try:
                 _last_scan_windows = speaker_id.window_evidence(audio_array)
                 _turn_trace.set_value("speaker_windows", _last_scan_windows)
@@ -14791,6 +14837,20 @@ def _process_audio(
     t2.start()
     t1.join()
     t2.join()
+
+    try:
+        if _maybe_bootstrap_campplus(audio_array, text_box[0]):
+            # The voice is now named by independent evidence, so attribute this
+            # first turn too instead of waiting for the next capture.
+            ranked = speaker_id.rank_speakers(audio_array)
+            _last_scan_ranked = list(ranked or [])
+            if ranked:
+                pid, name, score, _ = ranked[0]
+                second = ranked[1][2] if len(ranked)>1 else -1.0
+                speaker_box[:] = [pid, name, float(score), float(score-second),
+                                  speaker_id.required_ambiguity_margin(ranked)]
+    except Exception as exc:
+        _log.warning("[campplus] automatic enrollment unavailable: %s", exc)
 
     return (text_box[0] or "", speaker_box[0], speaker_box[1], speaker_box[2],
             speaker_box[3], speaker_box[4])
@@ -27727,7 +27787,7 @@ def _handle_speech_segment(
         # low-score utterances from the same person as long as they clear the
         # softer floor. New speakers still need the hard threshold because
         # their voice won't match the engaged person.
-        hard_threshold = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
+        hard_threshold = speaker_id.voice_score.match_threshold()
         soft_threshold = float(getattr(config, "SPEAKER_ID_SOFT_THRESHOLD", 0.60))
         known_floor = float(getattr(config, "SPEAKER_ID_KNOWN_SPEAKER_FLOOR", 0.45))
         # Scoreboard-specific ambiguity bar (thin-challenger relief) computed at scan

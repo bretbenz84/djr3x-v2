@@ -40,7 +40,7 @@ import sounddevice as sd
 import config
 from memory import database as db
 from memory import people as people_mod
-from audio import speaker_id
+from audio import speaker_id, voice_score
 from utils.config_loader import AUDIO_DEVICE_INDEX, AUDIO_SELECTION_DESCRIPTION
 
 
@@ -171,9 +171,9 @@ def _find_person_id(name: str) -> int | None:
 def _trim_voices_for(person_id: int, label: str) -> int:
     """Keep only the newest voice biometric for person_id. Returns rows deleted."""
     rows = db.fetchall(
-        "SELECT id, created_at FROM biometrics WHERE person_id = ? AND type = 'voice' "
+        "SELECT id, created_at FROM biometrics WHERE person_id = ? AND type = ? AND LENGTH(encoding) = ? "
         "ORDER BY created_at DESC",
-        (person_id,),
+        (person_id, voice_score.biometric_type(), voice_score.embedding_dim()*4),
     )
     if len(rows) <= 1:
         print(f"  {label}: {len(rows)} voice row(s); nothing to trim.")
@@ -206,8 +206,8 @@ def _enroll(name: str, seconds: float, replace: bool = False) -> None:
         print(f"  Created new person_id={pid}.")
     else:
         existing = db.fetchone(
-            "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type='voice'",
-            (pid,),
+            "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type=?",
+            (pid, voice_score.biometric_type()),
         )["n"]
         print(f"  Target: person_id={pid} ({existing} voice row(s) on file).")
 
@@ -261,7 +261,7 @@ def _calibrate(name: str, seconds: float) -> None:
         print(f"  No person named {name!r} in the DB.")
         return
     n_rows = db.fetchone(
-        "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type='voice'", (pid,)
+        "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type=?", (pid, voice_score.biometric_type())
     )["n"]
     print(f"CALIBRATION for {name} (person_id={pid}, {n_rows} enrolled sample(s))")
     print(f"{len(_CALIBRATION_ROUNDS)} rounds × {seconds:.0f}s. Talk for the WHOLE window each time —")

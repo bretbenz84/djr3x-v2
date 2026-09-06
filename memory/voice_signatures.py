@@ -40,6 +40,7 @@ _log = logging.getLogger("memory.voice_signatures")
 _TABLE = "voice_signatures"
 _table_checked = False
 _table_present = False
+_checked_backend = None
 
 
 def enabled() -> bool:
@@ -72,13 +73,16 @@ def _now() -> str:
 
 def _table_available() -> bool:
     """True once, cached, if the voice_signatures table exists (older DBs lack it)."""
-    global _table_checked, _table_present
+    global _table_checked, _table_present, _checked_backend
+    if _checked_backend != _voice_score.active_backend():
+        _table_checked = False
+        _checked_backend = _voice_score.active_backend()
     if _table_checked:
         return _table_present
     try:
         row = db.fetchone(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (_TABLE,),
+            (_voice_score.signature_table(),),
         )
         _table_present = row is not None
     except Exception as exc:
@@ -124,7 +128,7 @@ def match(embedding) -> Optional[dict]:
     threshold = float(getattr(config, "VOICE_SIGNATURE_MATCH_THRESHOLD", 0.74))
     try:
         rows = db.fetchall(
-            "SELECT id, embedding, turns, person_id, label, last_seen_at FROM voice_signatures"
+            f"SELECT id, embedding, turns, person_id, label, last_seen_at FROM {_voice_score.signature_table()}"
         )
     except Exception as exc:
         _log.debug("voice_signatures match query failed: %s", exc)
@@ -160,7 +164,7 @@ def record(embedding, *, label: Optional[str] = None) -> Optional[int]:
     now = _now()
     try:
         return db.execute(
-            "INSERT INTO voice_signatures (embedding, turns, label, created_at, last_seen_at) "
+            f"INSERT INTO {_voice_score.signature_table()} (embedding, turns, label, created_at, last_seen_at) "
             "VALUES (?, 1, ?, ?, ?)",
             (_to_blob(vec), label, now, now),
         )
@@ -178,7 +182,7 @@ def bump(signature_id: int, embedding) -> None:
         return
     try:
         row = db.fetchone(
-            "SELECT embedding, turns FROM voice_signatures WHERE id=?",
+            f"SELECT embedding, turns FROM {_voice_score.signature_table()} WHERE id=?",
             (int(signature_id),),
         )
         if row is None:
@@ -192,7 +196,7 @@ def bump(signature_id: int, embedding) -> None:
         else:
             blended = vec
         db.execute(
-            "UPDATE voice_signatures SET embedding=?, turns=turns+1, last_seen_at=? WHERE id=?",
+            f"UPDATE {_voice_score.signature_table()} SET embedding=?, turns=turns+1, last_seen_at=? WHERE id=?",
             (_to_blob(blended if blended is not None else vec), _now(), int(signature_id)),
         )
     except Exception as exc:
@@ -211,7 +215,7 @@ def attach_person(signature_id: Optional[int], person_id: int) -> None:
         return
     try:
         db.execute(
-            "UPDATE voice_signatures SET person_id=?, last_seen_at=? WHERE id=?",
+            f"UPDATE {_voice_score.signature_table()} SET person_id=?, last_seen_at=? WHERE id=?",
             (int(person_id), _now(), int(signature_id)),
         )
         _log.info(

@@ -15,16 +15,12 @@ logger = logging.getLogger(__name__)
 _encoder = None
 _UNAVAILABLE = False
 
-# Resolved at first load: "ecapa" or "resemblyzer" (after any fallback).
+# Resolved at first load: CAM++, ECAPA, or the legacy Resemblyzer fallback.
 _active_backend: Optional[str] = None
 
 
 def _load_ecapa():
-    """ECAPA-TDNN speaker embeddings (SpeechBrain, 192-dim) — far wider
-    genuine/impostor separation than Resemblyzer (the root cause of every
-    ambiguity incident: JT's print sat 0.45-0.49 from ALL of Bret's).
-    Model files live in config.ECAPA_MODEL_DIR (setup_assets.py downloads them;
-    ~80MB). Returns the encoder or None."""
+    """Load the legacy SpeechBrain ECAPA checkpoint for rollback."""
     try:
         import torch  # noqa: F401 — fail fast if torch is broken
         from speechbrain.inference.speaker import EncoderClassifier
@@ -66,6 +62,20 @@ def _get_encoder():
         return _encoder
 
     backend = str(getattr(config, "VOICE_EMBEDDER", "ecapa") or "ecapa").lower()
+    if backend == "campplus":
+        try:
+            from audio.campplus import Encoder
+            model_path = Path(__file__).resolve().parents[1] / config.CAMPPLUS_MODEL_PATH
+            _encoder = Encoder(model_path, getattr(config, "CAMPPLUS_CPU_THREADS", 2))
+            _active_backend = "campplus"
+            voice_score.set_active_backend("campplus")
+            logger.info("CAM++ Chinese/English loaded on CPU from %s", model_path)
+            return _encoder
+        except Exception as exc:
+            # Never silently switch embedding spaces when a configured model fails.
+            logger.error("CAM++ unavailable: %s", exc)
+            _UNAVAILABLE = True
+            return None
     if backend == "ecapa":
         _encoder = _load_ecapa()
         if _encoder is not None:
@@ -86,7 +96,7 @@ def _get_encoder():
 
 
 def active_backend() -> Optional[str]:
-    """The embedder actually in use ("ecapa"/"resemblyzer"), or None if unloaded."""
+    """The embedder actually in use ("campplus"/"ecapa"/"resemblyzer"), or None if unloaded."""
     return _active_backend
 
 
@@ -123,8 +133,10 @@ def preload() -> bool:
         sample_rate = int(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
         samples = max(1, int(sample_rate * 0.75))
         t = np.arange(samples, dtype=np.float32) / float(sample_rate)
-        dummy = (0.001 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
-        if _active_backend == "ecapa":
+        dummy = (0.05 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
+        if _active_backend == "campplus":
+            _encoder.embed(dummy, sample_rate)
+        elif _active_backend == "ecapa":
             _embed_ecapa(encoder, dummy)
         else:
             from resemblyzer import preprocess_wav
@@ -144,11 +156,14 @@ def _warn_if_all_prints_are_other_backend() -> None:
     """One loud line when every stored voice print belongs to the OTHER embedder —
     the operator would otherwise just see everyone become a mystery voice."""
     try:
-        native_bytes = (192 if _active_backend == "ecapa" else 256) * 4
+        native_bytes = voice_score.embedding_dim() * 4
         rows = db.fetchall(
-            "SELECT LENGTH(encoding) AS n FROM biometrics WHERE type = 'voice'"
+            "SELECT LENGTH(encoding) AS n FROM biometrics WHERE type = ?", (voice_score.biometric_type(),)
         )
         if not rows:
+            if _active_backend == "campplus":
+                logger.info("[campplus] no CAM++ voices yet; first profiles will enroll "
+                            "from active-speaker evidence or explicit self-identification")
             return
         native = sum(1 for r in rows if int(r["n"]) == native_bytes)
         if native == 0:
@@ -165,14 +180,15 @@ def _warn_if_all_prints_are_other_backend() -> None:
 def get_embedding(audio_array: np.ndarray) -> Optional[np.ndarray]:
     """Preprocess audio and return a normalized float32 embedding, or None on failure.
 
-    Dimension depends on the active backend: 192 (ECAPA) or 256 (Resemblyzer).
-    The two are INCOMPATIBLE — matchers skip stored rows of the other dimension,
-    so people enrolled under one embedder must re-enroll after switching.
+    CAM++ and ECAPA output 192 dimensions; Resemblyzer outputs 256.
+    Model-specific storage plus dimension checks prevent cross-model matching.
     """
     encoder = _get_encoder()
     if encoder is None:
         return None
     try:
+        if _active_backend == "campplus":
+            return encoder.embed(audio_array, int(config.AUDIO_SAMPLE_RATE))
         if _active_backend == "ecapa":
             return _embed_ecapa(encoder, audio_array)
         from resemblyzer import preprocess_wav
@@ -268,17 +284,14 @@ def window_evidence(audio_array: np.ndarray) -> list[dict]:
         if embedding is None:
             continue
         ranked = rank_embedding(embedding)
-        if not ranked:
-            continue
-        pid, name, score, _ = ranked[0]
+        pid, name, score, _ = ranked[0] if ranked else (None, None, 0., 0)
         margin = score - (ranked[1][2] if len(ranked) > 1 else -1.)
-        trusted = (score >= float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
+        trusted = (score >= voice_score.match_threshold()
                    and margin >= required_ambiguity_margin(ranked))
-        from audio import voice_score
         pair_similarity = (voice_score.map_similarity(float(np.dot(previous_embedding, embedding)))
                            if previous_embedding is not None else None)
         changed = (pair_similarity is not None
-                   and pair_similarity < float(config.SPEAKER_ID_SIMILARITY_THRESHOLD))
+                   and pair_similarity < voice_score.match_threshold())
         rows.append({"start": start/sr, "end": stop/sr, "person_id": pid if trusted else None,
                      "name": name if trusted else None, "score": float(score), "margin": float(margin),
                      "previous_similarity": pair_similarity, "change_suspected": changed})
@@ -292,7 +305,7 @@ def rank_embedding(embedding: np.ndarray) -> list[tuple[int, str, float, int]]:
     if embedding is None:
         return []
     rows = db.fetchall(
-        "SELECT person_id, encoding FROM biometrics WHERE type = 'voice'"
+        "SELECT person_id, encoding FROM biometrics WHERE type = ?", (voice_score.biometric_type(),)
     )
     if not rows:
         return []
@@ -347,6 +360,8 @@ def required_ambiguity_margin(ranked: list) -> float:
     because the runner-up (Bret) is mature — the who's-that challenge still fires
     while JT's print is thin, which is how his print gets confirmed and grown.
     """
+    if voice_score.active_backend() == "campplus":
+        return float(getattr(config, "CAMPPLUS_MATCH_MARGIN", .07))
     base = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07) or 0.0)
     if len(ranked) < 2:
         return base
@@ -377,7 +392,7 @@ def _log_scoreboard(
         dur = f" voiced={float(voiced or 0.0):.2f}s buffer={float(buffer or 0.0):.2f}s"
     logger.info(
         "[speaker_id] scan — threshold=%.3f,%s candidates: %s",
-        config.SPEAKER_ID_SIMILARITY_THRESHOLD,
+        voice_score.match_threshold(),
         dur,
         format_scoreboard(scored),
     )
@@ -437,7 +452,7 @@ def identify_speaker(
     return (best_id, name, float(best_sim))
 
 
-_BACKEND_EMBED_DIMS = {"ecapa": 192, "resemblyzer": 256}
+_BACKEND_EMBED_DIMS = {"ecapa": 192, "resemblyzer": 256, "campplus": 192}
 
 
 def comparable_print_count(person_id) -> int:
@@ -451,8 +466,8 @@ def comparable_print_count(person_id) -> int:
     count: they can never match a live query."""
     try:
         rows = db.fetchall(
-            "SELECT encoding FROM biometrics WHERE type = 'voice' AND person_id = ?",
-            (int(person_id),),
+            "SELECT encoding FROM biometrics WHERE type = ? AND person_id = ?",
+            (voice_score.biometric_type(), int(person_id)),
         )
     except Exception:
         return 0
@@ -503,6 +518,8 @@ def enroll_voice(
         )
     except Exception as exc:
         logger.debug("[speaker_id] enroll provenance log failed: %s", exc)
-    people.add_biometric(person_id, "voice", embedding)
+    if people.add_biometric(person_id, voice_score.biometric_type(), embedding) is None:
+        logger.warning("[speaker_id] enrollment storage failed for person_id=%s", person_id)
+        return False
     logger.info("[speaker_id] enrolled voice biometric for person_id=%s", person_id)
     return True

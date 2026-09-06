@@ -461,6 +461,17 @@ CREATE TABLE IF NOT EXISTS voice_signatures (
 
 CREATE INDEX IF NOT EXISTS idx_voice_sig_person
     ON voice_signatures(person_id);
+
+-- Separate space: CAM++ and ECAPA both have 192 dimensions but are incompatible.
+CREATE TABLE IF NOT EXISTS voice_signatures_campplus (
+    id INTEGER PRIMARY KEY,
+    embedding BLOB NOT NULL,
+    turns INTEGER DEFAULT 1,
+    person_id INTEGER REFERENCES people(id),
+    label TEXT,
+    created_at DATETIME,
+    last_seen_at DATETIME
+);
 """
 
 
@@ -843,6 +854,18 @@ ECAPA_FILES = [
     "hyperparams.yaml", "embedding_model.ckpt",
     "mean_var_norm_emb.ckpt", "classifier.ckpt", "label_encoder.txt",
 ]
+
+
+def download_campplus_model(root: Path):
+    from audio.campplus import download
+    try:
+        from config import CAMPPLUS_MODEL_PATH
+        path = root / CAMPPLUS_MODEL_PATH
+        existed = path.exists()
+        download(path)
+        return ([] if existed else ["campplus"], ["campplus"] if existed else [], [])
+    except Exception as exc:
+        return [], [], [f"campplus: {exc}"]
 
 
 def download_ecapa_model(
@@ -1478,7 +1501,12 @@ def main() -> None:
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[12/16] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
+    print("CAM++ speaker-ID model (default voice embedder) ...")
+    c, s, f = download_campplus_model(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[12/16] ECAPA-TDNN speaker-ID model (optional legacy embedder) ...")
     c, s, f = download_ecapa_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
