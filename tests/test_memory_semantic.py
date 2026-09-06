@@ -119,6 +119,10 @@ class SemanticEndToEndTest(unittest.TestCase):
         interests.upsert_interest(1, "sailing", interest_strength="low")
         interests.upsert_interest(1, "gardening", interest_strength="high")
         interests.upsert_interest(1, "baking", interest_strength="high")
+        # Candidate vectors are prepared before the turn, never by synchronous
+        # inference during prompt construction. Fill through the same cache seam.
+        for row in interests.get_interests_for_prompt(1):
+            semantic._embed_candidate(retrieval._interest_text(row))
         # Topic "ocean" shares NO word with "sailing" — only meaning. With a tight budget,
         # semantic relevance must still pull sailing in over the higher-strength others.
         with mock.patch.object(config, "MEMORY_PROMPT_BUDGET_ITEMS", 1):

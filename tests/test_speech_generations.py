@@ -123,9 +123,14 @@ class WorkerStaleDropTest(unittest.TestCase):
     def _process(self, item):
         q = _bare_queue()
         played = []
+        def speak(text, *args, **kwargs):
+            from audio import delivery
+            played.append(text)
+            delivery.started()
+            delivery.finish()
         with (
             mock.patch.object(SQ, "_state_suppresses_output", return_value=False),
-            mock.patch("audio.tts.speak", side_effect=lambda text, *a, **k: played.append(text)),
+            mock.patch("audio.tts.speak", side_effect=speak),
             mock.patch("audio.sound_effects.play_for_speech"),
         ):
             q._process_item(item)

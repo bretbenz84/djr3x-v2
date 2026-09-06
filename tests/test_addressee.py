@@ -172,6 +172,7 @@ class InteractionHintTest(unittest.TestCase):
     def test_assess_turn_addressee_field_case(self):
         from intelligence import interaction as I, dialogue_act as DA
         from memory import conversations as conv
+        self.enterContext(mock.patch.object(conv, "_log_turn"))
         DA.clear(); conv.clear_transcript()
         self.addCleanup(DA.clear); self.addCleanup(conv.clear_transcript)
         conv.add_to_transcript("Bret Benziger", "The Wrath of Khan.")

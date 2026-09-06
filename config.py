@@ -5419,7 +5419,7 @@ POST_QUESTION_RETRO_SCAN_MIN_VOICED_FRAMES = 3  # ~96ms of voiced audio required
 # progress at scan time is handed to the live loop as a recovered onset instead
 # (single capture, no double-dispatch).
 GAP_SPEECH_RECOVERY_ENABLED = _env_bool("GAP_SPEECH_RECOVERY_ENABLED", True)
-GAP_MERGE_ENABLED = True             # phase 1: pre-voice merge + regenerate
+GAP_MERGE_ENABLED = False            # owner: finish pending reply, then handle the new utterance
 GAP_CATCHUP_ENABLED = True           # phase 2: post-reply catch-up scan
 # Minimum total voiced audio in a scanned span to count as the person speaking.
 # Below this, breaths / chair creaks / TV blips stay ignored. A phase-1 false

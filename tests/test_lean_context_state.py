@@ -286,7 +286,7 @@ class SemanticBudgetTest(unittest.TestCase):
             mock.patch.object(semantic, "_healthy", return_value=True),
             semantic.turn_budget(0.2),
         ):
-            vec = semantic._embed_candidate("orcas")
+            vec = semantic._topic_vector({"orcas"})
         self.assertIsNotNone(vec)
         self.assertLessEqual(seen["timeout"], 0.2)
         # Outside a budget the cap is gone and _embed(text) keeps its one-arg shape.

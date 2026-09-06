@@ -33,6 +33,7 @@ SR = int(config.AUDIO_SAMPLE_RATE)
 
 
 def _reset_gap_state():
+    I.turn_coordinator.pending.clear()
     I._gap_watch_started_at = 0.0
     I._gap_first_audio_at = 0.0
     I._gap_recovery_floor_at = 0.0
@@ -172,6 +173,7 @@ class ReplyGapOnsetTests(unittest.TestCase):
     """Phase-1 trigger: conservative, and never fooled by Rex's own audio."""
 
     def setUp(self):
+        self.enterContext(mock.patch.object(config, "GAP_MERGE_ENABLED", True))
         _reset_gap_state()
         self.addCleanup(_reset_gap_state)
         self.now = 2000.0
@@ -379,9 +381,20 @@ class CatchUpTests(unittest.TestCase):
     """Phase-2: the one-shot blind-span sweep at loop resume."""
 
     def setUp(self):
+        self.enterContext(mock.patch.object(I, "_note_voice_bearing"))
         _reset_gap_state()
         self.addCleanup(_reset_gap_state)
         self.now = 3000.0
+
+    def test_later_finished_utterance_is_retained_in_order(self):
+        result, handled = self._catch_up(armed_ago=10.0, runs=[(8.0, 7.0), (4.0, 3.0)])
+        self.assertEqual(result, ("handled", None))
+        with mock.patch.object(I.time, "monotonic", return_value=self.now):
+            pending = I.turn_coordinator.pending.pop(I.conv_memory.transcript_version()[0])
+        self.assertIsNotNone(pending)
+        self.assertLess(pending.started_at, self.now - 4.0)
+        self.assertGreater(pending.ended_at, self.now - 3.0)
+        self.assertFalse(pending.require_trusted)
 
     def _catch_up(self, *, armed_ago, first_audio_ago=None, play_end_ago=None,
                   runs=(), aec_on=False, audio=None, span_secs=None):

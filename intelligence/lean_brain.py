@@ -34,6 +34,7 @@ from typing import Generator, Optional
 import config
 from utils import turn_trace as _turn_trace
 from intelligence import llm, llm_compat
+from intelligence.brain_context import bounded_context
 
 _log = logging.getLogger(__name__)
 
@@ -700,6 +701,7 @@ def _flat_answer_probe_line(
     )
 
 
+@bounded_context
 def _messages(
     user_text: str,
     person_id: Optional[int],

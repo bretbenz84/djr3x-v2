@@ -475,6 +475,7 @@ def _is_polar_or_tag_question(question: str) -> bool:
 _arc_lock = threading.Lock()
 _arc_summary: str = ""          # running summary text (read into the system prompt)
 _arc_cursor: int = 0            # highest transcript turn_id summarized through (new-material gate)
+_arc_epoch: int = 0             # changes even when a clear leaves the cursor at zero
 _arc_refreshing: bool = False   # a background worker is currently summarizing
 _arc_dirty: bool = False        # new material arrived while a worker was running
 _arc_thread: Optional[threading.Thread] = None  # most recent worker (tests join it)
@@ -488,13 +489,14 @@ _ARC_SYSTEM_PROMPT = (
 
 
 def _clear_arc() -> None:
-    global _arc_summary, _arc_cursor, _arc_dirty
+    global _arc_summary, _arc_cursor, _arc_dirty, _arc_epoch
     with _arc_lock:
+        _arc_epoch += 1
         _arc_summary = ""
         _arc_cursor = 0
         _arc_dirty = False
         # An in-flight worker is left to finish; its post-generate commit guard
-        # (cursor check) discards a summary computed from the old transcript.
+        # (epoch check) discards a summary computed from the old transcript.
 
 
 def _under_test_runner() -> bool:
@@ -701,16 +703,18 @@ def _trigger_arc_refresh() -> None:
 def _arc_worker() -> None:
     """Background loop: summarize while there is fresh material, then stop."""
     global _arc_dirty, _arc_refreshing
-    try:
-        while True:
-            with _arc_lock:
-                if not _arc_dirty:
-                    return
-                _arc_dirty = False
-            _arc_refresh_core()
-    finally:
+    while True:
         with _arc_lock:
-            _arc_refreshing = False
+            if not _arc_dirty:
+                # Retire atomically with checking dirty. A trigger arriving
+                # afterward must see no worker and start its replacement.
+                _arc_refreshing = False
+                return
+            _arc_dirty = False
+        try:
+            _arc_refresh_core()
+        except Exception:
+            _log.exception("[arc] refresh worker failed; retaining prior summary")
 
 
 def _arc_refresh_core() -> bool:
@@ -723,14 +727,19 @@ def _arc_refresh_core() -> bool:
     global _arc_summary, _arc_cursor
     if not _arc_enabled():
         return False
+    with _arc_lock:
+        input_epoch = _arc_epoch
     try:
         from memory import conversations
+        input_version = conversations.transcript_version()
         transcript = conversations.get_session_transcript()
     except Exception:
         return False
 
     latest = _latest_turn_id(transcript)
     with _arc_lock:
+        if input_epoch != _arc_epoch:
+            return False
         if _arc_cursor > latest:
             _arc_cursor = 0  # transcript reset under us
         if latest <= _arc_cursor:
@@ -767,7 +776,8 @@ def _arc_refresh_core() -> bool:
 
     with _arc_lock:
         # Commit only if no clear()/reset slipped in while we were generating.
-        if _arc_cursor != committed_cursor:
+        if (_arc_epoch != input_epoch or _arc_cursor != committed_cursor
+                or conversations.transcript_version() != input_version):
             _log.debug("[arc] discarding stale summary (cursor moved)")
             return False
         _arc_summary = updated
@@ -833,6 +843,8 @@ def _render_transcript_lines(lines: list[dict]) -> str:
     for entry in lines:
         raw = str(entry.get("speaker") or "").strip()
         speaker = "Rex" if raw.lower() == "rex" else "User"
+        if entry.get("uncertain"):
+            speaker = "Unidentified speaker (do not attribute this to the current user)"
         text = re.sub(r"\s+", " ", str(entry.get("text") or "")).strip()
         if text:
             out.append(f"{speaker}: {text}")

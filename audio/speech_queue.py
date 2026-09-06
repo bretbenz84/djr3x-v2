@@ -26,6 +26,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+from audio import delivery
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ class DoneEvent(threading.Event):
     def __init__(self) -> None:
         super().__init__()
         self.played: bool = False
+        self.started: bool = False
         self.dropped_reason: Optional[str] = None
 
     def drop(self, reason: str) -> None:
@@ -552,6 +554,14 @@ class _SpeechQueue:
         """Play (or drop) ONE popped item — the worker loop's body, split out so
         the stale-generation / played bookkeeping can be tested without a
         blocking worker thread."""
+        record = delivery.Delivery(valid=lambda: (
+            not _state_suppresses_output()
+            and (item.generation is None or item.generation == generation())
+        ))
+        with delivery.track(record):
+            self._deliver_item(item, record)
+
+    def _deliver_item(self, item, record) -> None:
         if True:
             with self._lock:
                 self._speaking = True
@@ -645,13 +655,14 @@ class _SpeechQueue:
                 # lands INTO the post_beat_ms pause: line lands -> silence -> beat.
                 # Must be non-blocking (animations.play_body_beat spawns its own
                 # thread); a raising callback never breaks the worker.
-                if item.on_audio_end is not None:
+                if record.completed and item.on_audio_end is not None:
                     try:
                         item.on_audio_end()
                     except Exception:
                         pass
                 try:
-                    item.done.played = True
+                    item.done.played = record.completed
+                    item.done.started = record.started
                 except Exception:
                     pass
 
@@ -661,6 +672,11 @@ class _SpeechQueue:
             except Exception as exc:
                 logger.error("speech_queue worker error: %s", exc)
             finally:
+                item.done.started = record.started
+                item.done.played = record.completed
+                if not record.completed and not getattr(item.done, "dropped_reason", None):
+                    item.done.dropped_reason = record.reason or (
+                        "interrupted" if record.started else "not_started")
                 try:
                     from awareness.situation import assessor as _sit
                     _sit.set_rex_speaking(False)
@@ -763,6 +779,8 @@ class _SpeechQueue:
                     logger.debug("speech_queue: playback skipped — output gate busy")
                     return
                 try:
+                    if not delivery.allowed():
+                        return
                     echo_cancel.set_playing(True)
                     if on_start is not None:
                         try:
@@ -777,7 +795,9 @@ class _SpeechQueue:
                         audio, samplerate,
                         blocksize=int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
                     )
+                    delivery.started()
                     sd.wait()
+                    delivery.finish(canceled=echo_cancel.was_canceled())
                 finally:
                     echo_cancel.set_playing(False)
         except Exception as exc:

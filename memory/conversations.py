@@ -6,6 +6,8 @@ is module-level in-memory state and is never persisted to the database.
 """
 
 import itertools
+import threading
+from functools import wraps
 import logging
 import sys
 import time
@@ -28,6 +30,26 @@ _transcript: list[dict] = []
 # (the conversation arc, generation IDs) must never see an old ID come back after
 # a session reset — length-based cursors cannot tell a reset from a race.
 _turn_seq = itertools.count(1)
+_transcript_lock = threading.RLock()
+_transcript_epoch = 0
+_transcript_revision = 0
+
+
+def _transcript_change(fn):
+    @wraps(fn)
+    def changed(*args, **kwargs):
+        global _transcript_revision
+        with _transcript_lock:
+            result = fn(*args, **kwargs)
+            _transcript_revision += 1
+            return result
+    return changed
+
+
+def transcript_version() -> tuple[int, int]:
+    """Session and input revision; corrections count even without a new turn."""
+    with _transcript_lock:
+        return _transcript_epoch, _transcript_revision
 
 
 def _now() -> str:
@@ -88,6 +110,7 @@ def delete_conversations(person_id: int) -> None:
 _REX_SPEAKERS = {"rex", "dj-r3x", "djr3x"}
 
 
+@_transcript_change
 def add_to_transcript(speaker: str, text: str, *, learnable: bool = True,
                       uncertain: bool = False) -> None:
     """Append a speaker/text entry to the in-memory session transcript.
@@ -104,7 +127,7 @@ def add_to_transcript(speaker: str, text: str, *, learnable: bool = True,
     _transcript.append({
         "speaker": speaker,
         "text": text,
-        "learnable": bool(learnable),
+        "learnable": bool(learnable) and not uncertain,
         # Correlation keys (Lean Brain phase 0): a per-process monotonic turn id
         # and a wall-clock stamp. Readers that copy entries into their own dicts
         # (the lean transcript builder) may drop them; nothing should compare an
@@ -115,7 +138,7 @@ def add_to_transcript(speaker: str, text: str, *, learnable: bool = True,
         # right (weak voice, contradicting camera/bearing). Readers may hedge.
         "uncertain": bool(uncertain),
     })
-    _log_turn(speaker, text)
+    _log_turn("Uncertain speaker" if uncertain else speaker, text)
 
 
 def last_turn_id() -> int:
@@ -128,6 +151,7 @@ def last_turn_id() -> int:
         return 0
 
 
+@_transcript_change
 def mark_last_human_turn_unlearnable() -> bool:
     """Flag the most recent NON-Rex transcript turn as not-learnable. Returns True if
     one was found and flipped. Targets the current exchange's human turn (only one is
@@ -139,6 +163,7 @@ def mark_last_human_turn_unlearnable() -> bool:
     return False
 
 
+@_transcript_change
 def relabel_prior_turn(old_speaker: str, new_speaker: str, *, skip_text: str = "") -> bool:
     """Move the ATTRIBUTION of the most recent transcript turn recorded under
     ``old_speaker`` to ``new_speaker`` — the "that was JT speaking" correction. The
@@ -188,7 +213,8 @@ def _log_turn(speaker: str, text: str) -> None:
             _session_id = local.strftime("session-%Y-%m-%d-%H-%M-%S")
         person_id = None
         if speaker_s.lower() not in _REX_SPEAKERS \
-                and not speaker_s.lower().startswith("unknown_voice"):
+                and not speaker_s.lower().startswith("unknown_voice") \
+                and speaker_s.lower() != "uncertain speaker":
             if speaker_s in _person_id_cache:
                 person_id = _person_id_cache[speaker_s]
             else:
@@ -242,9 +268,13 @@ def last_logged_day_before(day: str) -> Optional[str]:
 
 def get_session_transcript() -> list[dict]:
     """Return a copy of the current in-memory session transcript."""
-    return list(_transcript)
+    with _transcript_lock:
+        return [dict(row) for row in _transcript]
 
 
+@_transcript_change
 def clear_transcript() -> None:
     """Clear the in-memory session transcript buffer."""
+    global _transcript_epoch
+    _transcript_epoch += 1
     _transcript.clear()

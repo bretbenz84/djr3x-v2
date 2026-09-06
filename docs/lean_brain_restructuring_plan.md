@@ -1,9 +1,51 @@
 # Lean Brain restructuring plan
 
-Code review: 2026-09-04. Status (2026-09-05): IMPLEMENTED in shadow/flagged
-slices through phases 0–5 — see the "Status" paragraphs under each phase and
-CONTEXT.md "Conversation Voice". Owner's direction: behavior over measurement;
-live validation on the robot is the next step (no session has run this code yet).
+Code review: 2026-09-04. Status (2026-09-05): incremental implementation in
+progress. Initial slices exist across phases 0–5; this is not a claim that all
+phase acceptance criteria have passed. See the phase notes and the continuation
+below. Owner's direction: behavior over measurement.
+
+### Implementation continuation (2026-09-05)
+
+- Phase 0: `utils/runtime_report.py` adds allowlisted effective configuration,
+  actual imported model handles, ownership, peak RSS and CPU time to turn traces.
+  Peak RSS is explicitly not current RSS or system memory pressure.
+  `tools/production_replay.py` exercises `submit_text()` with injected model and
+  speech transports, temporary databases and blocked hardware/network access.
+  `evals/run_quality_eval.py` now uses the production `_reply_token_stream` seam.
+- Phases 1/2: one context-local retrieval deadline covers Lean's prompt build;
+  only one query embedding may be awaited. Candidate misses use keyword scoring
+  immediately and queue bounded, expiring prewarm work; fact/interest writes also
+  prepare candidates. Foreground ASR/local TTS prevent admission of new optional
+  embedding work. Existing GPU/HTTP requests cannot be preempted. Cache epochs
+  prevent late prewarm commits after reset; configured model changes clear vectors.
+  Conversation summaries now reject stale session epochs and transcript revisions,
+  including speaker corrections. Worker retirement is atomic with the dirty flag.
+- Phase 2B: uncertain transcript entries are unlearnable immediately, durable
+  conversation logging omits guessed identity, summaries retain the uncertainty,
+  and Lean replies do not retrieve the guessed person's personal context.
+- Phase 4: firmware completion of a safety-shortened turn is a partial goal;
+  no compass measurement is invented when verification is unavailable.
+- Phase 5: queue delivery requires a signal from the buffered/streamed/local audio
+  sink. Interrupted or failed sentences are excluded from delivered text, including
+  no-audio/whole-reply and fallback branches. Generation validity is checked after
+  synthesis and at the sinks; interrupted provider streams are closed.
+  This is sentence-level truth, not word-level alignment of partial audio.
+- Owner behavior decision: **finish the pending reply, then handle new speech**
+  when someone speaks while Rex is thinking. `GAP_MERGE_ENABLED=False` is the
+  default; explicit playback barge-in remains. `turn_coordinator.pending` retains
+  up to four later completed captures from the recovery scan in order, with a
+  60-second/session expiry and original capture times. Queued speech cannot answer
+  dialogue frames created after its capture; Lean receives that ordering note.
+
+Still outstanding: fully concurrent capture/response ownership (the pending-input
+adapter still uses the existing recovery scan); authoritative utterance-aligned
+attribution and mixed-speaker capture evaluation; complete per-target pending
+exchange ownership; minimal agenda preparation; unified action narration and goal
+verification; token/pressure/cost measurements and live acceptance scenarios.
+The heading-alternative flag remains OFF. No live robot validation was performed
+for this continuation. Do not remove recovery branches or enable alternative
+physical turns on the strength of offline fixture tests.
 
 Sources: README.md, CONTEXT.md, CLAUDE.md, and the implementation seams cited
 below. CLAUDE.md adds important test-isolation and real-hardware constraints;

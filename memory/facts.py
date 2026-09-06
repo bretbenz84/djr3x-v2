@@ -443,6 +443,13 @@ def add_fact(
         )
 
 
+    try:
+        from memory import semantic
+        semantic.prewarm_record("fact", {"key": key, "value": value, "category": category})
+    except Exception:
+        _log.debug("fact embedding prewarm skipped", exc_info=True)
+
+
 def get_facts(person_id: int) -> list[dict]:
     """Return all facts for a person."""
     rows = db.fetchall(

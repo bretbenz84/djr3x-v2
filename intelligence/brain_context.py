@@ -23,11 +23,22 @@ All reads are local, in-memory, and bounded; nothing here calls a model.
 from __future__ import annotations
 
 import logging
+from functools import wraps
 from typing import Optional
 
 import config
 
 _log = logging.getLogger(__name__)
+
+
+def bounded_context(fn):
+    """Share one retrieval deadline across every participant in a prompt."""
+    @wraps(fn)
+    def build(*args, **kwargs):
+        from memory import semantic
+        with semantic.turn_budget():
+            return fn(*args, **kwargs)
+    return build
 
 
 def _cfg(name: str, default):

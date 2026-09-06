@@ -16,6 +16,12 @@ from intelligence import motion_controller as mc
 
 
 class ActionResultTest(unittest.TestCase):
+    def test_completed_shortened_command_is_only_partial_goal(self):
+        r = AR.ActionResult("turn", seq=5, requested_deg=90, attempted_deg=62)
+        r.finish("completed")
+        self.assertEqual(r.status, "partial")
+        self.assertFalse(r.ok)
+
     def test_finish_and_shrunk(self):
         r = AR.ActionResult("turn", "left 90°", seq=5, requested_deg=90.0, attempted_deg=62.0)
         self.assertEqual(r.status, "running")
@@ -244,10 +250,12 @@ class TranscriptAndLeanUncertaintyTest(unittest.TestCase):
         from memory import conversations as conv
         conv.clear_transcript()
         self.addCleanup(conv.clear_transcript)
+        self.enterContext(mock.patch.object(conv, "_log_turn"))
         conv.add_to_transcript("Bret", "hi", uncertain=True)
         conv.add_to_transcript("Rex", "yo")
         rows = conv.get_session_transcript()
         self.assertTrue(rows[0]["uncertain"])
+        self.assertFalse(rows[0]["learnable"])
         self.assertFalse(rows[1]["uncertain"])
 
     def test_lean_labels_uncertain_speakers(self):

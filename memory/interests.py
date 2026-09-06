@@ -160,9 +160,11 @@ def upsert_interest(
                 row_id,
             ),
         )
+        _prewarm_interest({**row, "category": category_clean,
+                           "notes": (notes or "").strip() or row.get("notes")})
         return row_id
 
-    return db.execute(
+    row_id = db.execute(
         """INSERT INTO person_interests
            (person_id, name, category, interest_strength, confidence, source,
             first_mentioned_at, last_mentioned_at, last_asked_about_at,
@@ -182,6 +184,18 @@ def upsert_interest(
             (associated_stories or "").strip(),
         ),
     )
+
+
+    _prewarm_interest({"name": name_clean, "category": category_clean, "notes": notes})
+    return row_id
+
+
+def _prewarm_interest(record: dict) -> None:
+    try:
+        from memory import semantic
+        semantic.prewarm_record("interest", record)
+    except Exception:
+        _log.debug("interest embedding prewarm skipped", exc_info=True)
 
 
 def interest_topic_overlap(interest: dict, topic_tokens) -> int:

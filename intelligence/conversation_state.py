@@ -346,9 +346,12 @@ def render_lines(current_person_id: Optional[int]) -> list[str]:
                 if a.get("measured_deg") is not None:
                     phrase += f" (compass measured {abs(a['measured_deg']):.0f}°)"
             elif status == "partial":
-                phrase = (f"{what} → finished but landed short/long: compass measured "
-                          f"{abs(a.get('measured_deg') or 0):.0f}° of the "
-                          f"{abs(a.get('requested_deg') or 0):.0f}° asked")
+                if a.get("measured_deg") is None:
+                    phrase = f"{what} → only partly achieved the request; final heading unverified"
+                else:
+                    phrase = (f"{what} → finished but landed short/long: compass measured "
+                              f"{abs(a['measured_deg']):.0f}° of the "
+                              f"{abs(a.get('requested_deg') or 0):.0f}° asked")
             else:
                 phrase = f"{what} → ended '{status}' ({_reason_phrase(status)})"
             parts.append(f"{phrase}, {_age(now - a['at'])}")

@@ -49,6 +49,55 @@ class _ArcTestBase(unittest.TestCase):
 
 
 class ArcRefreshTest(_ArcTestBase):
+    def test_summary_cannot_commit_after_transcript_only_reset(self):
+        from intelligence import topic_thread as tt
+        from memory import conversations
+        def delayed_result(*args, **kwargs):
+            conversations.clear_transcript()
+            return "Topics: old session"
+        with (
+            mock.patch.object(tt, "_arc_enabled", return_value=True),
+            mock.patch.object(tt, "_arc_generate", side_effect=delayed_result),
+            mock.patch.object(conversations, "get_session_transcript",
+                              return_value=_transcript(("Bret", "old session"))),
+        ):
+            self.assertFalse(tt._arc_refresh_core())
+        self.assertEqual(tt.arc_summary(), "")
+
+    def test_summary_cannot_commit_after_speaker_correction(self):
+        from intelligence import topic_thread as tt
+        from memory import conversations
+        conversations.clear_transcript()
+        self.addCleanup(conversations.clear_transcript)
+        with mock.patch.object(conversations, "_log_turn"):
+            conversations.add_to_transcript("Bret", "I went sailing")
+        def delayed_result(*args, **kwargs):
+            conversations.relabel_prior_turn("Bret", "JT")
+            return "Topics: Bret's sailing trip"
+        with (
+            mock.patch.object(tt, "_arc_enabled", return_value=True),
+            mock.patch.object(tt, "_arc_generate", side_effect=delayed_result),
+        ):
+            self.assertFalse(tt._arc_refresh_core())
+        self.assertEqual(tt.arc_summary(), "")
+
+    def test_first_summary_cannot_commit_after_session_clear(self):
+        from intelligence import topic_thread as tt
+
+        def delayed_result(*args, **kwargs):
+            tt.clear()
+            return "Topics: the previous person's private trip"
+
+        with (
+            mock.patch.object(tt, "_arc_enabled", return_value=True),
+            mock.patch.object(tt, "_arc_generate", side_effect=delayed_result),
+            mock.patch("memory.conversations.get_session_transcript",
+                       return_value=_transcript(("Bret", "a trip"))),
+        ):
+            self.assertFalse(tt._arc_refresh_core())
+        self.assertEqual(tt.arc_summary(), "")
+        self.assertEqual(tt.arc_covered_through(), 0)
+
     def test_fold_new_exchange_into_summary(self):
         from intelligence import topic_thread as tt
         canned = (

@@ -198,6 +198,7 @@ class LocalAndEmbedCountingTest(unittest.TestCase):
 class TranscriptTurnIdTest(unittest.TestCase):
     def setUp(self):
         from memory import conversations
+        self.enterContext(mock.patch.object(conversations, "_log_turn"))
         self.conv = conversations
         self.conv.clear_transcript()
         self.addCleanup(self.conv.clear_transcript)

@@ -43,6 +43,8 @@ audio actually reaches the room; the buffered _play() path gets the same offset
 via _drive_leds(start_delay=...). Kill switch: TTS_MOUTH_SYNC_ENABLED.
 """
 
+from audio import delivery
+
 import hashlib
 import io
 import logging
@@ -396,7 +398,7 @@ def speak(
     renders Rex's own voice when --local-tts mode is on or the ElevenLabs breaker
     is open.
     """
-    if not text or not text.strip():
+    if not text or not text.strip() or not delivery.allowed():
         return
     spoken_text = _normalize_for_speech(text)
     # Callers may pass text carrying inline [audio tags] (authored seam lines, LLM-emitted);
@@ -417,6 +419,8 @@ def speak(
                 on_playback_start()
             except Exception:
                 pass
+        delivery.started()
+        delivery.finish()
         logger.info("[tts] audio suppressed — emitted text only")
         return
 
@@ -1039,8 +1043,16 @@ def _speak_streaming(
     with output_gate.hold("tts", timeout=_gate_timeout()) as acquired:
         if not acquired:
             _log_gate_timeout("streamed playback")
+            close = getattr(chunk_iter, "close", None)
+            if close:
+                close()
             return True   # handled: deliberately skipped, same as _play()
 
+        if not delivery.allowed():
+            close = getattr(chunk_iter, "close", None)
+            if close:
+                close()
+            return True
         with _speaking_lock:
             _speaking = True
         pcm_carry = b""
@@ -1057,6 +1069,8 @@ def _speak_streaming(
             # clone deep-buffer reply beside a motion chirp). Writes below run
             # lock-free.
             with sd_guard.device_control():
+                if not delivery.allowed():
+                    return True
                 stream = sd.OutputStream(
                     samplerate=samplerate, channels=1, dtype="float32",
                     **playback_stream_kwargs(),
@@ -1069,6 +1083,7 @@ def _speak_streaming(
                 _stream_output_latency(stream), samplerate,
                 lambda: _mouth_on(led_emotion),
             )
+            delivery.started()
             if on_playback_start is not None:
                 try:
                     on_playback_start()
@@ -1077,7 +1092,7 @@ def _speak_streaming(
 
             chunk = first_chunk
             while chunk is not None:
-                if echo_cancel.was_canceled():
+                if echo_cancel.was_canceled() or not delivery.allowed():
                     canceled = True
                     break
                 raw = pcm_carry + chunk
@@ -1123,12 +1138,20 @@ def _speak_streaming(
                 # that long, which beats it racing the teardown.
                 with sd_guard.device_control():
                     stream.stop()
+                delivery.finish(canceled=echo_cancel.was_canceled())
         except Exception as exc:
+            canceled = True
             logger.error("[tts] streamed playback error: %s", exc)
             # Audio may have partially played; do NOT fall back (would double-speak).
         finally:
             _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop,
                         pacer=pacer, canceled=canceled)
+            close = getattr(chunk_iter, "close", None)
+            if close:
+                try:
+                    close()
+                except Exception:
+                    pass
 
         logger.info(
             "[tts] streamed playback %s in %.2fs",
@@ -1439,7 +1462,7 @@ def _speak_local(
         canceled = False
         try:
             for chunk in gen:
-                if echo_cancel.was_canceled():
+                if echo_cancel.was_canceled() or not delivery.allowed():
                     canceled = True
                     break
                 buffered.append(chunk)
@@ -1464,6 +1487,8 @@ def _speak_local(
                 _log_gate_timeout("local playback")
                 return True   # handled: deliberately skipped, same as _play()
 
+            if not delivery.allowed():
+                return True
             with _speaking_lock:
                 _speaking = True
             # A whole-clip clone take is already fully buffered here, so its real
@@ -1489,6 +1514,8 @@ def _speak_local(
                 # the Clinton take was ready, beside a thinking chirp, and the mic
                 # never came back), writes lock-free.
                 with sd_guard.device_control():
+                    if not delivery.allowed():
+                        return True
                     stream = sd.OutputStream(
                         samplerate=sr, channels=1, dtype="float32",
                         **playback_stream_kwargs(),
@@ -1500,6 +1527,7 @@ def _speak_local(
                 pacer = _MouthPacer(
                     _stream_output_latency(stream), sr, lambda: _mouth_on(led_emotion),
                 )
+                delivery.started()
                 if on_playback_start is not None:
                     try:
                         on_playback_start()
@@ -1517,7 +1545,7 @@ def _speak_local(
                     # single ~12 s array, and writing it whole froze the mouth and
                     # the head for the entire line (see _led_chunks).
                     for piece in _led_chunks(samples, sr):
-                        if echo_cancel.was_canceled():
+                        if echo_cancel.was_canceled() or not delivery.allowed():
                             canceled = True
                             break
                         pacer.push(piece)
@@ -1541,7 +1569,7 @@ def _speak_local(
                             break
                         all_samples.append(samples)
                         for piece in _led_chunks(samples, sr):
-                            if echo_cancel.was_canceled():
+                            if echo_cancel.was_canceled() or not delivery.allowed():
                                 canceled = True
                                 break
                             pacer.push(piece)
@@ -1561,7 +1589,9 @@ def _speak_local(
                             pass
                     with sd_guard.device_control():
                         stream.stop()
+                    delivery.finish(canceled=echo_cancel.was_canceled())
             except Exception as exc:
+                canceled = True
                 logger.error("[tts] local playback error: %s", exc)
             finally:
                 _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop,
@@ -1615,11 +1645,14 @@ def _play(
             _log_gate_timeout("playback")
             return
 
+        if not delivery.allowed():
+            return
         with _speaking_lock:
             _speaking = True
 
         stop_event = threading.Event()
         led_thread: Optional[threading.Thread] = None
+        playback_ok = False
 
         # Hold AEC suppression for at least the audio's actual duration. A
         # CoreAudio glitch can cause sd.wait() to return early while audio is
@@ -1648,12 +1681,15 @@ def _play(
             # between turns; this guarantees they are lit for the turn itself.
             leds_head.ensure_eyes_on(led_emotion)
             echo_cancel.set_playing(True)
+            if not delivery.allowed():
+                return
+            sd.play(audio, samplerate, **playback_stream_kwargs())
+            delivery.started()
             if on_playback_start is not None:
                 try:
                     on_playback_start()
                 except Exception:
                     pass
-            sd.play(audio, samplerate, **playback_stream_kwargs())
             # The mouth (head SPEAK: + chest) and the RMS walk both start one
             # output latency from now, when the room actually hears this. sd.play
             # returns immediately, so the stream is live and reporting by here.
@@ -1667,6 +1703,7 @@ def _play(
             )
             led_thread.start()
             sd.wait()
+            playback_ok = True
         except Exception as exc:
             logger.error("[tts] playback error: %s", exc)
         finally:
@@ -1679,6 +1716,8 @@ def _play(
                     remaining, remaining,
                 )
                 time.sleep(remaining)
+            if playback_ok:
+                delivery.finish(canceled=echo_cancel.was_canceled())
             stop_event.set()
             if led_thread is not None and led_thread.is_alive():
                 led_thread.join(timeout=1.0)

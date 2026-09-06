@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import config
+from utils.local_work import foreground
 
 logger = logging.getLogger(__name__)
 _WHISPER_LOCAL_DIR = (Path(__file__).resolve().parents[1] / config.WHISPER_MODEL_DIR).resolve()
@@ -619,6 +620,7 @@ def _is_confident(avg_logprob, no_speech_prob, backend: str = "mlx_whisper") -> 
     return True
 
 
+@foreground()
 def transcribe(audio_array: np.ndarray) -> "Transcript":
     """Transcribe a float32 numpy array (16 kHz mono) and return a cleaned string.
 

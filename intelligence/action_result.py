@@ -49,6 +49,9 @@ class ActionResult:
     def finish(self, status: str, *, reason: str = "") -> None:
         status = str(status or "unknown").strip().lower()
         self.status = status if status in STATUSES else status or "unknown"
+        if self.status == "completed" and self.shrunk and not self.alternative:
+            self.status = "partial"
+            self.reason = "safety_shortened"
         if reason:
             self.reason = str(reason)
         self.ended_at = time.monotonic()

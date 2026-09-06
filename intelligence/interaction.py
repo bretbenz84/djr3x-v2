@@ -60,7 +60,7 @@ from intelligence import memory_query
 from intelligence import social_frame
 from intelligence import comedy_modes
 from intelligence import premise_memory
-from intelligence import turn_completion
+from intelligence import turn_completion, turn_coordinator
 from intelligence import friendship_patterns
 from intelligence import conversation_steering
 from intelligence import profile_questions
@@ -3001,6 +3001,8 @@ def _log_character_loop_trace(
         "timing": _ttfs_timing_payload(trace),
     }
     if trace.turn_trace is not None:
+        from utils import runtime_report
+        payload["runtime"] = runtime_report.snapshot(config)
         # Stage offsets are ms from the segment handler's entry (turn_start),
         # the same origin the "timing" block uses.
         snap = trace.turn_trace.snapshot(trace.turn_start)
@@ -15449,23 +15451,27 @@ def _maybe_catch_up_gap_speech() -> Optional[tuple[str, Optional[float]]]:
         )
         return None
 
-    # Finished utterance(s): dispatch the EARLIEST (it went unheard longest);
-    # anything later is logged, and fresh speech re-enters normally.
+    # Finished utterances: dispatch the earliest and retain later captures.
     onset, seg_end, slice_cap = candidates[0]
-    if len(candidates) > 1:
-        # WHAT was dropped, not just how many. Without this the log cannot tell
-        # the second half of an answer from a separate remark seconds later, so
-        # a field report ("it clipped our answers") can neither be confirmed nor
-        # ruled out here (2026-08-26 postmortem: four of these, and the question
-        # of whether any was a split answer was unanswerable from the log).
-        _capture_dropped(
-            "gap_catchup_extra_cluster", dropped=len(candidates) - 1,
-            why="; ".join(
-                f"onset {now - c[0]:.1f}s ago, {c[1] - c[0]:.2f}s long, "
-                f"{c[0] - seg_end:.2f}s after the dispatched cluster"
-                for c in candidates[1:]
-            ),
-        )
+    # Retain later finished captures while the first one gets its reply. The
+    # samples are copied now so rolling-buffer flushes cannot erase them.
+    for extra_onset, extra_end, extra_cap in candidates[1:]:
+        extra_start = max(actual_start, armed, extra_onset - pad)
+        extra_stop = min(now, extra_cap, extra_end + pad)
+        sr = float(config.AUDIO_SAMPLE_RATE)
+        j0 = max(0, int((extra_start - actual_start) * sr))
+        j1 = min(len(audio), int((extra_stop - actual_start) * sr))
+        if j1 - j0 < int(0.30 * sr):
+            continue
+        retained = turn_coordinator.pending.put(turn_coordinator.CapturedTurn(
+            audio=audio[j0:j1].copy(), started_at=extra_start, ended_at=extra_stop,
+            session=conv_memory.transcript_version()[0],
+            require_trusted=bool(played and b_start <= extra_onset < b_end)
+                and bool(getattr(config, "GAP_CATCHUP_UNDER_PLAYBACK_REQUIRE_TRUSTED", True)),
+        ))
+        if not retained:
+            _capture_dropped("pending_turn_overflow", dropped=1,
+                             why="bounded pending input queue is full")
     slice_start = max(actual_start, armed, onset - pad)
     slice_end = min(now, slice_cap, seg_end + pad)
     sr = float(config.AUDIO_SAMPLE_RATE)
@@ -15495,11 +15501,13 @@ def _maybe_catch_up_gap_speech() -> Optional[tuple[str, Optional[float]]]:
         # under his ready line decoded "Look me what you got me." (-0.55) and Rex
         # asked an empty room "Sorry, one more time?" — which played more audio,
         # which seeded the next residual.
-        _handle_speech_segment(
-            slice_audio,
-            require_trusted=under_playback and bool(getattr(
-                config, "GAP_CATCHUP_UNDER_PLAYBACK_REQUIRE_TRUSTED", True)),
-        )
+        _note_voice_bearing(slice_start, slice_end)
+        with dialogue_act.captured_at(slice_start):
+            _handle_speech_segment(
+                slice_audio,
+                require_trusted=under_playback and bool(getattr(
+                    config, "GAP_CATCHUP_UNDER_PLAYBACK_REQUIRE_TRUSTED", True)),
+            )
     except Exception:
         # Same containment as the live path: a handler bug costs one turn,
         # never the listening loop.
@@ -17081,13 +17089,8 @@ def _stream_llm_response(
         if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
             from intelligence import tool_router as _tr
             try:
-                from intelligence import lean_brain
-                full_text = lean_brain.respond(
-                    text, person_id,
-                    transcript=_lean_recent_transcript(text),
-                    world=_lean_world(),
-                    turn_directive=lean_callback_directive or None,
-                ).get("text") or ""
+                full_text = llm.clean_response_text("".join(_reply_token_stream(
+                    text, person_id, agenda_directive, lean_callback_directive))).strip()
             except _tr.ToolCallRequested as tc:
                 # Non-streaming path: same live-tool dispatch as the streaming
                 # branch. Executor already spoke; settle any callback claim so
@@ -17250,6 +17253,8 @@ def _stream_llm_response(
                 person_id,
                 source="agenda_llm_identity",
             )
+        if not completed:
+            full_text = ""
     if cb_claim is not None and not cb_settled:
         cb_settled = True
         _settle_callback_claim(
@@ -17403,11 +17408,13 @@ def _reply_token_stream(
     """Reply generator: the LEAN brain (one coherent call — persona + small context + recent
     turns) when LEAN_BRAIN_ENABLED, else the classic assembled-prompt path. A lean init error
     falls back to the classic path so a hiccup never breaks a live turn."""
+    lean_turn_directive = "\n".join(filter(None, (
+        lean_turn_directive, dialogue_act.queued_turn_note())))
     if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
         try:
             from intelligence import lean_brain
             return lean_brain.stream_reply(
-                user_text, person_id,
+                user_text, None if _turn_speaker_uncertain() else person_id,
                 transcript=_lean_recent_transcript(user_text),
                 world=_lean_world(),
                 turn_directive=lean_turn_directive or None,
@@ -17919,12 +17926,12 @@ def _stream_and_speak_sentences(
                 _log.debug("[interaction] stream fallback failed: %s", exc)
             if fallback:
                 filler_stop.set()
-                _speak_blocking(
+                delivered = _speak_blocking(
                     fallback,
                     emotion=delivery_emotion,
                     voice_settings=delivery_voice_settings,
                 )
-                return fallback
+                return fallback if delivered else ""
 
     full_text = " ".join(part for part in spoken if part).strip()
     if turn_start is not None:
@@ -17936,7 +17943,9 @@ def _stream_and_speak_sentences(
     # only the sentences whose audio went out count — the transcript, the memory
     # extractor, and the post-TTS handoff all see the delivered text, never a
     # drafted continuation nobody heard.
-    if not completed and full_text:
+    if full_text and (not completed or any(
+        isinstance(ev, speech_queue.DoneEvent) and not ev.played for ev in done_events
+    )):
         delivered = [
             part for part, ev in zip(spoken, done_events)
             if part and bool(getattr(ev, "played", False))
@@ -32476,6 +32485,21 @@ def _loop() -> None:
             _maybe_idle_outro()
             _end_session()
             state_module.set_state(State.IDLE)
+            continue
+
+        pending_turn = turn_coordinator.pending.pop(conv_memory.transcript_version()[0])
+        if pending_turn is not None:
+            _arm_gap_watch()
+            _begin_user_turn()
+            try:
+                _note_voice_bearing(pending_turn.started_at, pending_turn.ended_at)
+                with dialogue_act.captured_at(pending_turn.started_at):
+                    _handle_speech_segment(pending_turn.audio,
+                                          require_trusted=pending_turn.require_trusted)
+            except Exception:
+                _log.exception("queued turn failed; listening continues")
+            finally:
+                _end_user_turn()
             continue
 
         # A question handoff arms a one-shot retro scan: an answer spoken in the

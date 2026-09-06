@@ -10,6 +10,8 @@ conservative evidence checks.
 from __future__ import annotations
 
 from collections import deque
+from contextvars import ContextVar
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 import re
 import time
@@ -18,6 +20,25 @@ from typing import Any, Optional
 
 _FRAME_TTL_SECS = 120.0
 _frames: deque["RexTurnFrame"] = deque(maxlen=16)
+_capture_time = ContextVar("dialogue_capture_time", default=None)
+
+
+@contextmanager
+def captured_at(started_at: float):
+    """A queued utterance cannot answer a question asked after it was captured."""
+    token = _capture_time.set(started_at)
+    try:
+        yield
+    finally:
+        _capture_time.reset(token)
+
+
+def queued_turn_note() -> str:
+    if _capture_time.get() is None:
+        return ""
+    return ("This utterance was captured earlier, while you were handling a prior turn. "
+            "You finished that reply first. Address this utterance now; do not treat it "
+            "as an answer to a question you asked after it was spoken.")
 
 _QUESTION_START_RE = re.compile(
     r"^\s*(?:who|what|when|where|why|how|can|could|would|will|do|does|did|"
@@ -126,6 +147,9 @@ class RexTurnFrame:
     ttl_secs: float = _FRAME_TTL_SECS
 
     def active(self, now: Optional[float] = None) -> bool:
+        captured = _capture_time.get()
+        if captured is not None and self.created_at > captured:
+            return False
         current = time.monotonic() if now is None else now
         return (current - self.created_at) <= max(0.0, float(self.ttl_secs))
 

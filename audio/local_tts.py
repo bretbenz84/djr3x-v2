@@ -71,6 +71,9 @@ _busy_lock = threading.Lock()
 
 class _engine_busy:
     def __enter__(self):
+        from utils.local_work import foreground
+        self._foreground = foreground()
+        self._foreground.__enter__()
         global _busy_count
         with _busy_lock:
             _busy_count += 1
@@ -80,6 +83,7 @@ class _engine_busy:
         global _busy_count
         with _busy_lock:
             _busy_count = max(0, _busy_count - 1)
+        self._foreground.__exit__(*exc)
         return False
 
 

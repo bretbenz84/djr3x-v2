@@ -307,6 +307,27 @@ Tests: `tests/test_tool_router.py` (contracts + coverage-enforcement: a new
 
 ### Conversation Voice (lean brain primary, classic prompt as fallback)
 
+**Restructuring continuation (2026-09-05).** See the continuation section in
+`docs/lean_brain_restructuring_plan.md` for precise shipped/deferred scope.
+Summary commits now use session epochs and transcript revisions; queued audio
+reports sink-confirmed completion instead of assuming a return from TTS means it
+played. Partial sentences do not become complete transcript claims. Uncertain
+human turns are unlearnable from insertion and carry no guessed person into the
+durable conversation log or reply memory retrieval. Candidate embeddings are
+prepared off the prompt path, with a shared prompt deadline and optional-work
+admission that yields to ASR/local TTS.
+
+Owner preference: finish the reply already being prepared, then respond to the
+next utterance. `GAP_MERGE_ENABLED` now defaults OFF. A bounded pending-capture
+adapter retains later finished gap utterances; this is not yet a concurrent
+capture-loop replacement. Original capture times prevent a queued utterance from
+answering a question Rex asked afterward. Existing playback barge-in remains.
+
+Offline production replay: `venv/bin/python tools/production_replay.py
+tests/fixtures/lean_production_replay.json --out /tmp/rex-replay.json`. It uses
+`submit_text`, scripted model responses, fake audio, temporary DBs, and blocks
+real network/device access. It checks plumbing, not real model quality or latency.
+
 **Conversation state reaches Lean (Lean Brain plan phases 1/2/2B, 2026-09-04).**
 `intelligence/brain_context.py` adapts what Rex already knows about THIS conversation
 into a few lines in every Lean call (`_system_prompt` for replies, the impulse's

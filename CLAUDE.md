@@ -119,6 +119,15 @@ do not spend time on it unless the user asks.
 
 ### Lean Brain restructuring state (2026-09-04/05)
 
+Continuation: delivery tests can run without Metal. For interaction-importing
+tests in a sandbox without a GPU, set `sys.modules['mlx'] = None` and
+`sys.modules['mlx_whisper'] = None` before importing the test module, and set
+`sys.argv[0] = 'unittest'` so the existing arc test-runner guard still applies.
+Continue to run one module per process. Never escalate to real hardware merely
+to make these unit tests import. Transcript-only tests must mock
+`memory.conversations._log_turn`; otherwise their fixtures reach the real
+conversation log. The production replay runner uses temporary DBs instead.
+
 `docs/lean_brain_restructuring_plan.md` phases 0–5 shipped as flagged/shadow slices
 (see CONTEXT.md "Conversation Voice"). Session-scoped state now also lives in
 `intelligence/conversation_state.py` (corrections, body-action results, speaker

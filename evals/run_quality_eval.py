@@ -160,7 +160,9 @@ def generate_spoken(scenario: dict) -> str:
 
     buffer = ""
     raw_chunks: list[str] = []
-    for chunk in llm.stream_response(utterance, person_id, agenda_directive=plan.directive):
+    # Share production's Lean reply/tools/context dispatch. stream_response
+    # selects the directive voice under Lean, which is a different prompt.
+    for chunk in I._reply_token_stream(utterance, person_id, plan.directive):
         raw_chunks.append(chunk)
         buffer += chunk
         ready, buffer = I._split_stream_sentences(buffer, 12)

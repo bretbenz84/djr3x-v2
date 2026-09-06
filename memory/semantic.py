@@ -43,6 +43,8 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextvars import ContextVar
+from utils import local_work
 import time
 from typing import Optional
 
@@ -75,14 +77,15 @@ _last_error: str = ""
 
 # ── Inline budget + background prewarm (Lean Brain plan phase 1) ─────────────
 # retrieval.retrieve_person_memory wraps its scoring in turn_budget(): the topic
-# vector and any UNCACHED candidate may be embedded inline only while the budget
-# has time left; past the deadline a miss falls back to keyword relevance at once
-# and the text is queued for a background embed, so the NEXT turn finds it cached.
-# No candidate-by-candidate stall inside the prompt build.
-_budget_deadline: Optional[float] = None     # monotonic; None = no budget active
-_prewarm_pending: dict[str, None] = {}       # ordered set of texts to embed later
+# vector may be awaited once; uncached candidates always use keyword fallback
+# and a bounded, expiring background prewarm queue.
+_budget_deadline = ContextVar("retrieval_deadline", default=None)
+_prewarm_pending: dict[str, float] = {}       # ordered set of texts to embed later
 _prewarm_thread: Optional[threading.Thread] = None
 _prewarm_wake = threading.Event()
+_cache_epoch = 0
+_cache_model = None
+_query_attempted = ContextVar("retrieval_query_attempted", default=False)
 
 
 class turn_budget:
@@ -92,32 +95,37 @@ class turn_budget:
         self.secs = float(_cfg("MEMORY_RETRIEVAL_BUDGET_SECS", 0.25) if secs is None else secs)
 
     def __enter__(self):
-        global _budget_deadline
-        _budget_deadline = time.monotonic() + max(0.0, self.secs)
+        previous = _budget_deadline.get()
+        deadline = time.monotonic() + max(0.0, self.secs)
+        self.token = _budget_deadline.set(min(previous, deadline) if previous is not None else deadline)
+        self.query_token = _query_attempted.set(False) if previous is None else None
         return self
 
     def __exit__(self, *exc):
-        global _budget_deadline
-        _budget_deadline = None
+        _budget_deadline.reset(self.token)
+        if self.query_token is not None:
+            _query_attempted.reset(self.query_token)
         return False
 
 
 def _budget_remaining() -> Optional[float]:
     """Seconds left in the active retrieval budget; None when no budget is set."""
-    if _budget_deadline is None:
-        return None
-    return _budget_deadline - time.monotonic()
+    deadline = _budget_deadline.get()
+    return None if deadline is None else deadline - time.monotonic()
 
 
 def prewarm_texts(texts) -> int:
     """Queue candidate texts for a background embed (cache fill). Returns how
     many were newly queued. Safe to call from the reply path: it never blocks."""
+    _check_cache_model()
     queued = 0
     with _state_lock:
         for t in texts or []:
             t = (t or "").strip()
             if t and t not in _cand_cache and t not in _prewarm_pending:
-                _prewarm_pending[t] = None
+                if len(_prewarm_pending) >= 128:
+                    _prewarm_pending.pop(next(iter(_prewarm_pending)))
+                _prewarm_pending[t] = time.monotonic()
                 queued += 1
     if queued:
         _ensure_prewarm_worker()
@@ -125,13 +133,23 @@ def prewarm_texts(texts) -> int:
     return queued
 
 
+def prewarm_record(kind: str, record: dict) -> None:
+    """Prepare changed memory without adding inference to a database write."""
+    if not _cfg("MEMORY_SEMANTIC_RECALL_ENABLED", False):
+        return
+    from memory import retrieval
+    text = retrieval._fact_text(record) if kind == "fact" else retrieval._interest_text(record)
+    prewarm_texts([text])
+
+
 def _ensure_prewarm_worker() -> None:
     global _prewarm_thread
-    if _prewarm_thread is not None and _prewarm_thread.is_alive():
-        return
-    _prewarm_thread = threading.Thread(
-        target=_prewarm_loop, name="semantic-prewarm", daemon=True)
-    _prewarm_thread.start()
+    with _state_lock:
+        if _prewarm_thread is not None and _prewarm_thread.is_alive():
+            return
+        _prewarm_thread = threading.Thread(
+            target=_prewarm_loop, name="semantic-prewarm", daemon=True)
+        _prewarm_thread.start()
 
 
 def _prewarm_loop() -> None:
@@ -145,17 +163,31 @@ def _prewarm_loop() -> None:
                 if not _prewarm_pending:
                     break
                 text = next(iter(_prewarm_pending))
-                _prewarm_pending.pop(text, None)
+                queued_at = _prewarm_pending.pop(text)
+                epoch = _cache_epoch
+            if time.monotonic() - queued_at > 60.0:
+                continue
             if text in _cand_cache:
                 continue
             if not _healthy():
                 # Breaker open: drop the backlog quietly; a later retrieval re-queues.
                 with _state_lock:
+                    if epoch != _cache_epoch:
+                        continue
                     _prewarm_pending.clear()
                 break
-            vec = _embed(text)
+            with local_work.optional() as admitted:
+                if not admitted:
+                    with _state_lock:
+                        if epoch == _cache_epoch and len(_prewarm_pending) < 128:
+                            _prewarm_pending.setdefault(text, queued_at)
+                    time.sleep(0.1)
+                    continue
+                vec = _embed_within(text, 0.25)
             if vec is not None:
                 with _state_lock:
+                    if epoch != _cache_epoch:
+                        continue
                     cap = int(_cfg("MEMORY_SEMANTIC_CACHE_SIZE", 1024))
                     if len(_cand_cache) >= max(16, cap):
                         _cand_cache.clear()
@@ -274,7 +306,7 @@ def _request_embedding(text: str, *, timeout: Optional[float] = None) -> np.ndar
     resp = requests.post(
         f"{base}/api/embeddings",
         json=payload,
-        timeout=max(0.2, float(timeout if timeout is not None else _inline_timeout())),
+        timeout=max(0.001, float(timeout if timeout is not None else _inline_timeout())),
     )
     resp.raise_for_status()
     vec = np.asarray(resp.json().get("embedding") or [], dtype=np.float32)
@@ -285,19 +317,20 @@ def _request_embedding(text: str, *, timeout: Optional[float] = None) -> np.ndar
 
 
 # Request-timeout cap for the embed in flight (set by _embed_within, read by
-# _embed). A module variable rather than a new _embed parameter so tests and
-# callers that swap _embed(text) keep working.
-_timeout_cap: Optional[float] = None
+# _embed). Context-local so concurrent query/prewarm requests cannot change
+# each other's timeout; the one-argument embedding seam stays compatible.
+_timeout_cap = ContextVar("embedding_timeout", default=None)
 
 
 def _embed_within(text: str, budget_secs: float) -> Optional[np.ndarray]:
     """_embed with the request timeout capped to the remaining retrieval budget."""
-    global _timeout_cap
-    _timeout_cap = min(_inline_timeout(), max(0.05, float(budget_secs)))
+    if budget_secs <= 0:
+        return None
+    token = _timeout_cap.set(min(_inline_timeout(), float(budget_secs)))
     try:
         return _embed(text)
     finally:
-        _timeout_cap = None
+        _timeout_cap.reset(token)
 
 
 def _embed(text: str) -> Optional[np.ndarray]:
@@ -308,7 +341,7 @@ def _embed(text: str) -> Optional[np.ndarray]:
     if not text or not _healthy():
         return None
     try:
-        vec = _request_embedding(text, timeout=_timeout_cap)
+        vec = _request_embedding(text, timeout=_timeout_cap.get())
     except Exception as exc:
         _last_error = f"{type(exc).__name__}: {exc}"
         _note_failure()
@@ -337,6 +370,17 @@ def _warmup_timeout() -> float:
 
 
 def _recovery_probe() -> bool:
+    global _probe_in_flight, _disabled_until
+    with local_work.optional() as admitted:
+        if not admitted:
+            with _state_lock:
+                _probe_in_flight = False
+                _disabled_until = max(_disabled_until, time.monotonic() + 1.0)
+            return False
+        return _run_recovery_probe()
+
+
+def _run_recovery_probe() -> bool:
     """One health probe. Closes the breaker on a fast WARM round trip; re-opens it
     with a longer cooldown on failure or a slow reply. Runs on a background thread.
 
@@ -424,11 +468,12 @@ def warmup() -> bool:
 # ── Relevance backend ────────────────────────────────────────────────────────
 
 def _embed_candidate(text: str) -> Optional[np.ndarray]:
+    _check_cache_model()
     if text in _cand_cache:
         return _cand_cache[text]
     remaining = _budget_remaining()
-    if remaining is not None and remaining <= 0.0:
-        # Budget spent: keyword relevance for this one NOW, embed it for next time.
+    if remaining is not None:
+        # Candidate inference never runs during prompt construction.
         prewarm_texts([text])
         return None
     vec = _embed(text) if remaining is None else _embed_within(text, remaining)
@@ -448,6 +493,7 @@ def _embed_candidate(text: str) -> Optional[np.ndarray]:
 def _topic_vector(topic_tokens) -> Optional[np.ndarray]:
     """Embed the live topic once per turn, memoized by its token key."""
     global _topic_cache
+    _check_cache_model()
     key = " ".join(sorted(str(t) for t in topic_tokens)) if topic_tokens else ""
     if not key:
         return None
@@ -456,7 +502,27 @@ def _topic_vector(topic_tokens) -> Optional[np.ndarray]:
     remaining = _budget_remaining()
     if remaining is not None and remaining <= 0.0:
         return None
-    vec = _embed(key) if remaining is None else _embed_within(key, remaining)
+    if remaining is not None:
+        if _query_attempted.get():
+            return None
+        _query_attempted.set(True)
+        # A requests timeout is not a hard wall-clock deadline. Only wait for
+        # the result until this retrieval's deadline; the bounded worker owns
+        # the request and cannot publish into the prompt after that point.
+        ready = threading.Event()
+        result = []
+        def query():
+            try:
+                with local_work.optional() as admitted:
+                    if admitted:
+                        result.append(_embed_within(key, remaining))
+            finally:
+                ready.set()
+        threading.Thread(target=query, daemon=True, name="semantic-query").start()
+        ready.wait(max(0.0, _budget_remaining() or 0.0))
+        vec = result[0] if ready.is_set() and result else None
+    else:
+        vec = _embed(key)
     if vec is None:
         # Same negative-caching trap as _embed_candidate, and worse here: the topic
         # key holds until the conversation's topic tokens change, so one failure
@@ -470,7 +536,7 @@ def relevance(topic_tokens, text: str, cap: int) -> float:
     """retrieval relevance backend: scaled embedding cosine in [0, cap]. Falls back to
     keyword overlap whenever embeddings are unavailable, so it's never worse than keyword."""
     tvec = _topic_vector(topic_tokens)
-    cvec = _embed_candidate(text) if tvec is not None else None
+    cvec = _embed_candidate(text)
     if tvec is None or cvec is None or tvec.shape != cvec.shape:
         from memory import text_match
         return float(min(text_match.overlap_count(text, topic_tokens), cap))
@@ -480,15 +546,28 @@ def relevance(topic_tokens, text: str, cap: int) -> float:
     return scaled * float(cap)
 
 
+def _check_cache_model():
+    global _cache_model, _cache_epoch, _topic_cache
+    model = str(_cfg("MEMORY_SEMANTIC_EMBED_MODEL", "nomic-embed-text"))
+    with _state_lock:
+        if model != _cache_model:
+            _cache_model = model
+            _cache_epoch += 1
+            _cand_cache.clear()
+            _topic_cache = ("", None)
+            _prewarm_pending.clear()
+
+
 def reset_cache() -> None:
     """Test/diagnostic hook: clear caches + circuit breaker."""
     global _cand_cache, _topic_cache, _fail_count, _disabled_until, _warned
-    global _open, _cooldown_secs, _probe_in_flight, _last_error, _budget_deadline
+    global _open, _cooldown_secs, _probe_in_flight, _last_error, _cache_epoch
     with _state_lock:
+        _cache_epoch += 1
         _cand_cache = {}
         _topic_cache = ("", None)
         _prewarm_pending.clear()
-        _budget_deadline = None
+        _budget_deadline.set(None)
         _fail_count = 0
         _disabled_until = 0.0
         _warned = False
