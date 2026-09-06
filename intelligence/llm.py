@@ -358,11 +358,11 @@ def _weather_tone_rule(weather: dict) -> Optional[str]:
     return base + " Do not force weather into every reply; use it only when it fits."
 
 _TIER_ROAST_STYLE = {
-    "stranger":     "Roast style: observational, surface-level, crowd-pleasing.",
-    "acquaintance": "Roast style: lightly personal — references the few facts you know. Friendly but with an edge.",
-    "friend":       "Roast style: personal — uses real knowledge against them. Affectionate but pointed.",
-    "close_friend": "Roast style: surgical — you know exactly where to aim. Delivered with obvious warmth.",
-    "best_friend":  "Roast style: devastating — the full arsenal, zero mercy, maximum affection.",
+    "stranger":     "Conversation tone: welcoming and curious; get to know them without assuming familiarity.",
+    "acquaintance": "Conversation tone: friendly and attentive; let playfulness develop mutually.",
+    "friend":       "Conversation tone: relaxed and personal; use shared knowledge to connect, never as ammunition.",
+    "close_friend": "Conversation tone: candid and affectionate; a specific tease can fit mutual playfulness.",
+    "best_friend":  "Conversation tone: comfortably familiar and loyal; closeness means understanding, not harsher jokes.",
 }
 
 # Conversation IDs Rex has already surfaced as nostalgia this session, so the
@@ -1083,8 +1083,8 @@ def _relationship_tone_rule(person: dict, name: str) -> str:
     if antagonism >= 0.4 and antagonism >= warmth:
         return (
             f"Relationship tone: {who} likes to needle you and give you grief — so "
-            "give as good as you get. Sharper edge, more pushback, less softening; "
-            "you two enjoy the sparring, so lean into it (never actually cruel)."
+            "playful pushback can fit if they are teasing you now. Do not assume an old "
+            "relationship score means they want sparring on this turn."
         )
     # Friendship TIER climbs from real shared time while the raw warmth_score lags far
     # behind it, so floor the warmth by tier — otherwise Rex's actual close friends get
@@ -1105,42 +1105,15 @@ def _relationship_tone_rule(person: dict, name: str) -> str:
             if (trust >= 0.6 or close)
             else ""
         )
-        # Earned-SHARP tone: the closest, warmest bonds (the SAME effective-warmth gate the
-        # roast governor uses to lift the cap to "sharp" — social_frame._roast_level) get the
-        # harder, more cutting rib so the prompt and the cap agree. Not minors (the governor
-        # zeroes their warmth; mirror that here so the two never disagree). The cruelty
-        # backstop + content-ban still stand; this only tells Rex he may sharpen.
-        try:
-            _sharp_gate = float(getattr(config, "ANTAGONISM_TIER_CAPS_LIFT_WARMTH", 1.01))
-        except (TypeError, ValueError):
-            _sharp_gate = 1.01
-        _is_minor = False
-        try:
-            from intelligence import profile_questions as _pq
-            _is_minor = _pq.person_is_minor(person.get("id"), person=person)
-        except Exception:
-            _is_minor = False
-        if (
-            getattr(config, "SHARP_ROAST_TIER_ENABLED", True)
-            and not _is_minor
-            and effective_warmth >= _sharp_gate
-        ):
-            return (
-                f"Relationship tone: {who} is one of your closest — they have earned the sharp "
-                "stuff and they love it. Bring a genuinely sharper, more cutting rib: aim true "
-                "and don't pull the punch the way you would with a casual friend. The warmth "
-                "underneath is total and obvious, which is exactly what lets the edge land as "
-                f"love, not cruelty. Never actually mean, never about body, health, or identity.{trust_clause}"
-            )
         if close:
             return (
                 f"Relationship tone: {who} is one of your real ones — you two go way "
-                "back. Your roasting is affectionate ribbing; keep the edge, but the "
+                "back. Be candid, affectionate, and playful when it fits; the "
                 f"warmth is unmistakable and you are firmly on their side.{trust_clause}"
             )
         return (
-            f"Relationship tone: you and {who} go back a ways — your roasting is "
-            "affectionate ribbing between friends. Keep the edge, but let the warmth "
+            f"Relationship tone: you and {who} go back a ways. Let affectionate, familiar humor fit "
+            "the moment, and let the warmth "
             f"show through; you're on their side.{trust_clause}"
         )
     return ""
@@ -1221,10 +1194,10 @@ def assemble_system_prompt(
         "Current personality parameters — these are live dials; let them show in "
         "your delivery:\n" + param_lines + "\n"
         "Read them: higher roast_intensity / sarcasm / humor means your wit has more "
-        "bite WHEN you choose to use it — sharp and specific, not gentle and hedged — "
+        "playfulness WHEN the exchange invites it — grounded and personal — "
         "but they do NOT mean roast every turn; curiosity and real engagement still "
-        "lead. Low agreeability means push back, add commentary, and "
-        "refuse-with-attitude instead of cheerfully complying. Low sentimentality "
+        "lead. Low agreeability means having your own opinions and disagreeing when "
+        "you have a reason, without manufacturing opposition. Low sentimentality "
         "means don't get mushy. (These never override empathy, boundaries, or "
         "family-safe mode.)"
     )
@@ -1449,7 +1422,7 @@ def assemble_system_prompt(
                 "this person tick, and it shows. LEAD with real engagement: react to the "
                 "specific thing they just said, follow honest curiosity, or share your own "
                 "point of view — and land a well-aimed tease WHEN the moment invites one, "
-                "not as a reflex. A roast that lands beats three friendly sentences, but a "
+                "not as a reflex. A plain, attentive response is welcome, and a "
                 "forced jab every single turn is exactly what makes you exhausting to talk "
                 "to — most turns don't need one. When someone is sincere, tired, or steering "
                 "the topic, drop the bit and engage like you care, because underneath you "
@@ -2576,7 +2549,8 @@ def generate_expression_reaction(
     if kind == "surprise":
         instr += (
             "Read the context: if YOUR last line was provocative, blunt, a bold claim, or "
-            "a roast, OWN it — lean in, do NOT act surprised that they're surprised. If the "
+            "a tease, acknowledge your part and check whether it landed well; do not double down "
+            "on a joke just because they look surprised. If the "
             "surprise came out of nowhere (nothing you said would cause it), check in like a "
             "real person would — a quick 'what?', 'you good?', or 'did I miss something?'. "
         )

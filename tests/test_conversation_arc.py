@@ -409,10 +409,10 @@ class ActOnSignalRoastTest(unittest.TestCase):
              mock.patch.object(config, "ARC_EASES_ROAST_ON_FLOP", True):
             self.assertEqual(self._roast(person_id=None), "light")
 
-    def test_easing_is_off_by_default(self):
+    def test_easing_is_on_by_default(self):
         from intelligence import topic_thread
         with mock.patch.object(topic_thread, "arc_reads_flat", return_value=True):
-            self.assertEqual(self._roast(person_id=None), "normal")
+            self.assertEqual(self._roast(person_id=None), "light")
 
     def test_normal_stays_when_arc_not_flat(self):
         from intelligence import topic_thread

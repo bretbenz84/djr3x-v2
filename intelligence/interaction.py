@@ -5594,16 +5594,9 @@ _IDLE_BANTER_LIVE_TOPIC_ASK = (
 # of. Selected when tease=True (idle_count >= IDLE_BANTER_TEASE_SILENCE_AT); the tuple gives the
 # model varied seeds, and the opener-diversity guard stops two teases stacking the same opener.
 _IDLE_BANTER_TEASE_SILENCE = (
-    "They've gone properly quiet on you — no goodbye, just dead air. THIS time you ARE allowed "
-    "to call out the silence, but do it the way you'd needle a friend you're fond of: ONE short, "
-    "warm, teasing jab that pokes at the quiet and dares them back in ('cat got your tongue?', "
-    "'are you trying to stump me, or just gone full mute?', 'I can hear you thinking — out loud, "
-    "coward'). The ribbing obviously comes from affection and it MUST invite a reply — never sad, "
-    "never a sign-off, never 'I'll be here'. One line, ~8-14 words; land it like a grin.",
-    "Still nothing — the silence is getting comically long. Break it IN CHARACTER by gently "
-    "roasting the quiet itself: a fond, teasing dare that makes them want to fire back ('you do "
-    "remember how talking works, right?', 'this dramatic pause is doing real numbers'). Warm under "
-    "the snark, an obvious invitation to re-engage, never a goodbye, never melancholy. One short line.",
+    "They have gone quiet. If a final invitation fits, offer one brief, low-pressure "
+    "opening to continue the conversation. Do not mock their silence, dare them to talk, "
+    "or imply they owe you a response. Let them rest after this.",
 )
 
 
@@ -7789,8 +7782,8 @@ def _maybe_idle_banter(
         try:
             if tease_silence:
                 _purpose = (
-                    "Playfully call out the dead air with ONE short, fond teasing jab that "
-                    "dares them back into talking — a goad, never a sign-off."
+                    "Offer one brief, low-pressure opening if useful; let them rest. "
+                    "Do not tease their silence or demand a response."
                 )
             elif ask_on_topic:
                 _purpose = (
@@ -18680,9 +18673,9 @@ def _analyze_directed_view_once(
         f"The original request was: {raw_text!r}. "
         "You moved your head/visor, took a fresh look, and got this vision analysis:\n"
         f"{json.dumps(analysis, ensure_ascii=False)}\n\n"
-        "Reply as Rex with one concise roast-style observation or opinion based ONLY "
+        "Reply as Rex with a concise, attentive observation or opinion based ONLY "
         "on the analysis. Max 35 words. If the target is a person, child, pet, or "
-        "possible introduction, acknowledge them warmly with a harmless quip and, "
+        "possible introduction, acknowledge them warmly; a playful comment is optional and, "
         "only if useful, ask who they are. Do not mention JSON, APIs, cameras, "
         "screenshots, or image analysis."
     )

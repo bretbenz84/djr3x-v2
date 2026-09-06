@@ -37,18 +37,20 @@ class RelationshipToneTest(unittest.TestCase):
     def test_low_trust_warm_friend_omits_trust_clause(self):
         self.assertNotIn("trust", self._tone(warmth_score=0.7, trust_score=0.4).lower())
 
-    def test_antagonist_gets_sharper_tone(self):
+    def test_needling_history_requires_current_playfulness(self):
         out = self._tone(antagonism_score=0.6, warmth_score=0.1)
-        self.assertIn("sharper", out.lower())
+        self.assertIn("if they are teasing you now", out.lower())
+        self.assertNotIn("less softening", out.lower())
         self.assertIn("needle", out.lower())
 
     def test_mild_antagonism_below_threshold_is_neutral(self):
         self.assertEqual(self._tone(antagonism_score=0.2), "")
 
     def test_elevated_both_reads_as_sparring_when_antagonism_dominates(self):
-        # both up but antagonism >= warmth -> sparring (sharper), not affectionate
+        # A score alone cannot establish present consent to sparring.
         out = self._tone(warmth_score=0.5, antagonism_score=0.6)
-        self.assertIn("sharper", out.lower())
+        self.assertIn("if they are teasing you now", out.lower())
+        self.assertNotIn("less softening", out.lower())
 
     def test_warm_dominates_when_warmth_exceeds_antagonism(self):
         out = self._tone(warmth_score=0.7, antagonism_score=0.3)
@@ -100,7 +102,8 @@ class RelationshipToneTest(unittest.TestCase):
         out = self._tone(
             warmth_score=0.1, antagonism_score=0.6, friendship_tier="close_friend"
         )
-        self.assertIn("sharper", out.lower())
+        self.assertIn("if they are teasing you now", out.lower())
+        self.assertNotIn("less softening", out.lower())
 
 
 if __name__ == "__main__":

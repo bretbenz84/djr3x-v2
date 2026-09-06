@@ -451,57 +451,17 @@ def build_directive(frame: SocialFrame) -> str:
         "playful observation, or Rex-style banter beat when it fits the turn."
     )
     visual_rule = (
-        "What you actually SEE is prime material: their outfit, their expression, "
-        "the clutter behind them, the dog underfoot — name something specific and "
-        "roast or riff on it when it fits the turn (not every turn). Only what's "
+        "What you actually SEE can help you engage: their outfit, their expression, "
+        "the dog underfoot — mention a detail only when relevant to the exchange. "
+        "A playful observation is optional. Only what's "
         "genuinely there, though: never invent a prop or detail — a drink in their "
         "hand, what they're wearing or holding — to set up a joke. Punch up, keep "
         "it playful."
         if frame.allow_visual_comment
         else "Do not mention what you see, the camera, the room, their face, or their posture."
     )
-    # When the human just shared a genuine interest or answered a real question,
-    # lead with curiosity and let the roast ride on top — a forced pun that
-    # deflects a sincere share is exactly what makes Rex feel like a snark
-    # generator instead of a conversationalist. Banter/visual/general turns keep
-    # the roast-first default.
-    if frame.allow_roast in {"normal", "sharp"} and frame.purpose in {"interest", "answer_ack"}:
-        roast_rule = (
-            "ENGAGE-FIRST. They just shared something they care about — lead with "
-            "genuine, SPECIFIC curiosity or a reaction that shows you actually find "
-            "it interesting (name a real detail of the thing). A sharp roast is "
-            "welcome riding on top of that interest — tease the hobby, the "
-            "obsession, or your own take — but never deflect a sincere share with a "
-            "generic joke or a non-sequitur. And sometimes the honest response is "
-            "just 'good choice' or 'nice' — that is allowed; you do not owe them a "
-            "joke every turn. Curiosity that lands beats a forced pun."
-        )
-    else:
-        roast_rule = {
-            "none": "No roasts or pointed teasing this turn.",
-            "light": "If you roast, make it a tiny surface-level tap.",
-            "normal": (
-                "ROAST-LEAN. When you have a genuinely sharp, SPECIFIC angle on what "
-                "they just said, did, wore, or chose, lead with it — a real "
-                "punchline, not a generic quip or a polite observation dressed up as "
-                "one — and commit to the bit. But you do NOT have to roast every "
-                "single turn: when a real reaction, a specific opinion, or a plain "
-                "'good one' is the honest move, just say that. A relentless jab "
-                "every turn gets old fast; a roast that actually lands beats three "
-                "friendly sentences AND beats a forced one. Punch up, stay "
-                "good-natured (loyalty lives under the insult)."
-            ),
-            "sharp": (
-                "SHARP RIB — this is one of your real ones and they take a harder roast, so "
-                "don't pull the punch the way you would with a casual friend. Go for the "
-                "surgical, SPECIFIC cut: use what you genuinely know about them and commit "
-                "fully, no softening hedge. Punch UP, and the affection has to read THROUGH "
-                "the burn — they know you're on their side, and that's exactly what lets the "
-                "edge land as love instead of cruelty. Still off-limits: body, health, "
-                "identity, money, grief, trauma, private facts; never actually mean. And you "
-                "still don't owe them a jab every turn — a sharp one that lands beats a forced one."
-            ),
-        }.get(frame.allow_roast, "Land one sharp, specific, good-natured jab when it fits.")
+    # Use the same conversational guidance in both contract formats.
+    roast_rule = _slim_roast_rule(frame)
     return (
         "Final response shape contract:\n"
         "- Generate the reply in this shape now; the final cleanup layer should "
@@ -547,12 +507,12 @@ def _slim_length_rule(frame: SocialFrame) -> str:
     sent = "sentence" if n == 1 else "sentences"
     if frame.allow_question:
         # A reaction beat plus the one allowed question naturally wants ~2.
-        return f"a brief beat, then your one question — up to {n} {sent}, no padding"
+        return f"a brief response, with one question only if useful — up to {n} {sent}, no padding"
     if n <= 1:
         return f"one {sent}. Land it and stop"
     return (
-        f"one sentence is usually the stronger move — add a second only if it genuinely "
-        f"earns its place; at most {n} {sent}, and never pad to fill the limit"
+        f"use one or two natural sentences as the answer needs, up to {n} {sent}; "
+        "never pad to fill the limit"
     )
 
 
@@ -571,8 +531,8 @@ def _slim_question_rule(frame: SocialFrame) -> str:
 def _slim_roast_rule(frame: SocialFrame) -> str:
     if frame.allow_roast in {"normal", "sharp"} and frame.purpose in {"interest", "answer_ack"}:
         return (
-            "lead with genuine, SPECIFIC curiosity about what they shared; a sharp "
-            "roast may ride on top, but never deflect a sincere share with a joke"
+            "ENGAGE-FIRST: respond with genuine, SPECIFIC curiosity about what they shared; "
+            "a personal tease is optional when mutually playful, never deflect a sincere share with a joke"
         )
     return {
         # "no roasts" alone was not enough on 2026-08-27 13:37:05 — the model read a
@@ -582,18 +542,17 @@ def _slim_roast_rule(frame: SocialFrame) -> str:
             "no roasts, pointed teasing, or backhanded 'you're spared / lucky for "
             "you / you're welcome' jabs this turn — warmth played straight"
         ),
-        "light": "at most a light, surface-level tap if you roast",
+        "light": "at most a light, optional tease; a plain warm response is welcome",
         "normal": (
-            "land ONE sharp, specific jab only when you actually have an angle — not "
-            "every turn; a plain honest reaction can be the move"
+            "respond to their meaning first; a grounded, affectionate tease can fit a "
+            "playful exchange, but an ordinary answer needs no punchline"
         ),
         "sharp": (
-            "you've earned the harder rib with this one — land a genuinely sharp, surgical "
-            "jab that uses what you actually know about them; commit to it, punch UP, keep "
-            "the loyalty unmistakable under the cut (still nothing about body/health/identity, "
-            "still not every turn)"
+            "familiarity permits candid, playful back-and-forth when both enjoy it; "
+            "it never requires a harsher joke. Stay on their side, avoid private or "
+            "sensitive material, and own corrections plainly"
         ),
-    }.get(frame.allow_roast, "one sharp, specific, good-natured jab when it fits")
+    }.get(frame.allow_roast, "respond naturally; teasing is optional")
 
 
 def _slim_visual_rule(frame: SocialFrame) -> str:
@@ -1007,18 +966,8 @@ def _roast_level(
                 return "light"
         except Exception as exc:
             _log.debug("[social_frame] roast preference lookup failed: %s", exc)
-    # Brevity is a LENGTH decision, not an intensity one. Until 2026-09-02 any
-    # micro/brief plan capped the roast at "light" — so a one-line answer to the
-    # owner (sharp tier by warmth) was filtered like a stranger's, and the
-    # light-tier scrub then deleted "...like an idiot with a subscription" and
-    # spoke "Tell me more." instead (00:30:21). Owner directive that night: Rex
-    # is a roaster; the sensitive-moment gates above (tone repair, boundary,
-    # tender mode, sad/heavy affect, roast boundary, preference, closure) are
-    # the ONLY things that soften him. A short jab is still a jab.
-    # Act-on-signal: if the conversation arc reads flat (disengaged/disappointed
-    # mood), ease a would-be "normal" roast to "light" so Rex stops needling a
-    # flagging room. Additive — only downgrades the default; the care/affect "none"
-    # branches above are untouched. Gated by config; never raises.
+    # Length and humor permission are separate. The owner-approved 2026-09-06
+    # persona makes teasing optional, and a flat conversation eases it further.
     try:
         if getattr(config, "ARC_EASES_ROAST_ON_FLOP", True):
             from intelligence import topic_thread as _topic_thread

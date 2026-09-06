@@ -83,27 +83,22 @@ class RoastForwardDirectiveTests(unittest.TestCase):
             reason="test",
         )
 
-    def test_normal_roast_directive_is_roast_lean_and_specific(self):
+    def test_normal_conversation_allows_optional_personal_teasing(self):
         from intelligence import social_frame
-
         directive = social_frame.build_directive(self._frame(allow_roast="normal"))
-        # Roast-lean: still sharp and SPECIFIC when it roasts, but no longer a
-        # mandatory jab every single turn (a plain genuine reaction is allowed).
-        self.assertIn("ROAST-LEAN", directive)
-        self.assertIn("SPECIFIC", directive)
-        self.assertIn("have to roast every single turn", directive)
-        # The old socially-on-target softener must still be gone.
-        self.assertNotIn("keep it socially on-target", directive)
+        self.assertIn("respond to their meaning first", directive)
+        self.assertIn("ordinary answer needs no punchline", directive)
+        self.assertNotIn("ROAST-LEAN", directive)
 
     def test_tender_roast_levels_stay_gentle(self):
         from intelligence import social_frame
 
         none_directive = social_frame.build_directive(self._frame(allow_roast="none"))
-        self.assertIn("No roasts", none_directive)
+        self.assertIn("no roasts", none_directive.lower())
         light_directive = social_frame.build_directive(self._frame(allow_roast="light"))
-        self.assertIn("tiny surface-level tap", light_directive)
+        self.assertIn("light, optional tease", light_directive)
 
-    def test_visual_directive_invites_roasting_what_he_sees(self):
+    def test_visual_directive_invites_grounded_engagement(self):
         from intelligence import social_frame
 
         directive = social_frame.build_directive(

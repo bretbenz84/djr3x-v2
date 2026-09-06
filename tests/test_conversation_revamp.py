@@ -264,14 +264,14 @@ class EngageFirstOnSincereSharesTest(unittest.TestCase):
     def test_answer_ack_turn_is_engage_first(self):
         self.assertIn("ENGAGE-FIRST", self._directive("answer_ack"))
 
-    def test_general_banter_turn_stays_roast_lean(self):
+    def test_general_banter_can_be_an_ordinary_answer(self):
         directive = self._directive("banter")
-        self.assertIn("ROAST-LEAN", directive)
+        self.assertIn("ordinary answer needs no punchline", directive)
         self.assertNotIn("ENGAGE-FIRST", directive)
 
-    def test_rex_answering_user_stays_roast_lean(self):
+    def test_rex_answering_user_needs_no_punchline(self):
         # purpose="answer" = Rex answering the user's question, not a user share.
-        self.assertIn("ROAST-LEAN", self._directive("answer"))
+        self.assertIn("respond to their meaning first", self._directive("answer"))
 
 
 class WrongPersonRepairNarrowingTest(unittest.TestCase):

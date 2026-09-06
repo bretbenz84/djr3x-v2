@@ -61,11 +61,11 @@ class RoastLevelSharpTierTest(unittest.TestCase):
         self.assertEqual(_level(0.95, target="brief"), "sharp")
         self.assertEqual(_level(0.5, target="brief"), "normal")
 
-    def test_a_flat_arc_no_longer_pulls_punches_by_default(self):
+    def test_a_flat_arc_eases_teasing_by_default(self):
         with mock.patch("intelligence.topic_thread.arc_reads_flat", return_value=True):
-            self.assertEqual(_level(0.5), "normal")
-            with mock.patch.object(sf.config, "ARC_EASES_ROAST_ON_FLOP", True):
-                self.assertEqual(_level(0.5), "light")
+            self.assertEqual(_level(0.5), "light")
+            with mock.patch.object(sf.config, "ARC_EASES_ROAST_ON_FLOP", False):
+                self.assertEqual(_level(0.5), "normal")
 
     def test_kill_switch_disables_sharp(self):
         with mock.patch.object(sf.config, "SHARP_ROAST_TIER_ENABLED", False):
@@ -143,7 +143,8 @@ class CrueltyBackstopAtSharpTest(unittest.TestCase):
 class SharpDirectiveTextTest(unittest.TestCase):
     def test_slim_contract_emits_the_sharp_rule(self):
         c = sf.render_slim_contract(_frame("sharp", purpose="banter"))
-        self.assertIn("surgical", c.lower())
+        self.assertIn("never requires a harsher joke", c.lower())
+        self.assertNotIn("surgical", c.lower())
 
     def test_sharp_still_engages_first_on_a_sincere_share(self):
         # On an interest/answer_ack turn, even sharp leads with curiosity (no sincere-mock).

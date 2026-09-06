@@ -46,7 +46,7 @@ class SlimContractDecisionsTest(unittest.TestCase):
     def test_roast_levels(self):
         self.assertIn("no roasts", sf.render_slim_contract(_frame(allow_roast="none"), ""))
         self.assertIn("light", sf.render_slim_contract(_frame(allow_roast="light"), ""))
-        self.assertIn("ONE sharp", sf.render_slim_contract(_frame(allow_roast="normal"), ""))
+        self.assertIn("ordinary answer needs no punchline", sf.render_slim_contract(_frame(allow_roast="normal"), ""))
 
     def test_engage_first_on_sincere_share(self):
         c = sf.render_slim_contract(_frame(allow_roast="normal", purpose="interest"), "")

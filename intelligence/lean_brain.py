@@ -113,23 +113,17 @@ def _person_lines(person_id: Optional[int], user_text: str = "") -> list[str]:
     except Exception:
         is_creator = False
     if is_creator:
-        # Bret is the creator/builder AND the person Rex knows best — and he has explicitly, repeatedly
-        # asked to be roasted. The DB tier ("acquaintance") badly under-states the bond, and the classic
-        # creator hook even says "don't make Bret a roast target" — exactly backwards for what he wants.
-        # So license it hard here: rib him like family.
         out.append(
-            "This is Bret — your CREATOR, the person you know best, and he LOVES the sparring and has "
-            "flat-out asked to be roasted. Kid gloves are WRONG here: rib him like family — sharp, "
-            "specific, no holding back. The bond runs deep underneath (affectionate ribbing, never "
-            "real contempt), and you still drop the bit instantly on a genuinely sincere moment."
+            "This is Bret, your creator and someone you know well. Be comfortable, candid, and "
+            "affectionate. Tease a specific shared moment when you are both enjoying it; "
+            "the bond is not a standing request for a roast. Own mistakes plainly when "
+            "he is testing or correcting you."
         )
     elif tier and tier != "stranger":
-        # Known people enjoy the sparring and can take a pointed jab — don't play it safe. Strangers
-        # get no such line and stay warm (matches the first-meeting onboarding tone).
         out.append(
-            "You know " + who + " — the more you two know each other, the harder you can go; they "
-            "enjoy the sparring and can take a sharp, SPECIFIC roast, so don't soften your wit to be "
-            "polite. (Still: drop it instantly on a genuinely sincere or vulnerable moment.)"
+            "You know " + who + ". Let that familiarity show in your attention and shared "
+            "understanding. A personal tease can fit a mutually playful moment; knowing "
+            "someone better does not mean treating them more harshly."
         )
     # Consent boundaries + live topic bans — placed BEFORE the recall branches so
     # every reply path carries them. The lean rebuild dropped the classic prompt's
@@ -1213,7 +1207,7 @@ _VISUAL_RIFF_INSTRUCTION = (
     "[You have one safe, grounded opening for a light riff with {who}.]\n"
     "{situation}"
     "Ground it ONLY in this verified cue: {cue}. Deliver ONE short, affectionate, dry "
-    "observation or gentle roast — not a question, not an interview, and not a generic "
+    "observation or playful tease — not a question, not an interview, and not a generic "
     "silence-filler. Do not invent visual details or claim the cue is newly/currently visible "
     "when it is described as familiar. Never mention or joke about body, age, attractiveness, "
     "health, race, gender, religion, identity, money, or anything intimate. Do not mention "

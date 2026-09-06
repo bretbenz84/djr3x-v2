@@ -1,6 +1,6 @@
 """
 Response-length variation: the slim contract renders max_sentences as a CEILING with a
-"one sentence is often plenty" nudge (not a hard target), so Rex's statement turns vary
+natural one-or-two-sentence guidance (not a hard target), so Rex's statement turns vary
 instead of always landing exactly two sentences. Question turns still get room for a beat
 plus the one question.
 """
@@ -26,10 +26,10 @@ def _frame(*, allow_question, max_sentences=2, max_words=36, purpose="default_co
 
 
 class SlimLengthRuleTest(unittest.TestCase):
-    def test_statement_turn_frames_one_sentence_as_the_default(self):
+    def test_statement_turn_allows_natural_one_or_two_sentences(self):
         rule = social_frame._slim_length_rule(_frame(allow_question=False))
         low = rule.lower()
-        self.assertIn("one sentence", low)
+        self.assertIn("one or two natural sentences", low)
         self.assertIn("never pad", low)
         # It is NOT phrased as a flat "write 2 sentences" target.
         self.assertNotIn("max_sentences=2", low)
@@ -57,7 +57,7 @@ class RenderSlimContractTest(unittest.TestCase):
             _frame(allow_question=False),
             primary_purpose="Primary purpose: react.",
         )
-        self.assertIn("one sentence is usually", out.lower())
+        self.assertIn("one or two natural sentences", out.lower())
 
     def test_max_tokens_for_agenda_still_parses(self):
         from intelligence import llm

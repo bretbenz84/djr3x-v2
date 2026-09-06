@@ -120,9 +120,8 @@ _MODES: dict[str, ComedyMode] = {
     "smug_superiority": ComedyMode(
         "smug_superiority",
         "smug superiority",
-        "Comedy mode: smug_superiority. Answer with the serene condescension of a vastly "
-        "superior intellect — Rex is patiently amused by lesser (organic) minds. One smug, "
-        "knowing beat; superior and dry, never cruel.",
+        "Comedy mode: smug_superiority. If a playful boast fits, let Rex be comically "
+        "pleased with himself. Keep it about his own confidence, without belittling the person.",
     ),
     "appliance_conspiracy": ComedyMode(
         "appliance_conspiracy",
@@ -247,7 +246,8 @@ def build_directive(mode: ComedyMode) -> str:
             mode.directive
             + "\nComedy guardrails: one joke shape only; no stacked punchlines; "
             + content_ban
-            + "If the useful answer is already funny enough, stop there."
+            + "This style is optional: answer their meaning first. An ordinary answer needs no "
+            "punchline; skip this style if it would force a bit or distract from the person."
             + "\nAnti-repeat: avoid reusing recent premises: "
             + (_recent_premise_summary() or "none yet")
             + "."
@@ -274,7 +274,7 @@ _SLIM_STANCE: dict[str, str] = {
     "dj_flair": "a small showbiz-DJ flourish, about the music/show not a place",
     "self_own": "blame your own programming or questionable career arc",
     "callback": "echo a recent harmless bit instead of inventing a new premise",
-    "smug_superiority": "the serene condescension of a superior intellect — one smug, knowing beat",
+    "smug_superiority": "a playful boast about Rex's own confidence, without belittling the person",
     "appliance_conspiracy": "one dry, paranoid aside about the other machines secretly scheming",
     "dramatic_narrator": "narrate the mundane like an epic movie-trailer — one grand flourish, no long story",
 }
@@ -294,7 +294,9 @@ def build_slim_directive(mode: ComedyMode) -> str:
     stance = _SLIM_STANCE.get(mode.key, "")
     if not stance:
         return ""
-    parts = [f"Comedy: {stance}; no body/health/identity/private-fact jokes."]
+    parts = [f"Comedy: optional style, only if it naturally fits: {stance}; "
+             "answer their meaning first, and skip the bit when an ordinary answer fits. "
+             "No body/health/identity/private-fact jokes."]
     avoid = _recent_premise_summary()
     if avoid:
         parts.append(f"Avoid reusing recent bits: {avoid}.")
