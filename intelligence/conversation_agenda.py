@@ -670,6 +670,48 @@ def _wants_new_direction(text: str) -> bool:
     return bool(t) and bool(_NEW_DIRECTION_PAT.search(t))
 
 
+def build_lean_turn_plan(user_text: str, person_id: Optional[int], *,
+                         answered_question: Optional[dict] = None) -> TurnPlan:
+    """Bounded reactive preparation; Lean owns ordinary conversational intent.
+
+    Keep the established repair/care/closure contracts and the typed delivery
+    governor. Ordinary chat does not build classic topic, cast, environment,
+    friendship or plan-suggestion directives or run plan-intent classification.
+    """
+    from intelligence import end_thread, question_budget, social_frame
+    text = (user_text or "").strip()
+    if (empathy.classify_local_sensitivity(text)
+            or social_frame._looks_like_boundary(text)
+            or _looks_like_offscreen_correction(text)
+            or _looks_like_grounding_correction(text)
+            or _looks_like_health_resolved(text)
+            or _looks_like_reassurance(text)
+            or _looks_like_phatic_answer(text)
+            or end_thread.pending_closure()):
+        return build_turn_plan(text, person_id, answered_question=answered_question)
+    if end_thread.consume_invitation_acceptance():
+        return TurnPlan(
+            purpose="companionable", directive="Accept their yes warmly, then leave companionable quiet. No roast or new question.",
+            ask_allowed=False, hard_no_question=True, explicit_followup=False,
+            fresh_interest_followup=False, urgent_identity=False)
+    earned = bool(answered_question and not _is_compliment_or_ack(text))
+    allowed = earned or question_budget.can_ask("agenda_question")
+    purpose = "answer_ack" if answered_question else (
+        "answer" if _looks_like_user_question(text) else None)
+    instruction = "Respond to what they said; let the conversation context guide the next beat."
+    if answered_question:
+        instruction = (f"They answered your question: {answered_question.get('question_text')!r}. "
+                       "Use their answer; do not ask it again.")
+    if _wants_new_direction(text):
+        instruction = "Drop the old subject and bit. Accept the change and choose a fresh direction."
+        purpose = "interest"
+    instruction += (" At most one related follow-up, only when useful." if allowed
+                    else " No new question; leave space.")
+    return TurnPlan(directive=instruction, purpose=purpose, ask_allowed=bool(allowed),
+                    explicit_followup=earned, fresh_interest_followup=False,
+                    urgent_identity=False, hard_no_question=not allowed)
+
+
 def build_turn_plan(
     user_text: str,
     person_id: Optional[int],

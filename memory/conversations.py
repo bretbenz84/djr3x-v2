@@ -124,6 +124,10 @@ def add_to_transcript(speaker: str, text: str, *, learnable: bool = True,
     already does — otherwise a suppressed turn ("China", a misheard command) would be
     re-extracted as a permanent fact at teardown.
     """
+    captured_at = None
+    if str(speaker or "").lower() not in _REX_SPEAKERS:
+        from intelligence import dialogue_act
+        captured_at = dialogue_act.capture_time()
     _transcript.append({
         "speaker": speaker,
         "text": text,
@@ -134,6 +138,8 @@ def add_to_transcript(speaker: str, text: str, *, learnable: bool = True,
         # entry against a literal dict.
         "turn_id": next(_turn_seq),
         "ts": time.time(),
+        "captured_at_monotonic": captured_at,
+        "recorded_at_monotonic": time.monotonic(),
         # Phase 2B: the attribution resolver was not sure this speaker label is
         # right (weak voice, contradicting camera/bearing). Readers may hedge.
         "uncertain": bool(uncertain),

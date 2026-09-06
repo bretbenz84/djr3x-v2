@@ -15,11 +15,13 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 import re
 import time
+import threading
 from typing import Any, Optional
 
 
 _FRAME_TTL_SECS = 120.0
 _frames: deque["RexTurnFrame"] = deque(maxlen=16)
+_frames_lock = threading.RLock()
 _capture_time = ContextVar("dialogue_capture_time", default=None)
 
 
@@ -39,6 +41,14 @@ def queued_turn_note() -> str:
     return ("This utterance was captured earlier, while you were handling a prior turn. "
             "You finished that reply first. Address this utterance now; do not treat it "
             "as an answer to a question you asked after it was spoken.")
+
+
+def capture_time() -> Optional[float]:
+    return _capture_time.get()
+
+
+def is_counterquestion(text: str) -> bool:
+    return bool("?" in text and _QUESTION_START_RE.match(text))
 
 _QUESTION_START_RE = re.compile(
     r"^\s*(?:who|what|when|where|why|how|can|could|would|will|do|does|did|"
@@ -145,8 +155,12 @@ class RexTurnFrame:
     blocked_actions: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.monotonic)
     ttl_secs: float = _FRAME_TTL_SECS
+    answered_at: Optional[float] = None
+    answered_by: Optional[int] = None
 
     def active(self, now: Optional[float] = None) -> bool:
+        if self.answered_at is not None:
+            return False
         captured = _capture_time.get()
         if captured is not None and self.created_at > captured:
             return False
@@ -190,7 +204,28 @@ class DialogueActDecision:
 
 
 def clear() -> None:
-    _frames.clear()
+    with _frames_lock:
+        _frames.clear()
+
+
+def frames_snapshot() -> list[RexTurnFrame]:
+    with _frames_lock:
+        return list(_frames)
+
+
+def answer_frame(frame: RexTurnFrame, person_id: Optional[int], *, trusted: bool) -> bool:
+    """Only an accepted answer from its target retires a delivered question.
+
+    A caller retains the exact frame it classified; late callbacks cannot retire
+    a new session's question or a newer question for the same participant.
+    """
+    with _frames_lock:
+        if (not trusted or not any(item is frame for item in _frames)
+                or not frame.active() or not frame.for_person(person_id)):
+            return False
+        frame.answered_at = time.monotonic()
+        frame.answered_by = person_id
+        return True
 
 
 def note_rex_turn(
@@ -227,7 +262,8 @@ def note_rex_turn(
         ),
         ttl_secs=max(1.0, float(ttl_secs if ttl_secs is not None else _FRAME_TTL_SECS)),
     )
-    _frames.append(frame)
+    with _frames_lock:
+        _frames.append(frame)
     return frame
 
 
@@ -238,7 +274,7 @@ def active_frame(
 ) -> Optional[RexTurnFrame]:
     now = time.monotonic()
     max_age = float(max_age_secs if max_age_secs is not None else _FRAME_TTL_SECS)
-    for frame in reversed(_frames):
+    for frame in reversed(frames_snapshot()):
         if not frame.active(now):
             continue
         if (now - frame.created_at) > max_age:
@@ -301,7 +337,8 @@ def classify(
         return _answer_decision(frame, "reply to pending question", confidence=0.93)
 
     if frame is not None and _looks_like_contextual_reply(cleaned, frame):
-        if targeted_elsewhere and frame is not newest:
+        if (targeted_elsewhere and frame is not newest
+                and (is_counterquestion(cleaned) or not frame.expected_reply_types)):
             return DialogueActDecision(
                 "general_chat", 0.6,
                 "Rex's last question was aimed at someone else; not binding this speaker",

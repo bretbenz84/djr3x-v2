@@ -69,8 +69,8 @@ class ConversationStateTest(unittest.TestCase):
         from intelligence import dialogue_act
         dialogue_act.note_rex_turn("JT, how was the game?", target_person_id=7,
                                    target_name="JT")
-        # The current speaker IS the target → the incoming message answers it.
-        self.assertEqual(self.cs.pending_question_lines(7), [])
+        # Merely speaking does not settle a question, even for its target.
+        self.assertEqual(len(self.cs.pending_question_lines(7)), 1)
         # Someone else is speaking → it stays pending for JT.
         lines = self.cs.pending_question_lines(3)
         self.assertEqual(len(lines), 1)

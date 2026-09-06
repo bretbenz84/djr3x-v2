@@ -5,6 +5,70 @@ progress. Initial slices exist across phases 0–5; this is not a claim that all
 phase acceptance criteria have passed. See the phase notes and the continuation
 below. Owner's direction: behavior over measurement.
 
+### Ownership continuation (2026-09-06)
+
+This section supersedes the older shipped/deferred notes below. Software changes
+are implemented through the existing production seams; live acceptance remains
+unverified. Owner decisions: retain batch STT, finish an in-flight reply before
+handling later speech, retain the existing guarded forward swing escape. Hosted
+LLM cost optimization is not a priority. No new resident inference model is added.
+
+- Phase 0: optional current RSS/available memory/swap observations complement peak
+  RSS. Request-owned token usage is logged when returned; absent usage is unknown.
+  No dollar estimates, measured latency gains, or OS pressure claims are made.
+- Phase 1: ordinary Lean replies use minimal agenda preparation. Existing care,
+  boundary, correction and closure handling remains; delivery tone still uses the
+  established frame/comedy contracts. Candidate deletion invalidates prewarm work.
+- Phase 2/2B: delivered questions are tracked per target and explicitly settled.
+  Answers captured before a question cannot settle it, and stale frame objects
+  cannot settle a new session. The authoritative resolver owns final identity and
+  learning permission; older attribution code remains as candidate/gaze adapters.
+  Visual observations use a bounded monotonic-time history from the actual capture
+  interval. Direction conflicts cause abstention instead of a guessed identity.
+- Mixed captures: the existing voice encoder checks at most three shorter windows
+  alongside batch ASR. Conflicting names or low inter-window similarity mark a
+  suspect capture. These are heuristic similarities, not calibrated probabilities.
+  Supported silent gaps allow sequential splits of the captured samples; later
+  slices are queued in capture order and independently transcribed. A split found
+  after ASR discards the combined draft and incurs extra batch ASR for its slices.
+  No safe gap means no invented split: identity stays uncertain, with no personal
+  learning. This does not separate simultaneous voices or guarantee switch detection.
+  `SPEAKER_ID_SEGMENT_CHECK_ENABLED` is the rollback switch for the audio check.
+- Phase 3: the existing bounded cue chooser and delivery revalidation remain.
+- Phase 4: routed motion requests have correlated result/narration ownership.
+  The caller narrates routine refusals while urgent controller alerts remain.
+  Stop/manual takeover invalidate running results, so late completion/verification
+  cannot revive them. Legacy autonomous/sequence adapters remain; physical heading
+  alternatives stay OFF. An additional LLM replan is optional, not introduced.
+  **Owner exception:** keep the existing safety-gated forward escape; do not remove
+  it because of the original plan's exclusion below.
+- Phase 5: a bounded input producer scans existing VAD/AEC audio during reply work,
+  while one owner completes replies serially. Pending input precedes idle/proactive
+  work. `CONTINUOUS_REPLY_CAPTURE_ENABLED` can revert to recovery-only collection.
+  Tokens, prefetched TTS and sentence queue items retain the response generation;
+  stale tails stop and streams close. Recovery remains for special-handler seams
+  and incomplete captures until real-session equivalence is demonstrated.
+
+Evidence: the 2026-09-05 01:00:03 store exchange was one 5.63-second recording,
+with a single Bret score of 0.849. It also exposed an overly broad clock fast path;
+clock matching is now shared and excludes event-time questions. The supplied logs
+contain neither the waveform nor the dev Mac database, so the exact speaker switch
+cannot be replayed and JT's enrollment cannot be established.
+
+Validation: `venv/bin/python tools/run_lean_checks.py` runs each listed module in a
+separate process with temporary databases and real network/audio/serial blocked.
+The current 33-module suite passes 652 tests.
+Synthetic evidence tests cover enrolled/unenrolled switches, overlap abstention,
+ordered audio splits, queued input during generation, pending-target ownership,
+stale reply generations and action results. These tests do not establish real-world
+speaker accuracy, capture completeness, latency percentiles or swap behavior.
+
+Remaining acceptance work requires labeled real captures and same-device sessions:
+rapid A-B-A/overlap, dev GUI and robot audio, playback interruption/echo, long replies,
+head movement, and authorized floor testing of heading alternatives. Keep recovery
+and legacy adapters until those observations justify removing them. This is not a
+claim that every live acceptance gate in the plan has passed.
+
 ### Implementation continuation (2026-09-05)
 
 - Phase 0: `utils/runtime_report.py` adds allowlisted effective configuration,

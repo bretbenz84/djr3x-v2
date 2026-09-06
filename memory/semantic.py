@@ -558,6 +558,19 @@ def _check_cache_model():
             _prewarm_pending.clear()
 
 
+def invalidate_candidates() -> None:
+    """Memory edits/deletions invalidate candidate vectors and in-flight commits.
+
+    The bounded cache is content-addressed, so invalidating the candidate set
+    also removes old corrected text without touching circuit-breaker state.
+    """
+    global _cache_epoch
+    with _state_lock:
+        _cache_epoch += 1
+        _cand_cache.clear()
+        _prewarm_pending.clear()
+
+
 def reset_cache() -> None:
     """Test/diagnostic hook: clear caches + circuit breaker."""
     global _cand_cache, _topic_cache, _fail_count, _disabled_until, _warned

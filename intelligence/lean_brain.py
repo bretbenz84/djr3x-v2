@@ -732,6 +732,8 @@ def _messages(
         role = "assistant" if raw.lower() in _REX_SPEAKERS else "user"
         if role == "user" and raw and raw not in raw_speakers:
             raw_speakers.append(raw)
+        if role == "user" and turn.get("captured_at_monotonic") is not None:
+            text = "[Captured while the prior reply was pending; processed afterward.] " + text
         turns.append((role, raw, text, bool(turn.get("uncertain"))))
 
     current_display = _current_speaker_display(person_id)
@@ -909,12 +911,14 @@ def stream_reply(
     tool_calls: dict[int, dict[str, str]] = {}
     tc_name, tc_args, yielded = "", "", False
     first_delta = True
+    stream = None
     try:
         _turn_trace.stamp("model_request")
         _turn_trace.count("purpose.lean_reply")
         stream = llm_compat.create(
             llm._client,
             model=_model(),
+            telemetry_purpose="lean_reply",
             messages=messages,
             stream=True,
             max_tokens=int(getattr(config, "LEAN_BRAIN_MAX_TOKENS", 120)),
@@ -973,6 +977,10 @@ def stream_reply(
                 _log.error("[lean] local fallback also failed: %s", exc2)
         yield "...circuits hiccuped. Say that again?"
         return
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
     # Collapse the per-index slots to the ONE call this turn acts on. Ordered by
     # index so "first call wins" is deterministic rather than dict-insertion luck.
     if tool_calls:

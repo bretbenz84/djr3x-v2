@@ -14,6 +14,7 @@ Public API:
 
 import logging
 import contextvars
+from contextlib import contextmanager
 import difflib
 import json
 import random
@@ -40,6 +41,7 @@ from audio import hardware_aec
 from audio import barge_guard
 from audio import prosody
 from intelligence import action_router, command_parser, llm, motion_controller, personality
+from intelligence.action_result import narration_owner, current_request as current_motion_request
 from intelligence import rex_pov
 from intelligence import body_mood
 from intelligence import performance_output
@@ -12047,6 +12049,9 @@ def _maybe_auto_refresh_voice(
     # every condition (0.742-0.830 vs 0.812-0.921), which is how "90%+ weeks ago"
     # decayed. Only long-enough, loud-enough audio may seed or strengthen a print
     # (applies to bootstrap too — a garbage first sample is the worst outcome).
+    resolution = (_current_turn_speaker_evidence or {}).get("resolution")
+    if resolution and (resolution.get("status") != "known" or resolution.get("person_id") != person_id):
+        return
     try:
         sr = float(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
         sample_secs = float(len(audio_array)) / max(sr, 1.0)
@@ -12663,6 +12668,9 @@ def _maybe_passive_voice_enroll(
 
     solo_pid, solo_name = _single_visible_person_identity()
     if solo_pid is None:
+        return
+    resolution = (_current_turn_speaker_evidence or {}).get("resolution")
+    if resolution and resolution.get("person_id") != solo_pid:
         return
     if _has_unknown_visible_person() or _other_known_visible_recently(solo_pid):
         return
@@ -14378,6 +14386,7 @@ def _maybe_onboarding_timeout() -> bool:
 
 # Full per-person scoreboard of the most recent scan: [(pid, name, score, rows)].
 _last_scan_ranked: list = []
+_last_scan_windows: list = []
 # Durations of the buffer the last scan embedded — voiced (speech frames) and wall
 # length — for the [identity_decision] line. The embedder pools over the whole
 # buffer, pre-roll and silence timeout included, so both numbers matter.
@@ -14407,18 +14416,20 @@ def _resolve_turn_attribution(
     engaged: Optional[dict],
     previous_speaker: Optional[dict],
 ):
-    """Build this utterance's evidence record and run the SHADOW resolver
-    (intelligence/attribution.py). Never changes the ladder's decision; the
-    verdict feeds the [identity_decision] log, Lean's context, the transcript's
-    uncertainty flag, and the learning gates. Returns a Resolution."""
+    """Resolve utterance-bound evidence for identity, context and learning gates.
+
+    Legacy context proposals cannot overrule this verdict.
+    """
     from intelligence import attribution as _attr
     latch_pid = None
     try:
         from vision import active_speaker as _asp
-        _latch = _asp.recent_visual_speaker()
-        latch_pid = _safe_int((_latch or {}).get("person_db_id")) if _latch else None
+        visual_rows = list(_utterance_observations.get("visual") or []) if not text_input else []
+        visual_ids = {r.get("person_db_id") for r in visual_rows if r.get("person_db_id") is not None}
+        latch_pid = next(iter(visual_ids)) if len(visual_ids) == 1 else None
     except Exception:
         latch_pid = None
+        visual_rows = []
     sel_pid = None
     contradiction = False
     if bearing_match:
@@ -14430,6 +14441,13 @@ def _resolve_turn_attribution(
             sel_pid, contradiction = None, False
     ev = _attr.UtteranceEvidence(
         turn_id=turn_id,
+        session_id=conv_memory.transcript_version()[0],
+        started_at=_utterance_observations.get("started_at") if not text_input else None,
+        ended_at=_utterance_observations.get("ended_at") if not text_input else None,
+        visual_observations=visual_rows,
+        mixed_speakers=(not text_input and (
+            any(r.get("change_suspected") for r in _last_scan_windows)
+            or len({r.get("person_id") for r in _last_scan_windows if r.get("person_id") is not None}) > 1)),
         text=str(text or ""),
         text_input=bool(text_input),
         words=len(re.findall(r"[A-Za-z0-9']+", str(text or ""))),
@@ -14455,7 +14473,7 @@ def _resolve_turn_attribution(
         engaged_pid=_safe_int((engaged or {}).get("person_id")) if engaged else None,
         previous_speaker_pid=_safe_int((previous_speaker or {}).get("person_id")) if previous_speaker else None,
     )
-    return _attr.resolve(ev)
+    return _attr.resolve_authoritative(ev)
 
 
 def _assess_turn_addressee(text: str, *, person_id: Optional[int], text_input: bool,
@@ -14519,10 +14537,10 @@ def _assess_turn_addressee(text: str, *, person_id: Optional[int], text_input: b
 
 
 def _turn_speaker_uncertain() -> bool:
-    """True when this turn's attribution resolver said 'ambiguous' (phase 2B)."""
+    """True when utterance evidence cannot establish a known speaker."""
     try:
         res = (_current_turn_speaker_evidence or {}).get("resolution") or {}
-        return str(res.get("status") or "") == "ambiguous"
+        return str(res.get("status") or "") in {"ambiguous", "unknown"}
     except Exception:
         return False
 
@@ -14705,8 +14723,9 @@ def _process_audio(
     when the runner-up's print set is thin) — callers compare raw_best_margin
     against it instead of the raw config value.
     """
-    global _last_scan_ranked
+    global _last_scan_ranked, _last_scan_windows
     _last_scan_ranked = []
+    _last_scan_windows = []
     try:
         _last_scan_secs["buffer"] = speaker_id.buffer_secs(audio_array)
         _last_scan_secs["voiced"] = speaker_id.voiced_secs(audio_array)
@@ -14727,11 +14746,17 @@ def _process_audio(
             _turn_trace.stamp("asr_done")
 
     def _identify() -> None:
-        global _last_scan_ranked
+        global _last_scan_ranked, _last_scan_windows
         _turn_trace.stamp("speaker_id_start")
         ranked = speaker_id.rank_speakers(audio_array)
-        _turn_trace.stamp("speaker_id_done")
         _last_scan_ranked = list(ranked or [])
+        if ranked and bool(getattr(config, "SPEAKER_ID_SEGMENT_CHECK_ENABLED", True)):
+            try:
+                _last_scan_windows = speaker_id.window_evidence(audio_array)
+                _turn_trace.set_value("speaker_windows", _last_scan_windows)
+            except Exception as exc:
+                _log.warning("[speaker_id] interval check unavailable: %s", exc)
+        _turn_trace.stamp("speaker_id_done")
         if not ranked:
             return
         speaker_id._log_scoreboard(
@@ -15672,9 +15697,19 @@ def _adopt_probe_transcript(probe: Optional[dict]) -> bool:
 _last_voice_bearing: Optional[dict] = None
 
 
+_utterance_observations: dict = {}
+
+
 def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
     """Record the dominant direction of arrival over a captured segment."""
     global _last_voice_bearing
+    global _utterance_observations
+    _utterance_observations = {"started_at": float(t0), "ended_at": float(t1), "visual": []}
+    try:
+        from vision import active_speaker
+        _utterance_observations["visual"] = active_speaker.evidence_between(t0, t1)
+    except Exception:
+        pass
     # Phase 2B, first slice: a read that fails or returns nothing for THIS
     # utterance is MISSING evidence. The previous person's bearing must not be
     # reused to pick a face or aim a turn for the words that just arrived, so
@@ -15738,15 +15773,24 @@ def _voice_bearing_face_match(people: list) -> Optional[dict]:
         return None
     if float(voice.get("share") or 0.0) < float(getattr(config, "VOICE_BEARING_MIN_SHARE", 0.5)):
         return None
+    observations = _utterance_observations.get("visual") or []
+    aligned = observations[-1] if observations else None
+    # Captures with an evidence interval use only faces and pose from it.
+    # Legacy callers without an interval retain their existing gaze adapter.
+    if _utterance_observations.get("started_at") == voice.get("utterance_t0"):
+        if not aligned or aligned.get("neck_yaw_right_deg") is None:
+            return None
+        people = aligned.get("faces") or []
     faces = [p for p in (people or [])
              if isinstance(p, dict) and p.get("person_db_id") is not None
              and not (p.get("face_visible") is False or p.get("face_missing"))]
     if not faces:
         return None
-    neck = None
+    neck = aligned.get("neck_yaw_right_deg") if aligned else None
     try:
-        from intelligence import motion_agency as _ma
-        neck = _ma._come_neck_bearing_deg()
+        if aligned is None:
+            from intelligence import motion_agency as _ma
+            neck = _ma._come_neck_bearing_deg()
     except Exception:
         neck = None
     from perception import voice_bearing_match as _vbm
@@ -16843,6 +16887,78 @@ def _reply_frame_why(frame, comedy_mode, cb_claim) -> str:
     return " ".join(bits)
 
 
+def _scan_reply_input(cursor: float):
+    """Capture completed human runs while the response owner is generating.
+
+    Reuse the same VAD and playback/AEC rejection policy as recovery. Do not
+    transcribe partials or change the reply generation on incoming speech.
+    """
+    now = time.monotonic()
+    if _stop_event.is_set():
+        return [], cursor
+    audio, actual_start = _gap_span_audio(max(cursor, now - 25.0), now)
+    runs = _gap_voiced_runs(audio, actual_start)
+    first_audio = _gap_first_audio_at
+    play_end = float(echo_cancel.last_playback_ended_at() or 0.0)
+    busy = speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed()
+    played = first_audio > 0.0 or play_end > cursor or busy
+    b_start = first_audio if first_audio > 0.0 else cursor
+    b_end = now if busy else max(b_start, play_end)
+    candidates = _gap_catchup_candidates(
+        runs, armed=cursor, now=now, played=played,
+        aec_on=hardware_aec.is_active(), b_start=b_start, b_end=b_end,
+        audio=audio, actual_start=actual_start)
+    pad = float(getattr(config, "GAP_SPEECH_SLICE_PAD_SECS", 0.25))
+    endpoint = float(getattr(config, "GAP_SPEECH_JOIN_GAP_SECS", 1.2))
+    sr = float(config.AUDIO_SAMPLE_RATE)
+    turns = []
+    consumed = cursor
+    for onset, end, cap in candidates:
+        if now - end < endpoint:
+            continue
+        start = max(cursor, actual_start, onset - pad)
+        stop = min(now, cap, end + pad)
+        i0, i1 = max(0, int((start-actual_start)*sr)), min(len(audio), int((stop-actual_start)*sr))
+        if i1 - i0 < int(0.30 * sr):
+            continue
+        turns.append(turn_coordinator.CapturedTurn(
+            audio[i0:i1].copy(), start, stop, conv_memory.transcript_version()[0],
+            require_trusted=bool(played and onset < b_end and end > b_start)))
+        consumed = max(consumed, stop)
+    return turns, consumed
+
+
+_reply_input_owner = contextvars.ContextVar("reply_input_owner", default=False)
+
+
+@contextmanager
+def _capture_during_reply():
+    global _gap_watch_started_at
+    if (_reply_input_owner.get() or _gap_watch_started_at <= 0.0
+            or not _gap_recovery_on("CONTINUOUS_REPLY_CAPTURE_ENABLED")
+            or bool(getattr(config, "GAP_MERGE_ENABLED", False))):
+        yield
+        return
+    armed = _gap_watch_started_at
+    session = conv_memory.transcript_version()[0]
+    def scan(cursor):
+        if conv_memory.transcript_version()[0] != session:
+            return [], cursor
+        turns, consumed = _scan_reply_input(cursor)
+        return ([turn for turn in turns if turn.session == session], consumed)
+    token = _reply_input_owner.set(True)
+    capture = turn_coordinator.CaptureDuringReply(scan, armed)
+    try:
+        with capture:
+            yield
+    finally:
+        _reply_input_owner.reset(token)
+        # Only this watch may advance. A reset/new capture retains its own epoch.
+        if _gap_watch_started_at == armed and conv_memory.transcript_version()[0] == session:
+            _gap_watch_started_at = capture.cursor
+
+
+@_capture_during_reply()
 def _stream_llm_response(
     text: str,
     person_id: Optional[int],
@@ -16908,7 +17024,10 @@ def _stream_llm_response(
     lean_callback_directive = ""
     filler_stop = _start_latency_filler_timer()
     try:
-        turn_plan = conversation_agenda.build_turn_plan(
+        prepare_turn = (conversation_agenda.build_lean_turn_plan
+                        if getattr(config, "LEAN_BRAIN_ENABLED", False)
+                        else conversation_agenda.build_turn_plan)
+        turn_plan = prepare_turn(
             text,
             person_id,
             answered_question=answered_question,
@@ -17456,9 +17575,12 @@ def _prepare_stream_sentence(sentence: str, frame, comedy_mode) -> str:
 def _prefetch_stream_audio(
     text: str, emotion: str, voice_settings: Optional[dict],
     previous_text: Optional[str] = None,
+    generation: Optional[int] = None,
 ) -> None:
     """Warm the TTS cache for an upcoming sentence so playback doesn't gap."""
     def _run() -> None:
+        if generation is not None and generation != speech_queue.generation():
+            return
         try:
             from audio import tts
             # Only 2nd+ sentences of a reply are prefetched, and those suppress the audio tag —
@@ -17591,6 +17713,10 @@ def _stream_and_speak_sentences(
     trace = _current_character_loop_trace.get()
     tt = _turn_trace.current()
     priority = 1
+    response_generation = speech_queue.generation()
+
+    def obsolete():
+        return _interrupted.is_set() or response_generation != speech_queue.generation()
     min_chars = int(getattr(config, "LLM_STREAMING_MIN_SENTENCE_CHARS", 12) or 1)
     prefetch_enabled = bool(getattr(config, "LLM_STREAMING_PREFETCH_ENABLED", True))
 
@@ -17675,6 +17801,8 @@ def _stream_and_speak_sentences(
             if gap_onset is not None:
                 _turn_trace.stamp("gap_speech")
                 raise _GapSpeechDetected(gap_onset, _gap_watch_started_at)
+        if obsolete():
+            return
         prepared = _prepare_stream_sentence(raw_sentence, frame, comedy_mode)
         if not prepared:
             return
@@ -17753,13 +17881,14 @@ def _stream_and_speak_sentences(
         elif prefetch_enabled:
             _prefetch_stream_audio(
                 prepared, state["emotion"], sentence_voice,
-                previous_text=stream_prev_text,
+                previous_text=stream_prev_text, generation=response_generation,
             )
 
         done = speech_queue.enqueue(
             prepared,
             state["emotion"],
             priority=priority,
+            generation=response_generation,
             pre_beat_ms=pre_beat_ms,
             post_beat_ms=0,
             voice_settings=sentence_voice,
@@ -17791,6 +17920,8 @@ def _stream_and_speak_sentences(
                 th.join(timeout=0.4)
             except Exception:
                 pass
+        if obsolete():
+            return
         parts: list[str] = []
         for raw_sentence in raw_sentences:
             prepared = _prepare_stream_sentence(raw_sentence, frame, comedy_mode)
@@ -17826,12 +17957,13 @@ def _stream_and_speak_sentences(
             # Kick synthesis NOW so chunk 2 renders while chunk 1 is playing.
             _prefetch_stream_audio(
                 blob, state["emotion"], blob_voice,
-                previous_text=stream_prev_text,
+                previous_text=stream_prev_text, generation=response_generation,
             )
         done = speech_queue.enqueue(
             blob,
             state["emotion"],
             priority=priority,
+            generation=response_generation,
             pre_beat_ms=0,
             post_beat_ms=0,
             voice_settings=blob_voice,
@@ -17847,11 +17979,13 @@ def _stream_and_speak_sentences(
     buffer = ""
     raw_chunks: list[str] = []
     rest_raw: list[str] = []   # two-chunk mode: complete sentences after the first
+    reply_stream = None
     try:
-        for chunk in _reply_token_stream(
+        reply_stream = _reply_token_stream(
             user_text, person_id, agenda_directive, lean_turn_directive
-        ):
-            if _interrupted.is_set():
+        )
+        for chunk in reply_stream:
+            if obsolete():
                 break
             raw_chunks.append(chunk)
             buffer += chunk
@@ -17875,9 +18009,12 @@ def _stream_and_speak_sentences(
             raise
         _log.error("[interaction] streaming LLM error: %s", exc)
     finally:
+        close = getattr(reply_stream, "close", None)
+        if callable(close):
+            close()
         filler_stop.set()
 
-    if not _interrupted.is_set():
+    if not obsolete():
         tail = buffer.strip()
         if tail and _tail_is_speakable(tail):
             if two_chunk and not state["first"]:
@@ -17889,14 +18026,14 @@ def _stream_and_speak_sentences(
                 "[interaction] dropped incomplete stream tail (mid-sentence cut): %r",
                 tail,
             )
-    if two_chunk and rest_raw and not _interrupted.is_set():
+    if two_chunk and rest_raw and not obsolete():
         _consume_remainder(rest_raw)
 
     # Safety net: if the model produced text but every sentence was governed away
     # (e.g. an all-questions reply under a no-questions frame), fall back to
     # whole-reply governance — which yields a frame fallback line — so Rex is
     # never left silent. Rare: general frames never drop sentences here.
-    if not spoken and not _interrupted.is_set():
+    if not spoken and not obsolete():
         # The model sometimes writes its tool call as TEXT ("[web_search]\n{...}")
         # instead of a native tool-call delta; nothing was spoken, so dispatch it
         # like the real thing rather than dying silent (the caller catches
@@ -17929,6 +18066,7 @@ def _stream_and_speak_sentences(
                 delivered = _speak_blocking(
                     fallback,
                     emotion=delivery_emotion,
+                    generation=response_generation,
                     voice_settings=delivery_voice_settings,
                 )
                 return fallback if delivered else ""
@@ -23106,6 +23244,7 @@ def _no_drive_room_decline_line() -> Optional[str]:
             "Say \"you can drive in here\" if that's changed.")
 
 
+@narration_owner()
 def _handle_router_motion_action(
     decision: Optional[action_router.ActionDecision],
     requester_person_id: Optional[int] = None,
@@ -23417,6 +23556,10 @@ def _motion_refusal_line() -> Optional[str]:
     sensor), or None when nothing fresh was refused. _speak_blocking says it
     once even when motion_controller already queued it."""
     try:
+        request = current_motion_request()
+        if request is not None:
+            result = request.get("result")
+            return motion_controller._refusal_line(result.reason) if result is not None and result.reason else None
         r = motion_controller.last_refusal()
     except Exception:
         return None
@@ -27155,6 +27298,58 @@ def _should_reprompt_low_trust(text: str, *, trusted: bool, text_input: bool) ->
 # Speech segment processing
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _split_sequential_capture(audio_array, *, require_trusted=False):
+    """Reuse captured samples; only supported speaker switches create extra turns."""
+    observations = _utterance_observations.get("visual") or []
+    if len({r.get("person_db_id") for r in observations if r.get("person_db_id") is not None}) < 2:
+        return audio_array
+    ended = _utterance_observations.get("ended_at")
+    if ended is None or audio_array is None or not len(audio_array):
+        return audio_array
+    sr = float(config.AUDIO_SAMPLE_RATE)
+    started = ended - len(audio_array) / sr
+    runs = [(started + a, started + b) for a, b in vad.get_speech_segments(audio_array)]
+    from intelligence.attribution import sequential_boundaries
+    boundaries = sequential_boundaries(runs, observations)
+    if not boundaries:
+        return audio_array  # conflicting/mixed capture remains uncertain
+    edges = [started, *boundaries, ended]
+    # Later utterances retain their actual order and get independent batch ASR.
+    for a, b in zip(edges[1:-1], edges[2:]):
+        i0, i1 = int((a-started)*sr), min(len(audio_array), int((b-started)*sr))
+        if not turn_coordinator.pending.put(turn_coordinator.CapturedTurn(
+                audio_array[i0:i1].copy(), a, b, conv_memory.transcript_version()[0], require_trusted)):
+            _capture_dropped("speaker_split_overflow", dropped=1)
+    first_end = edges[1]
+    _note_voice_bearing(started, first_end)
+    _log.info("[attribution] split %d sequential speakers at supported silent gaps", len(edges)-1)
+    return audio_array[:int((first_end-started)*sr)]
+
+
+def _split_audio_speakers(audio_array, *, require_trusted=False):
+    if (not any(r.get("change_suspected") for r in _last_scan_windows)
+            and len({r.get("person_id") for r in _last_scan_windows if r.get("person_id") is not None}) < 2):
+        return None
+    from intelligence.attribution import voice_boundaries
+    cuts = voice_boundaries(vad.get_speech_segments(audio_array), _last_scan_windows)
+    if not cuts:
+        return None
+    sr = float(config.AUDIO_SAMPLE_RATE)
+    ended = _utterance_observations.get("ended_at")
+    if ended is None:
+        return None
+    started = ended - len(audio_array)/sr
+    edges = [0., *cuts, len(audio_array)/sr]
+    for a, b in zip(edges[1:-1], edges[2:]):
+        clip = audio_array[int(a*sr):int(b*sr)].copy()
+        if not turn_coordinator.pending.put(turn_coordinator.CapturedTurn(
+                clip, started+a, started+b, conv_memory.transcript_version()[0], require_trusted)):
+            _capture_dropped("speaker_split_overflow", dropped=1)
+    _note_voice_bearing(started, started+cuts[0])
+    _turn_trace.set_value("audio_speaker_segments", len(edges)-1)
+    return audio_array[:int(cuts[0]*sr)]
+
+
 def _handle_speech_segment(
     audio_array: np.ndarray,
     *,
@@ -27179,6 +27374,10 @@ def _handle_speech_segment(
     global _pending_last_name_confirm
     global _pending_offscreen_identify, _pending_face_reveal_confirm
     global _identity_reask_count
+    global _current_turn_anonymous, _current_turn_speaker_evidence
+
+    if not text_input and transcribed_text is None and eager_transcript is None:
+        audio_array = _split_sequential_capture(audio_array, require_trusted=require_trusted)
 
     turn_start = time.monotonic()
     answered_question: Optional[dict] = None
@@ -27259,6 +27458,13 @@ def _handle_speech_segment(
         else:
             (text, raw_best_id, raw_best_name, speaker_score, speaker_margin,
              required_margin) = _process_audio(audio_array, pretranscribed=eager_transcript)
+            split_audio = _split_audio_speakers(audio_array, require_trusted=require_trusted)
+            if split_audio is not None:
+                # The combined draft has not been logged or learned. Decode the
+                # first supported segment; queued segments get their own batch ASR.
+                audio_array = split_audio
+                (text, raw_best_id, raw_best_name, speaker_score, speaker_margin,
+                 required_margin) = _process_audio(audio_array)
             transcript_trusted = bool(getattr(text, "confident", True))
             _transcript_trusted.set(transcript_trusted)
             if not transcript_trusted:
@@ -27699,6 +27905,21 @@ def _handle_speech_segment(
             }
         except Exception:
             visible_known_by_id = {}
+
+        # Establish learning permission before legacy candidate adapters can
+        # schedule voiceprint refreshes. They may propose, never certify a name.
+        _current_turn_speaker_evidence = {}
+        if not text_input:
+            early_resolution = _resolve_turn_attribution(
+                turn_id=getattr(character_trace, "turn_id", None), text=str(text), text_input=False,
+                raw_best_id=raw_best_id, raw_best_name=raw_best_name,
+                speaker_score=speaker_score, speaker_margin=speaker_margin,
+                required_margin=required_margin, accept_tier=identity_accept_tier,
+                identity_resolution=None, person_id=person_id, person_name=person_name,
+                off_camera_unknown=off_camera_unknown,
+                visible_known_ids=list(visible_known_by_id), bearing_match=_bearing_match,
+                engaged=recent_engagement, previous_speaker=_last_speaker_turn)
+            _current_turn_speaker_evidence["resolution"] = early_resolution.as_dict()
 
         if text_input and person_id is None:
             recent_id = _safe_int((recent_engagement or {}).get("person_id"))
@@ -28401,18 +28622,14 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("speaker gaze intent note failed: %s", exc)
 
-        global _current_turn_anonymous, _current_turn_speaker_evidence
         _current_turn_anonymous = None
         _current_turn_speaker_evidence = {
             "raw_best_id": raw_best_id,
             "raw_best_name": raw_best_name,
             "raw_best_score": float(speaker_score or 0.0),
         }
-        # Phase 2B: the shadow attribution verdict for this utterance. The ladder
-        # above stays authoritative; this only says how SURE it is, and an
-        # 'ambiguous' verdict (a) reaches Lean as a no-name instruction, (b) marks
-        # the transcript line, (c) stands passive voiceprint growth down, and
-        # (d) suppresses durable personal-fact learning from this turn.
+        # Resolve raw voice + utterance-bound evidence. Legacy continuity and
+        # roster paths propose candidates only; the verdict owns identity below.
         try:
             from intelligence import conversation_state as _cstate
             _res = _resolve_turn_attribution(
@@ -28430,7 +28647,7 @@ def _handle_speech_segment(
             )
             _current_turn_speaker_evidence["resolution"] = _res.as_dict()
             _cstate.note_speaker_resolution(_res.as_dict())
-            if _res.status == "ambiguous":
+            if _res.status != "known":
                 suppress_memory_learning = True
                 _log.info("[attribution] speaker AMBIGUOUS (%s): %s — replying without a "
                           "name, no learning this turn", _res.basis, "; ".join(_res.conflicts))
@@ -28523,6 +28740,15 @@ def _handle_speech_segment(
                 "[interaction] cross-session voice recognized person_id=%s name=%r",
                 person_id, person_name,
             )
+        resolution = _current_turn_speaker_evidence.get("resolution") or {}
+        if not text_input:
+            person_id = resolution.get("person_id") if resolution.get("status") == "known" else None
+            person_name = resolution.get("name") if person_id is not None else None
+            if person_id is None:
+                suppress_memory_learning = True
+                identity_resolution_for_turn = "utterance_uncertain"
+                # Keep any stable anonymous session slot, never a guessed name.
+                speaker_label_for_turn = anonymous_speaker_label or "Unidentified speaker"
         if anonymous_speaker_label:
             slot = next(
                 (s for s in _anonymous_speaker_slots if s.label == anonymous_speaker_label),
@@ -30400,6 +30626,15 @@ def _handle_speech_segment(
                     "question_text": dialogue_decision.frame.text.strip(),
                     "answer_text": text,
                 }
+
+            if (answered_question is not None
+                    and dialogue_decision.label == "answer_to_rex"
+                    and dialogue_decision.frame is not None
+                    and not dialogue_act.is_counterquestion(text)):
+                dialogue_act.answer_frame(
+                    dialogue_decision.frame, person_id,
+                    trusted=not _turn_speaker_uncertain(),
+                )
 
             # A pet-guess answer settles the animal's name for the session:
             # "Yeah, it's Max" answering "Bret, is that Max?" must retire every
@@ -32379,6 +32614,21 @@ def _loop() -> None:
             continue
 
         # Idle timeout → end session and return to IDLE
+        pending_turn = turn_coordinator.pending.pop(conv_memory.transcript_version()[0])
+        if pending_turn is not None:
+            _arm_gap_watch()
+            _begin_user_turn()
+            try:
+                _note_voice_bearing(pending_turn.started_at, pending_turn.ended_at)
+                with dialogue_act.captured_at(pending_turn.started_at):
+                    _handle_speech_segment(pending_turn.audio,
+                                          require_trusted=pending_turn.require_trusted)
+            except Exception:
+                _log.exception("queued turn failed; listening continues")
+            finally:
+                _end_user_turn()
+            continue
+
         effective_idle_timeout = idle_timeout
         try:
             from features import games as games_mod
@@ -32485,21 +32735,6 @@ def _loop() -> None:
             _maybe_idle_outro()
             _end_session()
             state_module.set_state(State.IDLE)
-            continue
-
-        pending_turn = turn_coordinator.pending.pop(conv_memory.transcript_version()[0])
-        if pending_turn is not None:
-            _arm_gap_watch()
-            _begin_user_turn()
-            try:
-                _note_voice_bearing(pending_turn.started_at, pending_turn.ended_at)
-                with dialogue_act.captured_at(pending_turn.started_at):
-                    _handle_speech_segment(pending_turn.audio,
-                                          require_trusted=pending_turn.require_trusted)
-            except Exception:
-                _log.exception("queued turn failed; listening continues")
-            finally:
-                _end_user_turn()
             continue
 
         # A question handoff arms a one-shot retro scan: an answer spoken in the

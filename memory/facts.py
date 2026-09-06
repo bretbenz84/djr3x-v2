@@ -810,3 +810,5 @@ def apply_fact_correction(
 def delete_facts(person_id: int) -> None:
     """Remove all facts for a person."""
     db.execute("DELETE FROM person_facts WHERE person_id = ?", (person_id,))
+    from memory import semantic
+    semantic.invalidate_candidates()

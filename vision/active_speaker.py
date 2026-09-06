@@ -29,6 +29,7 @@ import math
 import threading
 import time
 from collections import deque
+import copy
 from typing import Optional
 
 import numpy as np
@@ -55,6 +56,14 @@ _last_vad_active_at: float = 0.0
 # released — so vision can disambiguate WHICH visible person spoke without racing
 # the real-time signal. Shape: {"person_db_id", "slot_idx", "confidence", "at"}.
 _last_active: Optional[dict] = None
+_utterance_history = deque(maxlen=512)
+
+
+def evidence_between(started_at: float, ended_at: float) -> list[dict]:
+    """Monotonic, interval-bound observations; never substitute the latest latch."""
+    with _lock:
+        return [copy.deepcopy(row) for row in _utterance_history
+                if started_at <= row["monotonic_at"] <= ended_at]
 
 
 def _safe_int(value) -> Optional[int]:
@@ -360,8 +369,29 @@ def _publish_speaker(*, winner_pid, winner_slot, confidence, now=None) -> None:
     so ``recent_visual_speaker`` keeps decaying naturally over the turn.
     """
     now = now if now is not None else time.time()
+    # Normalize at acquisition rather than converting a historical wall clock
+    # with today's offset. No raw frames or biometric vectors are retained.
+    monotonic_at = time.monotonic() - (time.time() - now)
+    observation = {"monotonic_at": monotonic_at,
+                   "person_db_id": _safe_int(winner_pid), "confidence": float(confidence),
+                   "faces": [], "neck_yaw_right_deg": None}
     try:
         from world_state import world_state
+        # Keep only the geometry used by attribution, never an image/vector.
+        observation["faces"] = [
+            {key: copy.deepcopy(p[key]) for key in
+             ("person_db_id", "face_id", "face_box", "bounding_box", "bbox", "face_visible", "face_missing")
+             if key in p} for p in (world_state.get("people") or [])]
+        positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
+        neck = positions.get("neck")
+        settings = getattr(config, "SERVO_CHANNELS", {}).get("neck") or {}
+        if neck is not None and all(k in settings for k in ("neutral", "min", "max")):
+            neutral = float(settings["neutral"])
+            half_span = max(1., min(float(settings["max"])-neutral, neutral-float(settings["min"])))
+            observation["neck_yaw_right_deg"] = ((float(neck)-neutral)/half_span
+                * float(getattr(config, "MOTION_COME_NECK_HALF_SPAN_DEG", 45.0)))
+        with _lock:
+            _utterance_history.append(observation)
         world_state.mutate(
             "people",
             lambda people: _write_speaker_fields(
@@ -484,3 +514,4 @@ def reset() -> None:
         _switch_since = 0.0
         _last_vad_active_at = 0.0
         _last_active = None
+        _utterance_history.clear()

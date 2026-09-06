@@ -3974,6 +3974,8 @@ VOICE_SCORE_OFFSET_ECAPA = 0.25
 # 0.50 hard-accepts, paired with a margin guard in the resolution layer to avoid
 # false-matching a different known voice.
 SPEAKER_ID_SIMILARITY_THRESHOLD = 0.50
+# Bounded same-encoder window check; no streaming STT or additional resident model.
+SPEAKER_ID_SEGMENT_CHECK_ENABLED = True
 # A voice match below the hard threshold may still be accepted as a KNOWN speaker (even
 # off-camera / not the engaged person) when it clears this floor AND beats the next
 # different person by SPEAKER_ID_KNOWN_MARGIN. Bret's 0.55-vs-0.45 (margin 0.10) passes.
@@ -5421,6 +5423,7 @@ POST_QUESTION_RETRO_SCAN_MIN_VOICED_FRAMES = 3  # ~96ms of voiced audio required
 GAP_SPEECH_RECOVERY_ENABLED = _env_bool("GAP_SPEECH_RECOVERY_ENABLED", True)
 GAP_MERGE_ENABLED = False            # owner: finish pending reply, then handle the new utterance
 GAP_CATCHUP_ENABLED = True           # phase 2: post-reply catch-up scan
+CONTINUOUS_REPLY_CAPTURE_ENABLED = True  # bounded input producer during reply; recovery owns seams
 # Minimum total voiced audio in a scanned span to count as the person speaking.
 # Below this, breaths / chair creaks / TV blips stay ignored. A phase-1 false
 # positive is the expensive miss (it abandons a drafted reply and regenerates,

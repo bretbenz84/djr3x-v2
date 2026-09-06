@@ -1,22 +1,9 @@
-"""
-intelligence/attribution.py — one utterance's speaker evidence and one verdict.
+"""Utterance-bound identity evidence and one authoritative speaker verdict.
 
-Lean Brain restructuring, phase 2B. `interaction._handle_speech_segment` decides
-WHO spoke through a long override ladder (hard voice match, known-floor, session
-stickiness, game roster, visible-face corroboration, bearing match, GUI text,
-pending-question attribution, short-clip continuity...). That ladder stays
-authoritative — it carries months of field fixes. What was missing is a single
-place that (a) holds every piece of evidence the turn had, with its own units
-left alone (a cosine similarity is not a probability), and (b) says how SURE the
-result is, so the reply can stay name-free when the room is ambiguous and the
-learning paths can stand down.
-
-`resolve()` runs in SHADOW: it never changes the ladder's person_id. It returns
-known / unknown / ambiguous plus the conflicts it saw, which interaction then
-(1) logs in [identity_decision], (2) hands to Lean via conversation_state, (3)
-marks on the transcript entry, and (4) uses to gate passive voiceprint growth
-and per-turn memory learning. Three decisions are kept apart: where the speech
-came from (bearing), who spoke (voice/face), whom they addressed (not judged here).
+resolve_authoritative owns production attribution and learning permission.
+The legacy resolve adapter remains for comparison tests. Voice scores remain
+similarities, not identity probabilities; direction, identity and addressee
+are separate decisions. Suspect mixed captures abstain from personal attribution.
 """
 
 from __future__ import annotations
@@ -28,6 +15,11 @@ from typing import Optional
 @dataclass
 class UtteranceEvidence:
     turn_id: Optional[int] = None
+    session_id: Optional[int] = None
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+    visual_observations: list = field(default_factory=list)
+    mixed_speakers: bool = False
     text: str = ""
     text_input: bool = False
     words: int = 0
@@ -92,6 +84,9 @@ def resolve(ev: UtteranceEvidence) -> Resolution:
     if ev.text_input:
         return Resolution("known" if pid is not None else "unknown", pid, ev.final_name,
                           "typed input — attribution is the GUI's", [])
+    if ev.mixed_speakers:
+        return Resolution("ambiguous", None, None, "multiple speakers within this capture",
+                          ["whole-buffer voice scores cannot assign these words to one person"])
     if pid is None:
         basis = "no enrolled voice matched and no single visible face"
         if ev.off_camera_unknown:
@@ -143,3 +138,93 @@ def resolve(ev: UtteranceEvidence) -> Resolution:
         return Resolution("known", pid, ev.final_name,
                           f"{tier or ev.identity_resolution} pick, no contradicting signal", [])
     return Resolution("known", pid, ev.final_name, "ladder decision, no contradicting signal", [])
+
+
+def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
+    """Resolve raw voice and interval evidence, treating context as a proposal.
+
+    The old candidate ladder may suggest a name, but engagement, roster and a
+    last-speaker guess cannot independently authorize identity or learning.
+    Existing raw voice thresholds retain their units and meaning.
+    """
+    if ev.text_input or ev.mixed_speakers:
+        return resolve(ev)
+    visual_ids = {row.get("person_db_id") for row in ev.visual_observations
+                  if row.get("person_db_id") is not None}
+    if len(visual_ids) > 1:
+        return Resolution("ambiguous", None, None, "speaker transition in utterance interval",
+                          ["sequential or overlapping speakers; no word-level attribution"])
+    # Only observations from the captured interval can corroborate the voice.
+    visual = next(iter(visual_ids), None)
+    candidate = ev.raw_best_id
+    enough_margin = ev.margin >= ev.required_margin
+    strong = candidate is not None and ev.raw_best_score >= ev.hard_threshold and enough_margin
+    supported_voice = (candidate is not None and ev.raw_best_score >= ev.soft_threshold
+                       and enough_margin and ev.accept_tier in {"hard", "known_floor", "roster"})
+    corroborated = (candidate is not None and enough_margin
+                    and ev.raw_best_score >= ev.known_floor and visual == candidate)
+    if strong or corroborated or supported_voice:
+        if (ev.bearing_selected_pid is not None and ev.bearing_selected_pid != candidate
+                or ev.bearing_contradiction and candidate in ev.visible_known_ids):
+            return Resolution("ambiguous", None, None, "voice and utterance direction disagree",
+                              ["conflicting identity evidence"])
+        if visual is not None and visual != candidate:
+            return Resolution("ambiguous", None, None, "voice and interval mouth motion disagree",
+                              ["conflicting identity evidence"])
+        return Resolution("known", candidate, ev.raw_best_name,
+                          "strong voice" if strong else ("voice with interval visual corroboration"
+                          if corroborated else "accepted voice score and margin"))
+    voiced_rows = [row for row in ev.visual_observations if row.get("person_db_id") == visual]
+    if (visual is not None and len(voiced_rows) >= 3 and ev.voiced_secs >= 1.0
+            and ev.words >= 4 and ev.raw_best_score < ev.soft_threshold
+            and not ev.bearing_contradiction
+            and ev.bearing_selected_pid in (None, visual)):
+        names = [face.get("face_id") for row in voiced_rows for face in row.get("faces", [])
+                 if face.get("person_db_id") == visual and face.get("face_id")]
+        return Resolution("known", visual, names[-1] if names else None,
+                          "sustained mouth motion during this utterance; weak voice evidence")
+    return Resolution("ambiguous" if candidate is not None else "unknown", None, None,
+                      "insufficient utterance-bound identity evidence")
+
+
+def sequential_boundaries(voiced_runs: list[tuple[float, float]], observations: list[dict]) -> list[float]:
+    """Split only at a real silent gap between sustained, different visual speakers.
+
+    Inputs use monotonic seconds. Multiple identities inside a voiced run are
+    suspect overlap; no boundary is invented inside speech. No word diarization
+    or extra inference model is implied by this conservative segmentation.
+    """
+    labeled = []
+    for start, end in voiced_runs:
+        rows = [r for r in observations if start <= r.get("monotonic_at", -1) <= end
+                and r.get("person_db_id") is not None]
+        identities = {r["person_db_id"] for r in rows}
+        pid = next(iter(identities)) if len(identities) == 1 and len(rows) >= 2 else None
+        labeled.append((start, end, pid))
+    boundaries = []
+    for previous, following in zip(labeled, labeled[1:]):
+        if (previous[2] is not None and following[2] is not None
+                and previous[2] != following[2] and following[0] - previous[1] >= .12):
+            boundaries.append((previous[1] + following[0]) / 2)
+    return boundaries
+
+
+def voice_boundaries(voiced_runs: list[tuple[float, float]], windows: list[dict]) -> list[float]:
+    """Audio-only boundaries: a silent gap between confidently different windows.
+
+    All times are relative to the same captured buffer. Overlapping speech has
+    no supported gap and stays mixed; it is never assigned a fabricated split.
+    """
+    gaps = [(a[1] + b[0]) / 2 for a, b in zip(voiced_runs, voiced_runs[1:])
+            if b[0] - a[1] >= .12]
+    cuts = []
+    for left, right in zip(windows, windows[1:]):
+        known_switch = (left.get("person_id") is not None and right.get("person_id") is not None
+                        and left["person_id"] != right["person_id"])
+        if not known_switch and not right.get("change_suspected"):
+            continue
+        lo, hi = (left["start"]+left["end"])/2, (right["start"]+right["end"])/2
+        candidates = [gap for gap in gaps if lo < gap < hi]
+        if candidates:
+            cuts.append(min(candidates, key=lambda gap: abs(gap-(lo+hi)/2)))
+    return sorted(set(cuts))

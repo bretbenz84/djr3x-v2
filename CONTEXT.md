@@ -26,7 +26,7 @@ Use the project virtual environment:
 
 ```bash
 source venv/bin/activate
-venv/bin/python -m unittest discover -s tests
+venv/bin/python tools/run_lean_checks.py
 ```
 
 `pytest` is not assumed to be installed; use `unittest` unless the repo changes.
@@ -306,6 +306,17 @@ Tests: `tests/test_tool_router.py` (contracts + coverage-enforcement: a new
 `ActionSpec` without a tool definition fails CI).
 
 ### Conversation Voice (lean brain primary, classic prompt as fallback)
+
+**Ownership continuation (2026-09-06).** The latest status is in the plan's
+"Ownership continuation" section. Lean now has minimal ordinary-turn preparation,
+an authoritative utterance-bound identity verdict, per-target pending questions,
+and a concurrent input producer alongside serial replies. Batch STT is retained.
+Suspect multi-speaker audio is split only at supported silent gaps; unresolved
+captures do not learn personal facts. The existing forward escape remains per the
+owner's instruction; heading alternatives remain OFF. Routed motion has request
+correlation and refusal ownership. Legacy capture/identity/motion adapters remain
+pending live equivalence tests. Run `venv/bin/python tools/run_lean_checks.py` for
+isolated offline checks; do not infer live speaker accuracy from synthetic fixtures.
 
 **Restructuring continuation (2026-09-05).** See the continuation section in
 `docs/lean_brain_restructuring_plan.md` for precise shipped/deferred scope.

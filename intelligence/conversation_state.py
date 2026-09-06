@@ -33,7 +33,7 @@ from collections import deque
 from typing import Optional
 
 import config
-from intelligence.action_result import ActionResult
+from intelligence.action_result import ActionResult, attach
 
 _log = logging.getLogger(__name__)
 
@@ -116,7 +116,9 @@ def note_action_issued(seq: Optional[int], verb: str, detail: str = "", *,
     )
     with _lock:
         _actions.append(rec)
-    return rec
+    if seq is None:
+        rec.finish("error", reason="not_accepted")
+    return attach(rec)
 
 
 def note_action_result(seq: Optional[int], result: str, *, reason: str = "") -> None:
@@ -128,6 +130,8 @@ def note_action_result(seq: Optional[int], result: str, *, reason: str = "") -> 
     with _lock:
         for rec in reversed(_actions):
             if rec.seq == seq:
+                if rec.status != "running":
+                    return  # duplicate/late completion cannot revive an invalidated goal
                 rec.finish(result, reason=reason)
                 return
 
@@ -142,6 +146,8 @@ def note_action_verified(seq: Optional[int], *, requested_deg: float,
     with _lock:
         for rec in reversed(_actions):
             if rec.seq == seq:
+                if rec.status not in {"completed", "partial"}:
+                    return
                 rec.measured_deg = float(measured_deg)
                 if rec.requested_deg is None:
                     rec.requested_deg = float(requested_deg)
@@ -162,7 +168,15 @@ def note_action_refused(verb: str, reason: str, detail: str = "", *,
     rec.ended_at = time.monotonic()
     with _lock:
         _actions.append(rec)
-    return rec
+    return attach(rec)
+
+
+def invalidate_running_actions(reason: str) -> None:
+    """Stop/manual ownership immediately invalidates unfinished action goals."""
+    with _lock:
+        for rec in _actions:
+            if rec.status == "running":
+                rec.finish("aborted", reason=reason)
 
 
 def recent_actions(*, max_age_secs: Optional[float] = None, limit: int = 3) -> list[dict]:
@@ -269,13 +283,13 @@ def _age(secs: float) -> str:
 # ── Rendering ────────────────────────────────────────────────────────────────
 
 def pending_question_lines(current_person_id: Optional[int]) -> list[str]:
-    """Rex's own unanswered questions, from the dialogue-act frames. Only frames
-    aimed at someone OTHER than the current speaker (or at nobody in particular)
-    are rendered — a frame aimed at the current speaker is answered by the very
-    message the model is about to read."""
+    """Render delivered questions that have not been explicitly answered.
+
+    The target merely speaking does not mean their question was answered.
+    """
     try:
         from intelligence import dialogue_act
-        frames = list(getattr(dialogue_act, "_frames", []) or [])
+        frames = dialogue_act.frames_snapshot()
     except Exception:
         return []
     now = time.monotonic()
@@ -285,9 +299,6 @@ def pending_question_lines(current_person_id: Optional[int]) -> list[str]:
             if not frame.active(now) or "?" not in (frame.text or ""):
                 continue
             target = frame.target_person_id
-            if target is not None and current_person_id is not None \
-                    and int(target) == int(current_person_id):
-                continue
             who = frame.target_name
             if not who and target is not None:
                 try:

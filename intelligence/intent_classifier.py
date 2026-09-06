@@ -117,13 +117,7 @@ _BARE_TOPIC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '&:-]{2,60}$")
 
 # Only real clock queries — NOT "give me time to answer" / "any time" (duration).
 # "what time", "the/current time", "time is it/now", or "o'clock"/"the clock".
-_TIME_QUERY_RE = re.compile(
-    r"\bwhat\s+time\b|"
-    r"\b(?:the|current|exact)\s+time\b(?!\s+(?:of|being|to|when|that|i|we|you|he|she|they)\b)|"
-    r"\btime\s+(?:is\s+it|right\s+now|now)\b|"
-    r"\b(?:o'?clock|the\s+clock)\b",
-    re.IGNORECASE,
-)
+from intelligence.clock_query import TIME_QUERY_RE as _TIME_QUERY_RE
 _DATE_QUERY_RE = re.compile(
     # Explicit date / day-of-week questions only. "today"/"day" must be the OBJECT
     # of the question, never a time adverbial after an action verb — so

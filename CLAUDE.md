@@ -138,6 +138,17 @@ call args must accept `generation=mock.ANY`. `add_to_transcript` entries carry
 `turn_id`, `ts`, `uncertain` — never compare an entry against a literal dict.
 Physical flags still OFF pending floor tests: `MOTION_HEADING_ALTERNATIVES_ENABLED`.
 
+### Ownership continuation (2026-09-06)
+
+Use `venv/bin/python tools/run_lean_checks.py` for the restructuring suite: one
+module per subprocess, temporary databases, network/audio/serial blocked, MLX
+imports disabled. Optional module names can narrow the run. Do not substitute a
+live robot test. The plan's newest "Ownership continuation" supersedes older
+shadow-only status: the resolver now owns identity and learning permission.
+Keep legacy recovery/attribution/motion adapters until live equivalence is proven.
+Owner decisions persist: batch STT, finish the pending reply before later speech,
+and retain existing forward swing escape. Heading alternatives remain OFF.
+
 ### Date-rot
 
 Several fixtures hardcode event dates ("2026-06-01") that silently cross the

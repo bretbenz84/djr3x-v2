@@ -84,6 +84,7 @@ def _complete_text_without_audio(
             pass
         logger.info("[speech_queue] audio suppressed — emitted text only: %r", text)
     try:
+        done.started = True
         done.played = True          # the text went out; that is the delivery here
     except Exception:
         pass

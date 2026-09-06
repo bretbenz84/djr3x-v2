@@ -885,6 +885,9 @@ def _suppressed(verb: str, reason: str) -> None:
         conversation_state.note_action_refused(verb, reason, _refusal_detail.get(verb, ""))
     except Exception:
         pass
+    from intelligence.action_result import current_request
+    if current_request() is not None:
+        return  # the correlated request caller narrates this routine refusal
     if line is None or not _user_commanded_fx():
         return                       # autonomous legs stay quiet; they retry constantly
     now = time.monotonic()
@@ -1192,6 +1195,8 @@ def drive_manual(lin: float, ang: float) -> "int | None":
     if charging():
         _log.debug("manual drive suppressed: charging")
         return None
+    from intelligence.conversation_state import invalidate_running_actions
+    invalidate_running_actions("manual_takeover")
     _invalidate_turn_verification()
     _cancel_arc()
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.40)
@@ -1205,6 +1210,8 @@ def drive_manual(lin: float, ang: float) -> "int | None":
 
 def stop() -> "int | None":
     """Controlled stop. Always honored while connected (bypasses the gate)."""
+    from intelligence.conversation_state import invalidate_running_actions
+    invalidate_running_actions("stop")
     _invalidate_turn_verification()
     _cancel_swing_escape()
     _fx_drive_loop_stop_all()   # a stop means silence now, not at the clip's end
@@ -1216,6 +1223,9 @@ def stop() -> "int | None":
 
 def estop() -> "int | None":
     """Hard disable until clear(). Always honored while connected."""
+    from intelligence.conversation_state import invalidate_running_actions
+    invalidate_running_actions("estop")
+    _cancel_swing_escape()
     _invalidate_turn_verification()
     if not motion.connected():
         return None

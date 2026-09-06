@@ -234,6 +234,58 @@ def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float, int]]:
     return rank_embedding(embedding)
 
 
+def window_evidence(audio_array: np.ndarray) -> list[dict]:
+    """Bounded audio-only check for a speaker change inside one capture.
+
+    Reuse the resident voice encoder on up to three non-overlapping windows.
+    This can detect conflicting enrolled voices without a camera or DoA array;
+    absence of a conflict is not proof of one speaker. Scores are similarities.
+    """
+    sr = int(config.AUDIO_SAMPLE_RATE)
+    if audio_array is None or len(audio_array) < int(2.4 * sr):
+        return []
+    frame = max(1, int(.03 * sr))
+    n = len(audio_array) // frame
+    rms = np.sqrt(np.mean(np.square(audio_array[:n*frame].reshape(n, frame)), axis=1))
+    active = np.flatnonzero(rms >= max(.004, .1 * float(rms.max())))
+    if not len(active):
+        return []
+    lo, hi = int(active[0]*frame), min(len(audio_array), int((active[-1]+1)*frame))
+    if hi - lo < int(2.4 * sr):
+        return []
+    width = min(int(1.5*sr), (hi-lo)//2)
+    starts = [lo, hi-width]
+    if hi-lo >= 3*width:
+        starts.insert(1, (lo+hi-width)//2)
+    rows = []
+    previous_embedding = None
+    for start in starts:
+        stop = start + width
+        clip = audio_array[start:stop]
+        if voiced_secs(clip) < .6:
+            continue
+        embedding = get_embedding(clip)
+        if embedding is None:
+            continue
+        ranked = rank_embedding(embedding)
+        if not ranked:
+            continue
+        pid, name, score, _ = ranked[0]
+        margin = score - (ranked[1][2] if len(ranked) > 1 else -1.)
+        trusted = (score >= float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
+                   and margin >= required_ambiguity_margin(ranked))
+        from audio import voice_score
+        pair_similarity = (voice_score.map_similarity(float(np.dot(previous_embedding, embedding)))
+                           if previous_embedding is not None else None)
+        changed = (pair_similarity is not None
+                   and pair_similarity < float(config.SPEAKER_ID_SIMILARITY_THRESHOLD))
+        rows.append({"start": start/sr, "end": stop/sr, "person_id": pid if trusted else None,
+                     "name": name if trusted else None, "score": float(score), "margin": float(margin),
+                     "previous_similarity": pair_similarity, "change_suspected": changed})
+        previous_embedding = embedding
+    return rows
+
+
 def rank_embedding(embedding: np.ndarray) -> list[tuple[int, str, float, int]]:
     """rank_speakers for an ALREADY-computed embedding (the enrollment provenance log
     scores the clip about to be stored without embedding it twice)."""

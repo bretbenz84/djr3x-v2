@@ -20,8 +20,39 @@ firmware's plus the host's own words.
 from __future__ import annotations
 
 import time
+import uuid
+from contextvars import ContextVar
+from contextlib import contextmanager
 from dataclasses import dataclass, asdict, field
 from typing import Optional
+
+_request = ContextVar("motion_request", default=None)
+
+
+@contextmanager
+def narration_owner():
+    """A request's caller owns routine narration; urgent alerts stay independent."""
+    if _request.get() is not None:
+        yield _request.get()
+        return
+    request = {"request_id": uuid.uuid4().hex, "result": None}
+    token = _request.set(request)
+    try:
+        yield request
+    finally:
+        _request.reset(token)
+
+
+def current_request():
+    return _request.get()
+
+
+def attach(rec):
+    request = current_request()
+    if request is not None:
+        rec.request_id = request["request_id"]
+        request["result"] = rec
+    return rec
 
 # Host + firmware status vocabulary. Firmware done results: completed / blocked /
 # aborted / superseded; host: running / refused / timeout / cancelled /
@@ -45,6 +76,7 @@ class ActionResult:
     alternative: str = ""                      # e.g. "asked left 180°, went right 180° (swing)"
     at: float = field(default_factory=time.monotonic)
     ended_at: Optional[float] = None
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def finish(self, status: str, *, reason: str = "") -> None:
         status = str(status or "unknown").strip().lower()

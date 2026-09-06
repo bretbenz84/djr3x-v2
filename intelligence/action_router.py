@@ -532,11 +532,7 @@ _GAME_STOP_NARRATION_RE = re.compile(
     r"(?:stopped|quit|ended|called\s+off|cancell?ed|bailed|gave\s+up)\b",
     re.IGNORECASE,
 )
-_TIME_QUERY_RE = re.compile(
-    r"\b(?:what(?:'s| is)?|tell me|give me|do you know)\b.{0,30}\b(?:time|clock)\b|"
-    r"\b(?:time|clock)\b.{0,20}\b(?:now|is it)\b",
-    re.IGNORECASE,
-)
+from intelligence.clock_query import TIME_QUERY_RE as _TIME_QUERY_RE
 _DATE_QUERY_RE = re.compile(
     # Keep in sync with intent_classifier._DATE_QUERY_RE: explicit date / day-of-week
     # questions only, NOT "what are you doing today" / "what are you up to today".

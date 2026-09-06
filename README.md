@@ -38,6 +38,12 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 
 See [CONTEXT.md](CONTEXT.md) for more detailed project features, architecture notes, hardware mappings, and behavior design.
 
+The restructuring status and remaining live validation are tracked in
+[the Lean Brain plan](docs/lean_brain_restructuring_plan.md). Speech recognition
+remains batch-based. Rex finishes a pending reply before handling later captured
+speech; mixed-speaker detection can abstain when it cannot safely assign a name.
+Run `venv/bin/python tools/run_lean_checks.py` for isolated checks with real I/O blocked.
+
 ## Requirements
 
 - macOS on **Apple Silicon** (required, not just preferred — `mlx`, `mlx-whisper`, and `mlx-audio` have no x86-64 wheels, and the default ASR and the local TTS voice are both MLX-only)

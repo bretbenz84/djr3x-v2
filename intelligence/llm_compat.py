@@ -139,5 +139,19 @@ def create(client, **kwargs):
     """Prepare params for `kwargs['model']` and call the OpenAI client. Returns the raw
     response (or stream when `stream=True`). `client` is any OpenAI client instance, so
     every module keeps using its own configured client/timeouts/retries."""
+    from utils.model_usage import RequestUsage, UsageStream
+    purpose = kwargs.pop("telemetry_purpose", "chat")
     params = prepare_chat_params(**kwargs)
-    return client.chat.completions.create(**params)
+    if params.get("stream"):
+        params["stream_options"] = {**(params.get("stream_options") or {}), "include_usage": True}
+    request = RequestUsage(params.get("model"), purpose)
+    try:
+        response = client.chat.completions.create(**params)
+    except BaseException:
+        request.finish("failed")
+        raise
+    if params.get("stream"):
+        return UsageStream(response, request)
+    request.observe(response)
+    request.finish("completed")
+    return response

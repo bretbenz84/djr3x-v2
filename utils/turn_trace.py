@@ -174,10 +174,14 @@ def stamp(name: str, when: Optional[float] = None, *, overwrite: bool = False) -
 def count(kind: str, n: int = 1) -> None:
     """Count a model call. Always adds to the process totals; also to the
     current turn when one is active."""
+    count_for(current(), kind, n)
+
+
+def count_for(trace: Optional[TurnTrace], kind: str, n: int = 1) -> None:
+    """Count against an owner captured at dispatch, including late completions."""
     kind = str(kind)
     with _active_lock:
         _totals[kind] = int(_totals.get(kind, 0)) + int(n)
-    trace = current()
     if trace is not None:
         trace.count(kind, n)
 
