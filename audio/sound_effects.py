@@ -44,6 +44,16 @@ from typing import Optional
 import numpy as np
 
 import config
+from audio import sd_guard
+
+
+def _playback_blocksize() -> int:
+    """ONE blocksize for every playback stream in the process. PortAudio pushes
+    the requested frames-per-buffer down as the CoreAudio device's buffer frame
+    size, and the device is the one the mic shares — so a 2048-frame chirp
+    beside a 4096-frame reply was reconfiguring the hardware under the live
+    input callback several times a turn. Same value as the TTS paths."""
+    return int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096))
 
 _log = logging.getLogger(__name__)
 
@@ -552,7 +562,7 @@ def _play_gated(sd, echo_cancel, output_gate, audio, samplerate, path, key,
                 if _yield_event.is_set():
                     _log.debug("[sfx] yielded %s to a blocking source", path.stem)
             else:
-                sd.play(audio, samplerate, blocksize=2048)
+                sd.play(audio, samplerate, blocksize=_playback_blocksize())
                 deadline = time.monotonic() + (audio.shape[0] / float(samplerate)) + 0.1
                 while time.monotonic() < deadline:
                     if abort is not None and abort.is_set():
@@ -586,7 +596,7 @@ def _play_concurrent(sd, echo_cancel, output_gate, audio, samplerate, path, key)
     try:
         echo_cancel.set_playing(True)          # suppress the mic for the chirp
         _log.info("[sfx] ▶ %s (%s, concurrent)", path.stem, key)
-        sd.play(audio, samplerate, blocksize=2048)
+        sd.play(audio, samplerate, blocksize=_playback_blocksize())
         # Hold suppression for the clip's length even if TTS's own playback steals the
         # device stream partway through — TTS is speaking, so the mic must stay muted.
         time.sleep(duration)
@@ -643,13 +653,17 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key,
             # Loop pass: one long-lived stream for the whole loop instead of a
             # fresh open/close per repeat (the drive whir loops for a ~9 s move).
             return bool(player.write(audio, samplerate, abort, yieldable=False))
-        stream = sd.OutputStream(
-            samplerate=samplerate,
-            channels=audio.shape[1],
-            blocksize=int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
-            latency=str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
-        )
-        stream.start()
+        # Raw stream on the device the mic shares: open+start under the device
+        # lock so it can't land on top of a guarded sd.play()/sd.stop() from
+        # another thread (audio/sd_guard.py). The write loop stays lock-free.
+        with sd_guard.device_control():
+            stream = sd.OutputStream(
+                samplerate=samplerate,
+                channels=audio.shape[1],
+                blocksize=_playback_blocksize(),
+                latency=str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
+            )
+            stream.start()
         started = True
         if abort is None:
             stream.write(audio.astype("float32"))
@@ -667,8 +681,9 @@ def _play_overlay(sd, echo_cancel, output_gate, audio, samplerate, path, key,
     finally:
         try:
             if stream is not None:
-                stream.stop()
-                stream.close()
+                with sd_guard.device_control(settle=True):
+                    stream.stop()
+                    stream.close()
         except Exception:
             pass
         try:
@@ -729,13 +744,14 @@ class _LoopStream:
         if self._stream is None or samplerate != self._rate or channels != self._channels:
             self.close()
             try:
-                self._stream = self._sd.OutputStream(
-                    samplerate=samplerate,
-                    channels=channels,
-                    blocksize=int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
-                    latency=str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
-                )
-                self._stream.start()
+                with sd_guard.device_control():
+                    self._stream = self._sd.OutputStream(
+                        samplerate=samplerate,
+                        channels=channels,
+                        blocksize=_playback_blocksize(),
+                        latency=str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
+                    )
+                    self._stream.start()
             except Exception as exc:
                 _log.debug("[sfx] loop stream open failed: %s", exc)
                 self._stream = None
@@ -766,8 +782,9 @@ class _LoopStream:
         if stream is None:
             return
         try:
-            stream.stop()
-            stream.close()
+            with sd_guard.device_control(settle=True):
+                stream.stop()
+                stream.close()
         except Exception:
             pass
 

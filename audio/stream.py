@@ -26,9 +26,17 @@ from collections import deque
 import numpy as np
 
 import config
+from audio import sd_guard
 from utils.config_loader import AUDIO_DEVICE_INDEX, AUDIO_SELECTION_DESCRIPTION
 
 _log = logging.getLogger(__name__)
+
+# How long a mic open/close waits for the shared device lock before going ahead
+# without it. Bounded on purpose: the lock is held by playback control calls
+# (a few ms, or one drain of the output buffer), never by a write loop, so a
+# wait past this means the holder is itself wedged — and the mic's recovery
+# path must not be hostage to that (see sd_guard.try_device_control).
+_DEVICE_LOCK_WAIT_SECS = 5.0
 
 # Fixed frames per callback invocation. 512 samples at 16 kHz = 32 ms, matching
 # Silero VAD's preferred chunk size and keeping the callback very fast.
@@ -132,20 +140,37 @@ def _open_stream() -> bool:
         candidates.append(1)
 
     last_exc = None
-    for ch in candidates:
-        try:
-            stream = sd.InputStream(
-                device=AUDIO_DEVICE_INDEX,
-                samplerate=config.AUDIO_SAMPLE_RATE,
-                channels=ch,
-                dtype="float32",
-                blocksize=_BLOCKSIZE,
-                callback=_callback,
+    # The mic is a raw stream on the device every playback stream shares, so its
+    # open is serialized against sd.play()/sd.stop() and the other raw opens the
+    # same way they are against each other (audio/sd_guard.py) — bounded, so a
+    # wedged playback control call can't keep the mic from ever opening.
+    with sd_guard.try_device_control(_DEVICE_LOCK_WAIT_SECS) as locked:
+        if not locked:
+            _log.warning(
+                "Audio device lock busy for %.0fs — opening the mic unguarded.",
+                _DEVICE_LOCK_WAIT_SECS,
             )
-            stream.start()
-        except Exception as exc:
-            last_exc = exc
-            continue
+        stream = None
+        opened_ch = 0
+        for ch in candidates:
+            try:
+                candidate = sd.InputStream(
+                    device=AUDIO_DEVICE_INDEX,
+                    samplerate=config.AUDIO_SAMPLE_RATE,
+                    channels=ch,
+                    dtype="float32",
+                    blocksize=_BLOCKSIZE,
+                    callback=_callback,
+                )
+                candidate.start()
+            except Exception as exc:
+                last_exc = exc
+                continue
+            stream, opened_ch = candidate, ch
+            break
+
+    if stream is not None:
+        ch = opened_ch
         _stream = stream
         _input_channels = ch
         # Arm the watchdog grace window: count from open, not from the last
@@ -243,8 +268,11 @@ def stop() -> None:
         if _stream is None:
             return
         try:
-            _stream.stop()
-            _stream.close()
+            with sd_guard.try_device_control(_DEVICE_LOCK_WAIT_SECS) as locked:
+                if not locked:
+                    _log.warning("Audio device lock busy — closing the mic unguarded.")
+                _stream.stop()
+                _stream.close()
         except Exception as exc:
             _log.warning("Error closing audio stream: %s", exc)
         finally:
@@ -299,8 +327,17 @@ def _reopen(reason: str) -> bool:
             _stream = None
             if old is not None:
                 try:
-                    old.stop()
-                    old.close()
+                    # Bounded device lock: this worker is already the thread we
+                    # are prepared to abandon if CoreAudio hangs, and it must not
+                    # take every playback control call down with it.
+                    with sd_guard.try_device_control(budget, settle=True) as locked:
+                        if not locked:
+                            _log.warning(
+                                "[stream_watchdog] device lock busy — closing the "
+                                "stalled stream unguarded."
+                            )
+                        old.stop()
+                        old.close()
                 except Exception as exc:
                     _log.warning("[stream_watchdog] error closing stalled stream: %s", exc)
 

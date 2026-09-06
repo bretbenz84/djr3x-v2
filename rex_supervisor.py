@@ -480,7 +480,7 @@ def _play_charger_effect(charging: bool) -> None:
     ).start()
 
 
-def _launch_controller() -> Optional[subprocess.Popen]:
+def _launch_controller(reason: str = "Wake word heard") -> Optional[subprocess.Popen]:
     """Start main.py in the project venv as a detached child.
 
     The child's stdout/stderr are redirected to its OWN console log (or DEVNULL if that
@@ -491,7 +491,7 @@ def _launch_controller() -> Optional[subprocess.Popen]:
     if not _VENV_PYTHON.exists():
         log.error("venv python not found at %s — cannot launch controller.", _VENV_PYTHON)
         return None
-    log.info("Wake word heard — launching DJ-R3X controller.")
+    log.info("%s — launching DJ-R3X controller.", reason)
 
     child_log = None
     try:
@@ -608,6 +608,104 @@ def _wake_consecutive() -> int:
         return 4
 
 
+# ── Mic-wedge relaunch ─────────────────────────────────────────────────────────
+# audio/stream.py's stall watchdog exits main.py with THIS code when the mic
+# stream is wedged inside CoreAudio and cannot be reopened in-process (its
+# handles are the process's own, so leaving is what frees them). Mirrored here
+# rather than imported: the supervisor deliberately never imports the app.
+#
+# Until 2026-09-05 that exit was treated like "shut down": the supervisor went
+# back to wake-word listening, so a wedge mid-conversation left Rex silent until
+# someone said the phrase again (field 2026-09-05 17:15: the Carter cameo wedged
+# the mic, he powered down, and stayed down). A wedge is a restart, not a
+# goodbye — relaunch after a short settle so CoreAudio can drop the dead
+# client, bounded so a device that wedges at every boot can't loop forever.
+MIC_WEDGE_EXIT_CODE = 86
+
+
+def _wedge_relaunch_enabled() -> bool:
+    return os.environ.get("REX_SUPERVISOR_WEDGE_RELAUNCH", "1").strip().lower() not in (
+        "0", "false", "no", "off", "",
+    )
+
+
+def _wedge_relaunch_max() -> int:
+    """Relaunches allowed inside the window before giving up to wake-word listening."""
+    try:
+        return max(0, int(os.environ.get("REX_SUPERVISOR_WEDGE_RELAUNCH_MAX", "3")))
+    except ValueError:
+        return 3
+
+
+def _wedge_relaunch_window_secs() -> float:
+    try:
+        return max(1.0, float(os.environ.get("REX_SUPERVISOR_WEDGE_RELAUNCH_WINDOW_SECS", "600")))
+    except ValueError:
+        return 600.0
+
+
+def _wedge_relaunch_settle_secs() -> float:
+    """Pause between the dead controller's exit and the relaunch. The old
+    process's CoreAudio client goes away with it; give the HAL a moment to
+    notice before a new client opens the same USB device."""
+    try:
+        return max(0.0, float(os.environ.get("REX_SUPERVISOR_WEDGE_RELAUNCH_SETTLE_SECS", "2.0")))
+    except ValueError:
+        return 2.0
+
+
+class WedgeRelaunchPolicy:
+    """Decides whether a controller exit should be answered with a relaunch.
+
+    Only the mic-wedge code qualifies; every other exit (clean "shut down", a
+    crash, a kill) still drops to wake-word listening as before. Within any
+    rolling window at most ``max_relaunches`` happen; past that the policy says
+    no and logs why, so a device that is genuinely broken ends in the old,
+    quiet state instead of a boot loop that plays the power-up clip on repeat.
+    """
+
+    def __init__(self, *, enabled: bool, max_relaunches: int, window_secs: float):
+        self.enabled = bool(enabled)
+        self.max_relaunches = int(max_relaunches)
+        self.window_secs = float(window_secs)
+        self._times: list[float] = []
+
+    @classmethod
+    def from_env(cls) -> "WedgeRelaunchPolicy":
+        return cls(
+            enabled=_wedge_relaunch_enabled(),
+            max_relaunches=_wedge_relaunch_max(),
+            window_secs=_wedge_relaunch_window_secs(),
+        )
+
+    def relaunches_in_window(self, now: float) -> int:
+        cutoff = now - self.window_secs
+        self._times = [t for t in self._times if t > cutoff]
+        return len(self._times)
+
+    def should_relaunch(self, returncode, now: float) -> bool:
+        """True (and the relaunch is recorded) when this exit earns a restart."""
+        if returncode != MIC_WEDGE_EXIT_CODE:
+            return False
+        if not self.enabled:
+            log.warning(
+                "Controller exited with the mic-wedge code (%d) but auto-relaunch is off "
+                "(REX_SUPERVISOR_WEDGE_RELAUNCH) — resuming wake-word listening.",
+                MIC_WEDGE_EXIT_CODE,
+            )
+            return False
+        used = self.relaunches_in_window(now)
+        if used >= self.max_relaunches:
+            log.error(
+                "Controller exited with the mic-wedge code (%d) %d times in %.0fs — "
+                "the audio device is not coming back; resuming wake-word listening.",
+                MIC_WEDGE_EXIT_CODE, used, self.window_secs,
+            )
+            return False
+        self._times.append(now)
+        return True
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run() -> int:
@@ -647,6 +745,7 @@ def run() -> int:
 
     child: Optional[subprocess.Popen] = None
     restart_after_controller = False
+    wedge_policy = WedgeRelaunchPolicy.from_env()
     stream = None
     listening = False
     open_channels = 1  # actual channel count the mic stream was opened with
@@ -724,11 +823,32 @@ def run() -> int:
 
             # Reap a finished child so the lock check is the single source of truth.
             if child is not None and child.poll() is not None:
-                log.info("Controller exited (code=%s). Resuming wake-word listening.", child.returncode)
+                code = child.returncode
                 child = None
                 running = _controller_running(None)
                 if restart_after_controller and not running:
+                    log.info("Controller exited (code=%s). Restarting for the update.", code)
                     _restart_supervisor()
+                elif not running and wedge_policy.should_relaunch(code, time.monotonic()):
+                    # A wedged mic is the controller asking to be reopened, not
+                    # a goodbye. The supervisor's own mic is still closed here
+                    # (it never reopened while the controller ran), so nothing
+                    # of ours holds the device across the relaunch.
+                    settle = _wedge_relaunch_settle_secs()
+                    log.warning(
+                        "Controller exited (code=%s): mic wedged inside CoreAudio — "
+                        "relaunching in %.1fs (%d/%d in the last %.0fs).",
+                        code, settle,
+                        wedge_policy.relaunches_in_window(time.monotonic()),
+                        wedge_policy.max_relaunches, wedge_policy.window_secs,
+                    )
+                    _stop.wait(settle)
+                    if not _stop.is_set():
+                        child = _launch_controller(reason="Mic wedge restart")
+                        _stop.wait(3.0)  # let main.py take the lock so we don't double-fire
+                        continue
+                else:
+                    log.info("Controller exited (code=%s). Resuming wake-word listening.", code)
 
             # The timer is in memory; Git's remote-tracking ref is the only
             # record of whether an update is waiting. While main.py is alive we

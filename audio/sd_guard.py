@@ -125,20 +125,30 @@ def install() -> bool:
 def device_control(*, settle: bool = False):
     """Serialize a RAW stream's open/close against ``sd.play()``/``sd.stop()``.
 
-    The DJ/radio playback path uses ``sd.OutputStream`` directly rather than the
-    ``sd.play()`` convenience function, so its ``start()``/``stop()``/``close()``
-    calls bypass the play/stop guard above and can race a wake-word barge-in stop
-    on the shared process-global PortAudio device. On macOS that race silently
-    wedges the long-lived mic InputStream (the buffer freezes and Rex goes deaf).
+    Every path that opens ``sd.OutputStream``/``sd.InputStream`` directly rather
+    than through the ``sd.play()`` convenience function — DJ/radio, the streamed
+    ElevenLabs reply, the local clone take, the sfx overlay and loop streams, and
+    the mic itself — bypasses the play/stop guard above, so its
+    ``start()``/``stop()``/``close()`` can race a guarded ``sd.play()``/``sd.stop()``
+    on another thread. Playback is deliberately routed THROUGH the ReSpeaker so
+    its onboard AEC gets a reference (main._configure_audio_output_device), which
+    makes the mic and every speaker stream ONE CoreAudio device: on macOS that
+    race silently wedges the long-lived mic InputStream (the buffer freezes and
+    Rex goes deaf), and when the reopen wedges too the process has to exit
+    (audio/stream.py's fatal escalation). Every fatal wedge in the logs through
+    2026-09-05 sits next to an unguarded raw-stream open/close landing on top of
+    an sfx ``sd.play()``: 2026-09-02 23:12 and 2026-09-05 17:14 were both the
+    Carter/Clinton clone window, where the deep-buffer reply stream opened
+    unguarded beside a motion/thinking chirp.
 
-    Hold this around the OutputStream construction/start and again around its
+    Hold this around the stream construction/start and again around its
     stop/close — but NOT around the steady-state ``stream.write()`` loop, which
     must run lock-free so it can't block TTS for the length of a song. Pass
     ``settle=True`` on the close so CoreAudio is given the same post-stop settle
     a guarded ``sd.stop()`` gets before the device may be re-initialized.
 
-    The lock is the same re-entrant ``_io_lock`` the play/stop guard uses, so a
-    DJ open/close and a TTS play/stop can never touch the device concurrently.
+    The lock is the same re-entrant ``_io_lock`` the play/stop guard uses, so no
+    two control-plane calls can touch the device concurrently.
     """
     _io_lock.acquire()
     try:
@@ -151,6 +161,40 @@ def device_control(*, settle: bool = False):
                     time.sleep(secs)
         finally:
             _io_lock.release()
+
+
+@contextmanager
+def try_device_control(timeout: float, *, settle: bool = False):
+    """``device_control`` with a BOUNDED acquire, for the mic's recovery paths.
+
+    The stall watchdog reopens the mic on a throwaway thread precisely because a
+    reopen can wedge inside CoreAudio and never return. If that thread held
+    ``_io_lock`` unbounded, one wedged reopen would also freeze every playback
+    control call (the shutdown clip included) until the fatal exit. So the mic
+    side waits up to ``timeout`` seconds for the device to be free and then goes
+    ahead WITHOUT the lock rather than never going ahead at all — the yielded
+    value says which happened, so the caller can log it.
+    """
+    acquired = _io_lock.acquire(timeout=max(0.0, float(timeout)))
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                if settle:
+                    secs = _stop_settle_secs()
+                    if secs > 0:
+                        time.sleep(secs)
+            finally:
+                _io_lock.release()
+
+
+def is_device_locked_by_me() -> bool:
+    """True when the calling thread currently holds the device lock (tests)."""
+    try:
+        return bool(_io_lock._is_owned())  # type: ignore[attr-defined]
+    except Exception:
+        return False
 
 
 def is_installed() -> bool:

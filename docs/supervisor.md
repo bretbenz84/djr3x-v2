@@ -129,6 +129,7 @@ the identical handoff.
 | **"go to sleep"** / "good night" | `main.py` stays running, asleep; only its own "wake up Rex" wakes it |
 | **"wake up Rex"** (while asleep) | `main.py` wakes itself (handled internally, not by the supervisor) |
 | **"shut down"** / "shut down Rex" / "power down" | `main.py` exits cleanly; supervisor resumes listening |
+| *(mic wedged inside CoreAudio — `main.py` exits with code 86)* | supervisor **relaunches** `main.py` after a 2 s settle (no wake word needed), at most 3 times per 10 min; past that it resumes listening. Knobs: `REX_SUPERVISOR_WEDGE_RELAUNCH`, `_MAX`, `_WINDOW_SECS`, `_SETTLE_SECS` |
 
 "Shut down" only triggers on a short, direct phrase — narration like *"I had to
 shut down my old server"* or *"shut down the music"* will **not** power off the

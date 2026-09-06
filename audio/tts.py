@@ -59,6 +59,7 @@ import config
 import state as state_module
 from audio import echo_cancel
 from audio import output_gate
+from audio import sd_guard
 from hardware import leds_head, leds_chest, servos
 from intelligence import emotion_orchestrator
 from sequences import animations
@@ -910,8 +911,12 @@ def _end_speech(
     if pacer is not None:
         pacer.close(canceled=canceled)
     if stream is not None:
+        # Device control call on the mic's own CoreAudio device — serialized
+        # against sd.play()/sd.stop() and every other raw stream, with the same
+        # post-close settle a guarded sd.stop() gets. See audio/sd_guard.py.
         try:
-            stream.close()
+            with sd_guard.device_control(settle=True):
+                stream.close()
         except Exception:
             pass
     shutdown_now = _is_shutdown_state()
@@ -1046,11 +1051,17 @@ def _speak_streaming(
         pacer = None
         try:
             _, led_emotion = _begin_speech(emotion, ttl_secs=8.0, defer_mouth=True)
-            stream = sd.OutputStream(
-                samplerate=samplerate, channels=1, dtype="float32",
-                **playback_stream_kwargs(),
-            )
-            stream.start()
+            # Open+start under the device lock: this is a raw stream on the
+            # device the mic shares, and an unguarded open landing on an sfx
+            # sd.play() is the race that wedged the mic (2026-09-05 17:14, the
+            # clone deep-buffer reply beside a motion chirp). Writes below run
+            # lock-free.
+            with sd_guard.device_control():
+                stream = sd.OutputStream(
+                    samplerate=samplerate, channels=1, dtype="float32",
+                    **playback_stream_kwargs(),
+                )
+                stream.start()
             # Mouth-on and every level from here run on the audible timeline, one
             # output-latency behind the writes (see _MouthPacer). Opened AFTER
             # stream.start() because only a started stream reports its real latency.
@@ -1087,7 +1098,8 @@ def _speak_streaming(
                 chunk = next(chunk_iter, None)
 
             if canceled:
-                stream.abort()
+                with sd_guard.device_control():
+                    stream.abort()
             else:
                 # Push the final speech samples fully through the device before
                 # teardown: write a short zero pad so the tail can't be clipped by
@@ -1106,7 +1118,11 @@ def _speak_streaming(
                         stream.write(pad)
                     except Exception:
                         pass
-                stream.stop()
+                # stop() drains the host buffer (~1 s; ~3 s in the clone deep
+                # buffer) under the device lock — an sfx queued behind it waits
+                # that long, which beats it racing the teardown.
+                with sd_guard.device_control():
+                    stream.stop()
         except Exception as exc:
             logger.error("[tts] streamed playback error: %s", exc)
             # Audio may have partially played; do NOT fall back (would double-speak).
@@ -1468,11 +1484,16 @@ def _speak_local(
             stream = None
             pacer = None
             try:
-                stream = sd.OutputStream(
-                    samplerate=sr, channels=1, dtype="float32",
-                    **playback_stream_kwargs(),
-                )
-                stream.start()
+                # Same contract as the streamed path: open+start under the device
+                # lock (2026-09-02 23:12 — this stream opened unguarded the moment
+                # the Clinton take was ready, beside a thinking chirp, and the mic
+                # never came back), writes lock-free.
+                with sd_guard.device_control():
+                    stream = sd.OutputStream(
+                        samplerate=sr, channels=1, dtype="float32",
+                        **playback_stream_kwargs(),
+                    )
+                    stream.start()
                 # Only a started stream reports its real output latency. The clone
                 # deep buffer makes this ~2.9 s at 24 kHz, which is exactly how far
                 # ahead of the voice the mouth used to run on an impersonation.
@@ -1527,7 +1548,8 @@ def _speak_local(
                             stream.write(piece)
 
                 if canceled:
-                    stream.abort()
+                    with sd_guard.device_control():
+                        stream.abort()
                 else:
                     pad_ms = float(getattr(config, "TTS_STREAM_END_PAD_MS", 200.0) or 0.0)
                     if pad_ms > 0:
@@ -1537,7 +1559,8 @@ def _speak_local(
                             stream.write(pad)
                         except Exception:
                             pass
-                    stream.stop()
+                    with sd_guard.device_control():
+                        stream.stop()
             except Exception as exc:
                 logger.error("[tts] local playback error: %s", exc)
             finally:

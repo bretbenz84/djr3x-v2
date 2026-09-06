@@ -769,7 +769,14 @@ class _SpeechQueue:
                             on_start()
                         except Exception:
                             pass
-                    sd.play(audio, samplerate, blocksize=2048)
+                    # One process-wide playback blocksize (see
+                    # sound_effects._playback_blocksize): the mic shares this
+                    # device, and a differing frames-per-buffer reconfigures it
+                    # under the live input callback.
+                    sd.play(
+                        audio, samplerate,
+                        blocksize=int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
+                    )
                     sd.wait()
                 finally:
                     echo_cancel.set_playing(False)
