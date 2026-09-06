@@ -12073,7 +12073,8 @@ def _maybe_auto_refresh_voice(
     # decayed. Only long-enough, loud-enough audio may seed or strengthen a print
     # (applies to bootstrap too — a garbage first sample is the worst outcome).
     resolution = (_current_turn_speaker_evidence or {}).get("resolution")
-    if resolution and (resolution.get("status") != "known" or resolution.get("person_id") != person_id):
+    if resolution and (resolution.get("status") != "known" or resolution.get("person_id") != person_id
+                       or resolution.get("learning_allowed") is False):
         return
     try:
         sr = float(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
@@ -14509,6 +14510,10 @@ def _resolve_turn_attribution(
         bearing_contradiction=contradiction,
         engaged_pid=_safe_int((engaged or {}).get("person_id")) if engaged else None,
         previous_speaker_pid=_safe_int((previous_speaker or {}).get("person_id")) if previous_speaker else None,
+        continuity_age_secs=(time.monotonic() - float(previous_speaker["verified_at"])
+                             if previous_speaker and previous_speaker.get("verified_at") is not None else None),
+        allow_short_continuity=(speaker_id.active_backend() == "campplus" and
+                               bool(getattr(config, "CAMPPLUS_SHORT_REPLY_CONTINUITY_ENABLED", True))),
     )
     return _attr.resolve_authoritative(ev)
 
@@ -14577,7 +14582,8 @@ def _turn_speaker_uncertain() -> bool:
     """True when utterance evidence cannot establish a known speaker."""
     try:
         res = (_current_turn_speaker_evidence or {}).get("resolution") or {}
-        return str(res.get("status") or "") in {"ambiguous", "unknown"}
+        return (str(res.get("status") or "") in {"ambiguous", "unknown"}
+                or res.get("learning_allowed") is False)
     except Exception:
         return False
 
@@ -14672,11 +14678,22 @@ def _note_last_speaker_turn(
     global _last_speaker_turn
     pid = _safe_int(person_id)
     if pid is None and not anonymous_label:
+        _last_speaker_turn = None
         return
+    evidence = _current_turn_speaker_evidence or {}
+    resolution = evidence.get("resolution") or {}
+    verified_at = ((_last_speaker_turn or {}).get("verified_at")
+                   if (_last_speaker_turn or {}).get("person_id") == pid else None)
+    if (pid is not None and resolution.get("status") == "known"
+            and resolution.get("learning_allowed", True)
+            and evidence.get("raw_best_id") == pid
+            and float(evidence.get("raw_best_score") or 0) >= speaker_id.voice_score.match_threshold()):
+        verified_at = time.monotonic()
     _last_speaker_turn = {
         "person_id": pid,
         "person_name": person_name,
         "label": anonymous_label if pid is None else None,
+        "verified_at": verified_at,
         "at": time.monotonic(),
     }
 
@@ -27136,76 +27153,31 @@ def _handle_classified_intent(
         return response
 
     if intent == "query_who_is_speaking":
-        # Build a confidence-aware prompt. Priority order:
-        #   1. Face visible + identified → confident by face
-        #   2. Voice score >= hard threshold → confident by voice
-        #   3. Voice score >= a "maybe" floor with a plausible candidate →
-        #      Rex expresses uncertainty with the candidate name
-        #   4. Nothing above the floor → Rex honestly says he doesn't know
-        hard = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
-        # "Maybe" floor: voice scores in [0.50, hard) deserve a tentative guess.
-        maybe_floor = float(getattr(config, "SPEAKER_ID_MAYBE_FLOOR", 0.50))
-
-        candidate_name = raw_best_name
-        candidate_score = raw_best_score
-
-        if visible_known_name:
-            # Face wins — tell them with confidence.
-            return _say(
-                f"Someone asked who's speaking. You can actually SEE them on "
-                f"camera and you recognize them as {visible_known_name}. "
-                f"In one short in-character Rex line, confirm their identity — "
-                f"warm but dry. Address them by name. One line only."
-            )
-
-        if candidate_name and candidate_score >= hard:
-            return _say(
-                f"Someone asked who's speaking. You recognize the voice with high "
-                f"confidence (score {candidate_score:.2f}) as {candidate_name}. "
-                f"In ONE short in-character Rex line, confirm their identity. "
-                f"Be direct, address them by name."
-            )
-
-        if candidate_name and candidate_score >= maybe_floor:
-            return _say(
-                f"Someone asked who's speaking. You have a PARTIAL voice match "
-                f"(confidence score {candidate_score:.2f} out of 1.0) for "
-                f"{candidate_name} — it might be them, but you're not sure. "
-                f"In ONE short in-character Rex line, voice that uncertainty out "
-                f"loud: say you're not sure but it could be {candidate_name}. "
-                f"Keep the hedging audible — 'I'm not positive' / 'could be' / "
-                f"'pretty sure but my sensors aren't certain'. One line only."
-            )
-
-        # No name, but Rex may still recognize the VOICE as one he's heard before —
-        # either recurring in this conversation or persisted from a past session.
-        anon = _current_turn_anonymous or {}
-        if anon.get("recognized"):
-            return _say(
-                "Someone asked who's speaking. You don't have their NAME, but their "
-                "voice matches one your memory banks logged in an EARLIER session — "
-                "you've heard this person before, just never got a name. In ONE short "
-                "in-character Rex line, say exactly that: familiar voice, no name on "
-                "file yet, and ask who they are. One line only."
-            )
-        if int(anon.get("turns") or 0) >= 2:
-            return _say(
-                "Someone asked who's speaking. You don't recognize them as anyone "
-                "named, but it's the SAME unknown voice you've heard a few times "
-                "already this conversation. In ONE short in-character Rex line, say "
-                "you keep hearing this voice but still don't have a name for it, and "
-                "ask who they are. One line only."
-            )
-
-        # Nothing plausible — honest unknown.
-        return _say(
-            f"Someone asked who's speaking but no voice print matched (top "
-            f"similarity was only {candidate_score:.2f}) and you don't see their "
-            f"face. In ONE short in-character Rex line, admit honestly that you "
-            f"don't recognize the voice — NO guessing, NO roast about forget"
-            f"tability unless it comes naturally. Just 'no idea, who's asking?' "
-            f"in Rex's voice. One line only."
-        )
+        # This is a factual identity answer. A second LLM call previously turned
+        # a correct Bret verdict into “Bret, it's me.” Keep speaker perspective
+        # and the authoritative uncertainty level intact.
+        resolution = (_current_turn_speaker_evidence or {}).get("resolution") or {}
+        if resolution:
+            name = resolution.get("name") if resolution.get("status") == "known" else None
+            if name:
+                prefix = "You're" if resolution.get("learning_allowed", True) else "I think you're"
+                line = f"{prefix} {name}."
+            else:
+                line = "I'm not certain who's speaking."
+        elif visible_known_name:
+            line = f"You're {visible_known_name}."
+        elif raw_best_name and raw_best_score >= speaker_id.voice_score.match_threshold():
+            line = f"You're {raw_best_name}."
+        elif raw_best_name and raw_best_score >= float(getattr(config, "SPEAKER_ID_MAYBE_FLOOR", .50)):
+            line = f"I think you're {raw_best_name}, but I'm not certain."
+        elif (_current_turn_anonymous or {}).get("recognized"):
+            line = "Your voice is familiar from before, but I don't have your name."
+        elif int((_current_turn_anonymous or {}).get("turns") or 0) >= 2:
+            line = "I've heard you speaking this conversation, but I don't have your name yet."
+        else:
+            line = "I'm not sure who's speaking. What's your name?"
+        _speak_blocking(line)
+        return line
 
     return None
 
@@ -28768,6 +28740,8 @@ def _handle_speech_segment(
             )
             _current_turn_speaker_evidence["resolution"] = _res.as_dict()
             _cstate.note_speaker_resolution(_res.as_dict())
+            if not _res.learning_allowed:
+                suppress_memory_learning = True
             if _res.status != "known":
                 suppress_memory_learning = True
                 _log.info("[attribution] speaker AMBIGUOUS (%s): %s — replying without a "
@@ -28865,6 +28839,10 @@ def _handle_speech_segment(
         if not text_input:
             person_id = resolution.get("person_id") if resolution.get("status") == "known" else None
             person_name = resolution.get("name") if person_id is not None else None
+            if person_id is not None:
+                speaker_label_for_turn = person_name
+                anonymous_speaker_label = None
+                off_camera_unknown = False
             if person_id is None:
                 suppress_memory_learning = True
                 identity_resolution_for_turn = "utterance_uncertain"

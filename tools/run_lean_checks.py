@@ -8,6 +8,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = (
+    "dev_mac_identity_room place_recognition place_questions "
     "campplus voice_backend voice_signatures speaker_id_margin identity_instrumentation passive_voice_enroll "
     "conversation_arc lean_context_state speech_generations delivery_contract "
     "optional_local_work turn_coordinator runtime_report gap_speech "

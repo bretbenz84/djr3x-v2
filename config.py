@@ -3958,6 +3958,9 @@ CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS = 1.0
 # Raw cosine thresholds, initial deployment defaults pending live calibration.
 CAMPPLUS_MATCH_THRESHOLD = 0.50
 CAMPPLUS_MATCH_MARGIN = 0.07
+# Conversational name continuity only; these turns never train or learn facts.
+CAMPPLUS_SHORT_REPLY_CONTINUITY_ENABLED = True
+CAMPPLUS_SHORT_REPLY_MIN_COSINE = 0.20
 # First CAM++ print may use agreement between a known face and the old voice
 # model. These are RAW legacy cosines, with no ECAPA score offset.
 CAMPPLUS_LEGACY_BOOTSTRAP_ENABLED = True
@@ -11067,16 +11070,12 @@ PLACE_QUESTION_TEMPLATES = [
 ]
 # Spoken acknowledgements the instant a room is named (verbatim; {name} filled in).
 PLACE_ENROLL_ACK_TEMPLATES = [
-    "Got it — the {name}. I'll remember this place.",
-    "The {name}. Noted. I'll know it next time.",
-    "Ah, the {name}. Filing this one away.",
-    "The {name} it is. Locking it into memory.",
+    "Got it — the {name}. I'll take a look around.",
+    "The {name}. Thanks for telling me.",
 ]
-# Variant when the named room is one he ALREADY knows (he still tops up its gallery).
+# Knowing the room's name is separate from having captured its visual features.
 PLACE_KNOWN_ACK_TEMPLATES = [
-    "The {name} — yeah, I know this one. Taking another look anyway.",
-    "Yep, the {name}. I recognize it. Refreshing my memory.",
-    "The {name}, right. Good — my circuits agree.",
+    "The {name}. Thanks — I'll try to get a clear view.",
 ]
 # Spoken when a human CONTRADICTS the believed room ("this is not the workshop").
 # The belief is dropped and the real name invited — Rex never argues the point. Field
@@ -11092,8 +11091,7 @@ PLACE_DENIAL_ACK_TEMPLATES = [
 # enough clear looks — e.g. someone stood in front of the lens the whole time).
 PLACE_ENROLL_FAIL_TTS_ENABLED = True
 PLACE_ENROLL_FAIL_TTS_LINES = [
-    "Hey — small confession. I tried to memorize this room and couldn't get a good look. Tell me where we are again sometime?",
-    "Update from my optics: this room did not save. Too much going on in front of my lens. We'll try again later.",
+    "I have the room name, but I couldn't save a usable visual memory of it yet.",
 ]
 # Spoken when a freshly-taught room's views are near-identical to an existing room's
 # (cross-sim >= the threshold): the gallery is broken from birth (field 2026-07-21: two

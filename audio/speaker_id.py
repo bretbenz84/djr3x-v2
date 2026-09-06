@@ -323,7 +323,12 @@ def rank_embedding(embedding: np.ndarray) -> list[tuple[int, str, float, int]]:
     query_norm = query / (np.linalg.norm(query) + 1e-10)
 
     per_person: dict[int, list[np.ndarray]] = {}
+    seen = set()
     for row in rows:
+        key = (row["person_id"], bytes(row["encoding"]))
+        if voice_score.active_backend() == "campplus" and key in seen:
+            continue
+        seen.add(key)
         stored = np.frombuffer(bytes(row["encoding"]), dtype=np.float32)
         if stored.shape != query.shape:
             # Other-embedder enrollment — expected during migration, not an error.
@@ -487,6 +492,8 @@ def comparable_print_count(person_id) -> int:
     dim = _BACKEND_EMBED_DIMS.get(str(backend or "").lower())
     if dim is None:
         return len(rows)
+    if backend == "campplus":
+        return len({bytes(r["encoding"]) for r in rows if len(r["encoding"]) == dim*4})
     count = 0
     for row in rows:
         arr = np.frombuffer(bytes(row["encoding"]), dtype=np.float32)

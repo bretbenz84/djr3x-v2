@@ -173,6 +173,8 @@ class _EnrollSession:
     last_capture_at: Optional[float] = None
     vectors: list = field(default_factory=list)     # list[np.ndarray] (normalized)
     headings: list = field(default_factory=list)    # list[float|None], parallel
+    skipped: dict = field(default_factory=dict)
+    blocked_notified: bool = False
 
 
 def _circular_sep(a: float, b: float) -> float:
@@ -728,6 +730,19 @@ class PlaceRecognizer:
 
     # ── Collection / commit internals ────────────────────────────────────────────
 
+    def _note_collection_skip(self, session, reason, **details):
+        with self._lock:
+            if self._enroll is not session:
+                return
+            count = session.skipped.get(reason, 0) + 1
+            session.skipped[reason] = count
+            if count == 1 or count % 10 == 0:
+                _log.info("[place] capture skipped room=%r reason=%s count=%d details=%s",
+                          session.name, reason, count, details)
+            if reason == "person_occlusion" and count >= 3 and not session.blocked_notified:
+                session.blocked_notified = True
+                self._emit("enrollment_blocked", {"name": session.name, "reason": reason, **details})
+
     def _collect(self, frame, now: float) -> None:
         """Try to add one diverse frame to the active enrollment session. Embedding runs
         outside the lock; the diversity gate is re-checked under the lock before append."""
@@ -742,12 +757,17 @@ class PlaceRecognizer:
 
         occ = self._get_person_occlusion()
         if occ is not None and occ > occ_frac:
+            self._note_collection_skip(session, "person_occlusion", fraction=round(float(occ), 3), limit=occ_frac)
             return
         heading = self._get_heading()
         if not self._passes_diversity(heading, now, headings_snapshot, last_cap, min_hsep, min_tsep):
             return
 
-        q = self._embed(frame)                          # outside the lock (slow)
+        try:
+            q = self._embed(frame)                      # outside the lock (slow)
+        except Exception as exc:
+            self._note_collection_skip(session, "embedding_error", error=str(exc))
+            return
         with self._lock:
             sess = self._enroll
             # Drop the embedding if enrollment ended OR was replaced (cancel+enroll, or
@@ -840,6 +860,7 @@ class PlaceRecognizer:
                 "place_id": sess.place_id,
                 "reason": reason,
                 "collected": len(sess.vectors),
+                "skipped": dict(sess.skipped),
             })
             self._drop_created_empty_locked(sess)
         self._enroll = None

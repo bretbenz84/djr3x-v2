@@ -49,6 +49,8 @@ class UtteranceEvidence:
     bearing_contradiction: bool = False              # voice came from off-camera
     engaged_pid: Optional[int] = None
     previous_speaker_pid: Optional[int] = None
+    continuity_age_secs: Optional[float] = None
+    allow_short_continuity: bool = False
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -63,10 +65,12 @@ class Resolution:
     name: Optional[str]
     basis: str                        # one-line reason for the status
     conflicts: list = field(default_factory=list)
+    learning_allowed: bool = True
 
     def as_dict(self) -> dict:
         return {"status": self.status, "person_id": self.person_id, "name": self.name,
-                "basis": self.basis, "conflicts": list(self.conflicts)}
+                "basis": self.basis, "conflicts": list(self.conflicts),
+                "learning_allowed": self.status == "known" and self.learning_allowed}
 
 
 def _first(name: Optional[str]) -> str:
@@ -174,6 +178,10 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
         return Resolution("known", candidate, ev.raw_best_name,
                           "strong voice" if strong else ("voice with interval visual corroboration"
                           if corroborated else "accepted voice score and margin"))
+    if _guarded_short_continuity(ev):
+        return Resolution("known", candidate, ev.raw_best_name,
+                          "short reply with recent verified speaker and continuous sole face",
+                          learning_allowed=False)
     voiced_rows = [row for row in ev.visual_observations if row.get("person_db_id") == visual]
     if (visual is not None and len(voiced_rows) >= 3 and ev.voiced_secs >= 1.0
             and ev.words >= 4 and ev.raw_best_score < ev.soft_threshold
@@ -185,6 +193,30 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
                           "sustained mouth motion during this utterance; weak voice evidence")
     return Resolution("ambiguous" if candidate is not None else "unknown", None, None,
                       "insufficient utterance-bound identity evidence")
+
+
+def _guarded_short_continuity(ev):
+    """Conversational attribution only; never a new biometric/learning anchor."""
+    import config
+    pid = ev.raw_best_id
+    if (not ev.allow_short_continuity or pid is None or pid != ev.previous_speaker_pid
+            or not 0 < ev.voiced_secs <= 1.5 or not 0 < ev.words <= 4
+            or ev.continuity_age_secs is None
+            or not 0 <= ev.continuity_age_secs <= float(getattr(config, "SHORT_CLIP_LAST_SPEAKER_SECS", 90))
+            or ev.raw_best_score < float(getattr(config, "CAMPPLUS_SHORT_REPLY_MIN_COSINE", .20))
+            or ev.margin < ev.required_margin or ev.bearing_contradiction
+            or ev.bearing_selected_pid not in (None, pid)
+            or set(ev.visible_known_ids) != {pid} or len(ev.visual_observations) < 3):
+        return False
+    for row in ev.visual_observations:
+        if row.get("person_db_id") not in (None, pid):
+            return False
+        faces = [f for f in row.get("faces", []) if not f.get("face_missing")
+                 and f.get("face_visible") is not False
+                 and (f.get("face_visible") or f.get("face_box"))]
+        if len(faces) != 1 or faces[0].get("person_db_id") != pid:
+            return False
+    return True
 
 
 def sequential_boundaries(voiced_runs: list[tuple[float, float]], observations: list[dict]) -> list[float]:

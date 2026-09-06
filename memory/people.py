@@ -530,6 +530,11 @@ def add_biometric(person_id: int, type: str, encoding: np.ndarray) -> Optional[i
     """Store a face or voice encoding as a BLOB. type must be 'face' or 'voice'."""
     if type == "voice":
         type = _voice_score.biometric_type()
+    if type == "voice_campplus_zh_en_v1":
+        existing = db.fetchone("SELECT id FROM biometrics WHERE person_id=? AND type=? AND encoding=? LIMIT 1",
+                               (person_id, type, _to_blob(encoding)))
+        if existing:
+            return int(existing["id"])
     return db.execute(
         "INSERT INTO biometrics (person_id, type, encoding, created_at) VALUES (?, ?, ?, ?)",
         (person_id, type, _to_blob(encoding), _now()),
@@ -1118,8 +1123,9 @@ def count_biometrics(person_id: int, type_: str) -> int:
         return 0
     if type_ == "voice":
         type_ = _voice_score.biometric_type()
+    count_expr = "COUNT(DISTINCT encoding)" if type_ == "voice_campplus_zh_en_v1" else "COUNT(*)"
     row = db.fetchone(
-        "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type = ?",
+        f"SELECT {count_expr} AS n FROM biometrics WHERE person_id = ? AND type = ?",
         (person_id, type_),
     )
     return int(row["n"]) if row else 0
@@ -1137,8 +1143,9 @@ def count_native_voice_prints(person_id: int) -> int:
     if person_id is None:
         return 0
     n_bytes = _voice_score.embedding_dim() * 4  # float32
+    count_expr = "COUNT(DISTINCT encoding)" if _voice_score.active_backend() == "campplus" else "COUNT(*)"
     row = db.fetchone(
-        "SELECT COUNT(*) AS n FROM biometrics "
+        f"SELECT {count_expr} AS n FROM biometrics "
         "WHERE person_id = ? AND type = ? AND LENGTH(encoding) = ?",
         (person_id, _voice_score.biometric_type(), n_bytes),
     )

@@ -121,3 +121,51 @@ Every CAM++ enrollment attempt records its outcome, voiced duration, available
 visual evidence, and legacy verification scores in `[campplus] enrollment` and
 the turn trace's `campplus_enrollment` field. The copied DB and logs are evidence;
 this repair does not manufacture voiceprints without captured audio or modify them.
+
+## 2026-09-06 short replies and duplicate enrollment
+
+The 11:45:56 dev-Mac run successfully enrolled Bret. Its two CAM++ rows were
+byte-identical: initial enrollment and automatic refresh saved the same capture.
+CAM++ insertion now reuses an identical existing print, and counts/centroid matching
+ignore historical exact duplicates. No existing biometric rows are deleted.
+
+With the owner's approval, `CAMPPLUS_SHORT_REPLY_CONTINUITY_ENABLED = True` allows
+conversational attribution for replies of at most four words and 1.5 voiced seconds.
+It requires the same recent verified speaker (within 90 seconds), a matching raw
+voice candidate at least `CAMPPLUS_SHORT_REPLY_MIN_COSINE = 0.20`, sufficient runner-up
+margin, and at least three capture-interval observations each showing only that
+person's visible face. Conflicting direction, mixed speech, or another visible face
+blocks continuity. Mouth-motion detection is not required.
+
+These verdicts carry `learning_allowed=False`: they cannot refresh voiceprints or
+add personal memories. They also cannot extend the verified-speaker timestamp;
+an intervening unidentified turn clears continuity. The strong CAM++ threshold
+remains 0.50. This is contextual naming, not proof that CAM++ alone identified a
+short utterance. The logged .490, .414, and .234 cases have regression coverage
+with explicit interval evidence, plus rejection cases where that evidence is absent.
+
+“Do you know who's speaking?” now uses the authoritative verdict directly:
+“You're Bret Benziger,” or “I think you're Bret Benziger” for contextual attribution.
+An unresolved verdict says Rex is uncertain. A second LLM paraphrase no longer
+turns the identified human into Rex saying “it's me.”
+
+## Room capture in the same session
+
+Naming a room starts visual collection; it does not prove recognition or a saved
+memory. Acknowledgments now reflect that distinction, and conversation grounding
+retains a recent user-reported room name instead of asking for it again.
+Repeated person occlusion triggers one request to step aside; skipped capture
+reasons and timeout counts are logged. Off-image pose landmarks are clamped to the
+image before estimating occlusion, and enrollment times out even without camera
+frames. A failed capture says the visual memory was not saved, without asking for
+the room's name again. The old log recorded zero collected frames but did not log
+why each was rejected; the original cause cannot be proved retrospectively.
+
+Run the offline regressions with:
+
+```sh
+venv/bin/python tools/run_lean_checks.py dev_mac_identity_room campplus voice_primary_identity place_recognition place_questions
+```
+
+Live alternating-speaker accuracy and room recognition still require validation
+on the robot. The copied dev-Mac database and logs remain unchanged.

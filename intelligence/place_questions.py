@@ -464,7 +464,7 @@ def maybe_capture_answer(text: str) -> Optional[dict]:
     _last_capture = {"name": name, "place_id": place_id, "known": known}
     _last_capture_at = time.monotonic()
     _log.info("[place_questions] %s room %r (place_id=%s)",
-              "refreshed known" if known else "learned", name, place_id)
+              "started visual refresh for" if known else "started learning", name, place_id)
     return dict(_last_capture)
 
 
@@ -692,6 +692,14 @@ def belief_clause() -> str:
         ctx = None
     if not ctx:
         return ""
+    reported = (_last_capture or {}).get("name")
+    age = time.monotonic() - _last_capture_at
+    belief_name = (ctx.get("belief") or {}).get("name")
+    if (reported and 0 <= age < float(getattr(config, "PLACE_QUESTION_COOLDOWN_SECS", 600))
+            and belief_name in (None, reported)):
+        return (f"Room: the user just identified this room as {reported}. "
+                "Use that reported name; do not ask which room this is again. "
+                "This is the user's report, not proof that visual recognition or learning succeeded.")
     enrolling = ctx.get("enrolling")
     if enrolling:
         return f"Room: you're currently memorizing what the {enrolling} looks like."

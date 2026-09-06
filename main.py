@@ -578,17 +578,17 @@ def _queue_camera_reconnect_line(downtime_secs: float = 0.0) -> Optional[str]:
 def _place_event_sink(name: str, payload: dict) -> None:
     """Voice feedback for place-recognition edge events (perception/place_service).
 
-    Two events speak; the rest stay in the log:
-      - enrollment_failed: Rex acknowledged a room-name tell with "Got it — I'll
-        remember this place", so a capture that later dies (someone stood in front of
-        the lens for the whole window) must be owned out loud.
-      - possible_duplicate_place at TWIN similarity (>= PLACE_TWIN_WARN_TTS_SIM): the
-        service auto-commits the room (the human's explicit name wins), but a gallery
-        born near-identical to another room's WILL be confused with it — say so and
-        invite a walkaround instead of failing silently later.
-    Success is silent (the ack already covered it)."""
+    Blocked collection requests a clearer view once; failed collection reports
+    that the room name was received but visual memory could not be saved.
+    Near-duplicate galleries invite a walkaround. Successful collection is silent.
+    """
     try:
-        if name == "enrollment_failed":
+        if name == "enrollment_blocked" and (payload or {}).get("reason") == "person_occlusion":
+            lines = ["I have the room name. Could you step to one side briefly so I can see the room behind you?"]
+            tag = "place:enroll_blocked"
+            fmt = {}
+            log_line = f"Place enrollment needs a clear view: {payload}"
+        elif name == "enrollment_failed":
             if not bool(getattr(config, "PLACE_ENROLL_FAIL_TTS_ENABLED", True)):
                 return
             lines = getattr(config, "PLACE_ENROLL_FAIL_TTS_LINES", [])
@@ -596,7 +596,7 @@ def _place_event_sink(name: str, payload: dict) -> None:
             fmt = {}
             log_line = (
                 f"Place enrollment failed (room={(payload or {}).get('name')!r}, "
-                f"collected={(payload or {}).get('collected')})"
+                f"collected={(payload or {}).get('collected')}, skipped={(payload or {}).get('skipped')})"
             )
         elif name == "possible_duplicate_place":
             sim = float((payload or {}).get("similarity") or 0.0)

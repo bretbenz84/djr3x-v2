@@ -143,15 +143,23 @@ def _run(world_state, emit_event) -> None:
 
     from vision import camera
     interval = float(getattr(config, "PLACE_OBSERVE_INTERVAL_S", 1.5))
+    last_problem = None
     while not _stop.wait(interval):
         try:
             frame = camera.get_frame()
+            recognizer.tick()           # timeouts must also fire without a frame
             if frame is None:
-                continue
-            recognizer.observe(frame)   # embedder converts BGR->RGB; observe() self-throttles
-            recognizer.tick()           # let enrollment timeouts fire during camera lulls
+                problem = "camera frame unavailable"
+            else:
+                result = recognizer.observe(frame)
+                problem = result.skip_reason if result is not None and result.skipped else None
+            if problem and problem != last_problem:
+                _log.info("place observation skipped: %s", problem)
+            last_problem = problem
         except Exception as exc:  # a bad frame/encoder call must never kill the loop
-            _log.debug("place observe tick failed: %s", exc)
+            if str(exc) != last_problem:
+                _log.warning("place observe tick failed: %s", exc)
+            last_problem = str(exc)
 
 
 # ── Signal adapters (all fail-safe: a dead sensor yields None / neutral) ──────────
@@ -234,8 +242,10 @@ def _get_person_occlusion() -> float:
             kp = person.get("pose_keypoints") or {}
             pts = [v for v in kp.values() if v and len(v) >= 3 and v[2] >= 0.4]
             if len(pts) >= 2:
-                xs = [v[0] for v in pts]
-                ys = [v[1] for v in pts]
+                # MediaPipe can extrapolate landmarks beyond the image. Only
+                # their on-image extent can obscure the room.
+                xs = [max(0., min(1., float(v[0]))) for v in pts]
+                ys = [max(0., min(1., float(v[1]))) for v in pts]
                 best = max(best, (max(xs) - min(xs)) * (max(ys) - min(ys)))
         return float(best)
     except Exception:
