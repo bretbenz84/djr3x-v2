@@ -5759,7 +5759,7 @@ def _maybe_prompt_unknown_identity(
         _identity_prompt_in_flight.clear()
 
     queued = _speak_async(
-        "Hold up, I don't know you yet. What name should I save for you?",
+        "I’m having trouble recognizing you. What’s your name?",
         emotion="curious",
         wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
         purpose="identity_prompt",

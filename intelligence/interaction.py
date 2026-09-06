@@ -8403,7 +8403,10 @@ def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Option
         m = pattern.search(normalized)
         if not m:
             continue
-        return _normalize_name(m.group(1))
+        candidate = (m.group(1) or "").strip()
+        if _SELF_INTRO_NON_NAME_RE.search(candidate):
+            return None
+        return _normalize_name(candidate)
 
     # After Rex explicitly asks "who are you?", many people reply with only a name.
     if allow_bare_name:
@@ -9137,6 +9140,7 @@ def _handle_name_update_request(
         return None
 
     if old_clean.lower() == new_name.lower():
+        _clear_pending_identity_prompts("identity_resolved")
         response = f"Already got you as {new_name}."
         _speak_blocking(response)
         return response
@@ -9158,6 +9162,7 @@ def _handle_name_update_request(
         _canonical_rename_at[int(target_id)] = time.monotonic()
     except Exception:
         pass
+    _clear_pending_identity_prompts("identity_resolved")
     _refresh_world_state_person_name(target_id, new_name)
     _log.info(
         "[identity] renamed person_id=%s old=%r new=%r text=%r",
@@ -12169,6 +12174,16 @@ def _enroll_new_person(
             "[interaction] refusing to enroll %r — the transcript it came from was "
             "low-confidence. Rex will ask again rather than invent a person.", name,
         )
+        return None
+    if _normalize_name(name) is None or _SELF_INTRO_NON_NAME_RE.search(name):
+        return None
+    visual = _utterance_observations.get("visual") or []
+    if (any(row.get("change_suspected") for row in _last_scan_windows)
+            or len({row.get("person_id") for row in _last_scan_windows
+                    if row.get("person_id") is not None}) > 1
+            or len({row.get("person_db_id") for row in visual
+                    if row.get("person_db_id") is not None}) > 1):
+        _log.warning("[identity] refusing enrollment from a suspect mixed capture")
         return None
     person_id, created = people_memory.find_or_create_person(name)
     if person_id is None:

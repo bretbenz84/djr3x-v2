@@ -156,3 +156,13 @@ Several fixtures hardcode event dates ("2026-06-01") that silently cross the
 tests months after they were written. Write fixture dates relative to
 `date.today()`. If a followup/plan test fails on a date comparison, suspect
 rot before suspecting the code.
+
+### Identity regression (2026-09-06 live run)
+
+A recognized name acknowledgment must clear pending identity prompts before speech.
+The 00:18:26 run left that window armed, then parsed "I'm going camping tomorrow"
+as a new name after the strict resolver abstained. `_extract_introduced_name` now
+uses the existing non-name guard, storage rejects activity phrases, and enrollment
+rejects mixed captures. Preserve real prompted bare-name introductions. Regression:
+`tests/test_camping_identity_regression.py`. Offline voice predicate tests alone did
+not cover this handoff; do not cite their count as proof of end-to-end identity safety.

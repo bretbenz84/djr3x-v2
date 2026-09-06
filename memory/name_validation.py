@@ -157,6 +157,8 @@ _BAD_SINGLE_TOKENS = {
     "yes",
 }
 _BAD_PHRASE_STARTS = {
+    "going", "bringing", "doing", "feeling", "getting", "leaving", "coming",
+    "headed", "heading", "staying", "walking", "driving",
     "a",
     "am",
     "an",

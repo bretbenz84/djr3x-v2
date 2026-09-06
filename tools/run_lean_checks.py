@@ -15,7 +15,7 @@ MODULES = (
     "addressee lean_impulse_menu production_replay restructure_ownership llm_compat "
     "dialogue_act turn_plan turn_planner_slim_contract conversation_streaming "
     "voice_primary_identity voice_bearing_match active_speaker lean_multi_party "
-    "game_roster_identity motion_swing motion_sequence motion_route_tool speaker_segments"
+    "game_roster_identity motion_swing motion_sequence motion_route_tool speaker_segments camping_identity_regression"
 ).split()
 
 
