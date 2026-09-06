@@ -1303,10 +1303,7 @@ _PLACE_QUESTION_INSTRUCTION = (
     "[You genuinely don't recognize what room you're in, and the conversation just "
     "reached a lull — a natural moment to just ask.]\n"
     "{situation}"
-    "Ask ONE short, in-character question about what room or place this is — you'd like "
-    "to know it so you can recognize it next time. Light, curious, a little sheepish "
-    "about not knowing is fine; not an interrogation. You MUST ask the one question; do "
-    "not reply PASS."
+    'Ask exactly: "What room am I in?" You MUST ask this question; do not reply PASS.'
 )
 
 
@@ -1770,7 +1767,7 @@ def _render_option(kind: str, cue: dict) -> str:
                     "specific question.")
         return "ASK how their day has been — one easy, open question."
     if kind == "place_question":
-        return "ASK which room this is — you genuinely don't recognize it; one short question."
+        return 'ASK exactly: "What room am I in?"'
     if kind == "room_question":
         where = g("where")
         return (f"ASK what {g('label', 'that thing')} is{(' (' + where + ')') if where else ''} — "

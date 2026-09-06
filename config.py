@@ -11063,10 +11063,7 @@ PLACE_ROOM_WORDS = [
 ]
 # Spoken when Rex proactively asks what room he's in (LLM instruction, not verbatim).
 PLACE_QUESTION_TEMPLATES = [
-    "Ask, in character and briefly, what room you're in — you don't recognize this "
-    "place and you'd like to know it so you can remember it next time.",
-    "You don't recognize where you are right now. Ask them, curiously and in one short "
-    "line, what room this is.",
+    'Ask exactly: "What room am I in?"',
 ]
 # Spoken acknowledgements the instant a room is named (verbatim; {name} filled in).
 PLACE_ENROLL_ACK_TEMPLATES = [
@@ -11083,7 +11080,7 @@ PLACE_KNOWN_ACK_TEMPLATES = [
 # is both wrong and infuriating; a person standing in the room outranks a cosine score.
 PLACE_DENIAL_ACK_TEMPLATES = [
     "My mistake — scratch the {was}. Where am I, then?",
-    "Noted, not the {was}. What room is this?",
+    "Noted, not the {was}. What room am I in?",
     "Fair enough, I had it wrong. What should I call this room?",
     "Wiping the {was} from the record. Where are we actually?",
 ]

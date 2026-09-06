@@ -227,7 +227,7 @@ def next_place_question() -> Optional[dict]:
     if (now - _last_capture_at) < cooldown:      # don't re-ask right after being told
         return None
     templates = getattr(config, "PLACE_QUESTION_TEMPLATES", None) or [
-        "Ask, briefly and in character, what room you're in — you don't recognize it."
+        'Ask exactly: "What room am I in?"'
     ]
     return {"text": random.choice(list(templates))}
 
