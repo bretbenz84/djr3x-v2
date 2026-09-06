@@ -20,3 +20,13 @@ def target(*, observations, windows, explicit_person_id=None):
     if visual is not None and len(rows)>=3:
         return visual
     return None
+
+
+def visible_identity(people):
+    """One actually visible, named face; voice-only/cached slots do not qualify."""
+    faces = [p for p in people if not p.get('face_missing')
+             and p.get('face_visible') is not False
+             and (p.get('face_visible') or p.get('face_box'))]
+    if len(faces) != 1 or not faces[0].get('face_id'):
+        return None
+    return faces[0].get('person_db_id')

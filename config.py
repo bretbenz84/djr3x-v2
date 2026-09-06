@@ -3948,8 +3948,8 @@ FACE_UNKNOWN_MIN_CONFIDENCE = _env_float(
 # CAM++ Chinese/English ONNX runs on CPU; download via tools/download_campplus.py.
 # Select "ecapa" or "resemblyzer" to roll back, then restart Rex.
 # CAM++ prints/signatures live in separate storage; legacy prints are preserved.
-# Missing CAM++ profiles seed automatically from interval active-speaker evidence
-# or an explicit self-identification. See docs/campplus_voice_id.md.
+# Missing CAM++ profiles seed from face + legacy voice agreement, explicit
+# self-identification, or active-speaker evidence. See docs/campplus_voice_id.md.
 VOICE_EMBEDDER = (os.getenv("VOICE_EMBEDDER", "").strip().lower() or "campplus")
 CAMPPLUS_MODEL_PATH = "assets/models/campplus/campplus.onnx"
 CAMPPLUS_CPU_THREADS = 2
@@ -3958,6 +3958,13 @@ CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS = 1.0
 # Raw cosine thresholds, initial deployment defaults pending live calibration.
 CAMPPLUS_MATCH_THRESHOLD = 0.50
 CAMPPLUS_MATCH_MARGIN = 0.07
+# First CAM++ print may use agreement between a known face and the old voice
+# model. These are RAW legacy cosines, with no ECAPA score offset.
+CAMPPLUS_LEGACY_BOOTSTRAP_ENABLED = True
+CAMPPLUS_MIGRATION_MIN_VOICED_SECS = 2.0
+CAMPPLUS_MIGRATION_ECAPA_MIN_COSINE = 0.45
+CAMPPLUS_MIGRATION_RESEMBLYZER_MIN_COSINE = 0.75
+CAMPPLUS_MIGRATION_MIN_MARGIN = 0.10
 ECAPA_MODEL_DIR = "assets/models/ecapa"
 # ECAPA genuine matches run ~0.30-0.75 raw (vs Resemblyzer 0.45-0.93); impostors
 # ~0.0-0.2 (vs 0.3-0.5). +0.25 lines the bands up with the thresholds below:

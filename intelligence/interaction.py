@@ -12005,6 +12005,21 @@ def _handle_pending_prompted_name_confirmation(
     return None, None, None
 
 
+def _campplus_growth_supported(person_id, raw_best_id, score):
+    """Require an existing CAM++ voice match plus an actually visible face."""
+    from intelligence.voice_bootstrap import visible_identity
+    return bool(
+        person_id is not None and raw_best_id == person_id
+        and getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
+        and _turn_transcript_trusted()
+        and float(score) >= max(.75, speaker_id.voice_score.match_threshold())
+        and speaker_id.comparable_print_count(person_id) > 0
+        and visible_identity(world_state.get("people") or []) == person_id
+        and not any(r.get("change_suspected") for r in _last_scan_windows)
+        and all(r.get("person_id") in (None, person_id) for r in _last_scan_windows)
+    )
+
+
 def _maybe_auto_refresh_voice(
     person_id: int,
     voice_score: float,
@@ -12046,13 +12061,9 @@ def _maybe_auto_refresh_voice(
     AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES), where Guard 1 is relaxed and the once-per-session
     budget is not consumed, so the print can build across several camera-confirmed turns.
     """
-    if speaker_id.active_backend() == "campplus":
-        from intelligence.voice_bootstrap import target
-        if (not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
-                or not _turn_transcript_trusted() or target(
-                observations=_utterance_observations.get("visual") or [],
-                windows=_last_scan_windows) != person_id):
-            return
+    if (speaker_id.active_backend() == "campplus"
+            and not _campplus_growth_supported(person_id, raw_best_id, voice_score)):
+        return
     if person_id is None:
         return
     # SAMPLE-QUALITY gate: a refresh sample becomes part of the centroid FOREVER — a
@@ -12106,6 +12117,7 @@ def _maybe_auto_refresh_voice(
         # applies (bootstrap included).
         require_visual = bool(
             getattr(config, "AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER", True)
+            and speaker_id.active_backend() != "campplus"
         )
         if require_visual and _safe_int(visual_speaker_pid) != _safe_int(person_id):
             _log.debug(
@@ -12667,13 +12679,9 @@ def _maybe_passive_voice_enroll(
     speaker_score: float,
 ) -> None:
     """Silently grow the voiceprint of the solo visible person. Never speaks."""
-    if speaker_id.active_backend() == "campplus":
-        from intelligence.voice_bootstrap import target
-        if (not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
-                or not _turn_transcript_trusted() or target(
-                observations=_utterance_observations.get("visual") or [],
-                windows=_last_scan_windows) != person_id):
-            return
+    if (speaker_id.active_backend() == "campplus"
+            and not _campplus_growth_supported(person_id, raw_best_id, speaker_score)):
+        return
     now = time.monotonic()
     pid = _safe_int(person_id)
     if pid is not None:
@@ -14732,35 +14740,73 @@ def _short_clip_last_speaker() -> Optional[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _maybe_bootstrap_campplus(audio_array, text):
-    """Seed a missing model-specific print before this turn's identity decision.
+    """Seed missing CAM++ profiles from independently established identity."""
+    if audio_array is None or speaker_id.active_backend() != "campplus":
+        return False
+    from intelligence.voice_bootstrap import target, visible_identity
+    observations = _utterance_observations.get("visual") or []
+    diag = {"visual_samples": len(observations),
+            "active_speaker_ids": sorted({r.get("person_db_id") for r in observations
+                                          if r.get("person_db_id") is not None}),
+            "voiced_secs": _last_scan_secs.get("voiced", 0)}
 
-    Recognition runs normally after enrollment. There is no fallback guess to
-    the previous speaker and no copying of incompatible legacy embeddings.
-    """
-    if (audio_array is None or speaker_id.active_backend() != "campplus"
-            or not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
-            or not text or not bool(getattr(text, "confident", True))
-            or _is_non_speech_vocalization(str(text))):
-        return False
-    if _last_scan_secs.get("voiced", 0) < float(getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0)):
-        return False
-    from intelligence.voice_bootstrap import target
+    def finish(reason, enrolled=False):
+        diag.update(reason=reason, enrolled=bool(enrolled))
+        _turn_trace.set_value("campplus_enrollment", diag)
+        _log.info("[campplus] enrollment %s", json.dumps(diag, sort_keys=True))
+        return bool(enrolled)
+
+    if not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True):
+        return finish("disabled")
+    if not text or not bool(getattr(text, "confident", True)) or _is_non_speech_vocalization(str(text)):
+        return finish("untrusted_or_non_speech")
+    if diag["voiced_secs"] < float(getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0)):
+        return finish("insufficient_voiced_audio")
+    # A raw short-window cosine difference is logged by speaker_id, but is not
+    # proof of multiple talkers. Positively identified switches still block.
+    visual_ids = set(diag["active_speaker_ids"])
+    window_ids = {r.get("person_id") for r in _last_scan_windows if r.get("person_id") is not None}
+    if len(visual_ids)>1 or len(window_ids)>1 or any(r.get("change_suspected") for r in _last_scan_windows):
+        return finish("conflicting_speakers")
+    visible = visible_identity(world_state.get("people") or [])
+    diag["visible_person_id"] = visible
     explicit_id = None
     name = _extract_self_identified_name(str(text))
     if name:
         person = people_memory.find_person_by_name(name)
         if person:
             explicit_id = person["id"]
-    pid = target(observations=_utterance_observations.get("visual") or [],
-                 windows=_last_scan_windows, explicit_person_id=explicit_id)
-    if pid is None or speaker_id.comparable_print_count(pid) > 0:
-        return False
+    else:
+        # The field run ended with “Bret Benziger.” A full existing name spoken
+        # by its visible owner is also an identity statement; never parse an
+        # ordinary sentence or create a new person from this fallback.
+        bare = str(text).strip().rstrip(".!?").strip()
+        if visible is not None and len(bare.split()) >= 2:
+            person = people_memory.get_person(visible)
+            if person and bare.casefold() == str(person.get("name") or "").casefold():
+                explicit_id = visible
+    pid = target(observations=observations, windows=_last_scan_windows,
+                 explicit_person_id=explicit_id)
+    source = "self_identification" if explicit_id is not None else "interval_active_speaker"
+    if pid is None and visible is not None and explicit_id is None:
+        if speaker_id.comparable_print_count(visible) > 0:
+            return finish("profile_already_present")
+        if (getattr(config, "CAMPPLUS_LEGACY_BOOTSTRAP_ENABLED", True)
+                and diag["voiced_secs"] >= float(getattr(config, "CAMPPLUS_MIGRATION_MIN_VOICED_SECS", 2.0))
+                and visual_ids.issubset({visible})):
+            from audio import voice_migration
+            proof = voice_migration.verify(audio_array, visible)
+            diag["legacy_verification"] = proof
+            if proof["accepted"]:
+                pid, source = visible, "legacy_voice_and_face"
+    diag.update(person_id=pid, source=source if pid is not None else None)
+    if pid is None:
+        return finish("identity_not_established")
+    if speaker_id.comparable_print_count(pid) > 0:
+        return finish("profile_already_present")
     ok = _safe_enroll_voice(pid, audio_array, transcript_text=str(text),
-                            source="campplus_first_voice", confirmed=True)
-    if ok:
-        _log.info("[campplus] automatically enrolled first CAM++ voice for person_id=%s (%s)",
-                  pid, "self-identification" if explicit_id is not None else "interval active speaker")
-    return ok
+                            source="campplus_first_voice:" + source, confirmed=True)
+    return finish("first_profile_enrolled" if ok else "sample_or_storage_rejected", ok)
 
 
 def _process_audio(

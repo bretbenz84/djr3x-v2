@@ -45,19 +45,31 @@ models by storage namespace as well as dimension. Existing DBs gain the signatur
 table through the normal migration path; no old person or print is deleted.
 
 With `CAMPPLUS_AUTO_ENROLL_ENABLED = True`, a missing CAM++ profile is created
-from a trusted spoken turn when either:
+from a trusted spoken turn using any of these independent identity sources:
 
-- Interval mouth-motion evidence consistently identifies one existing person
-  (at least three observations at confidence 0.5 or higher); or
+- One actually visible named face agrees with the strongest legacy voice match.
+  With `CAMPPLUS_LEGACY_BOOTSTRAP_ENABLED`, the captured audio is temporarily
+  verified against the person's old ECAPA or Resemblyzer prints. This needs two
+  seconds of voiced speech, a conservative raw-cosine threshold, and a margin
+  over other people. It never changes the active CAM++ backend or copies an old
+  vector into CAM++ storage. Once that person has a CAM++ print this path stops.
 - The speaker explicitly identifies themselves, such as “My name is Bret,”
   and that name resolves to an existing person without conflicting visual evidence.
+  A complete existing name, such as “Bret Benziger,” also qualifies when that
+  named person is the sole visible face. Ordinary sentences cannot create people.
+- Interval mouth-motion evidence consistently identifies one existing person
+  (at least three observations at confidence 0.5 or higher), when available.
+
+Mouth detection is optional. The owner reports that it has never worked reliably
+on these cameras/models, so enrollment and profile growth cannot depend on it.
 
 The first enrollment requires at least one second of voiced audio and the
 existing 1.2-second capture minimum. Recognized mixed-speaker captures, conflicting
 visual speakers, low-confidence transcripts, laughter, and typed GUI text cannot
 seed this profile. After saving, the same turn is rescored so it can immediately
 carry the speaker's name. Established enrollment/introduction flows also use CAM++.
-Opportunistic profile growth additionally requires interval active-speaker evidence.
+Opportunistic profile growth requires an existing strong CAM++ match and agreement
+with the sole currently visible named face; it does not require mouth detection.
 
 A visible face or prior conversation partner alone is insufficient. If Rex cannot
 establish who an un-enrolled voice belongs to, it remains unknown until identity
@@ -87,3 +99,25 @@ including immediate back-to-back turns, followed by off-camera speech. Check nam
 in HEARD lines and the `[campplus]` enrollment / `[speaker_id]` scoreboards. No
 microphone capture, speaker playback, or robot movement is needed by the offline
 CAM++ tests.
+
+
+## 2026-09-06 dev-Mac enrollment failure
+
+The 11:10:20 session loaded CAM++ and recognized Bret's face, but the copied DB
+contained six old ECAPA prints for Bret and zero CAM++ prints for anyone. Short
+windows from his single-speaker speech had cosines as low as 0.134; the original
+integration incorrectly used the 0.50 identity threshold as a speaker-change
+threshold. It declared six turns mixed and blocked enrollment. No usable active
+mouth identity was logged; the bare full-name reply also missed the self-ID parser.
+
+CAM++ window cosines now remain diagnostics (`acoustic_change_suspected`), not
+proof of another speaker. Distinct positively identified window speakers and
+conflicting visual speakers still block whole-clip enrollment/attribution and can
+support splitting at actual silent gaps. Unenrolled-speaker diarization remains
+unvalidated; low cosine alone cannot establish it. Legacy backends retain their
+previous window policy.
+
+Every CAM++ enrollment attempt records its outcome, voiced duration, available
+visual evidence, and legacy verification scores in `[campplus] enrollment` and
+the turn trace's `campplus_enrollment` field. The copied DB and logs are evidence;
+this repair does not manufacture voiceprints without captured audio or modify them.

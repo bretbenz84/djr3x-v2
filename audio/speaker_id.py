@@ -163,7 +163,8 @@ def _warn_if_all_prints_are_other_backend() -> None:
         if not rows:
             if _active_backend == "campplus":
                 logger.info("[campplus] no CAM++ voices yet; first profiles will enroll "
-                            "from active-speaker evidence or explicit self-identification")
+                            "from face/legacy-voice agreement, explicit self-identification, "
+                            "or active-speaker evidence")
             return
         native = sum(1 for r in rows if int(r["n"]) == native_bytes)
         if native == 0:
@@ -290,11 +291,19 @@ def window_evidence(audio_array: np.ndarray) -> list[dict]:
                    and margin >= required_ambiguity_margin(ranked))
         pair_similarity = (voice_score.map_similarity(float(np.dot(previous_embedding, embedding)))
                            if previous_embedding is not None else None)
-        changed = (pair_similarity is not None
-                   and pair_similarity < voice_score.match_threshold())
+        acoustic_change = (pair_similarity is not None
+                           and pair_similarity < voice_score.match_threshold())
+        # Short-window cosine is NOT a calibrated diarization score. The first
+        # CAM++ field run marked a sole speaker's own sentences as mixed (0.13
+        # between windows), blocking every first enrollment. Require distinct
+        # positively identified window speakers for CAM++ automatic splitting.
+        known_switch = (trusted and rows and rows[-1]["person_id"] is not None
+                        and rows[-1]["person_id"] != pid)
+        changed = bool(known_switch if voice_score.active_backend() == "campplus" else acoustic_change)
         rows.append({"start": start/sr, "end": stop/sr, "person_id": pid if trusted else None,
                      "name": name if trusted else None, "score": float(score), "margin": float(margin),
-                     "previous_similarity": pair_similarity, "change_suspected": changed})
+                     "previous_similarity": pair_similarity, "acoustic_change_suspected": acoustic_change,
+                     "change_suspected": changed})
         previous_embedding = embedding
     return rows
 

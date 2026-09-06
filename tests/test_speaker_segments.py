@@ -36,7 +36,12 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(rows[1]['change_suspected'])
         self.assertLessEqual(rows[0]['end'], rows[1]['start'])
 
-    def test_unenrolled_second_voice_does_not_inherit_first_name(self):
+    def test_legacy_unenrolled_second_voice_does_not_inherit_first_name(self):
+        # Preserve the legacy backend policy; CAM++ short-window cosines are
+        # separately tested against the sole-speaker field regression.
+        backend = mock.patch.object(S.voice_score, '_active_backend', 'ecapa')
+        backend.start()
+        self.addCleanup(backend.stop)
         rows = self.evidence([np.array([1., 0.]), np.array([0., 1.])],
                              [[(1, 'Bret', .85, 6)], [(1, 'Bret', .30, 6)]])
         self.assertIsNone(rows[1]['person_id'])
@@ -49,6 +54,20 @@ class WindowTests(unittest.TestCase):
         rows = self.evidence([np.array([1., 0.]), np.array([1., 0.])],
                              [[(1, 'Bret', .85, 6)], [(1, 'Bret', .80, 6)]])
         self.assertFalse(any(r['change_suspected'] for r in rows))
+
+    def test_reported_sole_speaker_cosines_do_not_assert_multiple_cam_speakers(self):
+        with mock.patch.object(S.voice_score, '_active_backend', 'campplus'):
+            for cosine in (.134176895, .258361399, .135507286, .486753643, .136621624):
+                with self.subTest(cosine=cosine):
+                    rows = self.evidence([np.array([1., 0.]), np.array([cosine, np.sqrt(1-cosine**2)])], [[], []])
+                    self.assertTrue(rows[1]['acoustic_change_suspected'])
+                    self.assertFalse(rows[1]['change_suspected'])
+
+    def test_different_positive_cam_identities_flag_switch_even_with_similar_vectors(self):
+        with mock.patch.object(S.voice_score, '_active_backend', 'campplus'):
+            rows = self.evidence([np.array([1., 0.]), np.array([1., 0.])],
+                                 [[(1, 'Bret', .9, 6)], [(2, 'JT', .9, 6)]])
+        self.assertTrue(rows[1]['change_suspected'])
 
     def test_short_clip_does_not_load_encoder(self):
         with mock.patch.object(S, 'get_embedding') as encode:
