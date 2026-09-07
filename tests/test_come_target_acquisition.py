@@ -71,6 +71,59 @@ class ComeTargetAcquisitionTest(_ComeFixture):
     def _tick(self):
         MA.step(self.scene, _profile())
 
+    def test_unenrolled_caller_is_acquired_from_face_and_microphone(self):
+        self.scene = _snapshot(db_id=None, slot='guest-7')
+        self.assertTrue(MA.request_come_here(voice_bearing_deg=0., voice_share=.9,
+                                            speaker_evidence={'scoreboard': []}))
+        self._tick()
+        self.assertTrue(MA._requested_come['acquired'])
+        self.assertIsNone(MA._requested_come['requester_id'])
+        self.assertEqual(MA._requested_come['requester_track'], 'guest-7')
+        self.come.assert_called_once()
+        self.turn.assert_not_called()
+        # A different anonymous face must not inherit the errand.
+        self.scene = _snapshot(db_id=None, slot='guest-8')
+        self.assertIsNone(MA._observe_come_target(self.scene, time.monotonic()))
+        self.assertEqual(MA._requested_come['requester_track'], 'guest-7')
+
+    def test_router_passes_unknown_caller_direction_to_approach(self):
+        self.scene = _snapshot(db_id=None, slot='visitor')
+        with mock.patch.object(IX, '_recent_voice_bearing', return_value={'bearing_deg': 0., 'share': .9}):
+            reply = IX._handle_router_motion_action(
+                IX.action_router.classify_explicit_motion('Come here.'), requester_person_id=None)
+        self.assertEqual(reply, 'On my way.')
+        self._tick()
+        self.come.assert_called_once()
+        self.assertEqual(MA._requested_come['requester_track'], 'visitor')
+
+    def test_two_unknown_faces_direction_selects_one_and_tie_abstains(self):
+        left = _snapshot(db_id=None, slot='left', face_box=(50, 400, 220, 220))['people'][0]
+        right = _snapshot(db_id=None, slot='right', face_box=(1650, 400, 220, 220))['people'][0]
+        self.scene = {'people': [left, right]}
+        with mock.patch.object(MA, '_come_neck_bearing_deg', return_value=0.):
+            self.assertIs(MA._directional_come_target(self.scene, 21., {}), left)
+            self.assertIs(MA._directional_come_target(self.scene, -21., {}), right)
+            self.assertIsNone(MA._directional_come_target(self.scene, 0., {}))
+            self.assertIsNone(MA._directional_come_target(self.scene, 150., {}))
+            self.assertIsNone(MA._directional_come_target(self.scene, 21., {'mixed_speakers': True}))
+
+    def test_unknown_face_needs_usable_microphone_evidence(self):
+        self.scene = _snapshot(db_id=None)
+        self.assertFalse(MA.request_come_here(voice_bearing_deg=0., voice_share=.1,
+                                             speaker_evidence={}))
+        self.come.assert_not_called()
+        self.turn.assert_not_called()
+
+    def test_search_acquires_unknown_after_turn_in_same_world_direction(self):
+        self.assertTrue(MA.request_come_here(voice_bearing_deg=90., voice_share=.9,
+                                            speaker_evidence={}))
+        self.scene = _snapshot(db_id=None, slot='guest-7')
+        with mock.patch.object(MA, '_come_heading_deg', return_value=90.), \
+             mock.patch.object(MA, '_come_neck_bearing_deg', return_value=0.):
+            person = MA._observe_come_target(self.scene, time.monotonic())
+        self.assertIsNotNone(person)
+        self.assertEqual(MA._requested_come['requester_track'], 'guest-7')
+
     def test_field_attribution_search_recognition_approach_and_dropout(self):
         evidence = field_evidence()
         with mock.patch.object(IX, "_last_scan_ranked", evidence["scoreboard"]), \

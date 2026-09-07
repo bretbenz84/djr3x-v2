@@ -3175,3 +3175,18 @@ The field run contained startup lines in the reverse order used by the ASR promp
 consistent with context regurgitation; this does not prove audible speaker echo.
 Existing transcript trust and echo guards remain. Live microphone validation of
 the handoff and actual CAM++ short-utterance accuracy is still needed.
+
+
+## Come-here location without enrollment (2026-09-07)
+
+`motion_agency` can now acquire an unenrolled caller using a visible face and the
+command's microphone direction. Camera bearing includes neck yaw and uses the
+opposite sign from base/microphone bearings. The closest face must be within
+`MOTION_COME_VOICE_FACE_MATCH_DEG` (25 degrees), with a lead of at least
+`MOTION_COME_VOICE_FACE_MARGIN_DEG` (10 degrees) over any other face. Weak microphone
+clusters and conflicting speaker evidence do not qualify. No voiceprint or recent
+conversation is required for this location-based path. An anonymous target binds
+to its world-state camera slot for the errand; losing it holds rather than
+switching to another visitor. Existing confirmed-identity targeting, obstacle
+stops, room rules, bounded search, and approach limits remain in effect. Tests use
+mocked hardware; physical direction calibration still requires a live run.

@@ -9744,6 +9744,8 @@ MOTION_COME_VOICE_BEARING_ENABLED = True
 MOTION_COME_VOICE_RADAR_MATCH_DEG = 40.0   # radar body within this of the voice = them
 MOTION_COME_VOICE_TURN_MIN_DEG = 15.0      # voice this close to dead ahead needs no opening turn
 MOTION_COME_VOICE_MIN_SHARE = 0.4          # ignore a bearing whose dominant cluster is weaker
+MOTION_COME_VOICE_FACE_MATCH_DEG = 25.0    # maximum camera/microphone bearing disagreement
+MOTION_COME_VOICE_FACE_MARGIN_DEG = 10.0   # minimum lead over another visible face
 
 # ── Radar orient (owner spec 2026-08-19) ────────────────────────────────────────
 # When the camera sees NOBODY but the ring shows a persistent body, face it —

@@ -348,11 +348,48 @@ def requested_come_refusal() -> Optional[str]:
     return _requested_come.get("refusal_line")
 
 
+def _come_track_key(person: dict):
+    # World-state slot survives recognition changes during this errand.
+    return person.get("id") or person.get("face_id")
+
+
+def _directional_come_target(snapshot: dict, bearing: Optional[float],
+                             evidence: Optional[dict]) -> Optional[dict]:
+    """Select location, without assigning identity, from camera + capture DOA."""
+    if bearing is None or not math.isfinite(float(bearing)) or (evidence and (evidence.get("text_input")
+            or evidence.get("mixed_speakers") or evidence.get("bearing_contradiction"))):
+        return None
+    candidates = []
+    for person in snapshot.get("people") or []:
+        if (not isinstance(person, dict) or person.get("face_visible") is False
+                or person.get("face_missing") or _face_offset_fraction(person) is None
+                or (person.get("person_db_id") is None and _come_track_key(person) is None)):
+            continue
+        face = _come_bearing_deg(person, head_locked=False)
+        if face is not None:
+            # Camera bearings are right-positive; microphone/base turns are left-positive.
+            candidates.append((abs(_wrap180(float(bearing) + face)), person))
+    candidates.sort(key=lambda item: item[0])
+    if (not candidates or candidates[0][0] > _num("MOTION_COME_VOICE_FACE_MATCH_DEG", 25.0)
+            or len(candidates) > 1 and candidates[1][0] - candidates[0][0]
+               < _num("MOTION_COME_VOICE_FACE_MARGIN_DEG", 10.0)):
+        return None
+    chosen_pid = candidates[0][1].get("person_db_id")
+    if evidence and any(evidence.get(key) not in (None, chosen_pid)
+                        for key in ("bearing_selected_pid", "visual_latch_pid")):
+        return None
+    _log.info("[motion_agency] come location: camera track %s agrees with microphone (error %.1f deg)",
+              _come_track_key(candidates[0][1]), candidates[0][0])
+    return candidates[0][1]
+
+
 def _visible_come_requester(snapshot: dict, person_id: Optional[int],
-                            evidence: Optional[dict]) -> Optional[dict]:
+                            evidence: Optional[dict], bearing: Optional[float] = None) -> Optional[dict]:
     """Locate the caller without turning a weak voice score into an identity.
 
-    A confirmed caller must match their face. For a short, unresolved command, the
+    A confirmed caller must match their face. An unresolved caller can match any
+    visible face (including an unenrolled camera track) to the microphone bearing.
+    When directional evidence cannot select one, for a short command the
     sole visible conversational partner can supply LOCATION when their current
     voice score is close to the weak argmax. A brief, unconfirmed change of speaker
     can also use that partner when their voice score clears the continuity floor.
@@ -366,6 +403,9 @@ def _visible_come_requester(snapshot: dict, person_id: Optional[int],
         matched = _visible_known_person(snapshot, person_id)
         if matched is not None or not provisional:
             return matched
+    located = _directional_come_target(snapshot, bearing, evidence)
+    if located is not None:
+        return located
     visible = [p for p in snapshot.get("people") or [] if isinstance(p, dict)
                and p.get("face_visible") is not False and not p.get("face_missing")]
     if len(visible) != 1 or visible[0].get("person_db_id") is None:
@@ -413,8 +453,10 @@ def request_come_here(person_id: "int | None" = None, *,
     people in the room, "the first known face wins" meant Rex could deliver himself
     to whoever happened to be on camera, not to whoever called him (owner spec
     2026-08-11). A short ambiguous voice may use a single visible partner with
-    matching conversation continuity and current voice support for movement only;
-    an unconfirmed brief speaker change is reconciled when that partner is found
+    matching conversation continuity and current voice support for movement only.
+    Independently, camera/microphone agreement can locate an unnamed caller with
+    no voiceprints or conversation history; the errand then binds their camera track.
+    An unconfirmed brief speaker change is reconciled when that partner is found
     later, too. This does not authorize naming or learning from the speaker.
 
     ``behind=True`` ("I'm behind you, come here") seeds the search with an
@@ -456,7 +498,11 @@ def request_come_here(person_id: "int | None" = None, *,
     now = time.monotonic()
     from world_state import world_state
     snapshot = world_state.snapshot()
-    target = _visible_come_requester(snapshot, person_id, speaker_evidence)
+    usable_voice = (voice_bearing_deg is not None
+                    and _flag("MOTION_COME_VOICE_BEARING_ENABLED", True)
+                    and (voice_share is None or float(voice_share) >= _num("MOTION_COME_VOICE_MIN_SHARE", 0.4)))
+    target = _visible_come_requester(snapshot, person_id, speaker_evidence,
+                                   voice_bearing_deg if usable_voice else None)
     if (person_id is None and target is None and _any_visible_face(snapshot)
             and not behind and not side_deg):
         cancel_requested_come("caller ambiguous with faces on camera")
@@ -466,7 +512,7 @@ def request_come_here(person_id: "int | None" = None, *,
         )
         return False
     if target is not None:
-        person_id = target["person_db_id"]  # bind this errand; never switch faces
+        person_id = target.get("person_db_id")  # identity optional; bind track at acquisition
     # Radar frames from BEFORE the request are usable only if the base was
     # already still (they are in the current frame); a base mid-motion means
     # wait for a settled sample instead.
@@ -480,6 +526,7 @@ def request_come_here(person_id: "int | None" = None, *,
         active=True,
         started_at=now,
         requester_id=person_id,
+        requester_track=None,
         search_turns=0,
         last_turn_at=0.0,
         pending_turn_seq=None,
@@ -654,7 +701,7 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
             pass
     _stop_come_dwell_gaze()
     _stop_come_drive_gaze()
-    _requested_come.update(active=False, started_at=0.0, requester_id=None,
+    _requested_come.update(active=False, started_at=0.0, requester_id=None, requester_track=None,
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
@@ -673,7 +720,16 @@ def _observe_come_target(snapshot: dict, now: float) -> Optional[dict]:
         return None
     requester = _requested_come["requester_id"]
     if _requested_come["acquired"]:
-        person = _visible_known_person(snapshot, requester)
+        track = _requested_come.get("requester_track")
+        if requester is not None:
+            person = _visible_known_person(snapshot, requester)
+        elif track is not None:
+            person = next((p for p in snapshot.get("people") or []
+                           if isinstance(p, dict) and _come_track_key(p) == track
+                           and p.get("face_visible") is not False and not p.get("face_missing")
+                           and _face_offset_fraction(p) is not None), None)
+        else:
+            person = _visible_known_person(snapshot, requester) if requester is not None else None
     else:
         evidence = _requested_come.get("speaker_evidence")
         if evidence is not None:
@@ -681,7 +737,11 @@ def _observe_come_target(snapshot: dict, now: float) -> Optional[dict]:
             age = evidence.get("previous_speaker_age_secs")
             if age is not None:
                 evidence["previous_speaker_age_secs"] = age + max(0., now-_requested_come["started_at"])
-        person = _visible_come_requester(snapshot, requester, evidence)
+        heading = _come_heading_deg()
+        voice_world = _requested_come.get("voice_world")
+        bearing = (_wrap180(voice_world - heading)
+                   if voice_world is not None and heading is not None else None)
+        person = _visible_come_requester(snapshot, requester, evidence, bearing)
     if person is None:
         return None
     if not _requested_come["acquired"]:
@@ -702,7 +762,8 @@ def _acquire_come_target(person: dict, now: float) -> None:
     target_world = (_wrap180(heading-bearing)
                     if heading is not None and bearing is not None else None)
     was_search = _requested_come.get("last_turn_kind") == "search"
-    _requested_come.update(acquired=True, requester_id=person["person_db_id"],
+    _requested_come.update(acquired=True, requester_id=person.get("person_db_id"),
+                           requester_track=_come_track_key(person),
                            last_seen_at=now, lost_since=0., target_world=target_world,
                            voice_bearing_deg=None, voice_world=None, voice_used=True,
                            radar_pending_world=None, radar_pending_since=0., radar_visited=[])
@@ -715,12 +776,13 @@ def _acquire_come_target(person: dict, now: float) -> None:
         _requested_come.update(pending_turn_seq=None, turn_done_at=now, last_turn_kind=None)
     try:
         from intelligence import consciousness
-        consciousness.note_speaker_gaze_intent(person["person_db_id"], unknown_voice=False,
+        consciousness.note_speaker_gaze_intent(person.get("person_db_id"),
+                                              unknown_voice=person.get("person_db_id") is None,
                                               reason="come_target", force_search=False)
     except Exception:
         pass
     _log.info("[motion_agency] requested come: camera acquired person %s (voice target was %s); "
-              "search ended — alignment/approach only", person["person_db_id"], previous)
+              "search ended — alignment/approach only", person.get("person_db_id"), previous)
 
 
 # ── Radar-first search helpers ─────────────────────────────────────────────────
@@ -1408,7 +1470,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             _hold_acquired_caller(now)
             return True
         if _requested_come.get("speaker_evidence") is not None and _any_visible_face(snapshot):
-            _wait_for_come_path(now, "caller identity unresolved on camera",
+            _wait_for_come_path(now, "caller location unresolved on camera",
                                 "I can see someone, but I'm not sure who called me. Say 'come here' again.")
             return True
         _requested_come["align_turns"] = 0   # sighting lost — alignment starts over
