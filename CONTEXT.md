@@ -3216,3 +3216,13 @@ reply. Speech preservation and queued follow-up handling are accepted for this
 scenario; do not keep listing this behavior as wholly unvalidated. This does not
 by itself validate speaker separation, echo rejection, cancellation, or shutdown.
 See the phase 5 live acceptance update in `docs/lean_brain_restructuring_plan.md`.
+
+
+Firmware deployment confirmed 2026-09-07: flashed the curved-approach firmware
+from `e53cb1e` to the .env motion port `/dev/cu.usbserial-110`, using the Bluepad32
+core and all four flags (`MOTION_HW_PRESENT`, `MOTION_GAMEPAD_PRESENT`,
+`MOTION_TOF_PRESENT`, `MOTION_TOF_MATRIX_PRESENT`). Upload hashes verified.
+Post-boot read-only monitoring confirmed live radial ToF, 73 matrix frames,
+`imu.ok` and `mag.ok`, idle state, and “Bluepad32 ready” (no controller connected
+at verification). Battery menu-bar service restored afterward. No driving test
+was performed; physical curved-approach behavior still needs validation.
