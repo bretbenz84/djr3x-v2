@@ -3092,3 +3092,64 @@ address "you there"). Two fixes in `_step_presence_tracking`:
   camera's return: "I can only say you left once I looked and you were gone."
   Unknown slots get the same guard. `tests/test_presence_camera_moved.py`.
 - The unknown-departure examples put the address in vocative position only.
+
+### Come-here camera priority and capture timing (2026-09-06 00:44 run)
+
+`request_come_here` now checks the caller's visible face before issuing an opening
+voice-bearing turn. A short ambiguous voice can use the sole visible recent partner
+as a movement target with close current voice support; identity and learning remain
+unresolved. The head is claimed immediately and the acquired ID stays bound to the
+request. `_accumulate_speech` stamps microphone and visual evidence from the copied
+audio interval, including pre-roll, BEFORE waiting for an eager transcript (formerly
+the direction window extended through up to 3 s of decode wait). DoA logs now retain
+the actual DOA register and beam separately. Refused search turns end the request;
+persistent front blockage/missing face geometry gets an 8 s wait then an explanation.
+Obstacle gates and forward swing escape are preserved. Investigation and unverified
+sensor readings: `docs/come_here_2026-09-06.md`. Offline regression:
+`venv/bin/python tools/run_lean_checks.py come_here_regression`.
+
+### Come-here arrival and wake ownership (2026-09-06 01:04 run)
+
+The next run approached Bret successfully. Firmware completed sequence 461 at
+01:06:04, but the host attempted a −13° alignment before checking completion and
+received a swing refusal (`fr=72 mm`). The later 90° left turn was sequence 586 at
+01:06:23: the `Hey_rex` wake reflex followed +91° audio/+99° radar despite a visible
+Bret. Completion now precedes alignment/search; a far face permits a completed-drive
+retry only with independent clear radial readings. Missing face/range holds position.
+Bare wakes preserve any visible person or active approach, with a second check at
+turn dispatch after waiting for idle. Explicit `over here` remains supported. Tests:
+`come_here_regression`, `wake_orient`, `motion_agency`. Full timeline and remaining
+sensor uncertainty: `docs/come_here_2026-09-06.md`.
+
+The owner clarified that he was slightly RIGHT at the wake call. +91° left was
+the wrong direction estimate, not merely an ill-timed turn. Its 16 polls averaged
+only 0.02M energy; repeated weak polls could still win and satisfy sample-count
+confidence. `flex_doa.bearing_between` now excludes measured energy below the
+existing 0.05M floor, requires three agreeing eligible polls, and distinguishes
+zero energy from an unavailable register. Radar uses only eligible groups and a
+promoted group's own confidence. Wake logs now retain individual DOA/beam samples,
+including rejected windows. No recalibration or DSP write. Reconstruction tests:
+`voice_direction_quality`; exact wake samples were absent from the original log.
+
+### A false voice label must not search past the caller (2026-09-06 01:30 run)
+
+Jeremy Thomas was absent. Bret's 0.51 s "Come here" scored JT .608 (one print),
+Bret .449 (eight); the general .50 threshold called it a strong JT voice. The
+motion request bound person 4. Camera recognized Bret at 01:31:41, but motion
+explicitly skipped person 1 and sent +155° at 01:31:45. No approach was sent.
+
+`attribution` now abstains on an uncorroborated sub-second new-speaker guess below
+.70 rather than certifying a name from the generic threshold. The movement request
+retains utterance evidence so the sole visible recent partner can resolve that
+brief uncertain switch when found, with current voice support and no conflicting
+interval evidence. This binds motion only. Strong other callers remain distinct.
+
+Come acquisition is now a one-way state: it stops a running scan and permanently
+forbids further search turns in that request, including after a face dropout or
+an `over here` reflex. Shared request/dispatch/acquisition operations are serialized.
+Only camera-derived alignment follows (<=30°, <=3 attempts). Recentring a side-on
+head retains the observed world bearing for bounded alignment/reacquisition; a lost
+target holds for 8 s then ends with an explanation. Come turns disable delayed
+compass correction and queued swing escape, preserving firmware yaw and obstacle
+checks. End-to-end regression: `come_target_acquisition`. Full field timeline:
+`docs/come_here_2026-09-06.md`. No physical test or profile/database edits performed.

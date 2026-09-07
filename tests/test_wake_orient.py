@@ -72,6 +72,42 @@ class OrientToVoiceTest(unittest.TestCase):
         self.assertEqual(MA.orient_to_voice(175.0, share=0.9), "turned")
         self.assertAlmostEqual(self.turn.call_args[0][0], 175.0)
 
+    def test_wake_does_not_turn_away_from_a_visible_face_despite_radar_agreement(self):
+        self._people = [{"person_db_id": 1, "face_visible": True,
+                         "face_box": (860, 400, 200, 200)}]
+        body = {"bearing_deg": 99., "range_m": 1.5, "confidence": 1., "hits": 16, "frames": 18}
+        res = {"bearing_deg": 91.44, "clusters": [(91., 16), (-89., 1), (-29., 1)]}
+        with mock.patch.object(MA, "_radar_bodies", return_value=([body], True)):
+            bearing, _ = MA.resolve_voice_bearing(res)
+        self.assertEqual(MA.orient_to_voice(bearing, share=16/18, samples=16,
+                                           reason="wake:Hey_rex"), "on_camera")
+        self.turn.assert_not_called()
+        self.glance.assert_not_called()
+
+    def test_transcribed_wake_also_preserves_the_visible_person(self):
+        self._people = [{"person_db_id": 1, "face_visible": True}]
+        self.assertEqual(MA.orient_to_voice(91., share=.9, reason="wake:transcribed"), "on_camera")
+        self.turn.assert_not_called()
+
+    def test_bare_wake_cannot_take_over_an_active_approach(self):
+        with mock.patch.object(MA, "requested_come_active", return_value=True):
+            self.assertEqual(MA.orient_to_voice(91., share=.9, reason="wake:Hey_rex"), "come_active")
+        self.turn.assert_not_called()
+        self.glance.assert_not_called()
+
+    def test_face_found_while_waiting_for_idle_prevents_wake_turn(self):
+        def base_state():
+            self._people = [{"person_db_id": 1, "face_visible": True}]
+            return "idle"
+        with mock.patch.object(MA.motion, "state", side_effect=base_state):
+            self.assertEqual(MA.orient_to_voice(91., share=.9, reason="wake:Hey_rex"), "on_camera")
+        self.turn.assert_not_called()
+
+    def test_missing_face_does_not_block_an_off_camera_wake(self):
+        self._people = [{"person_db_id": 1, "face_visible": False, "face_missing": True}]
+        self.assertEqual(MA.orient_to_voice(91., share=.9, reason="wake:Hey_rex"), "turned")
+        self.turn.assert_called_once()
+
     def test_already_facing_does_nothing(self):
         self.assertEqual(MA.orient_to_voice(8.0, share=0.9), "facing")
         self.turn.assert_not_called()
@@ -84,8 +120,12 @@ class OrientToVoiceTest(unittest.TestCase):
         offset = float(getattr(config, "VOICE_BEARING_CAM_YAW_OFFSET_DEG", 0.0))
         self.assertEqual(MA.orient_to_voice(-offset - 20.0, share=0.9), "on_camera")
         self.glance.assert_not_called()
-        # ...but a voice 60° away from that face is somebody else: glance.
-        self.assertEqual(MA.orient_to_voice(-offset + 40.0, share=0.9), "glanced")
+        # A contradictory bearing alone cannot establish a different caller.
+        self.assertEqual(MA.orient_to_voice(-offset + 40.0, share=0.9), "on_camera")
+        self.glance.assert_not_called()
+        # An explicit directional invitation still gets the normal response.
+        self.assertEqual(MA.orient_to_voice(-offset + 40.0, share=0.9,
+                                           reason="over_here"), "glanced")
 
     def test_no_drive_room_gets_a_full_glance_instead(self):
         with mock.patch.object(MA, "no_drive_room", return_value=("living room", "carpet")):
@@ -132,7 +172,7 @@ class WakeHookTest(unittest.TestCase):
         from state import State
         now = time.monotonic()
         # 1.5 s of speech-flagged samples from the right, just before the fire.
-        flex_doa._inject_for_tests([(now - 1.5 + 0.1 * i, 270.0, -90.0, True, 1.0) for i in range(15)])
+        flex_doa._inject_for_tests([(now - 1.5 + 0.1 * i, 270.0, -90.0, True, 1000000.0) for i in range(15)])
         with mock.patch("intelligence.motion_agency.orient_to_voice", return_value="turned") as orient:
             worker = I._start_wake_orient_reflex("Hey_rex", State.IDLE)
             self.assertIsNotNone(worker)
@@ -168,9 +208,9 @@ class FieldFixes20260902Test(unittest.TestCase):
 
     def test_samples_taken_while_the_base_moves_are_ignored(self):
         now = time.monotonic()
-        flex_doa._inject_for_tests([(now - 1.0 + 0.1 * i, 105.0, 105.0, True, 1.0, True) for i in range(10)])
+        flex_doa._inject_for_tests([(now - 1.0 + 0.1 * i, 105.0, 105.0, True, 1000000.0, True) for i in range(10)])
         self.assertIsNone(flex_doa.bearing_between(now - 1.2, now))
-        flex_doa._inject_for_tests([(now - 0.5 + 0.1 * i, 30.0, 30.0, True, 1.0, False) for i in range(5)])
+        flex_doa._inject_for_tests([(now - 0.5 + 0.1 * i, 30.0, 30.0, True, 1000000.0, False) for i in range(5)])
         res = flex_doa.bearing_between(now - 1.2, now)
         self.assertAlmostEqual(res["bearing_deg"], 30.0)
         self.assertEqual(res["n"], 5)
@@ -214,7 +254,7 @@ class FieldFixes20260902Test(unittest.TestCase):
     def test_samples_during_rex_playback_are_ignored(self):
         now = time.monotonic()
         # Injected as the poller marks them while Rex plays: the exclusion flag set.
-        flex_doa._inject_for_tests([(now - 1.0 + 0.1 * i, 9.0, 9.0, True, 1.0, True) for i in range(10)])
+        flex_doa._inject_for_tests([(now - 1.0 + 0.1 * i, 9.0, 9.0, True, 1000000.0, True) for i in range(10)])
         self.assertIsNone(flex_doa.bearing_between(now - 1.2, now))
 
     def test_facing_is_judged_by_the_head_not_the_body(self):
@@ -411,8 +451,8 @@ class StaleHoldTest(unittest.TestCase):
 
     def test_tail_of_the_phrase_outvotes_the_stale_head(self):
         now = time.monotonic()
-        rows = [(now - 1.3 + 0.1 * i, 359.0, -1.0, True, 1.0, False) for i in range(7)]
-        rows += [(now - 0.6 + 0.1 * i, 270.0, -90.0, True, 1.0, False) for i in range(6)]
+        rows = [(now - 1.3 + 0.1 * i, 359.0, -1.0, True, 1000000.0, False) for i in range(7)]
+        rows += [(now - 0.6 + 0.1 * i, 270.0, -90.0, True, 1000000.0, False) for i in range(6)]
         flex_doa._inject_for_tests(rows)
         res = flex_doa.bearing_between(now - 1.4, now)
         self.assertAlmostEqual(res["bearing_deg"], -90.0, delta=1.0)
@@ -426,10 +466,12 @@ class StaleHoldTest(unittest.TestCase):
              mock.patch.object(flex_doa, "_self_speaking", return_value=False):
             self.assertTrue(flex_doa._poll_once())
         with flex_doa._lock:
-            t, raw, bearing, speech, energy, moving, _hero, _neck = flex_doa._samples[-1]
+            t, raw, bearing, speech, energy, moving, _hero, _neck, doa, beam = flex_doa._samples[-1]
         self.assertAlmostEqual(raw, 270.0)
         self.assertAlmostEqual(bearing, -90.0)
         self.assertTrue(speech)
+        self.assertAlmostEqual(doa, 359.0)
+        self.assertAlmostEqual(beam, 270.0)
 
     def test_beam_without_energy_falls_back_to_the_doa_register(self):
         with mock.patch.object(flex_doa, "_dev", _FakeFlex(doa=90, beam_deg=236.0, energy=0.0)), \
@@ -437,9 +479,11 @@ class StaleHoldTest(unittest.TestCase):
              mock.patch.object(flex_doa, "_self_speaking", return_value=False):
             self.assertTrue(flex_doa._poll_once())
         with flex_doa._lock:
-            _t, raw, bearing, speech, _e, _m, _h, _nk = flex_doa._samples[-1]
+            _t, raw, bearing, speech, _e, _m, _h, _nk, doa, beam = flex_doa._samples[-1]
         self.assertAlmostEqual(raw, 90.0)
         self.assertAlmostEqual(bearing, 90.0)
+        self.assertAlmostEqual(doa, 90.0)
+        self.assertAlmostEqual(beam, 236.0)
 
 
 class HeroArmMountTest(unittest.TestCase):
@@ -479,7 +523,7 @@ class HeroArmMountTest(unittest.TestCase):
         flex_doa._reset_for_tests()
         try:
             now = time.monotonic()
-            flex_doa._inject_for_tests([(now - 0.5 + 0.1 * i, 30.0, 30.0, True, 1.0, False, 6500.0) for i in range(6)])
+            flex_doa._inject_for_tests([(now - 0.5 + 0.1 * i, 30.0, 30.0, True, 1000000.0, False, 6500.0) for i in range(6)])
             res = flex_doa.bearing_between(now - 0.6, now)
             self.assertAlmostEqual(res["heroarm_qus"], 6500.0)
         finally:
@@ -575,8 +619,8 @@ class EnergyWeightedVoteTest(unittest.TestCase):
 
     def test_without_energy_the_tail_rule_still_applies(self):
         now = time.monotonic()
-        rows = [(now - 1.3 + 0.1 * i, 359.0, -1.0, True, 0.0, False) for i in range(7)]
-        rows += [(now - 0.6 + 0.1 * i, 270.0, -90.0, True, 0.0, False) for i in range(6)]
+        rows = [(now - 1.3 + 0.1 * i, 359.0, -1.0, True, None, False) for i in range(7)]
+        rows += [(now - 0.6 + 0.1 * i, 270.0, -90.0, True, None, False) for i in range(6)]
         flex_doa._inject_for_tests(rows)
         res = flex_doa.bearing_between(now - 1.4, now)
         self.assertAlmostEqual(res["bearing_deg"], -90.0, delta=1.0)
@@ -606,15 +650,21 @@ class RefusedMotionIsALineTest(unittest.TestCase):
     def test_refused_single_turn_returns_the_refusal(self):
         from intelligence import interaction as I
         from intelligence.action_router import ActionDecision
+        from intelligence.action_result import ActionResult, attach
+
+        def refuse(*args, **kwargs):
+            attach(ActionResult(verb="turn", status="refused", reason="swing_blocked"))
+            return None
+
         d = ActionDecision(action="motion.turn", confidence=0.95,
                            args={"direction": "right", "deg": 15.0}, reason="t")
         with mock.patch.object(I.motion_controller, "available", return_value=True), \
              mock.patch.object(I.motion_controller, "charging", return_value=False), \
              mock.patch.object(I, "_no_drive_room_decline_line", return_value=None), \
-             mock.patch.object(I.motion_controller, "turn_right", return_value=None), \
+             mock.patch.object(I.motion_controller, "turn_right", side_effect=refuse), \
              mock.patch.object(I.motion_controller, "last_refusal", return_value=self._refusal(True)):
             line = I._handle_router_motion_action(d)
-        self.assertEqual(line, "Can't swing that way — I'd clip something behind me.")
+        self.assertEqual(line, config.MOTION_SWING_BLOCKED_LINE)
 
     def test_unrefused_none_stays_none(self):
         from intelligence import interaction as I

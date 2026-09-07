@@ -552,6 +552,19 @@ correction and `IDLE_ARM_WANDER_HEROARM_ENABLED` (left ON per the owner).
   channels and nothing else; there is no reason to flash it. The 48 kHz builds
   would change `AUDIO_SAMPLE_RATE` assumptions everywhere — do not.
 
+## September 6 direction confidence correction
+
+In the 01:04 run, Bret was slightly right when "Hey Rex" caused a +91° left turn.
+The selected +91° group averaged only 0.02M speech energy across 16 polls; repeated
+weak polls could win the weighted sum and count as confident agreement. The runtime
+now excludes polls below `FLEX_DOA_BEAM_ENERGY_MIN` (0.05M) from direction votes,
+requires three agreeing eligible polls, and prevents radar from promoting rejected
+groups or borrowing another group's confidence. Zero energy means silence; a failed
+energy read is `None` and permits the legacy DoA-only fallback. Successful and rejected
+wake windows now log individual register/beam samples. This supersedes the earlier
+2%-floor voting policy above; the measured angle convention and DSP settings are unchanged.
+See [the investigation](come_here_2026-09-06.md) for evidence and remaining uncertainty.
+
 ## Tools
 
 - `tools/flex_ctl.py` — read/dump parameters (default read-only; `--write`

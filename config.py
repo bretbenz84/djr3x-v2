@@ -4227,7 +4227,7 @@ FLEX_DOA_SIGN = 1.0                    # +1: chip angle grows toward Rex's LEFT 
 FLEX_DOA_FORWARD_OFFSET_DEG = 0.0      # chip reading for dead ahead (measured 359/0)
 FLEX_DOA_HISTORY_SECS = 20.0
 FLEX_DOA_CLUSTER_DEG = 20.0            # samples within this agree (one talker)
-FLEX_DOA_MIN_SAMPLES = 3               # speech-flagged samples a segment needs
+FLEX_DOA_MIN_SAMPLES = 3               # agreeing eligible samples a direction needs
 FLEX_DOA_MIN_CLUSTER_SHARE = 0.4       # dominant cluster must hold this share of them
 FLEX_DOA_SEGMENT_PAD_SECS = 0.3        # window padding around the captured segment
 # The chip HOLDS the previous talker's direction for the first ~1-2 s after a
@@ -4237,14 +4237,16 @@ FLEX_DOA_SEGMENT_PAD_SECS = 0.3        # window padding around the captured segm
 # stood 90° right). So the bearing is decided from the LAST part of the
 # speech-flagged samples: the trailing share below, but never fewer than
 # FLEX_DOA_MIN_SAMPLES. The earlier samples only break ties.
-FLEX_DOA_TAIL_SHARE = 0.5              # FALLBACK only, when no speech-energy readings exist
+FLEX_DOA_TAIL_SHARE = 0.5              # FALLBACK only, when the energy register is unavailable
 FLEX_DOA_TAIL_MIN_SAMPLES = 5          # the tail never shrinks below this (a 0.6 s phrase is ~6 samples)
 # Per-sample source: the auto-selected BEAM azimuth (AEC_AZIMUTH_VALUES[3])
 # swings to a new talker ~1 s before DOA_VALUE follows (bench 2026-09-02: beam
 # 270° while DOA still 86° for 1.2 s; beam 359° while DOA still 264°), so it is
 # the sample whenever the chip reports speech energy on that beam above this
 # floor (real speech scored 1e5-2.5e6; between-word flickers mostly 0-3e4).
-# Below the floor the sample is DOA_VALUE with its own speech flag.
+# Below the floor the diagnostic sample is DOA_VALUE with its own speech flag,
+# but it cannot vote on a caller direction. Repeated low-energy polls must not
+# manufacture confidence (2026-09-06: +91° x16 at only 0.02M mean energy).
 FLEX_DOA_BEAM_ENERGY_MIN = 50000.0
 # The ring rides on the hero-arm section (owner 2026-09-02). Its 0° therefore
 # turns with that servo: degrees of ring yaw at heroarm MAX (8000 qus) relative
@@ -7039,6 +7041,11 @@ FACE_REVEAL_CONFIRM_WINDOW_SECS = 30.0
 # conversation. New speakers still need the hard threshold because their voice
 # won't match the engaged person.
 SPEAKER_ID_SOFT_THRESHOLD = 0.60
+# A sub-second command cannot establish a different speaker from the generic
+# .50 match floor alone (2026-09-06: Bret's "come here" became absent JT at .608).
+# Interval mouth/voice agreement can still corroborate it; context alone cannot.
+SPEAKER_ID_NEW_SHORT_VOICE_SECS = 1.0
+SPEAKER_ID_NEW_SHORT_VOICE_SCORE = 0.70
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VOICE-PRIMARY IDENTITY — who is speaking is decided by the VOICE, not the camera
@@ -9606,6 +9613,7 @@ MOTION_COME_SEARCH_MAX_TURNS = 8       # sweep budget (net reach grows ±90,±18
 # burned the clock and the errand died with "no person found" five seconds after
 # aligning on the requester's face (field 2026-08-11).
 MOTION_COME_SEARCH_TIMEOUT_SECS = 45.0
+MOTION_COME_PATH_WAIT_SECS = 8.0       # visible caller but blocked/no geometry: explain and end
 # After a scan/resight turn COMPLETES, the camera must dwell this long — settled,
 # not sweeping — before the search may conclude "nobody this way" and take the next
 # leg. The old grace counted from turn ISSUE, but a leg takes 1-2 s to execute, so
@@ -9680,6 +9688,8 @@ MOTION_COME_CENTERED_DEG = 11.0
 # degrees. Field 2026-08-11: four minutes of align turns, zero re-approaches.
 MOTION_COME_ALIGN_MAX_TRIES = 3
 MOTION_COME_ALIGN_GOOD_ENOUGH_DEG = 24.0
+MOTION_COME_ACQUIRED_TURN_MAX_DEG = 30.0  # camera alignment only; never a new room search
+MOTION_COME_REACQUIRE_WAIT_SECS = 8.0     # hold/recenter around the observed caller, then stop
 # A come-here errand survives being stopped short: if something steps in front of
 # him mid-approach (field 2026-07-24: "if he gets blocked by my dog walking in
 # front of it... if my dog moves out of the way he should keep trying"), he waits
@@ -9776,7 +9786,7 @@ IDLE_ARM_WANDER_HEROARM_ENABLED = True   # owner: the ring is fixed; the arm shi
 # angle is beyond the neck (a call from behind gets a full about-face). The
 # bearing is the Flex XVF3800's direction of arrival over the phrase itself
 # (hardware/flex_doa.py, the LOOKBACK window before the wake-word fire). Skipped
-# when the caller is already on camera (voice bearing lands on a visible face) or
+# when a person is already on camera, an approach owns the target, or the caller is
 # nearly dead ahead. When the base may not turn (no-drive room, "don't move",
 # no traction, base busy, swing refused) the neck still glances that way at full
 # throw — the over-the-shoulder look.
@@ -10857,7 +10867,7 @@ MOTION_SWING_ESCAPE_SETTLE_SECS = 0.3      # let telemetry catch up before the r
 # Spoken when a turn a human asked for out loud is refused for this reason
 # (no room to step forward either).
 MOTION_SWING_BLOCKED_LINE = (
-    "Can't swing that way — I'd clip something behind me. Give me some room."
+    "My sensors report something in the turn path. I can't safely turn that way."
 )
 
 # Serial connection retry (mirrors the servo connect pattern).

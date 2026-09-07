@@ -817,7 +817,7 @@ def _refusal_line(reason: str) -> "str | None":
     """The spoken line for a safety refusal reason, or None for the quiet ones."""
     if reason.startswith("swing_"):
         return str(getattr(config, "MOTION_SWING_BLOCKED_LINE",
-                           "Can't swing that way — I'd clip something behind me."))
+                           "My sensors report something in the turn path. I can't safely turn that way."))
     if reason.startswith("tof_"):
         return str(getattr(config, "MOTION_TOF_BLOCKED_LINE",
                            "My depth sensor is down, sweetheart. I don't drive blind."))
@@ -953,6 +953,8 @@ def turn(
     _verify_attempt: int = 0,
     _escaped: bool = False,
     allow_reverse: bool = False,
+    verify: bool = True,
+    allow_escape: bool = True,
 ) -> "int | None":
     """Spin in place by `deg` (+ = left/CCW). Closed loop on the ESP32.
 
@@ -964,7 +966,12 @@ def turn(
     not a direction ("turn left") — so when the swing check blocks this way and
     MOTION_HEADING_ALTERNATIVES_ENABLED is on, the equivalent spin the other way
     may be sent instead (validated over its whole sweep). A directional request
-    never silently becomes a long turn the other way (Lean Brain plan, phase 4)."""
+    never silently becomes a long turn the other way (Lean Brain plan, phase 4).
+
+    Camera-guided come turns set verify=False and allow_escape=False: camera
+    feedback chooses their next heading; no delayed compass correction or queued
+    escape may continue aiming at a search heading after the person is found.
+    The firmware yaw controller and swing/obstacle checks still apply."""
     requested_deg = float(deg)
     _refusal_detail["turn"] = f"{'left' if deg > 0 else 'right'} {abs(deg):.0f}°"
     reason = _autonomous_allowed()
@@ -1012,7 +1019,7 @@ def turn(
             # 13° trim is a move nobody asked for. Leave the heading as it is.
             _log.info("[swing] compass correction %+.0f° skipped: %s", deg, reason)
             return None
-        if not _escaped:
+        if not _escaped and allow_escape:
             seq = _try_swing_escape(deg, rate)
             if seq is not None:
                 return seq
@@ -1027,14 +1034,15 @@ def turn(
         _note_issued(seq, "turn", f"{'left' if deg > 0 else 'right'} {abs(deg):.0f}°",
                      requested_deg=requested_deg, attempted_deg=float(deg),
                      alternative=alternative)
-        _remember_turn_verification(
-            seq,
-            desired_deg=deg,
-            rate=rate,
-            start_yaw=start_yaw,
-            epoch=epoch,
-            attempt=_verify_attempt,
-        )
+        if verify:
+            _remember_turn_verification(
+                seq,
+                desired_deg=deg,
+                rate=rate,
+                start_yaw=start_yaw,
+                epoch=epoch,
+                attempt=_verify_attempt,
+            )
         _fx_drive_loop_start("motion_turn", seq)
     return seq
 

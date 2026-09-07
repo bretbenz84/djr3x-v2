@@ -1148,10 +1148,19 @@ def _start_wake_orient_reflex(model_name: str, current_state) -> Optional[thread
             if not flex_doa.available():
                 return
             time.sleep(0.15)   # let the last DoA polls of the phrase land
+            diagnostics = {}
             res = flex_doa.bearing_between(
                 fired_at - float(getattr(config, "WAKE_ORIENT_LOOKBACK_SECS", 2.5)), fired_at,
+                diagnostics=diagnostics,
             )
+            _log.info("[wake_orient] %s direction evidence: %d/%d eligible samples; rejected=%s; "
+                      "window %.3f..%.3f; samples=%s; registers (secs-before-end, DOA, beam, selected)=%s",
+                      model_name, diagnostics.get("eligible_n", 0), diagnostics.get("window_n", 0),
+                      diagnostics.get("rejected", "none"), diagnostics.get("t0", fired_at), fired_at,
+                      flex_doa.describe_trace(diagnostics), diagnostics.get("sensor_trace") or [])
             if res is None:
+                if float((_last_voice_bearing or {}).get("t1") or 0.0) <= fired_at:
+                    _last_voice_bearing = None
                 _log.info("[wake_orient] %s: no usable voice bearing over the phrase", model_name)
                 try:
                     conv_log.log_wake(model_name, "no usable voice bearing")
@@ -14508,6 +14517,15 @@ def _resolve_turn_attribution(
         allow_short_continuity=(speaker_id.active_backend() == "campplus" and
                                bool(getattr(config, "CAMPPLUS_SHORT_REPLY_CONTINUITY_ENABLED", True))),
     )
+    # Location for an invited movement is a separate decision from permission
+    # to name/learn from this speaker. Preserve THIS turn's evidence for it.
+    if _current_turn_speaker_evidence is not None:
+        motion_evidence = ev.as_dict()
+        motion_evidence["previous_speaker_age_secs"] = (
+            time.monotonic() - float(previous_speaker["at"])
+            if previous_speaker and previous_speaker.get("at") is not None else None
+        )
+        _current_turn_speaker_evidence["motion_evidence"] = motion_evidence
     return _attr.resolve_authoritative(ev)
 
 
@@ -15850,12 +15868,17 @@ def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
         if not flex_doa.available():
             _last_voice_bearing = None
             return None
-        res = flex_doa.bearing_between(t0, t1)
+        diagnostics = {}
+        res = flex_doa.bearing_between(t0, t1, diagnostics=diagnostics)
     except Exception as exc:
         _log.debug("[voice_doa] read failed: %s", exc)
         _last_voice_bearing = None
         return None
     if res is None:
+        _log.info("[voice_doa] direction rejected=%s (%d/%d eligible); samples=%s; registers=%s",
+                  diagnostics.get("rejected", "unavailable"), diagnostics.get("eligible_n", 0),
+                  diagnostics.get("window_n", 0), flex_doa.describe_trace(diagnostics),
+                  diagnostics.get("sensor_trace") or [])
         if _last_voice_bearing is not None:
             _log.info("[voice_doa] no usable bearing for this utterance — "
                       "dropping the previous one rather than reusing it")
@@ -15869,7 +15892,7 @@ def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
         _ma.note_voice_bearing(res["bearing_deg"])
     except Exception:
         pass
-    _log.info("[voice_doa] bearing %+.0f° (chip %s°, %d/%d tail samples agree of %d, spread %.0f°; groups %s%s)",
+    _log.info("[voice_doa] bearing %+.0f° (selected sensor %s°, %d/%d samples agree of %d, spread %.0f°; groups %s%s)",
               res["bearing_deg"],
               "?" if res.get("raw_deg") is None else f"{res['raw_deg']:.0f}",
               res["cluster_n"], res["n"], res.get("window_n", res["n"]), res["spread_deg"],
@@ -15879,6 +15902,9 @@ def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
               + (f"; neck {res['neck_qus']:.0f} qus" if res.get("neck_qus") is not None else ""))
     if len(res.get("clusters") or []) > 1:
         _log.info("[voice_doa] samples: %s", flex_doa.describe_trace(res))
+    _log.info("[voice_doa] capture window %.3f..%.3f (%.2fs), sampled %.2fs after audio end; "
+              "sensor trace (secs-before-end, DOA_VALUE, beam, selected)=%s",
+              t0, t1, t1 - t0, time.monotonic() - t1, res.get("sensor_trace") or [])
     return res
 
 
@@ -16042,8 +16068,15 @@ def _accumulate_speech(
     # Grab the full segment from the rolling buffer. Add pre-roll so soft starts
     # before the first VAD-positive chunk are not clipped, clamped to the latest
     # post-TTS handoff so Rex's own question is not transcribed as user speech.
-    capture_secs = _speech_capture_secs(speech_start_mono)
+    capture_end = time.monotonic()
+    capture_secs = _speech_capture_secs(speech_start_mono, capture_end)
     segment = stream.get_audio_chunk(capture_secs)
+    if not raw_vad and allowed_states == (State.ACTIVE,) and len(segment) > 0:
+        # Bind direction and visual evidence to the audio we actually copied,
+        # including its pre-roll. Adopting an eager decode can wait another 3 s;
+        # that processing delay must NEVER become part of the microphone window.
+        capture_start = capture_end - len(segment) / float(config.AUDIO_SAMPLE_RATE)
+        _note_voice_bearing(capture_start, capture_end)
     if adopt_probe is not None:
         _adopt_probe_transcript(adopt_probe)
     return segment
@@ -23450,7 +23483,6 @@ def _handle_router_motion_action(
             # room, "come here" must go to whoever SAID it, not to the first known
             # face the search happens across (owner spec 2026-08-11).
             behind = bool(args.get("behind"))
-            side = args.get("side")
             try:
                 side_deg = float(args["side_deg"]) if args.get("side_deg") else None
             except (TypeError, ValueError):
@@ -23460,13 +23492,11 @@ def _handle_router_motion_action(
                 person_id=requester_person_id, behind=behind, side_deg=side_deg,
                 voice_bearing_deg=(voice["bearing_deg"] if voice else None),
                 voice_share=(voice.get("share") if voice else None),
+                speaker_evidence=(_current_turn_speaker_evidence or {}).get("motion_evidence"),
             )
             if not started:
-                return None
-            if behind:
-                return "Turning around — on my way."
-            if side:
-                return f"Swinging {side} — on my way."
+                return (motion_agency.requested_come_refusal()
+                        or "I couldn't start coming over. Please try again.")
             return "On my way."
         except Exception as exc:
             _log.debug("requested come start failed: %s", exc)
@@ -32651,7 +32681,6 @@ def _loop() -> None:
                     continue
 
                 _last_speech_at = time.monotonic()
-                _note_voice_bearing(speech_start, _last_speech_at)
                 # Same gap-speech arming as the ACTIVE path — an idle-activated
                 # turn's reply blinds the loop identically.
                 _arm_gap_watch()
@@ -32985,8 +33014,6 @@ def _loop() -> None:
             # Accumulate the full utterance
             audio_segment = _accumulate_speech(speech_start)
             eager_text = _pop_eager_transcript()
-            if audio_segment is not None and len(audio_segment) > 0:
-                _note_voice_bearing(speech_start, time.monotonic())
             if audio_segment is None or len(audio_segment) == 0:
                 # THE invisible drop (owner 2026-08-05: "he's not hearing my first
                 # line"). VAD accepted this turn and the loop committed to it, then

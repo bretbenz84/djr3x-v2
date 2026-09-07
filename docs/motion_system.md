@@ -269,16 +269,52 @@ ESP32 has enough usable GPIO for this; lay out PWM and interrupt pins first.
 | **"move back"** | Reverse a default/stated distance; **gated by the rear ToF** — slow then stop if something's behind. |
 | **"move forward"/"go"** | Drive forward a default/stated distance; front ToF gated. |
 | **"stop"** | Immediate controlled stop (always honored, highest priority). |
-| **"come here" / "come over here" / "come to me"** | Rotate in bounded search steps until face tracking acquires a person, align the chassis from the tracked neck offset, then advance until the nearest forward obstacle is 1.0 m away. Furniture or a wall stops the approach before the person if it is closer. |
+| **"come here" / "come over here" / "come to me"** | Acquire the caller's visible face before any voice/radar search turn, center the head and align from the face box, then advance with `MOTION_COME_REQUEST_STOP_AT_M` clearance (currently 1.3 m). A nearer obstacle stops him first. |
 
-**"Come here" person acquisition.** `intelligence/motion_agency.py` owns the deliberate
-sequence. It rotates the base by `MOTION_COME_SEARCH_TURN_DEG` after each settled turn,
-up to `MOTION_COME_SEARCH_MAX_TURNS` or `MOTION_COME_SEARCH_TIMEOUT_SECS`. Once normal
-face tracking locks onto a visible person, the neck offset supplies the chassis bearing;
-Rex makes a proportional alignment turn and then sends firmware `come` with
-`MOTION_COME_REQUEST_STOP_AT_M` (default 1.0 m). The camera selects and orients toward a
-person but does not navigate the path. The ESP32's forward ToF remains authoritative, so
-any nearer obstacle ends the approach.
+**"Come here" person acquisition.** `intelligence/motion_agency.py` owns the sequence.
+The caller's visible face wins before an opening microphone-bearing turn can be sent.
+For a short ambiguous command, a sole visible recent conversational partner can supply
+the movement target when their current voice score closely trails a weak top match and
+no interval mouth/direction evidence conflicts. This binds the errand to that person;
+speaker identity and learning permission remain unchanged. Ambiguous callers with faces
+on camera get a request to repeat instead of a speculative turn.
+
+The errand claims the head immediately, parks it forward, and aligns from a measured
+face box. A centered face starts a straight firmware `come`; a missing box never counts
+as centered. When the caller is off camera, spoken direction, microphone direction,
+radar bodies and bounded sweeps guide acquisition, with settled camera observations
+between turns. A refused turn ends the request, including a refused radar leg: no
+same-tick fallback sweep or retry after the refusal. A visible caller with a persistently
+blocked front gets a bounded wait (`MOTION_COME_PATH_WAIT_SECS`, 8 s), then an explanation.
+The ESP32's forward ToF remains authoritative. See
+[the September 6 investigation](come_here_2026-09-06.md) for the field evidence and limits.
+
+**Arrival and wake calls.** A firmware `completed` result is handled before any
+further alignment, head park or search. The robot holds position if the caller is
+close, has gone out of view, or independent front clearance is unavailable. A retry
+requires both a still-far visible caller and clear split radial readings; a near
+radial return is confirmed over two stationary ticks. Face size alone cannot restart
+a completed drive. Bare wake calls (`Hey Rex`, including transcribed wakes) preserve
+an active approach or a visible person even if the microphone/radar bearing disagrees.
+An explicit `over here` invitation can still orient during an off-camera search;
+it cannot replace an already acquired approach target.
+
+**Once the caller is acquired, search is over for that request.** Acquisition stops
+an in-flight scan and binds the observed person. A subsequent face/identity dropout
+cannot revive a radar turn, microphone turn, room sweep, or `over here` reflex.
+Alignment commands are capped at 30° and three attempts. If centering the neck loses
+a side-on caller, bounded alignment can use the stored camera bearing while waiting
+up to eight seconds for reacquisition. Other loss holds position. Driving requires
+the bound caller's visible face and measured alignment; failure ends the request
+with an explanation. Come turns use firmware yaw control and the swing check but
+do not queue compass corrections or swing escapes toward obsolete search headings.
+
+A sub-second new-speaker guess below 0.70 similarity cannot independently authorize
+identity, even when it passes the general voice threshold. A sole visible recent
+conversational partner with current voice support can supply the movement target
+when that brief switch is unconfirmed, including when the face is found later.
+Strong or independently corroborated other callers and multiple visible people do
+not permit that substitution. This addresses the 01:30 run's false Jeremy label.
 
 ---
 

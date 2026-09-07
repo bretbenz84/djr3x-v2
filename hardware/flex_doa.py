@@ -269,8 +269,10 @@ def _poll_once() -> bool:
         doa, speech = dev.read("DOA_VALUE")
         try:
             energy = float(dev.read("AEC_SPENERGY_VALUES")[3])
+            if not math.isfinite(energy):
+                energy = None
         except Exception:
-            energy = 0.0
+            energy = None                 # unavailable is different from measured silence
         beam_deg = None
         try:
             az = dev.read("AEC_AZIMUTH_VALUES")
@@ -286,7 +288,7 @@ def _poll_once() -> bool:
     # trust it while the chip reports speech energy on it.
     raw_deg = float(doa)
     speech_flag = bool(speech)
-    if beam_deg is not None and energy >= _num("FLEX_DOA_BEAM_ENERGY_MIN", 50000.0):
+    if beam_deg is not None and energy is not None and energy >= _num("FLEX_DOA_BEAM_ENERGY_MIN", 50000.0):
         raw_deg = float(beam_deg)
         speech_flag = True
     neck = None
@@ -311,7 +313,11 @@ def _poll_once() -> bool:
         moving = True                      # the room is still ringing with him
     keep = _num("FLEX_DOA_HISTORY_SECS", 20.0)
     with _lock:
-        _samples.append((now, raw_deg, bearing, speech_flag, energy, moving, hero, neck_qus))
+        # Preserve both hardware directions: raw_deg above may be the selected
+        # beam, so calling it "chip DoA" in diagnostics hid disagreements with
+        # the DOA_VALUE register used by the owner's array bench test.
+        _samples.append((now, raw_deg, bearing, speech_flag, energy, moving, hero, neck_qus,
+                         float(doa), beam_deg))
         while _samples and (now - _samples[0][0]) > keep:
             _samples.popleft()
     _status["reads"] += 1
@@ -396,7 +402,7 @@ def status() -> dict:
 
 # ── queries ───────────────────────────────────────────────────────────────────
 
-def bearing_between(t0: float, t1: float) -> "Optional[dict]":
+def bearing_between(t0: float, t1: float, *, diagnostics: "Optional[dict]" = None) -> "Optional[dict]":
     """Where the voice came from over [t0, t1] (monotonic seconds).
 
     Uses the speech-flagged samples in the window (padded by
@@ -404,7 +410,9 @@ def bearing_between(t0: float, t1: float) -> "Optional[dict]":
     returns {"bearing_deg" (base frame, + = left), "raw_deg", "n", "cluster_n",
     "share", "spread_deg", "t0", "t1"} — or None when the poller is off, the
     window holds fewer than FLEX_DOA_MIN_SAMPLES speech samples, or no cluster
-    reaches FLEX_DOA_MIN_CLUSTER_SHARE of them.
+    reaches FLEX_DOA_MIN_CLUSTER_SHARE of them. When energy is available, only
+    samples above the measured speech-energy floor may support a direction.
+    diagnostics, if supplied, retains the full window even when it is rejected.
     """
     if not available():
         return None
@@ -412,30 +420,49 @@ def bearing_between(t0: float, t1: float) -> "Optional[dict]":
     lo, hi = float(t0) - pad, float(t1) + pad
     with _lock:
         rows = [s for s in _samples if lo <= s[0] <= hi and s[3] and not (len(s) > 5 and s[5])]
-    min_n = int(_num("FLEX_DOA_MIN_SAMPLES", 3))
-    if len(rows) < min_n:
-        return None
+    energies = [max(0.0, float(r[4] or 0.0)) for r in rows]
     cluster_deg = _num("FLEX_DOA_CLUSTER_DEG", 20.0)
-    energies = [max(0.0, float(r[4])) for r in rows]
-    if any(e > 0.0 for e in energies):
-        # ENERGY-WEIGHTED vote over the whole window: the direct path carries
-        # the speech energy, reflections and the chip's stale hold come in
-        # weak (owner observation 2026-09-02). A zero-energy sample still
-        # counts a little so a window of DOA-only samples is not empty.
-        floor_w = max(1.0, 0.02 * max(energies))
+    detail = {
+        "t0": float(t0), "t1": float(t1), "window_n": len(rows),
+        "clusters": cluster_summary([r[2] for r in rows], cluster_deg, energies=energies),
+        "trace": [(round(float(t1) - r[0], 1), round(r[2]), e) for r, e in zip(rows, energies)],
+        "sensor_trace": [
+            (round(float(t1) - r[0], 1), round(r[8]),
+             round(r[9]) if r[9] is not None else None, round(r[1]))
+            for r in rows if len(r) > 9
+        ],
+    }
+    energy_available = any(r[4] is not None for r in rows)
+    energy_min = _num("FLEX_DOA_BEAM_ENERGY_MIN", 50000.0)
+    pool = ([r for r, e in zip(rows, energies) if e >= energy_min]
+            if energy_available else rows)
+    detail["eligible_n"] = len(pool)
+    if diagnostics is not None:
+        diagnostics.update(detail)
+
+    def reject(reason):
+        if diagnostics is not None:
+            diagnostics["rejected"] = reason
+        return None
+
+    min_n = int(_num("FLEX_DOA_MIN_SAMPLES", 3))
+    if len(pool) < min_n:
+        return reject("too_few_speech_energy_samples" if energy_available else "too_few_samples")
+    if energy_available:
+        # Weak polls cannot vote by repetition. Field 2026-09-06 01:06:23:
+        # +91° x16 at mean 0.02M beat two stronger, disagreeing samples. All
+        # sixteen still counted as confident speech under the old weighted sum.
         # Recency rides on top (0.5 at the window's start → 1.0 at its end): the
         # chip's direction register lags a talker who moved, so with FLAT
         # energies the converged tail still outvotes the stale head.
-        t_first, t_last = rows[0][0], rows[-1][0]
+        t_first, t_last = pool[0][0], pool[-1][0]
         span = max(1e-6, t_last - t_first)
-        weights = [max(e, floor_w) * (0.5 + 0.5 * (r[0] - t_first) / span)
-                   for e, r in zip(energies, rows)]
-        pool = rows
+        weights = [float(r[4]) * (0.5 + 0.5 * (r[0] - t_first) / span) for r in pool]
         cluster = dominant_cluster([r[2] for r in pool], cluster_deg, weights)
         ok = cluster is not None and cluster["weight_share"] >= _num("FLEX_DOA_MIN_CLUSTER_SHARE", 0.4)
         raw = dominant_cluster([r[1] for r in pool], cluster_deg, weights)
     else:
-        # No energy readings at all: the chip's direction register lags a talker
+        # Energy register unavailable (None, not measured zero): the register lags a talker
         # who moved, so decide from the TAIL of the phrase (the converged part).
         tail_n = max(min_n, int(_num("FLEX_DOA_TAIL_MIN_SAMPLES", 5)),
                      int(round(len(rows) * _num("FLEX_DOA_TAIL_SHARE", 0.5))))
@@ -444,22 +471,23 @@ def bearing_between(t0: float, t1: float) -> "Optional[dict]":
         ok = cluster is not None and cluster["share"] >= _num("FLEX_DOA_MIN_CLUSTER_SHARE", 0.4)
         raw = dominant_cluster([r[1] for r in pool], cluster_deg)
     if not ok:
-        return None
-    cluster["n"] = len(rows)            # n = every speech sample in the window
+        return reject("no_dominant_cluster")
+    if cluster["cluster_n"] < min_n:
+        return reject("too_few_agreeing_samples")
+    # Radar may only consider the same eligible evidence. Keep rejected groups
+    # in the diagnostics so the next floor run explains silence as well as turns.
+    eligible_groups = cluster_summary([r[2] for r in pool], cluster_deg,
+                                      energies=[float(r[4] or 0.0) for r in pool])
     whole = dominant_cluster([r[2] for r in rows], cluster_deg)
     heroes = [r[6] for r in rows if len(r) > 6 and r[6] is not None]
     necks = [r[7] for r in rows if len(r) > 7 and r[7] is not None]
     cluster.update({
+        **detail,
+        "eligible_clusters": eligible_groups,
         "heroarm_qus": (sum(heroes) / len(heroes)) if heroes else None,
         "neck_qus": (sum(necks) / len(necks)) if necks else None,
         "raw_deg": (raw["bearing_deg"] % 360.0) if raw else None,
-        "t0": float(t0), "t1": float(t1),
-        "window_n": len(rows),
         "tail_n": len(pool),
-        "clusters": cluster_summary([r[2] for r in rows], cluster_deg, energies=energies),
-        # (seconds before the window end, base bearing, energy) per speech sample —
-        # the only way to tell a stale hold from a reflection after the fact.
-        "trace": [(round(float(t1) - r[0], 1), round(r[2]), float(r[4])) for r in rows],
         "head_disagrees": bool(whole and abs(_wrap180(whole["bearing_deg"] - cluster["bearing_deg"])) > cluster_deg),
     })
     return cluster

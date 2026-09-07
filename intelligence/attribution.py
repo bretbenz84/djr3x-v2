@@ -167,6 +167,10 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
                        and enough_margin and ev.accept_tier in {"hard", "known_floor", "roster"})
     corroborated = (candidate is not None and enough_margin
                     and ev.raw_best_score >= ev.known_floor and visual == candidate)
+    if short_voice_switch_needs_confirmation(ev.as_dict()) and not corroborated:
+        return Resolution("ambiguous", None, None,
+                          "brief voice cannot establish a different speaker",
+                          ["insufficient speech for an uncorroborated speaker change"])
     if strong or corroborated or supported_voice:
         if (ev.bearing_selected_pid is not None and ev.bearing_selected_pid != candidate
                 or ev.bearing_contradiction and candidate in ev.visible_known_ids):
@@ -217,6 +221,26 @@ def _guarded_short_continuity(ev):
         if len(faces) != 1 or faces[0].get("person_db_id") != pid:
             return False
     return True
+
+
+def short_voice_switch_needs_confirmation(evidence: dict) -> bool:
+    """A brief new voice needs stronger evidence than the general match floor.
+
+    The 0.51 s 'come here' in the 2026-09-06 field run scored an absent enrollee
+    .608 against the configured .50 floor. A hard-tier label cannot compensate
+    for that lack of speech. This abstains; it never names the previous speaker.
+    """
+    import config
+    candidate = evidence.get("raw_best_id")
+    return bool(
+        candidate is not None and not evidence.get("text_input")
+        and candidate not in (evidence.get("previous_speaker_pid"), evidence.get("engaged_pid"))
+        and 0 < float(evidence.get("voiced_secs") or 0.) < float(
+            getattr(config, "SPEAKER_ID_NEW_SHORT_VOICE_SECS", 1.0))
+        and 0 < int(evidence.get("words") or 0) <= 3
+        and float(evidence.get("raw_best_score") or 0.) < float(
+            getattr(config, "SPEAKER_ID_NEW_SHORT_VOICE_SCORE", .70))
+    )
 
 
 def sequential_boundaries(voiced_runs: list[tuple[float, float]], observations: list[dict]) -> list[float]:

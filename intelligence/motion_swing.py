@@ -160,6 +160,7 @@ def check_turn(turn_deg: float, tof_mm: Optional[dict]) -> "tuple[float, Optiona
     if abs(allowed) < min_turn:
         _log.info("[swing] %+.0f° turn refused — %s would sweep into it (room %.0f°)",
                   turn_deg, limiter, abs(allowed))
+        _log.info("[swing] refusal sensor readings (mm): %s", tof_mm)
         return 0.0, "swing_blocked"
     _log.info("[swing] %+.0f° turn shrunk to %+.0f° — %s in the swing path",
               turn_deg, allowed, limiter)

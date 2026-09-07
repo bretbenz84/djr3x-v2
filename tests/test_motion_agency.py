@@ -46,7 +46,7 @@ def tearDownModule():
     _ORIENT_ON.stop()
 
 
-def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=None,
+def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=(860, 400, 200, 200),
               db_id=1):
     """`visible=False` means NOBODY is on camera. The come-here search keys off
     world_state.people (a head lock is head behavior, not visibility), so clearing
@@ -128,8 +128,13 @@ class MotionAgencyTest(unittest.TestCase):
 
     def _tick(self, n=1, zone="social", profile=None):
         for _ in range(n):
+            # A centered approach needs a measured face box. Realign tests keep
+            # their explicit None to exercise missing geometry independently.
+            box = self._face_box
+            if box is None and MA.requested_come_active():
+                box = _CENTERED_FACE
             MA.step(_snapshot(distance_zone=zone, visible=self._visible,
-                              face_box=self._face_box),
+                              face_box=box),
                     profile or _profile())
 
     def _verdicts(self, *results):
@@ -513,7 +518,7 @@ class MotionAgencyTest(unittest.TestCase):
         # can catch a face the camera crosses mid-turn.
         self.turn.assert_called_once_with(
             config.MOTION_COME_SEARCH_TURN_DEG,
-            rate=config.MOTION_COME_SCAN_RATE_DEG_S,
+            rate=config.MOTION_COME_SCAN_RATE_DEG_S, verify=False, allow_escape=False,
         )
         self.come.assert_not_called()
         self.assertTrue(MA.requested_come_active())
@@ -611,9 +616,8 @@ class MotionAgencyTest(unittest.TestCase):
         rels = [c.args[0] for c in self.turn.call_args_list]
         self.assertEqual(rels, [90.0, -180.0, -90.0])
 
-    def test_requested_come_align_seeds_sweep_side_and_dwell(self):
-        # Person on the left (+ align turn), then lost: the sweep must start back
-        # toward that side, and only after the settled-camera dwell.
+    def test_requested_come_alignment_loss_never_restarts_a_sweep(self):
+        # After acquisition, a face dropout holds the target instead of searching.
         self._face_box = (284, 400, 200, 200)      # -0.60 → face left → +15° turn
         self.assertTrue(MA.request_come_here())
         self._tick(1)                              # align turn issued
@@ -625,9 +629,9 @@ class MotionAgencyTest(unittest.TestCase):
         self._tick(2)                              # inside the dwell -> no scan yet
         self.assertEqual(self.turn.call_count, 1)
         with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
-            self._tick(1)                          # dwell over -> first sweep turn
-        self.assertEqual(self.turn.call_count, 2)
-        self.assertGreater(self.turn.call_args[0][0], 0)   # starts toward the last-known side
+            self._tick(1)                          # dwell expiry cannot revive search
+        self.assertEqual(self.turn.call_count, 1)
+        self.assertTrue(MA._requested_come["acquired"])
 
     def test_align_measurement_waits_out_the_settle_window(self):
         # After an align turn completes, the frame is still stabilizing —
@@ -762,7 +766,7 @@ class MotionAgencyTest(unittest.TestCase):
         self._visible = False
         self.assertTrue(MA.request_come_here(person_id=1, behind=True))
         self.turn.assert_called_once_with(
-            180.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S
+            180.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S, verify=False, allow_escape=False
         )
         self.assertEqual(MA._requested_come["pending_turn_seq"], 7)
         # The next tick waits on that turn's `done` like any search leg.
@@ -799,7 +803,7 @@ class MotionAgencyTest(unittest.TestCase):
         self._visible = False
         self.assertTrue(MA.request_come_here(person_id=1, side_deg=-90.0))
         self.turn.assert_called_once_with(
-            -90.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S
+            -90.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S, verify=False, allow_escape=False
         )
         self.assertEqual(MA._requested_come["pending_turn_seq"], 7)
         self.assertEqual(MA._requested_come["scan_sign"], -1.0,
@@ -861,7 +865,7 @@ class MotionAgencyTest(unittest.TestCase):
             self._tick(3)                          # legs proceed at the stock pace
         self.assertEqual(self.turn.call_count, 3)
 
-    def test_a_lost_sighting_resets_the_align_try_counter(self):
+    def test_a_lost_sighting_keeps_the_bounded_alignment_budget(self):
         self._neck = 5472
         self._face_box = (1436, 400, 200, 200)   # +0.60 → bearing 15°
         self.assertTrue(MA.request_come_here())
@@ -870,7 +874,7 @@ class MotionAgencyTest(unittest.TestCase):
         self._visible = False
         self._tracking = {"locked": False, "visible": False}
         self._tick()
-        self.assertEqual(MA._requested_come["align_turns"], 0)
+        self.assertEqual(MA._requested_come["align_turns"], 1)
 
 
 class RequestedComeFieldFixTest(unittest.TestCase):
@@ -916,34 +920,23 @@ class RequestedComeFieldFixTest(unittest.TestCase):
         for _ in range(n):
             MA.step(_snapshot(visible=self._visible), _profile())
 
-    def test_midturn_sighting_turns_back_instead_of_sweeping_on(self):
-        # Scan turn 1 issued; DURING the turn (base moving) the camera sweeps past
-        # the person and face tracking locks briefly, off to Rex's right. Once lost
-        # again, the search must turn back toward that side — not take sweep leg 2.
-        with mock.patch.object(config, "MOTION_COME_SCAN_DWELL_SECS", 0.0, create=True):
+    def test_midturn_sighting_stops_search_and_holds_through_face_loss(self):
+        with mock.patch.object(MA.motion_controller, "stop") as stop:
             self.assertTrue(MA.request_come_here())
-            self._tick(1)
-            self.assertEqual(self.turn.call_count, 1)  # sweep leg 1
-            # Mid-turn sighting: base busy, person visible, neck parked right.
+            self._tick()
+            self.assertEqual(self.turn.call_count, 1)
             self.state.return_value = "moving"
             self._tracking = {"locked": True, "visible": True, "lock_key": "slot:person_1"}
             self._visible = True
             self._neck = 7594
-            self._tick(1)                              # sampler records; step defers
-            self.assertEqual(self.turn.call_count, 1)
-            # Lock lost again, base settled.
+            self._tick()
+            stop.assert_called_once()
+            self.assertTrue(MA._requested_come["acquired"])
             self.state.return_value = "idle"
             self._tracking = {"locked": False, "visible": False}
-            self._visible = False        # nobody on camera
-            self._tick(1)
-        self.assertEqual(self.turn.call_count, 2)
-        resight = self.turn.call_args[0][0]
-        # The turn-back uses the ACTUAL bearing measured at the sighting (neck
-        # 7594 → +0.61 of the calibrated 45° half-span → ~-27.4°), not the
-        # fixed fallback step — a fixed 30° under- or over-turned depending on
-        # where the face was spotted (field 2026-08-11).
-        self.assertAlmostEqual(resight, -27.4, places=0)
-        self.assertLess(resight, 0)                    # back toward the right side
+            self._visible = False
+            self._tick()
+        self.assertEqual(self.turn.call_count, 1)
         self.assertTrue(MA.requested_come_active())
 
     def test_sweep_legs_rotate_the_short_way(self):
@@ -1124,11 +1117,9 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
                          "front clutter CONFIRMED twice must end the errand")
         self.assertEqual(self.come.call_count, 1, "no bulldozing retry")
 
-    def test_completed_without_an_independent_reading_keeps_coming(self):
-        """Firmware predating fl_radial/fr_radial has no second opinion. Reading
-        fl/fr instead would cross-check the matrix phantom against itself — the
-        exact bug (field 2026-08-20). No corroboration = no veto: keep the errand
-        alive and let the firmware's own obstacle stop guard the drive."""
+    def test_completed_without_an_independent_reading_holds_position(self):
+        """Without split radial readings, face size alone cannot justify moving
+        again after firmware completed. The caller may already be beside us."""
         with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             MA.step(_snapshot(distance_zone="public"), _profile())
@@ -1140,8 +1131,8 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
             ):
                 MA.step(_snapshot(distance_zone="public"), _profile())
                 MA.step(_snapshot(distance_zone="public"), _profile())
-        self.assertTrue(MA.requested_come_active(),
-                        "an uncorroborated phantom ended the errand across the room")
+        self.assertFalse(MA.requested_come_active())
+        self.assertEqual(self.come.call_count, 1, "no uncorroborated retry after completion")
 
     def test_completed_with_open_front_floor_resumes(self):
         # Face reads far AND the front radial genuinely shows open floor — this
@@ -1161,22 +1152,17 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
         self.assertTrue(MA.requested_come_active())
         self.assertEqual(self.come.call_count, 2, "open floor ahead — try again")
 
-    def test_completed_while_still_far_is_a_stopped_short_retry(self):
-        # Firmware "completed" = it stopped stop_at short of the nearest front
-        # return — and a phantom floor return (mis-calibrated matrix ToF)
-        # completes the drive seconds in while the requester still reads PUBLIC
-        # distance across the room (field 2026-08-11: `come` done in 3 s, 261
-        # front zone_blocks that session). Visibly-far + completed = the sensor
-        # is lying; retry instead of declaring arrival.
+    def test_face_size_alone_does_not_overrule_completed_drive(self):
+        # A wide-angle face-size estimate can still read PUBLIC at arrival.
+        # Missing telemetry does not establish open floor for another drive.
         with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True):
             self.assertTrue(MA.request_come_here())
             MA.step(_snapshot(distance_zone="public"), _profile())
             self.assertEqual(self.come.call_count, 1)
             self._result = "completed"
             MA.step(_snapshot(distance_zone="public"), _profile())
-        self.assertTrue(MA.requested_come_active(),
-                        "a phantom arrival must not end the errand")
-        self.assertEqual(self.come.call_count, 2, "he must try again")
+        self.assertFalse(MA.requested_come_active())
+        self.assertEqual(self.come.call_count, 1)
 
     def test_still_driving_is_left_alone(self):
         self.assertTrue(MA.request_come_here())
@@ -1833,7 +1819,8 @@ class RadarFirstComeTest(unittest.TestCase):
         # A radar bearing IS the turn (+ = left/CCW on both sides), at the scan
         # rate so the sighting sampler can catch a face mid-turn — not the
         # sweep's +90 opening leg.
-        self.turn.assert_called_once_with(135.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S)
+        self.turn.assert_called_once_with(135.0, rate=config.MOTION_COME_SCAN_RATE_DEG_S,
+                                          verify=False, allow_escape=False)
         self.come.assert_not_called()
         self.assertEqual(MA._requested_come["radar_turns"], 1)
         self.assertTrue(MA.requested_come_active())
@@ -1931,8 +1918,7 @@ class RadarFirstComeTest(unittest.TestCase):
         self.ring.bodies = [(135.0, 3.0, 0.9)]
         self.assertTrue(MA.request_come_here(person_id=1))
         self._tick()
-        MA._requested_come["last_seen_at"] = time.monotonic()      # glimpsed mid-turn
-        MA._requested_come["seen_sign"] = 0.0                      # (no resight bearing)
+        MA._observe_come_target(_snapshot(db_id=1), time.monotonic())
         self.ring.bodies = [(0.0, 3.0, 1.0)]
         self._tick()
         self.assertEqual(MA._requested_come["radar_visited"], [])
@@ -1949,17 +1935,14 @@ class RadarFirstComeTest(unittest.TestCase):
         self.turn.assert_not_called()
         self.assertEqual(self.ring.reads, 0)
 
-    def test_a_fresh_sighting_turns_back_before_radar_is_consulted(self):
+    def test_an_acquired_sighting_prevents_any_new_radar_search(self):
         self.ring.bodies = [(-120.0, 3.0, 0.9)]
         self.assertTrue(MA.request_come_here(person_id=1))
-        MA._requested_come["last_seen_at"] = time.monotonic() - 1.0
-        MA._requested_come["seen_sign"] = 1.0
-        MA._requested_come["seen_deg"] = -20.0      # face was 20° to his left
-        self._tick()
-        # Resight turn (+20 for a -20 bearing), not the radar body.
-        self.assertEqual(len(self._turns()), 1)
-        self.assertAlmostEqual(self._turns()[0], 20.0)
+        MA._observe_come_target(_snapshot(db_id=1), time.monotonic())
+        self._tick()  # a subsequent missing face keeps the acquired target
+        self.assertEqual(self._turns(), [])
         self.assertEqual(self.ring.reads, 0)
+        self.assertTrue(MA._requested_come["acquired"])
 
     # ── settle: decide only from frames after the base stopped ─────────────
 

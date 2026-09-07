@@ -5,16 +5,17 @@ Four behaviors, evaluated once per consciousness tick (~1 Hz), highest priority
 first:
 
 REQUESTED COME — after an explicit "come here" command, find the REQUESTER (the
-voice-identified speaker, when known — other people's faces are skipped; an
-anonymous requester accepts any known face), square the base to them off the
+voice-identified speaker, when known — other people's faces are skipped; a
+short weak voice can locate the sole visible conversational partner), square the base to them off the
 camera, then issue the firmware `come` command with a social stop distance. The
 search is RADAR-FIRST (owner spec 2026-08-15): the LD2450 ring on the base
 (hardware/radar.py) reports where bodies are, so with no face on camera he turns
 straight to the best radar body instead of sweeping blind, dwells for the camera
 to find the requester's face, and if that body is not them (no face, or someone
 else's) marks the spot rejected and turns to the next. Camera evidence always
-outranks radar: a visible/locked requester face goes straight to alignment, and a
-fresh sighting turns back toward the sighting before radar is consulted. Radar
+outranks radar: first acquisition permanently ends search for this request and
+stops an in-flight scan. Missing faces then hold the acquired target; only bounded
+alignment from a measured camera bearing can follow. Radar
 bearings smear while the base rotates, so radar decisions are made only from ring
 frames received after a turn's `done` plus a settle, and a body must persist over
 several frames. The blind sweep survives as the fallback when the ring is down,
@@ -90,6 +91,7 @@ import logging
 import math
 import random
 import threading
+from functools import wraps
 import time
 from typing import Optional
 
@@ -232,6 +234,17 @@ def _user_motion_standdown(now: float) -> bool:
     window = _num("MOTION_USER_MOTION_STANDDOWN_SECS", 45.0)
     return (now - at) < window
 
+_come_lock = threading.RLock()
+
+
+def _come_serialized(fn):
+    @wraps(fn)
+    def run(*args, **kwargs):
+        with _come_lock:
+            return fn(*args, **kwargs)
+    return run
+
+
 _requested_come = {
     "active": False,
     "started_at": 0.0,
@@ -282,6 +295,14 @@ _requested_come = {
     "voice_bearing_deg": None,  # Flex XVF3800 DoA of the request itself, base frame at request
     "voice_world": None,        # the same as a world bearing (heading + bearing), for radar matching
     "voice_used": False,        # the opening voice turn has been issued (or words overrode it)
+    "refusal_line": None,
+    "wait_since": 0.0,
+    "acquired": False,       # one-way transition: search -> camera target
+    "speaker_evidence": None,
+    "last_turn_kind": None,
+    "target_world": None,   # observed face bearing, never an audio/radar substitute
+    "recenter_reacquire": False,
+    "lost_since": 0.0,
 }
 
 # Flinch detector state, sampled every idle tick and reset whenever the base is
@@ -323,18 +344,78 @@ def requested_come_active() -> bool:
     return bool(_requested_come["active"])
 
 
+def requested_come_refusal() -> Optional[str]:
+    return _requested_come.get("refusal_line")
+
+
+def _visible_come_requester(snapshot: dict, person_id: Optional[int],
+                            evidence: Optional[dict]) -> Optional[dict]:
+    """Locate the caller without turning a weak voice score into an identity.
+
+    A confirmed caller must match their face. For a short, unresolved command, the
+    sole visible conversational partner can supply LOCATION when their current
+    voice score is close to the weak argmax. A brief, unconfirmed change of speaker
+    can also use that partner when their voice score clears the continuity floor.
+    A confirmed different voice, another
+    visible person, mixed speech, or interval direction/mouth conflict abstains.
+    This does not change the speaker verdict or authorize memory/voice learning.
+    """
+    from intelligence.attribution import short_voice_switch_needs_confirmation
+    provisional = bool(evidence and short_voice_switch_needs_confirmation(evidence))
+    if person_id is not None:
+        matched = _visible_known_person(snapshot, person_id)
+        if matched is not None or not provisional:
+            return matched
+    visible = [p for p in snapshot.get("people") or [] if isinstance(p, dict)
+               and p.get("face_visible") is not False and not p.get("face_missing")]
+    if len(visible) != 1 or visible[0].get("person_db_id") is None:
+        return None
+    person = visible[0]
+    if evidence is None:    # legacy callers with no utterance evidence
+        return person
+    pid = person["person_db_id"]
+    age = evidence.get("previous_speaker_age_secs")
+    if (evidence.get("text_input") or evidence.get("mixed_speakers")
+            or evidence.get("bearing_contradiction")
+            or evidence.get("bearing_selected_pid") not in (None, pid)
+            or evidence.get("visual_latch_pid") not in (None, pid)
+            or evidence.get("engaged_pid") != pid
+            or evidence.get("previous_speaker_pid") != pid
+            or age is None or not 0 <= age <= _num("SHORT_CLIP_LAST_SPEAKER_SECS", 90.0)
+            or not 0 < evidence.get("words", 0) <= _num("SHORT_CLIP_MAX_WORDS", 3)
+            or _face_offset_fraction(person) is None):
+        return None
+    best = float(evidence.get("raw_best_score") or 0.0)
+    if not provisional and best >= float(evidence.get("soft_threshold", 0.60)):
+        return None         # unresolved strong/conflicting evidence needs a repeat
+    scores = [float(row[2]) for row in evidence.get("scoreboard") or []
+              if len(row) >= 3 and row[0] == pid]
+    if (not scores or max(scores) < _num("SHORT_CLIP_ROSTER_FLOOR", 0.40)
+            or not provisional and best - max(scores) > _num("SHORT_CLIP_ROSTER_MARGIN", 0.06)):
+        return None
+    _log.info("[motion_agency] come target: visible conversational partner %s "
+              "(short weak voice %.3f vs %.3f, previous %.1fs); identity unchanged",
+              pid, max(scores), best, age)
+    return person
+
+
+@_come_serialized
 def request_come_here(person_id: "int | None" = None, *,
                       behind: bool = False,
                       side_deg: "float | None" = None,
                       voice_bearing_deg: "float | None" = None,
-                      voice_share: "float | None" = None) -> bool:
+                      voice_share: "float | None" = None,
+                      speaker_evidence: Optional[dict] = None) -> bool:
     """Arm a bounded search/align/approach sequence for an explicit voice request.
 
     ``person_id`` is the voice-identified requester (person_db_id). When known, the
     search goes to THAT face and skips everyone else until it finds them — with two
     people in the room, "the first known face wins" meant Rex could deliver himself
     to whoever happened to be on camera, not to whoever called him (owner spec
-    2026-08-11). An anonymous requester keeps the old any-known-face behavior.
+    2026-08-11). A short ambiguous voice may use a single visible partner with
+    matching conversation continuity and current voice support for movement only;
+    an unconfirmed brief speaker change is reconciled when that partner is found
+    later, too. This does not authorize naming or learning from the speaker.
 
     ``behind=True`` ("I'm behind you, come here") seeds the search with an
     immediate about-face instead of sweeping the wrong hemisphere first (owner
@@ -344,12 +425,13 @@ def request_come_here(person_id: "int | None" = None, *,
 
     ``voice_bearing_deg`` is where the Flex XVF3800 heard the request come from
     (hardware/flex_doa.py, base frame, + = left). Evidence, layered: an explicit
-    "behind"/side word outranks it (words win, the bearing still helps radar
-    matching); otherwise it is the opening turn when it points off-axis, and in
+    "behind"/side word outranks it when the caller is not visible; otherwise
+    it is the opening turn when it points off-axis, and in
     every case a radar body that agrees with it within
     MOTION_COME_VOICE_RADAR_MATCH_DEG is visited before a more persistent one.
     ``voice_share`` is the dominant-cluster share the bearing came with; weak
     ones (< MOTION_COME_VOICE_MIN_SHARE) are ignored."""
+    _requested_come["refusal_line"] = None
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True) or not motion_controller.available():
         return False
     # "Come here" asks for movement, so it lifts an earlier "don't move" outright
@@ -372,6 +454,19 @@ def request_come_here(person_id: "int | None" = None, *,
     except Exception:
         pass
     now = time.monotonic()
+    from world_state import world_state
+    snapshot = world_state.snapshot()
+    target = _visible_come_requester(snapshot, person_id, speaker_evidence)
+    if (person_id is None and target is None and _any_visible_face(snapshot)
+            and not behind and not side_deg):
+        cancel_requested_come("caller ambiguous with faces on camera")
+        _requested_come["refusal_line"] = (
+            "I can see someone, but I'm not sure who called me. "
+            "Say 'Rex, come here' again."
+        )
+        return False
+    if target is not None:
+        person_id = target["person_db_id"]  # bind this errand; never switch faces
     # Radar frames from BEFORE the request are usable only if the base was
     # already still (they are in the current frame); a base mid-motion means
     # wait for a settled sample instead.
@@ -408,7 +503,19 @@ def request_come_here(person_id: "int | None" = None, *,
         voice_bearing_deg=None,
         voice_world=None,
         voice_used=False,
+        wait_since=0.0,
+        acquired=False,
+        speaker_evidence=dict(speaker_evidence) if speaker_evidence is not None else None,
+        last_turn_kind=None, target_world=None, recenter_reacquire=False, lost_since=0.0,
     )
+    # Claim the head BEFORE any opening turn or the next consciousness tick.
+    # Otherwise the weak-voice off-camera gaze search can turn away from a face
+    # we have already acquired while this handler is confirming the command.
+    try:
+        from intelligence import consciousness
+        consciousness.suspend_face_tracking(10.0)
+    except Exception:
+        pass
     _reset("neck_hits", "far_hits")
     voice = None
     if (voice_bearing_deg is not None and _flag("MOTION_COME_VOICE_BEARING_ENABLED", True)
@@ -424,6 +531,12 @@ def request_come_here(person_id: "int | None" = None, *,
     else:
         _log.info("[motion_agency] requested come: searching for a visible person "
                   "(radar-first, heading via %s)", _requested_come["heading_mode"])
+    if target is not None:
+        _acquire_come_target(target, now)
+        _log.info("[motion_agency] requested come: requester %s already visible — "
+                  "camera alignment before any voice/radar turn (voice=%s)",
+                  person_id, voice)
+        return True
     if behind:
         seq = _issue_come_turn(180.0, now, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
         if seq is not None:
@@ -464,7 +577,26 @@ def request_come_here(person_id: "int | None" = None, *,
                 _log.info("[motion_agency] requested come: voice came from %+.0f° "
                           "(share %.2f) — leading with a turn toward it",
                           voice, float(voice_share) if voice_share is not None else -1.0)
-    return True
+    return requested_come_active()
+
+
+def _wait_for_come_path(now: float, reason: str, line: str) -> None:
+    since = float(_requested_come.get("wait_since") or 0.0)
+    if since <= 0.0:
+        _requested_come["wait_since"] = now
+        _log.info("[motion_agency] requested come: holding %s; tof_mm=%s", reason,
+                  (motion.telemetry() or {}).get("tof_mm"))
+        return
+    if now - since < _num("MOTION_COME_PATH_WAIT_SECS", 8.0):
+        return
+    cancel_requested_come(reason)
+    _log.info("[motion_agency] requested come: ended %s; tof_mm=%s", reason,
+              (motion.telemetry() or {}).get("tof_mm"))
+    try:
+        from audio import speech_queue
+        speech_queue.enqueue(line, "neutral", priority=1, tag="come_path_blocked", log_text=True)
+    except Exception:
+        pass
 
 
 def note_behind_turn(seq: "int | None") -> None:
@@ -511,6 +643,7 @@ def _adopt_voice_bearing_turn(seq: "int | None", where: str) -> None:
               "adopting the turn as a search leg", where)
 
 
+@_come_serialized
 def cancel_requested_come(reason: str = "cancelled") -> None:
     if _requested_come["active"]:
         _log.info("[motion_agency] requested come: %s", reason)
@@ -529,7 +662,65 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
                            approaches=0, align_turns=0, skip_log_at=0.0,
                            radar_since=0.0, radar_turns=0,
                            radar_pending_world=None, radar_pending_since=0.0,
-                           radar_visited=[], heading_mode="cmd", cmd_heading=0.0)
+                           radar_visited=[], heading_mode="cmd", cmd_heading=0.0,
+                           acquired=False, speaker_evidence=None, last_turn_kind=None,
+                           target_world=None, recenter_reacquire=False, lost_since=0.0)
+
+
+@_come_serialized
+def _observe_come_target(snapshot: dict, now: float) -> Optional[dict]:
+    if not requested_come_active():
+        return None
+    requester = _requested_come["requester_id"]
+    if _requested_come["acquired"]:
+        person = _visible_known_person(snapshot, requester)
+    else:
+        evidence = _requested_come.get("speaker_evidence")
+        if evidence is not None:
+            evidence = dict(evidence)
+            age = evidence.get("previous_speaker_age_secs")
+            if age is not None:
+                evidence["previous_speaker_age_secs"] = age + max(0., now-_requested_come["started_at"])
+        person = _visible_come_requester(snapshot, requester, evidence)
+    if person is None:
+        return None
+    if not _requested_come["acquired"]:
+        _acquire_come_target(person, now)
+    _stop_come_dwell_gaze()
+    _requested_come["last_seen_at"] = now
+    _requested_come["lost_since"] = 0.0
+    _state["user_motion_at"] = now  # arrival/loss must not immediately start idle wandering
+    return person
+
+
+def _acquire_come_target(person: dict, now: float) -> None:
+    """Commit to the observed caller and end every search source for this request."""
+    previous = _requested_come["requester_id"]
+    bearing = (_come_bearing_deg(person, head_locked=False)
+               if _face_offset_fraction(person) is not None else None)
+    heading = _come_heading_deg()
+    target_world = (_wrap180(heading-bearing)
+                    if heading is not None and bearing is not None else None)
+    was_search = _requested_come.get("last_turn_kind") == "search"
+    _requested_come.update(acquired=True, requester_id=person["person_db_id"],
+                           last_seen_at=now, lost_since=0., target_world=target_world,
+                           voice_bearing_deg=None, voice_world=None, voice_used=True,
+                           radar_pending_world=None, radar_pending_since=0., radar_visited=[])
+    _state["user_motion_at"] = now
+    _stop_come_dwell_gaze()
+    if was_search:
+        # Stop the current scan even if its original `done` just arrived: also
+        # invalidates pending compass/escape work for the old search heading.
+        motion_controller.stop()
+        _requested_come.update(pending_turn_seq=None, turn_done_at=now, last_turn_kind=None)
+    try:
+        from intelligence import consciousness
+        consciousness.note_speaker_gaze_intent(person["person_db_id"], unknown_voice=False,
+                                              reason="come_target", force_search=False)
+    except Exception:
+        pass
+    _log.info("[motion_agency] requested come: camera acquired person %s (voice target was %s); "
+              "search ended — alignment/approach only", person["person_db_id"], previous)
 
 
 # ── Radar-first search helpers ─────────────────────────────────────────────────
@@ -569,16 +760,35 @@ def _come_heading_deg() -> Optional[float]:
     return float(_requested_come.get("cmd_heading") or 0.0)
 
 
-def _issue_come_turn(deg: float, now: float, *, rate: Optional[float] = None) -> Optional[int]:
+@_come_serialized
+def _issue_come_turn(deg: float, now: float, *, rate: Optional[float] = None,
+                     kind: str = "search") -> Optional[int]:
     """Every base turn the errand issues goes through here so the cmd-mode
     heading stays in step (pending seq + issue stamp bookkeeping too)."""
-    seq = (motion_controller.turn(deg, rate=rate) if rate is not None
-           else motion_controller.turn(deg))
+    if not requested_come_active() or (_requested_come["acquired"] and kind != "align"):
+        _log.info("[motion_agency] discarded come %s turn %+.0f°: search no longer owns target", kind, deg)
+        return None
+    if kind == "align":
+        limit = _num("MOTION_COME_ACQUIRED_TURN_MAX_DEG", 30.)
+        deg = max(-limit, min(limit, deg))
+        if rate is None:
+            rate = _num("MOTION_COME_SCAN_RATE_DEG_S", 40.)
+    # The camera closes this loop. A delayed compass correction or swing-escape
+    # worker must not move toward a scan heading after the caller has been found.
+    seq = motion_controller.turn(deg, rate=rate, verify=False, allow_escape=False)
     if seq is not None:
         _requested_come["pending_turn_seq"] = seq
         _requested_come["last_turn_at"] = now
+        _requested_come["last_turn_kind"] = kind
         _requested_come["cmd_heading"] = _wrap180(
             float(_requested_come.get("cmd_heading") or 0.0) + float(deg))
+    else:
+        # A refused search leg ends the invitation. Do not fall through to a
+        # sweep in the same tick, or retry it as soon as a speckle reading clears
+        # after Rex has just told the caller he cannot turn that way.
+        refusal = motion_controller.last_refusal() or {}
+        cancel_requested_come("turn refused — ending request")
+        _requested_come["refusal_line"] = refusal.get("line")
     return seq
 
 
@@ -757,7 +967,7 @@ def _step_come_radar(now: float) -> "bool | None":
         return True
     seq = _issue_come_turn(turn_deg, now, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
     if seq is None:
-        return None
+        return True          # refusal consumed the tick; no fallback sweep
     _requested_come["radar_turns"] = int(_requested_come.get("radar_turns") or 0) + 1
     _requested_come["scan_sign"] = 1.0 if turn_deg >= 0 else -1.0
     _requested_come["search_turns"] = 0      # a fresh sweep budget from this heading
@@ -828,6 +1038,8 @@ def _maybe_start_come_dwell_gaze(done_key: float, now: float) -> bool:
     """Start (at most once per scan stop) the dwell neck sweep. Returns True when
     a sweep is running or already ran for this stop, so the caller can extend the
     dwell window to cover it."""
+    if _requested_come["acquired"]:
+        return False
     if _come_dwell_gaze_running_or_ran(done_key):
         return True
     if not _flag("MOTION_COME_NECK_SWEEP_ENABLED", True):
@@ -1052,6 +1264,70 @@ def _come_drive_gaze_loop(stop_event: threading.Event, seq: int,
             pass
 
 
+def _completed_come_holds(person: Optional[dict]) -> bool:
+    """Consume a completed approach before any new scan, head park or base turn.
+
+    Only a still-far visible caller AND independent clear range justify retrying
+    a firmware completion. A missing face (including a drive-camera dip) is not
+    permission to start searching from beside the caller.
+    """
+    if person is None:
+        cancel_requested_come("approach completed — holding position, caller out of view")
+        return True
+    if person.get("distance_zone") != "public":
+        cancel_requested_come("arrived")
+        return True
+    front = _radial_front_m()
+    if front is None:
+        cancel_requested_come("approach completed — no independent clearance for retry")
+        return True
+    if front < _num("MOTION_COME_RESUME_CLEAR_M", 1.8):
+        hits = int(_requested_come["front_near_hits"]) + 1
+        _requested_come["front_near_hits"] = hits
+        if hits >= 2:
+            cancel_requested_come("arrived (front reads %.2fm)" % front)
+        return True       # hold STILL while confirming; never align first
+    _requested_come["front_near_hits"] = 0
+    _log.info("[motion_agency] requested come: drive completed but requester still "
+              "reads far and independent front is open (%.2fm) — stopped short", front)
+    return False
+
+
+def _hold_acquired_caller(now: float) -> None:
+    """A missing acquired face never reopens radar/sweep search.
+
+    Recentring the neck can put a side-on caller outside the image temporarily.
+    Only that deliberate recenter allows bounded body alignment to the stored
+    camera bearing; no microphone/radar location or fresh sweep is substituted.
+    """
+    if not _requested_come["lost_since"]:
+        _requested_come["lost_since"] = now
+        _log.info("[motion_agency] requested come: acquired caller out of view — holding target; no search")
+    if now-_requested_come["lost_since"] >= _num("MOTION_COME_REACQUIRE_WAIT_SECS", 8.):
+        cancel_requested_come("lost acquired caller — holding position")
+        from audio import speech_queue
+        speech_queue.enqueue("I lost sight of you. I'm stopping here.", "neutral",
+                             priority=1, tag="come_target_lost", log_text=True)
+        return
+    if not _requested_come["recenter_reacquire"] or _come_gaze_busy():
+        return
+    if now-float(_requested_come["turn_done_at"]) < _num("MOTION_COME_ALIGN_SETTLE_SECS", 1.2):
+        return
+    target, heading = _requested_come["target_world"], _come_heading_deg()
+    if target is None or heading is None:
+        return
+    deg = _wrap180(target-heading)
+    if abs(deg) < _num("MOTION_COME_CENTERED_DEG", 11.):
+        _requested_come["recenter_reacquire"] = False
+        return
+    if _requested_come["align_turns"] >= int(_num("MOTION_COME_ALIGN_MAX_TRIES", 3)):
+        return
+    seq = _issue_come_turn(deg, now, kind="align", rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.))
+    if seq is not None:
+        _requested_come["align_turns"] += 1
+
+
+@_come_serialized
 def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> bool:
     """Run one settled-state step. True means this mode consumed the autonomy tick.
 
@@ -1061,6 +1337,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     """
     if not requested_come_active():
         return False
+    person = _observe_come_target(snapshot, now)
     # The errand OWNS the head for its whole duration: face tracking's neck
     # steering is suspended (rolling re-up, so it resumes shortly after the
     # errand ends however it ends). Five field runs on 2026-08-11 all failed
@@ -1082,7 +1359,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     anchor = max(float(_requested_come["started_at"]), seen_at)
     turns_used = (int(_requested_come["search_turns"])
                   + int(_requested_come.get("radar_turns") or 0))
-    if (now - anchor) >= timeout or turns_used >= max_turns:
+    if not _requested_come["acquired"] and ((now - anchor) >= timeout or turns_used >= max_turns):
         cancel_requested_come("lost them again after sighting — giving up"
                               if seen_at > 0.0
                               else "no person found before search limit")
@@ -1119,9 +1396,21 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     # whenever anything else steers the head and flickers on a small far-away face.
     # Seeing the target's face at all is enough to go to them (field 2026-07-24).
     requester = _requested_come["requester_id"]
-    locked_person = _tracked_person(snapshot, requester)
-    person = locked_person or _visible_known_person(snapshot, requester)
+    last_result = None
+    if int(_requested_come["approaches"]) > 0:
+        _, last_result = motion_controller.last_come_result()
+        if last_result is None:
+            return True                       # approach still in flight
+        if last_result == "completed" and _completed_come_holds(person):
+            return True
     if person is None:
+        if _requested_come["acquired"]:
+            _hold_acquired_caller(now)
+            return True
+        if _requested_come.get("speaker_evidence") is not None and _any_visible_face(snapshot):
+            _wait_for_come_path(now, "caller identity unresolved on camera",
+                                "I can see someone, but I'm not sure who called me. Say 'come here' again.")
+            return True
         _requested_come["align_turns"] = 0   # sighting lost — alignment starts over
         # DWELL: the camera settled only turn_done_at ago, and the detect→identify
         # pipeline needs a couple of seconds of STILL camera to find a face across
@@ -1140,37 +1429,6 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         _stop_come_dwell_gaze(recenter=True)   # dwell over — recentre for the next leg
         if _come_gaze_busy():
             return True              # let the recentre glide finish first
-        # RESIGHT: face tracking held the person moments ago — typically mid-scan,
-        # when the sweeping camera swept PAST them and a follow-up micro-turn (e.g.
-        # compass correction) lost the lock again (field 2026-07-23: lock on Bret at
-        # scan turn 3, sweep continued to -180 and Rex pirouetted instead of coming).
-        # Turn a small step back toward that sighting and restart the sweep budget
-        # centered there, instead of taking the next ever-bigger sweep leg away.
-        fresh = _num("MOTION_COME_SIGHT_FRESH_SECS", 6.0)
-        seen_sign = float(_requested_come["seen_sign"])
-        if seen_at > 0.0 and (now - seen_at) < fresh and seen_sign != 0.0:
-            # Turn by the ACTUAL bearing measured at the sighting (fused
-            # neck+face, synchronized) when we have one — a fixed 30° step
-            # chronically under-turned toward a face spotted at full neck throw
-            # (~60°+ off-body) and the sweep swung right past him again (field
-            # 2026-08-11 19:37). Fixed step is the fallback for a signless read.
-            seen_deg = float(_requested_come["seen_deg"])
-            if seen_deg != 0.0:
-                turn_deg = _come_turn_for_bearing(seen_deg)
-            else:
-                turn_deg = seen_sign * abs(_num("MOTION_COME_RESIGHT_TURN_DEG", 30.0))
-            seq = _issue_come_turn(turn_deg, now,
-                                   rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
-            if seq is not None:
-                _requested_come["search_turns"] = 0
-                _requested_come["scan_sign"] = seen_sign
-                _requested_come["seen_deg"] = 0.0   # spent — don't re-turn on it
-                _log.info(
-                    "[motion_agency] requested come: recent sighting %.1fs ago — "
-                    "turning back %+.0f deg toward it",
-                    now - seen_at, turn_deg,
-                )
-            return True
         # ── RADAR FIRST (owner spec 2026-08-15) ─────────────────────────────
         # No face, no fresh sighting. The dwell that just ended was the camera's
         # look at whatever body the last radar turn pointed at — if the requester
@@ -1242,13 +1500,23 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     # read it — five runs on 2026-08-11 ended in sign-flipping or clamped
     # align turns from exactly that race.
     if not _neck_parked_centre():
+        bearing = _come_bearing_deg(person, head_locked=False)
+        heading = _come_heading_deg()
+        if heading is not None and bearing is not None and _face_offset_fraction(person) is not None:
+            _requested_come["target_world"] = _wrap180(heading-bearing)
+            _requested_come["recenter_reacquire"] = True
         _park_head_for_alignment(now)
         return True                # settle: measure off a fresh, still frame
+    _requested_come["recenter_reacquire"] = False
     centered_deg = _num("MOTION_COME_CENTERED_DEG", 11.0)
     approach_heading = 0.0
     face_frac = _face_offset_fraction(person)
     bearing = (None if face_frac is None
                else face_frac * _num("MOTION_COME_CAM_HALF_FOV_DEG", 25.0))
+    if bearing is None:
+        _wait_for_come_path(now, "no measured face bearing",
+                            "I lost a clear view of you. Say 'Rex, come here' again.")
+        return True
     if bearing is not None and abs(bearing) >= centered_deg:
         # GOOD-ENOUGH ESCAPE: repeated align turns that keep missing "centered"
         # must not starve the approach forever — field 2026-08-11: ±12-45 deg
@@ -1260,6 +1528,11 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         tries = int(_requested_come["align_turns"])
         good_enough = _num("MOTION_COME_ALIGN_GOOD_ENOUGH_DEG", 24.0)
         if (tries >= int(_num("MOTION_COME_ALIGN_MAX_TRIES", 3))
+                and abs(bearing) > good_enough):
+            _wait_for_come_path(now, "camera alignment did not converge",
+                                "I can see you, but I couldn't line up. I'm stopping here.")
+            return True
+        if (tries >= int(_num("MOTION_COME_ALIGN_MAX_TRIES", 3))
                 and abs(bearing) <= good_enough):
             approach_heading = _come_turn_for_bearing(bearing, floor=False)
             _log.info(
@@ -1269,13 +1542,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             )
         else:
             deg = _come_turn_for_bearing(bearing)
-            seq = _issue_come_turn(deg, now)
+            seq = _issue_come_turn(deg, now, kind="align")
             if seq is not None:
                 _requested_come["align_turns"] = tries + 1
-                # Remember which side they were on: if the align turn loses them,
-                # the sweep starts back toward that side, not away from it.
-                _requested_come["scan_sign"] = 1.0 if deg >= 0 else -1.0
-                _requested_come["search_turns"] = 0  # fresh sweep budget after a sighting
                 _log.info(
                     "[motion_agency] requested come: acquired %s %s, aligning %+.0f deg",
                     "requester" if requester is not None else "person",
@@ -1286,7 +1555,11 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     if not base_idle:
         # Person found and centered but the front is momentarily blocked — hold
         # this tick; the approach starts once the zone clears (firmware final say).
+        _wait_for_come_path(now, "front sensors keep reporting blocked",
+                            "I can see you, but my front sensors keep reporting something "
+                            "in the way. I'm stopping here.")
         return True
+    _requested_come["wait_since"] = 0.0
     # ── APPROACH ────────────────────────────────────────────────────────────
     # The errand stays ALIVE across the drive. It used to end the instant `come`
     # was sent, so anything that stopped him short ended the whole thing: field
@@ -1295,45 +1568,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     # The firmware reports how the drive ended, which is the only signal that can
     # tell ARRIVED from STOPPED SHORT — the front ToF cannot, because a dog
     # standing half a metre away looks exactly like having reached someone.
-    _, last_result = motion_controller.last_come_result()
     if int(_requested_come["approaches"]) > 0:
-        if last_result == "completed":
-            # The firmware believes it arrived — but "arrived" means it stopped
-            # `stop_at` short of the nearest front return, and a phantom floor
-            # return (mis-calibrated matrix ToF) completes the drive seconds in
-            # while the requester is still across the room (field 2026-08-11:
-            # `come` "completed" after 3 s, 261 front zone_blocks that session).
-            # A face-size "public" read alone is NOT enough to resume: the wide-
-            # angle lens lies about distance, and the resulting retry burst (three
-            # `come`s in 7 s, field 2026-08-11 19:05) bulldozed him into floor
-            # clutter right next to the owner. Resume only when the radial front
-            # ToF ALSO shows open floor ahead — the same the-ToF-is-the-truth
-            # cross-check the spontaneous approach uses. No usable reading fails
-            # open (the firmware's own obstacle stop still guards the drive).
-            if person.get("distance_zone") != "public":
-                cancel_requested_come("arrived")
-                return True
-            front = _radial_front_m()
-            if front is not None and front < _num("MOTION_COME_RESUME_CLEAR_M", 1.8):
-                # Confirm the near reading on a SECOND tick before believing it:
-                # the radial front throws single-frame speckle, and one bad
-                # frame ended a whole errand as "arrived (front reads 0.62m)"
-                # nowhere near the requester (field 2026-08-11 20:37).
-                hits = int(_requested_come["front_near_hits"]) + 1
-                _requested_come["front_near_hits"] = hits
-                if hits >= 2:
-                    cancel_requested_come("arrived (front reads %.2fm)" % front)
-                    return True
-                return True             # re-sample next tick
-            _requested_come["front_near_hits"] = 0
-            _log.info(
-                "[motion_agency] requested come: drive completed but requester "
-                "still reads far and the front is open (%s) — treating as "
-                "stopped short",
-                "no front reading" if front is None else "%.2fm" % front,
-            )
-        elif last_result is None:
-            return True                 # still driving; nothing to decide yet
         # Stopped short (blocked/aborted). Reaching here already means the base is
         # idle again (the not-base_idle hold above), i.e. the path cleared. Wait a
         # short beat so a dog dawdling in front can't become a 1 Hz retry storm.
@@ -1399,8 +1634,8 @@ def _radial_front_m() -> Optional[float]:
 
     Returns None when there is no usable INDEPENDENT reading — including on
     firmware that predates the split, where believing fl/fr would silently restore
-    the old false confidence. Callers already treat None as "no cross-check
-    available"; that is the honest answer, and it fails closed.
+    the old false confidence. None means "no cross-check available"; in particular,
+    it cannot authorize another approach after the firmware reports completion.
     """
     global _radial_front_fallback_warned
     tele = motion.telemetry()
@@ -1414,7 +1649,8 @@ def _radial_front_m() -> Optional[float]:
         _log.warning(
             "[motion_agency] firmware does not publish fl_radial/fr_radial — no "
             "independent front cross-check this session (flash the motion ESP32). "
-            "Guards that need one fail open; clearance checks are unaffected."
+            "Completed drives cannot retry on face size alone; direct clearance "
+            "checks still use fl/fr."
         )
     return None
 
@@ -1638,6 +1874,8 @@ def _tracked_person(snapshot: dict,
                      or (kind != "db" and str(person.get("id")) == value))
             if not match:
                 continue
+            if person.get("face_visible") is False or person.get("face_missing"):
+                return None  # suspended head tracking can leave a stale lock
             if (requester_id is not None
                     and str(person.get("person_db_id")) != str(requester_id)):
                 return None               # locked onto the wrong person
@@ -1857,9 +2095,11 @@ def resolve_voice_bearing(res: dict, now: "float | None" = None) -> "tuple[float
     """Pick the bearing to act on from a flex_doa result. The chip's groups
     (``res["clusters"]``: [(base_deg, n), ...]) are candidates; a persistent radar
     body within MOTION_COME_VOICE_RADAR_MATCH_DEG of one promotes it. Returns
-    (bearing_deg, note) — note explains the choice for the log."""
+    (bearing_deg, note) — note explains the choice for the log. A promoted
+    direction also updates the bearing and count/share used by motion gates."""
     chosen = float(res.get("bearing_deg"))
-    groups = [(float(g[0]), int(g[1])) for g in (res.get("clusters") or [])]
+    groups = [(float(g[0]), int(g[1])) for g in
+              (res.get("eligible_clusters", res.get("clusters")) or [])]
     if not _flag("WAKE_ORIENT_RADAR_TIEBREAK_ENABLED", True) or len(groups) < 2:
         return chosen, ""
     now = time.monotonic() if now is None else now
@@ -1890,8 +2130,36 @@ def resolve_voice_bearing(res: dict, now: "float | None" = None) -> "tuple[float
     k, centre, body = agreeing[0]
     if abs(_wrap180(centre - chosen)) <= _num("FLEX_DOA_CLUSTER_DEG", 20.0):
         return chosen, f" (radar body {body['bearing_deg']:+.0f}°/{body['range_m']:.1f}m agrees)"
+    # A promoted direction must pass the wake gates on its OWN supporting polls,
+    # not borrow the sample count/confidence of the previous winning direction.
+    res["bearing_deg"] = centre
+    res["cluster_n"] = k
+    res["share"] = k / max(1, int(res.get("n") or k))
     return centre, (f" — radar body {body['bearing_deg']:+.0f}°/{body['range_m']:.1f}m backs the "
                     f"{centre:+.0f}°×{k} group over the {chosen:+.0f}° pick")
+
+
+def _wake_orientation_guard(reason: str) -> Optional[str]:
+    """A bare name call has no resolved caller identity or movement instruction.
+
+    Keep an active approach and a visible person ahead of an acoustic bearing
+    that disagrees with the camera. Explicit "over here" still localizes an
+    off-camera caller through the existing path.
+    """
+    if requested_come_active() and _requested_come["acquired"]:
+        return "come_active"
+    if not reason.startswith("wake"):
+        return None
+    if requested_come_active():
+        return "come_active"
+    try:
+        from world_state import world_state
+        people = world_state.get("people") or []
+        if _any_visible_face({"people": people}):
+            return "on_camera"
+    except Exception:
+        pass
+    return None
 
 
 def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
@@ -1899,7 +2167,7 @@ def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
                     reason: str = "wake") -> str:
     """Turn toward a voice bearing (base frame, + = left) once. Returns a machine
     key: ``glanced`` (neck), ``turned`` (base), ``facing`` (already), ``on_camera``
-    (the caller is in view), or why nothing/less happened — ``disabled``,
+    (a visible person takes priority), or why nothing/less happened — ``disabled``,
     ``weak``, ``cooldown``, ``come_active``, ``base_busy``, ``unavailable``, and
     the glance-instead fallbacks ``no_drive_glance`` / ``held_glance`` /
     ``traction_glance`` / ``turn_refused_glance``."""
@@ -1909,6 +2177,12 @@ def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
         return "weak"
     if samples is not None and int(samples) < int(_num("WAKE_ORIENT_MIN_SAMPLES", 6)):
         return "thin"
+    guard = _wake_orientation_guard(reason)
+    if guard:
+        _log.info("[motion_agency] name-call reflex (%s): holding %s — "
+                  "voice at %+.0f° does not replace the camera/approach target",
+                  reason, guard, bearing_deg)
+        return guard
     now = time.monotonic()
     bearing = _wrap180(float(bearing_deg))
     note_voice_bearing(bearing)
@@ -1975,6 +2249,11 @@ def orient_to_voice(bearing_deg: float, *, share: "float | None" = None,
     if not base_idle:
         _orient_glance(bearing, fraction=1.0)
         return "base_busy"
+    # A face or a new come request can arrive during the base-idle wait above.
+    # Recheck at dispatch so an earlier empty-camera read cannot win that race.
+    guard = _wake_orientation_guard(reason)
+    if guard:
+        return guard
     max_deg = _num("WAKE_ORIENT_TURN_MAX_DEG", 180.0)
     deg = max(-max_deg, min(max_deg, bearing))
     seq = motion_controller.turn(deg, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
@@ -2936,27 +3215,10 @@ def _step_inner(snapshot: dict, profile) -> None:
 
     st = motion.state()
 
-    # SIGHTING SAMPLER for an active come request — runs on EVERY tick, including
-    # while the base is mid-turn. Scan turns sweep the camera across the person for
-    # only a moment; the settled-state step below never runs during that moment, so
-    # without this the sighting is thrown away and the sweep spins right past them
-    # (field 2026-07-23: face lock on Bret during scan turn 3, sweep went to -180).
+    # Observe while moving as well as settled. First acquisition stops a scan
+    # and permanently transfers this request from search to its camera target.
     if requested_come_active():
-        _req = _requested_come["requester_id"]
-        seen_locked = _tracked_person(snapshot, _req)
-        seen = seen_locked or _visible_known_person(snapshot, _req)
-        if seen is not None:
-            _stop_come_dwell_gaze()   # face found — the sweep yields to tracking,
-                                      # leaving the neck ON them (no recentre)
-            _requested_come["last_seen_at"] = time.monotonic()
-            bearing = _come_bearing_deg(seen, head_locked=seen_locked is not None)
-            if bearing is not None and abs(bearing) > 3.0:
-                # + bearing = person to Rex's right needs a negative (CW) base
-                # turn; seen_sign follows the turn convention (+ = left).
-                _requested_come["seen_sign"] = -1.0 if bearing >= 0 else 1.0
-                # The neck and face are read TOGETHER here, so this bearing is
-                # synchronized — trustworthy even mid-sweep at full neck throw.
-                _requested_come["seen_deg"] = float(bearing)
+        _observe_come_target(snapshot, time.monotonic())
 
     # The base must be settled (idle) to sample intrusions, but a firmware BLOCKED
     # state is itself a strong front-crowding signal the flinch should answer. Any

@@ -92,7 +92,7 @@ class BearingBetweenTest(unittest.TestCase):
         flex_doa._reset_for_tests()
 
     def _rows(self, t0, bearings, speech=True, step=0.1):
-        return [(t0 + i * step, (b % 360.0), b, speech, 1.0) for i, b in enumerate(bearings)]
+        return [(t0 + i * step, (b % 360.0), b, speech, 1000000.0) for i, b in enumerate(bearings)]
 
     def test_off_poller_says_nothing(self):
         self.assertIsNone(flex_doa.bearing_between(0.0, 1.0))
