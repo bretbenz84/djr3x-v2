@@ -1336,7 +1336,15 @@ def _completed_come_holds(person: Optional[dict]) -> bool:
     a firmware completion. A missing face (including a drive-camera dip) is not
     permission to start searching from beside the caller.
     """
+    if _requested_come.get("arrival_only"):
+        return False
     if person is None:
+        target = _requested_come.get("target_world")
+        heading = _base_yaw_deg() if _requested_come.get("heading_mode") == "imu" else None
+        if target is not None and heading is not None and abs(_wrap180(target-heading)) >= _num("MOTION_COME_CENTERED_DEG", 11.):
+            _requested_come.update(arrival_only=True, recenter_reacquire=True, lost_since=0.)
+            _log.info("[motion_agency] approach completed: restoring acquired caller heading without advancing")
+            return False
         cancel_requested_come("approach completed — holding position, caller out of view")
         return True
     if person.get("distance_zone") != "public":
@@ -1662,8 +1670,13 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                   last_result)
 
     stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
+    travel_yaw = _base_yaw_deg()
     seq = motion_controller.come(approach_heading, stop_at=stop_at)
     if seq is not None:
+        # Keep the camera-established travel bearing across an obstacle curve.
+        # Only real IMU heading can measure that curve after the face leaves view.
+        if travel_yaw is not None and _requested_come.get("heading_mode") == "imu":
+            _requested_come["target_world"] = _wrap180(travel_yaw + approach_heading)
         _start_come_drive_gaze(seq, approach_heading)
         _requested_come["approach_at"] = now
         _requested_come["approaches"] = int(_requested_come["approaches"]) + 1

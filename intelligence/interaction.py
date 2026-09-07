@@ -3652,6 +3652,7 @@ def _looks_like_own_echo(text: str) -> bool:
         recent = [
             (line, now - at) for line, at in _recent_rex_lines if (now - at) <= window
         ]
+    explicit_motion = action_router.classify_explicit_motion(text) is not None
     for line, age in recent:
         if not line:
             continue
@@ -3659,6 +3660,11 @@ def _looks_like_own_echo(text: str) -> bool:
         # the line) or high overall similarity.
         if norm == line or (len(norm) >= 10 and norm in line):
             return True
+        # "Turn to the right" is a new imperative, not a fuzzy echo of our
+        # "Turning right" acknowledgement. Exact playback matches above still
+        # reject; normal motion/safety routing must see the repeated request.
+        if explicit_motion:
+            continue
         floor = seam_floor if age <= seam_secs else ratio_floor
         if difflib.SequenceMatcher(None, norm, line).ratio() >= floor:
             return True
@@ -8652,6 +8658,8 @@ def _known_person_needs_last_name(person_id: Optional[int], person_name: Optiona
         return False
     if looks_like_initials(normalized):
         return False
+    if people_memory.has_recorded_full_name(int(person_id)):
+        return False
     return not _has_declined_last_name(int(person_id))
 
 
@@ -11447,6 +11455,8 @@ def _should_defer_existing_common_first_name_prompt(
     except Exception:
         match = None
     if match is not None:
+        return True
+    if re.fullmatch(r"(?:rex[,!]?\s+)?(?:over here|right here|this way)[.!?]*", cleaned, re.I):
         return True
     try:
         intent = intent_classifier._deterministic_label(cleaned)

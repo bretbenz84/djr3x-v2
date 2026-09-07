@@ -439,6 +439,22 @@ def find_potential_person_match(name: str) -> Optional[dict]:
     return None
 
 
+def has_recorded_full_name(person_id: int) -> bool:
+    """A preferred short display name does not erase a previously saved surname."""
+    person = get_person(int(person_id)) or {}
+    if len((person.get("name") or "").split()) > 1:
+        return True
+    if not _person_aliases_available():
+        return False
+    rows = db.fetchall(
+        "SELECT alias FROM person_aliases WHERE person_id = ? AND source IN ('previous_name', 'user_confirmed')",
+        (int(person_id),),
+    )
+    first = normalized_name_key(person.get("name") or "")
+    return any(len((r["alias"] or "").split()) > 1
+               and normalized_name_key(r["alias"]).split()[:1] == [first] for r in rows)
+
+
 def add_alias(person_id: int, alias: str, source: str = "user_confirmed") -> bool:
     """Attach an unambiguous spoken alias to an existing person."""
     clean = _clean_display_name(alias)

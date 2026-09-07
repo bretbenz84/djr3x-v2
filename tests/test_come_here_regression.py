@@ -231,6 +231,28 @@ class ComeHereRegressionTest(_ComeFixture):
         self.assertFalse(MA.requested_come_active())
         self.come.assert_called_once()
 
+    def test_obstacle_curve_restores_camera_heading_without_new_advance(self):
+        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.):
+            self.assertTrue(self._request(person_id=1))
+            self._tick()
+        self.scene = {"people": []}
+        self.ring.bodies = [(150., 1.5, 1.)]
+        with mock.patch.object(MA, "_base_yaw_deg", return_value=25.), \
+             mock.patch.object(MA.motion_controller, "last_come_result", return_value=(8, "completed")), \
+             mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 0.):
+            self._tick()
+        self.assertTrue(MA._requested_come["arrival_only"])
+        self.turn.assert_called_once()
+        self.assertAlmostEqual(self.turn.call_args.args[0], -25.)
+        self.come.assert_called_once()
+        self.scene = _snapshot(db_id=1)
+        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.), \
+             mock.patch.object(MA.motion_controller, "last_come_result", return_value=(8, "completed")), \
+             mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 0.):
+            self._tick()
+        self.assertFalse(MA.requested_come_active())
+        self.come.assert_called_once()
+
     def test_arrival_with_camera_dipped_out_of_view_does_not_start_a_search(self):
         self.assertTrue(self._request(person_id=1))
         self._tick()

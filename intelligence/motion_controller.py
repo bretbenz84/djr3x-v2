@@ -395,6 +395,18 @@ def _calibrated_compass_yaw() -> "float | None":
         return None
 
 
+def _relative_turn_yaw():
+    """Gyro yaw is the relative-turn reference used by the firmware controller."""
+    try:
+        imu = (motion.telemetry() or {}).get("imu") or {}
+        if imu.get("ok") and imu.get("yaw") is not None:
+            value = float(imu["yaw"])
+            return value if math.isfinite(value) else None
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def _remember_turn_verification(
     seq: int,
     *,
@@ -403,6 +415,8 @@ def _remember_turn_verification(
     start_yaw: "float | None",
     epoch: int,
     attempt: int,
+    start_imu_yaw: "float | None" = None,
+    allow_correction: bool = True,
 ) -> None:
     if start_yaw is None:
         # Silent for a whole session of overshooting turns (field 2026-08-11:
@@ -426,6 +440,8 @@ def _remember_turn_verification(
             "desired_deg": float(desired_deg),
             "rate": float(rate),
             "start_yaw": float(start_yaw),
+            "start_imu_yaw": start_imu_yaw,
+            "allow_correction": allow_correction,
             "epoch": int(epoch),
             "attempt": int(attempt),
         }
@@ -466,6 +482,16 @@ def _verify_completed_turn(record: dict) -> None:
         actual = ang_diff(float(end_yaw), float(record["start_yaw"]))
     except Exception:
         return
+    if record.get("start_imu_yaw") is not None:
+        end_imu = _relative_turn_yaw()
+        if end_imu is None:
+            _log.warning("[motion] turn verification held: gyro became unavailable")
+            return
+        gyro_actual = ang_diff(end_imu, float(record["start_imu_yaw"]))
+        if abs(ang_diff(actual, gyro_actual)) > 4.0:
+            _log.warning("[motion] relative turn references disagree: compass=%+.1f gyro=%+.1f; using firmware gyro reference",
+                         actual, gyro_actual)
+        actual = gyro_actual
     desired = float(record["desired_deg"])
     error = desired - actual
     while error > 180.0:
@@ -486,6 +512,10 @@ def _verify_completed_turn(record: dict) -> None:
             "[motion] compass verified turn: requested=%+.1f actual=%+.1f error=%+.1f deg",
             desired, actual, error,
         )
+        return
+    if not record.get("allow_correction", True):
+        _log.warning("[motion] safety-shortened turn measured=%+.1f attempted=%+.1f; holding partial turn without automatic reversal",
+                     actual, desired)
         return
     attempt = int(record.get("attempt", 0))
     max_attempts = _get_int("MOTION_COMPASS_TURN_MAX_CORRECTIONS", 1)
@@ -1025,8 +1055,14 @@ def turn(
                 return seq
         _suppressed("turn", reason)
         return None
+    shortened = abs(send_deg) < abs(deg) - 1.0
+    if shortened:
+        # A small obstacle-limited step needs less momentum, not the original
+        # 90-degree command's full rate. Never undo that partial step afterward.
+        rate = min(rate, 25.0)
     deg = send_deg
     start_yaw = _calibrated_compass_yaw()
+    start_imu_yaw = _relative_turn_yaw()
     epoch = _invalidate_turn_verification()
     _cancel_arc()
     seq = motion.send({"cmd": "turn", "deg": deg, "rate": rate})
@@ -1040,6 +1076,8 @@ def turn(
                 desired_deg=deg,
                 rate=rate,
                 start_yaw=start_yaw,
+                start_imu_yaw=start_imu_yaw,
+                allow_correction=not shortened,
                 epoch=epoch,
                 attempt=_verify_attempt,
             )

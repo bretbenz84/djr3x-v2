@@ -3245,3 +3245,30 @@ closure on an independent radial sensor; a stationary close table or absent
 radial evidence cannot authorize retreat. Firmware obstacle stops remain active.
 These host changes have offline regression coverage; physical behavior and
 attribution after a completed sample still need a live run.
+
+### 2026-09-07 02:10 run: final approach facing and repeated right turns
+
+CAM++ enrollment succeeded. First come completed at 02:11:48, but the host
+cancelled at 02:11:52 when the caller's face was missing. Approach launch now
+saves its camera-established travel heading in the IMU frame. If an obstacle
+curve leaves a heading error at completion with the face absent, use the
+existing bounded acquired-target alignment loop, arrival-only (no further
+advance, no radar substitution). Missing IMU or no heading error still holds.
+Swing clearance and the existing loss timeout/turn limit remain in force.
+
+At 02:12:49 and 02:12:57, requested right 90° was swing-shortened to ~30°;
+compass verification measured ~48° and issued opposite ~17° corrections.
+Safety-shortened turns now cap their rate at 25°/s and report their measurement
+without an automatic corrective reversal. Relative turn measurement prefers the
+firmware gyro when available; fused magnetic heading can shift after motor load.
+True overshoot of a non-shortened turn still permits the existing bounded trim.
+No physical-turn accuracy claim is made until a live run verifies it.
+
+Robot person 1's display name is Bret, with Bret Benziger retained as a
+previous_name alias (2026-09-06). Last-name prompting now checks stored full names
+and matching saved aliases before asking; "over here" also defers that prompt.
+No person database was rewritten. All changes here are host-side; no reflash.
+
+The third right-turn request at 02:13:04 was dropped as a fuzzy echo of Rex's
+"Turning right." Explicit motion requests now bypass fuzzy echo similarity;
+verbatim containment and concatenated-playback rejection remain enabled.

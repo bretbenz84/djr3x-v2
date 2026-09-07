@@ -118,6 +118,13 @@ class OwnEchoRejectionTest(unittest.TestCase):
         self.I._note_rex_spoke("Yeah, okay. Onward.")
         self.assertFalse(self.I._looks_like_own_echo("yeah okay"))
 
+    def test_repeated_turn_command_is_not_fuzzy_acknowledgement_echo(self):
+        self.I._note_rex_spoke("Turning right.")
+        self.assertFalse(self.I._looks_like_own_echo("Turn to the right."))
+        self.assertFalse(self.I._looks_like_own_echo("Turn to your right."))
+        self.I._note_rex_spoke("Please say turn to the right.")
+        self.assertTrue(self.I._looks_like_own_echo("Turn to the right."))
+
     def test_normal_speech_not_rejected(self):
         self.I._note_rex_spoke("Something's in my way — that's as far as I get.")
         self.assertFalse(self.I._looks_like_own_echo("what do you see in my hand"))

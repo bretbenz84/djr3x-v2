@@ -424,6 +424,47 @@ class CompassTurnVerificationTest(_MotionTestBase):
             mc._verify_completed_turn(record)
         correction.assert_called_once_with(10.0, rate=25.0, _verify_attempt=1)
 
+    def test_swing_shortened_turn_arms_measurement_without_correction(self):
+        self._connect()
+        with mock.patch("intelligence.motion_swing.check_turn", return_value=(-30., None)), \
+             mock.patch.object(mc, "_remember_turn_verification") as remember:
+            self.assertIsNotNone(mc.turn(-90., rate=75.))
+        self.assertEqual(remember.call_args.kwargs["rate"], 25.)
+        self.assertFalse(remember.call_args.kwargs["allow_correction"])
+        self.assertEqual(remember.call_args.kwargs["desired_deg"], -30.)
+
+    def test_obstacle_shortened_turn_is_not_automatically_reversed(self):
+        self._connect()
+        record = self._record(desired=-30., start=100.)
+        record["allow_correction"] = False
+        with mock.patch.object(mc._stop, "wait", return_value=False), \
+             mock.patch.object(mc, "_calibrated_compass_yaw", return_value=52.), \
+             mock.patch.object(mc, "turn") as correction:
+            mc._verify_completed_turn(record)
+        correction.assert_not_called()
+
+    def test_relative_gyro_completion_cannot_be_undone_by_compass_drift(self):
+        self._connect()
+        record = self._record(desired=-30., start=100.)
+        record["start_imu_yaw"] = 0.
+        with mock.patch.object(mc._stop, "wait", return_value=False), \
+             mock.patch.object(mc, "_calibrated_compass_yaw", return_value=52.), \
+             mock.patch.object(mc, "_relative_turn_yaw", return_value=-30.), \
+             mock.patch.object(mc, "turn") as correction:
+            mc._verify_completed_turn(record)
+        correction.assert_not_called()
+
+    def test_true_gyro_overshoot_still_gets_bounded_correction(self):
+        self._connect()
+        record = self._record(desired=-30., start=100.)
+        record["start_imu_yaw"] = 0.
+        with mock.patch.object(mc._stop, "wait", return_value=False), \
+             mock.patch.object(mc, "_calibrated_compass_yaw", return_value=52.), \
+             mock.patch.object(mc, "_relative_turn_yaw", return_value=-40.), \
+             mock.patch.object(mc, "turn") as correction:
+            mc._verify_completed_turn(record)
+        correction.assert_called_once_with(10., rate=25., _verify_attempt=1)
+
     def test_turn_within_compass_tolerance_needs_no_correction(self):
         self._connect()
         record = self._record()

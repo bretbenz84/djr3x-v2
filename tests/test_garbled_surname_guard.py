@@ -80,3 +80,29 @@ class GarbledSurnameLookupTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SavedSurnamePromptTest(unittest.TestCase):
+    def test_short_display_name_keeps_saved_full_name(self):
+        import sqlite3
+        from unittest import mock
+        from memory import people
+        from intelligence import interaction as I
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        aliases = conn.execute("SELECT 'Bret Benziger' AS alias").fetchall()
+        with mock.patch.object(people, "get_person", return_value={"id": 1, "name": "Bret"}), \
+             mock.patch.object(people, "_person_aliases_available", return_value=True), \
+             mock.patch.object(people.db, "fetchall", return_value=aliases), \
+             mock.patch.object(I, "_common_first_name_prompted_this_session", set()):
+            self.assertTrue(people.has_recorded_full_name(1))
+            self.assertFalse(I._known_person_needs_last_name(1, "Bret"))
+        with mock.patch.object(people, "get_person", return_value={"id": 1, "name": "Bret"}), \
+             mock.patch.object(people, "_person_aliases_available", return_value=True), \
+             mock.patch.object(people.db, "fetchall", return_value=[]):
+            self.assertFalse(people.has_recorded_full_name(1))
+
+    def test_over_here_is_not_a_last_name_prompt_opportunity(self):
+        from intelligence import interaction as I
+        self.assertTrue(I._should_defer_existing_common_first_name_prompt("Over here."))
