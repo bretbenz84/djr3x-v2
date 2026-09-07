@@ -527,6 +527,7 @@ def request_come_here(person_id: "int | None" = None, *,
         started_at=now,
         requester_id=person_id,
         requester_track=None,
+        arrival_only=False,
         search_turns=0,
         last_turn_at=0.0,
         pending_turn_seq=None,
@@ -701,7 +702,7 @@ def cancel_requested_come(reason: str = "cancelled") -> None:
             pass
     _stop_come_dwell_gaze()
     _stop_come_drive_gaze()
-    _requested_come.update(active=False, started_at=0.0, requester_id=None, requester_track=None,
+    _requested_come.update(active=False, started_at=0.0, requester_id=None, requester_track=None, arrival_only=False,
                            search_turns=0, last_turn_at=0.0,
                            pending_turn_seq=None, turn_done_at=0.0,
                            scan_sign=1.0, last_seen_at=0.0, seen_sign=0.0,
@@ -1337,6 +1338,10 @@ def _completed_come_holds(person: Optional[dict]) -> bool:
         cancel_requested_come("approach completed — holding position, caller out of view")
         return True
     if person.get("distance_zone") != "public":
+        bearing = _come_bearing_deg(person, head_locked=False)
+        if bearing is not None and abs(bearing) >= _num("MOTION_COME_CENTERED_DEG", 11.):
+            _requested_come["arrival_only"] = True
+            return False  # finish facing the caller, without another forward leg
         cancel_requested_come("arrived")
         return True
     front = _radial_front_m()
@@ -1594,7 +1599,11 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             _wait_for_come_path(now, "camera alignment did not converge",
                                 "I can see you, but I couldn't line up. I'm stopping here.")
             return True
-        if (tries >= int(_num("MOTION_COME_ALIGN_MAX_TRIES", 3))
+        if _requested_come.get("arrival_only") and tries >= int(_num("MOTION_COME_ALIGN_MAX_TRIES", 3)):
+            cancel_requested_come("arrival alignment limit reached")
+            return True
+        if (not _requested_come.get("arrival_only")
+                and tries >= int(_num("MOTION_COME_ALIGN_MAX_TRIES", 3))
                 and abs(bearing) <= good_enough):
             approach_heading = _come_turn_for_bearing(bearing, floor=False)
             _log.info(
@@ -1613,6 +1622,10 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                     person.get("person_db_id") or person.get("id"), deg,
                 )
             return True
+
+    if _requested_come.get("arrival_only"):
+        cancel_requested_come("arrived and facing caller")
+        return True
 
     if not base_idle:
         # Person found and centered but the front is momentarily blocked — hold

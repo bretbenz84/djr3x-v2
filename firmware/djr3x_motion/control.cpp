@@ -63,12 +63,17 @@ static float hall_assist_correction(const MotionContext& c, float lin_t) {
   if (eng <= 0) return 0.0f;
   const int16_t l_side = nearest_capped(c.tof.lf, c.tof.lb, eng);
   const int16_t r_side = nearest_capped(c.tof.rf, c.tof.rb, eng);
-  const int16_t l_frnt = nearest_capped(c.tof.fl, -1, eng);
-  const int16_t r_frnt = nearest_capped(c.tof.fr, -1, eng);
+  // COME anticipates front-half imbalance sooner. fl/fr include the
+  // floor-rejected 8x8 matrix: a table on the right gently bends travel left.
+  const int16_t front_eng = (c.cmd_mode == CMD_COME)
+      ? (int16_t)fmaxf(eng, COME_FRONT_ASSIST_ENGAGE_MM) : eng;
+  const int16_t l_frnt = nearest_capped(c.tof.fl, -1, front_eng);
+  const int16_t r_frnt = nearest_capped(c.tof.fr, -1, front_eng);
   // Imbalance in metres: positive (l - r) = the left side is more open (right wall
   // closer) -> steer LEFT (+ang, REP-103) toward the open side; negative mirrors.
-  const float imbal_m = ((float)(l_side - r_side)
-                         + ASSIST_FRONT_WEIGHT * (float)(l_frnt - r_frnt)) * 0.001f;
+  const float side_turn = c.params.assist_gain * (float)(l_side-r_side) * 0.001f;
+  float front_turn = c.params.assist_gain * ASSIST_FRONT_WEIGHT * (float)(l_frnt-r_frnt) * 0.001f;
+  if (c.cmd_mode == CMD_COME) front_turn = clampf(front_turn, -0.25f, 0.25f);
 
   // Close-wall REPULSION (ASSIST_REPEL_MM, ~5 in): a side wall this close pushes back
   // hard on its own, independent of the other side. The imbalance term alone reads
@@ -83,7 +88,7 @@ static float hall_assist_correction(const MotionContext& c, float lin_t) {
   if ((float)r_min < ASSIST_REPEL_MM)   // right wall close -> steer LEFT (+ang)
     repel += ASSIST_REPEL_GAIN * (ASSIST_REPEL_MM - (float)r_min) * 0.001f;
 
-  const float corr = c.params.assist_gain * imbal_m + repel;
+  const float corr = side_turn + front_turn + repel;
   const float cap  = ASSIST_MAX_ANG_FRAC * c.params.max_ang;
   return clampf(corr, -cap, cap);
 }
@@ -228,7 +233,22 @@ void control_tick(float dt) {
   // Hallway steering assist: center manual and autonomous forward travel BEFORE
   // the reflex gate — the assist steers, the reflex still stops. Open rooms and
   // the stub build produce exactly zero correction.
-  if (!halted) ang_t += hall_assist_correction(c, lin_t);
+  if (!halted) {
+    float assist = hall_assist_correction(c, lin_t);
+    if (c.cmd_mode == CMD_COME && !c.finite.come_turning && lin_t > ASSIST_MIN_LIN_MS
+        && !c.full_override && c.params.assist_enabled) {
+      // Restore only after BOTH front halves and both sides clear the avoidance
+      // envelope. A balanced narrow passage is not permission to turn into its wall.
+      const float front_clear = fmaxf(c.params.assist_engage_mm, COME_FRONT_ASSIST_ENGAGE_MM) + 100.f;
+      const float side_clear = c.params.assist_engage_mm + 100.f;
+      const bool clear = c.tof.fl >= front_clear && c.tof.fr >= front_clear
+          && c.tof.lf >= side_clear && c.tof.lb >= side_clear
+          && c.tof.rf >= side_clear && c.tof.rb >= side_clear;
+      assist = c.finite.come_heading.correction(DEG2RAD(c.imu.yaw), c.imu.ok,
+                                                dt, clear, assist);
+    }
+    ang_t += assist;
+  }
 
   // Charging lockout: while on the charger NOTHING moves — not manual teleop,
   // not autonomy, and deliberately NOT the R3 sensor-bypass (full_override):

@@ -107,6 +107,17 @@ gamepad drive, Python `move`, and the forward phase of Python `come`; reverse mo
 pure turns, and deliberate arcs are not auto-centered. The operator's stick adds on top
 in manual mode, and B/e-stop + the stop reflex always win.
 
+During autonomous `come`, the matrix-fused front halves now anticipate asymmetric
+obstacles out to 900 mm (ordinary hallway side sensing stays unchanged). Front
+steering is capped at 0.25 rad/s, with existing close-side repulsion and stop
+reflexes still authoritative. The approach remembers its initial forward IMU
+bearing: obstacle avoidance wins while either side/front remains crowded, then
+after 0.4 seconds of clearance it gently restores that bearing while rolling.
+IMU loss disables restoration for that command rather than changing references.
+This restores orientation, not the original geometric path after a lateral offset;
+the host camera loop finishes facing the caller at arrival without another advance.
+Requires rebuilding/flashing the motion ESP32; a Python restart alone cannot apply it.
+
 Finite turns use the LSM6DS3 gyro yaw as the physical completion signal when the IMU is
 healthy, so spinning encoders cannot falsely claim a completed turn when the wheels slip.
 Encoder odometry remains the fallback if the IMU was unavailable when the turn began.

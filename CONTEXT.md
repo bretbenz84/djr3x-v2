@@ -3190,3 +3190,19 @@ to its world-state camera slot for the errand; losing it holds rather than
 switching to another visitor. Existing confirmed-identity targeting, obstacle
 stops, room rules, bounded search, and approach limits remain in effect. Tests use
 mocked hardware; physical direction calibration still requires a live run.
+
+
+## Curved come-here avoidance and heading recovery (2026-09-07)
+
+The motion firmware already feeds floor-rejected matrix halves into hallway
+steering, but it previously kept the deflected travel bearing after furniture
+cleared. `travel_heading.h` now retains the initial forward IMU bearing for each
+COME and restores it gently after 0.4 seconds of both front and side clearance.
+Avoidance wins throughout obstruction; loss of IMU disables restoration for that
+command. COME front anticipation starts at 900 mm with its front correction capped
+at 0.25 rad/s. Manual drive and explicit arcs are unaffected. The host may finish
+arrival with bounded camera alignment, without starting another forward leg.
+This is local reactive steering, not a map-based route around arbitrary furniture.
+Firmware flash is required for curved heading recovery. Native controller tests
+exercise left/right avoidance, clear-gap hysteresis, heading wrap and IMU loss;
+physical clearance and steering still need live validation.

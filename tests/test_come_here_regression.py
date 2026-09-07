@@ -216,16 +216,19 @@ class ComeHereRegressionTest(_ComeFixture):
         self.assertFalse(MA.requested_come_active())
         self.turn.assert_called_once()
 
-    def test_arrival_is_processed_before_an_off_center_face_can_realign(self):
+    def test_arrival_finishes_facing_caller_without_another_advance(self):
         self.assertTrue(self._request(person_id=1))
         self._tick()
-        # The drive stops close to Bret; his face now reads 13 degrees right.
-        # Field 01:06:04 completed -> 01:06:06 attempted another -13 degree turn.
         self.scene["people"][0]["face_box"] = (1359, 400, 200, 200)
-        with mock.patch.object(MA.motion_controller, "last_come_result", return_value=(8, "completed")):
+        with mock.patch.object(MA.motion_controller, "last_come_result", return_value=(8, "completed")), \
+             mock.patch.object(config, "MOTION_COME_ALIGN_SETTLE_SECS", 0.):
+            self._tick()
+            self.assertTrue(MA._requested_come['arrival_only'])
+            self.turn.assert_called_once()
+            self.assertLess(self.turn.call_args.args[0], 0.)
+            self.scene["people"][0]["face_box"] = _CENTERED_FACE
             self._tick()
         self.assertFalse(MA.requested_come_active())
-        self.turn.assert_not_called()
         self.come.assert_called_once()
 
     def test_arrival_with_camera_dipped_out_of_view_does_not_start_a_search(self):

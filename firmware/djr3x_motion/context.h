@@ -7,6 +7,7 @@
 #pragma once
 #include <Arduino.h>
 #include "protocol.h"
+#include "travel_heading.h"
 #include "calib.h"   // boot defaults for the runtime-tunable drive params below
 
 // ===== Small numeric helpers (shared) ======================================
@@ -125,6 +126,7 @@ struct FiniteCmd {
   // delayed.
   uint32_t block_match_ms = 0;
   // come bookkeeping
+  TravelHeading come_heading;  // fixed at the start of forward travel
   bool     come_turning  = false;  // phase 1: rotating to heading
   float    come_stop_at  = 0;      // m
   float    come_sim_wall = 0;      // m, stub-only virtual wall ahead at start
