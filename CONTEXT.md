@@ -3206,3 +3206,13 @@ This is local reactive steering, not a map-based route around arbitrary furnitur
 Firmware flash is required for curved heading recovery. Native controller tests
 exercise left/right avoidance, clear-gap hysteresis, heading wrap and IMU loss;
 physical clearance and steering still need live validation.
+
+
+## Continuous listening: owner-confirmed live acceptance (2026-09-07)
+
+Bret confirmed that in the latest live run he could split sentences with pauses,
+and Rex retained the later speech and answered it after finishing the current
+reply. Speech preservation and queued follow-up handling are accepted for this
+scenario; do not keep listing this behavior as wholly unvalidated. This does not
+by itself validate speaker separation, echo rejection, cancellation, or shutdown.
+See the phase 5 live acceptance update in `docs/lean_brain_restructuring_plan.md`.

@@ -486,6 +486,15 @@ played/dropped truth, delivered-text return on cut-short streamed replies. NOT
 done, deliberately: the turn-coordinator extraction and concurrent input/response
 processing — those need live sessions to validate and stay as designed here.
 
+Live acceptance update 2026-09-07 — **passed for speech preservation and queued
+follow-up replies**, confirmed by Bret on the live robot. In the most recent run,
+he split sentences with pauses; Rex retained the later speech and addressed it
+after finishing his current reply. Bret explicitly accepted this part of the
+restructure. This confirms the intended finish-current-reply-then-handle-new-speech
+behavior for that scenario. It does not establish the separate two-speaker,
+echo-rejection, cancellation, or shutdown acceptance cases. The September 4 status
+above describes the earlier implementation stage, not this current live result.
+
 ## Budget and release gates
 
 Numeric values below are proposed engineering targets, not measured promises.
