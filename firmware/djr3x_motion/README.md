@@ -18,7 +18,7 @@ v1) and has **two build modes** (see "Build modes" below):
   base**, docs §14).
 
 - The plant model in `control.cpp` synthesizes odometry from commanded velocity,
-  so `turn`/`move`/`come` actually run to completion and emit `done`.
+  so `turn`/`move` actually run to completion and emit `done`.
 - `hal.cpp` returns a "clear room" for the ToF sensors, so the reflex/zone logic
   stays green.
 - Everything above the HAL (protocol, control, safety, state machine, watchdog,
@@ -103,28 +103,17 @@ stop reflex + room sense). All stay at 0x29; the TCA9548A mux selects one channe
 time (zero XSHUT GPIOs). There is **no down/cliff sensor** in this layout, so cliff/
 drop-off detection is unavailable. While driving FORWARD, the firmware auto-steers away
 from walls / centers in a hallway (`assist_*` config params, docs §6.4). This applies to
-gamepad drive, Python `move`, and the forward phase of Python `come`; reverse movement,
-pure turns, and deliberate arcs are not auto-centered. The operator's stick adds on top
-in manual mode, and B/e-stop + the stop reflex always win.
+gamepad drive and Mac `drive`/`move` commands; reverse movement and pure turns
+are not auto-centered. The operator's stick adds on top in manual mode, and
+B/e-stop plus the stop reflex always win. Front avoidance starts at the larger
+of 900 mm and the configured assist range; its contribution is capped at 0.25 rad/s.
 
-During autonomous `come`, the matrix-fused front halves now anticipate asymmetric
-obstacles out to the larger of 900 mm, the configured assist range, or the requested
-stop distance plus 600 mm (ordinary hallway side sensing stays unchanged). Front
-steering is capped at 0.25 rad/s, with existing close-side repulsion and stop
-reflexes still authoritative. The approach remembers its initial forward IMU
-bearing: obstacle avoidance wins while either side/front remains crowded, then
-after 0.4 seconds of clearance it gently restores that bearing while rolling.
-IMU loss disables restoration for that command rather than changing references.
-This restores orientation, not the original geometric path after a lateral offset;
-the host camera loop finishes facing the caller at arrival without another advance.
-Hardware `come` now measures arrival using the nearer valid matrix-fused front ToF
-range, with a 30 mm arrival tolerance and a braking-distance speed taper through
-the normal acceleration slew. It no longer completes after a simulated 0.6 m:
-that virtual wall exists only in hardware-free builds. Missing both front ranges,
-4 m of forward travel, or 20 seconds without arrival aborts the command. A nearby
-object can determine the stopping distance; these sensors do not measure person
-identity or guarantee a clear path around furniture. Hard obstacle stops remain.
-Requires rebuilding/flashing the motion ESP32; a Python restart alone cannot apply it.
+Since firmware 0.2.0, **the Mac owns come-here semantics**. There is no firmware
+`come` command, social stopping distance, or caller-heading restoration. The Mac
+sends ordinary `turn` and refreshed `drive` commands; the ESP32 handles motor
+control, acceleration, obstacle avoidance, gamepad priority, and the watchdog.
+A host update is required with this firmware. See `intelligence/approach.py` for
+target tracking, estimated camera range, arrival confirmation, and loss limits.
 
 Finite turns use the LSM6DS3 gyro yaw as the physical completion signal when the IMU is
 healthy, so spinning encoders cannot falsely claim a completed turn when the wheels slip.
@@ -348,7 +337,7 @@ as a shortest-path delta from the live heading (`g_ctx.odom.theta`). (Needs the
 `-DMOTION_HW_PRESENT=1` build for real encoders; on the stub build the turn "works" but only
 against synthesized odometry, testing nothing.)
 
-Any meaningful stick push switches `owner` to **MANUAL** — the Mac's drive/turn/move/come
+Any meaningful stick push switches `owner` to **MANUAL** — the Mac's drive/turn/move
 are then refused (`stop`/`estop`/`config`/`ping` still work) and the GUI shows
 `owner: manual`. Default is **MANUAL-ASSISTED** (ToF still protects you); FULL-OVERRIDE
 is the only way past it and only while held. If the pad drops, the base stops immediately

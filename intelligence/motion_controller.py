@@ -110,6 +110,77 @@ _last_come_seq: "int | None" = None
 # from "something stepped in front of me". ToF cannot make that call — a dog
 # standing 0.5 m away looks exactly like having reached someone.
 _last_come_result: "str | None" = None
+_approach_lock = threading.RLock()
+_host_approach: dict | None = None
+_last_come_detail: dict = {}
+
+
+def last_come_detail() -> dict:
+    return dict(_last_come_detail)
+
+
+def _finish_host_approach(result: str, reason: str, *, send_stop: bool = True) -> None:
+    global _host_approach, _last_come_detail
+    with _approach_lock:
+        active = _host_approach
+        if active is None:
+            return
+        _host_approach = None
+        _last_come_detail = {'owner': 'mac', 'reason': reason, 'arrival': result == 'completed'}
+        if send_stop and motion.connected():
+            motion.send({'cmd': 'drive', 'lin': 0., 'ang': 0.})
+        _log.info('[approach] Mac end seq=%s result=%s reason=%s travel=%.2fm target_range=%s',
+                  active['seq'], result, reason, active['plan'].travel, active['plan'].last_range)
+        _on_motion_done({'seq': active['seq'], 'result': result, 'owner': 'mac'})
+
+
+def _heartbeat_approach() -> bool:
+    """Own the destination on the Mac; refresh only short-lived motor setpoints."""
+    with _approach_lock:
+        active = _host_approach
+        if active is None:
+            return False
+        if _autonomous_allowed() is not None:
+            _finish_host_approach('aborted', 'motion permission lost')
+            return True
+        from intelligence import approach, motion_agency
+        from world_state import world_state
+        now = time.monotonic()
+        telemetry = motion.telemetry() or {}
+        if active.get('turn_seq') is not None:
+            result = motion.done_result(active['turn_seq'])
+            if result is None and now-active['plan'].started < 8:
+                motion.ping()
+                return True
+            if result != 'completed':
+                _finish_host_approach('aborted', 'initial alignment failed')
+                return True
+            active['turn_seq'] = None
+        snapshot = world_state.snapshot()
+        person = approach.target_in_frame(snapshot, active['person_id'], active['track_id'])
+        target_range = bearing = seen = None
+        if person is not None:
+            seen = person.get('face_last_seen_at')
+            if seen is not None and time.time()-float(seen) <= _get_float('MOTION_COME_CAMERA_FRESH_SECS', 1.5):
+                frame = (snapshot.get('self_state') or {}).get('frame_size') or {}
+                width = frame.get('width') or getattr(config, 'CAMERA_FRAME_WIDTH', 1920)
+                target_range = approach.face_range_m(person, width,
+                    _get_float('MOTION_COME_CAM_HALF_FOV_DEG', 25.),
+                    _get_float('MOTION_COME_FACE_WIDTH_M', .16))
+                right = motion_agency._come_bearing_deg(person, head_locked=False)
+                bearing = -right if right is not None else None
+        decision = active['plan'].step(now, telemetry, target_range, bearing, seen)
+        if decision.reason != active.get('reason') or now-active.get('log_at', 0) >= 2:
+            _log.info('[approach] Mac seq=%s target=%s/%s range=%s front=%s reason=%s velocity=%.2f/%.2f',
+                      active['seq'], active['person_id'], active['track_id'],
+                      active['plan'].last_range, telemetry.get('tof_mm'), decision.reason, decision.lin, decision.ang)
+            active.update(reason=decision.reason, log_at=now)
+        if decision.result:
+            _finish_host_approach(decision.result, decision.reason)
+        elif motion.send({'cmd': 'drive', 'lin': decision.lin, 'ang': decision.ang}) is None:
+            _finish_host_approach('aborted', 'drive send failed')
+        return True
+
 
 
 def last_come_result() -> "tuple[int | None, str | None]":
@@ -351,6 +422,10 @@ def _on_motion_done(msg: dict) -> None:
     and the "whoa, blocked" accent when the base stops a command on an obstacle."""
     try:
         result = str((msg or {}).get("result") or "")
+        with _approach_lock:
+            if (_host_approach is not None and msg.get('seq') == _host_approach['seq']
+                    and msg.get('owner') != 'mac'):
+                return  # physical alignment completion is not caller arrival
         _finish_swing_escape(msg or {})
         # The wheels have stopped — cut the looping whir first, so the arrival /
         # blocked accent lands in silence instead of on top of a drive sound.
@@ -633,6 +708,7 @@ def _heartbeat_loop() -> None:
         if motion.connected():
             _heartbeat_tick()
         else:
+            _finish_host_approach('aborted', 'motion link disconnected', send_stop=False)
             now = time.monotonic()
             if now - last_reconnect >= reconnect_interval:
                 last_reconnect = now
@@ -663,6 +739,8 @@ def _heartbeat_tick() -> None:
     if _tof_should_cut_inflight():
         stop()
         return
+    if _heartbeat_approach():
+        return
     with _arc_lock:
         if _arc_active:
             if time.monotonic() < _arc_until and _autonomous_allowed() is None:
@@ -686,6 +764,7 @@ def _cancel_arc() -> None:
     global _arc_active
     with _arc_lock:
         _arc_active = False
+    _finish_host_approach('aborted', 'superseded by another motion command', send_stop=False)
 
 
 _TUNING_KEYS = (
@@ -714,7 +793,6 @@ def _push_config() -> None:
         "max_ang": math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 85.0)),
         "slow_zone_m": _get_float("MOTION_SLOW_ZONE_M", 0.60),
         "stop_zone_m": _get_float("MOTION_STOP_ZONE_M", 0.30),
-        "come_stop_at_m": _get_float("MOTION_COME_STOP_AT_M", 0.60),
         "default_turn_deg": _get_float("MOTION_DEFAULT_TURN_DEG", 90.0),
         "default_turn_rate": _get_float("MOTION_DEFAULT_TURN_RATE", 75.0),
         "watchdog_ms": _get_int("MOTION_WATCHDOG_MS", 500),
@@ -1141,45 +1219,46 @@ def turn_to_compass(target_deg: float) -> "int | None":
 
 
 def come(heading: float = 0.0, stop_at: "float | None" = None,
-         speed: "float | None" = None) -> "int | None":
-    """Turn toward `heading` (deg, + = left), then advance to `stop_at` m from the
-    nearest forward obstacle. ``speed`` (m/s) sets the advance pace — None keeps
-    the firmware default (max_lin); older firmware ignores the field entirely."""
+         speed: "float | None" = None, *, target: dict | None = None) -> "int | None":
+    """Start a Mac-owned, camera-targeted approach using drive/turn primitives."""
+    global _host_approach, _last_come_seq, _last_come_result, _last_come_detail
     reason = _autonomous_allowed()
     if reason:
-        _suppressed("come", reason)
+        _suppressed('come', reason)
         return None
-    if "come" not in motion.caps():
-        _log.debug("motion come unsupported by firmware")
+    if 'drive' not in motion.caps():
         return None
-    heading = _clampf(heading, -180.0, 180.0)
+    if target is None:
+        from world_state import world_state
+        visible = [p for p in world_state.get('people') or []
+                   if p.get('face_visible') is not False and not p.get('face_missing') and p.get('face_box')]
+        target = visible[0] if len(visible) == 1 else None
+    if target is None or (target.get('id') is None and target.get('person_db_id') is None):
+        _suppressed('come', 'no acquired camera target')
+        return None
+    heading = _clampf(heading, -180., 180.)
     if heading:
-        # The firmware spins to `heading` before advancing — that spin sweeps the
-        # body just like turn(). Don't shrink it (he'd walk off at the wrong
-        # bearing); refuse the whole come if the swing is blocked.
-        _, reason = _swing_gate("come", heading)
+        _, reason = _swing_gate('come', heading)
         if reason:
             return None
-    stop_at = _get_float("MOTION_COME_STOP_AT_M", 0.60) if stop_at is None else stop_at
+    from intelligence.approach import Approach
     _invalidate_turn_verification()
     _cancel_arc()
-    payload = {
-        "cmd": "come",
-        "heading": heading,
-        "stop_at": _clampf(stop_at, 0.05, 5.0),
-    }
-    if speed is not None:
-        payload["speed"] = _clampf(abs(speed), 0.0,
-                                   _get_float("MOTION_MAX_LINEAR_MS", 0.40))
-    seq = motion.send(payload)
-    if seq is not None:
-        _note_issued(seq, "come here")
-    if seq is not None:
-        global _last_come_seq, _last_come_result
-        _last_come_seq = seq
-        _last_come_result = None      # in flight
-        _fx_drive_loop_start("motion_move", seq)
-    return seq
+    with _approach_lock:
+        seq = (turn(heading, verify=False, allow_escape=False) if heading
+               else motion.send({'cmd': 'drive', 'lin': 0., 'ang': 0.}))
+        if seq is None:
+            return None
+        pace = _get_float('MOTION_MAX_LINEAR_MS', .4)
+        pace = pace if speed is None else _clampf(abs(speed), 0., pace)
+        distance = _get_float('MOTION_COME_STOP_AT_M', .6) if stop_at is None else float(stop_at)
+        _host_approach = dict(seq=seq, turn_seq=seq if heading else None,
+            person_id=target.get('person_db_id'), track_id=target.get('id'),
+            plan=Approach(time.monotonic(), distance, pace, _get_float('MOTION_ACCEL_LINEAR_MS2', .35)))
+        _last_come_seq, _last_come_result, _last_come_detail = seq, None, {}
+        _note_issued(seq, 'come here')
+        _fx_drive_loop_start('motion_move', seq)
+        return seq
 
 
 def arc(lin: float, ang: float, duration_s: "float | None" = None) -> "int | None":
@@ -1261,9 +1340,9 @@ def stop() -> "int | None":
     _invalidate_turn_verification()
     _cancel_swing_escape()
     _fx_drive_loop_stop_all()   # a stop means silence now, not at the clip's end
+    _cancel_arc()
     if not motion.connected():
         return None
-    _cancel_arc()
     return motion.send({"cmd": "stop"})
 
 

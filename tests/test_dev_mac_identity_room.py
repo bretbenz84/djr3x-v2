@@ -44,6 +44,14 @@ class ShortReplyTests(unittest.TestCase):
                 self.assertIsNone(A.resolve_authoritative(replace(ev, **change)).person_id)
 
 
+    def test_face_supported_short_command_is_checked_before_new_speaker_veto(self):
+        for score in (.499, .55):
+            result = A.resolve_authoritative(evidence(text='Come here.', words=2,
+                raw_best_score=score, known_floor=.45, voiced_secs=.63,
+                previous_speaker_pid=None, engaged_pid=None, continuity_age_secs=None))
+            self.assertEqual(result.person_id, 1)
+            self.assertFalse(result.learning_allowed)
+
     def test_reported_short_replies_preserve_name_but_never_learn(self):
         for text, score, words, secs, age in (
             ('This is the bedroom.', .490, 4, 1.08, 67.8),

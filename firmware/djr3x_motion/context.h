@@ -7,7 +7,6 @@
 #pragma once
 #include <Arduino.h>
 #include "protocol.h"
-#include "travel_heading.h"
 #include "calib.h"   // boot defaults for the runtime-tunable drive params below
 
 // ===== Small numeric helpers (shared) ======================================
@@ -49,7 +48,6 @@ struct MotionParams {
                                    // matrix ToF adds ~77 ms detection latency; at 0.6 m/s
                                    // the 0.15 envelope physically could not stop in time)
 
-  float    come_stop_at_m= 0.60f;
   float    default_turn_deg  = 90.0f;
   float    default_turn_rate = 75.0f;   // deg/s
   uint32_t watchdog_ms       = 500;
@@ -101,7 +99,7 @@ inline float slow_zone_eff(const MotionParams& p, float lin_ms) {
   return fmaxf(s, stop_zone_eff(p, lin_ms) + 0.05f);        // keep a real band above stop
 }
 
-// ===== Active finite command (turn / move / come) ===========================
+// ===== Active finite command (turn / move) ===========================
 struct FiniteCmd {
   CmdKind  kind = CMD_NONE;
   uint32_t seq  = 0;
@@ -125,12 +123,6 @@ struct FiniteCmd {
   // killing it. The reflex still zeroes velocity instantly; only the give-up is
   // delayed.
   uint32_t block_match_ms = 0;
-  // come bookkeeping
-  TravelHeading come_heading;  // fixed at the start of forward travel
-  bool     come_turning  = false;  // phase 1: rotating to heading
-  float    come_stop_at  = 0;      // m
-  uint32_t come_started_ms = 0; // bounded real-sensor approach lifetime
-  float    come_sim_wall = 0;      // m, stub-only virtual wall ahead at start
   // wheel bring-up jog bookkeeping (CMD_WHEEL): raw single-wheel duty, time-bounded
   uint8_t  wheel_side    = 0;      // 0 = left, 1 = right
   float    wheel_frac    = 0;      // signed drive fraction -1..1 (+ = that wheel forward)

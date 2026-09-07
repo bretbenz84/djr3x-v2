@@ -23520,9 +23520,12 @@ def _handle_router_motion_action(
     # A fresh single command supersedes any queued route. Its own command will
     # supersede the in-flight firmware finite command; stop/come need an explicit
     # controlled stop because they may not immediately issue another finite step.
-    _cancel_motion_sequence(
-        f"superseded by {action}", stop_base=(action == "motion.come")
-    )
+    stop_for_come = action == "motion.come"
+    if stop_for_come:
+        from intelligence import motion_agency
+        # Let the errand compare callers before braking an existing approach.
+        stop_for_come = not motion_agency.requested_come_active()
+    _cancel_motion_sequence(f"superseded by {action}", stop_base=stop_for_come)
 
     if action == "motion.stop":
         _clear_motion_continuation()

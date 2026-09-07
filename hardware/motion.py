@@ -264,7 +264,7 @@ def _dispatch(msg: dict) -> None:
     mtype = msg.get("type")
     if mtype == "telemetry":
         with _state_lock:
-            _latest_telemetry = msg
+            _latest_telemetry = dict(msg, rx_monotonic=time.monotonic())
     elif mtype == "tofmx":
         # 64 zones hex-packed 3 chars each (mm, row-major, row 0 = top,
         # col 0 = robot left) + per-row floor-rejection thresholds.
@@ -294,7 +294,7 @@ def _dispatch(msg: dict) -> None:
         # Command outcomes at INFO: without this, a command the firmware accepted but
         # ended early (done:blocked — boxed in at a bookshelf) was invisible in the
         # logs and read as "Rex ignored me" (field 2026-07-21).
-        _log.info("[motion] done seq=%s result=%s", msg.get("seq"), msg.get("result"))
+        _log.info("[motion] done seq=%s result=%s odom=%s", msg.get("seq"), msg.get("result"), msg.get("odom"))
         seq = msg.get("seq")
         if isinstance(seq, int):
             with _state_lock:

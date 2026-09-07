@@ -561,3 +561,18 @@ selection or physical planning. Phase 2B is part of the early context work, with
 utterance-bound evidence prioritized over additional proactive features. Phases 3
 and 4 can ship independently after phases 2 and 2B;
 phase 5 remains a separate, carefully tested concurrency change.
+
+
+### 2026-09-07: Mac ownership of person-directed approach
+
+Owner clarification: the ESP32 executes motion and danger avoidance; it does not
+interpret come-here, choose a social distance, or decide that a person was reached.
+Firmware 0.2.0 removes the legacy COME command and its arrival/heading state.
+`intelligence/approach.py` now makes approach decisions on the Mac, using the
+acquired camera target, estimated camera range, fresh obstacle telemetry and
+bounded loss/time/travel rules. `motion_controller.py` refreshes drive primitives
+and cancels the stream atomically on stop, manual takeover or another command.
+The firmware still independently enforces drive expiry, watchdog, motor slew,
+physical move/turn completion and obstacle avoidance. Target location does not
+authorize biometric or personal-memory learning. Camera range remains approximate
+and live approach/final-facing equivalence still needs physical validation.

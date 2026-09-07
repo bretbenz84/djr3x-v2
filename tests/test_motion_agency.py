@@ -527,7 +527,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.come.assert_called_once_with(
-            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY
         )
         # The errand now stays ALIVE across the drive so a transient obstruction
         # (a dog crossing) can be waited out and retried; it ends on the firmware
@@ -560,7 +560,7 @@ class MotionAgencyTest(unittest.TestCase):
         self._face_box = _CENTERED_FACE
         self._tick()
         self.come.assert_called_once_with(
-            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY
         )
 
     def test_requested_come_stops_after_full_search(self):
@@ -675,7 +675,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here(person_id=1))
         self._tick(1)
         self.come.assert_called_once_with(
-            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY
         )
 
     def test_requester_sighting_restarts_the_giveup_clock(self):
@@ -734,7 +734,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.come.assert_called_once_with(
-            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY
         )
 
     def test_align_turns_that_never_settle_hand_the_residual_to_come(self):
@@ -1934,7 +1934,7 @@ class RadarFirstComeTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here(person_id=1))
         self._tick(_snapshot(db_id=1, face_box=_CENTERED_FACE))
         # ...is irrelevant: the requester is centred on camera, so he approaches.
-        self.come.assert_called_once_with(0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M)
+        self.come.assert_called_once_with(0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY)
         self.turn.assert_not_called()
         self.assertEqual(self.ring.reads, 0)
 
@@ -2185,8 +2185,8 @@ class ComeDriveGazeTest(unittest.TestCase):
         poses = []
         stop = threading.Event()
         with mock.patch.object(MA, "_base_yaw_deg", side_effect=lambda: yaw["v"]), \
-                mock.patch.object(MA.motion, "done_result",
-                                  side_effect=lambda s: done["v"], create=True), \
+                mock.patch.object(MA.motion_controller, "last_come_result",
+                                  side_effect=lambda: (42, done["v"])), \
                 mock.patch("hardware.servos.set_motion_profile"), \
                 mock.patch("hardware.servos.set_servos",
                            side_effect=lambda d: writes.append(dict(d))), \
@@ -2202,7 +2202,7 @@ class ComeDriveGazeTest(unittest.TestCase):
             done["v"] = "completed"  # the drive ended
             worker.join(timeout=2.0)
         self.assertFalse(worker.is_alive())
-        self.assertEqual(poses[0], ("center", "down-slight"))   # drive pose
+        self.assertEqual(poses[0], ("center", "level"))   # drive pose
         self.assertEqual(poses[-1], ("center", "level"))        # canonical exit pose
         neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
         neutral = int(config.SERVO_CHANNELS["neck"]["neutral"])
@@ -2220,8 +2220,8 @@ class ComeDriveGazeTest(unittest.TestCase):
         writes = []
         stop = threading.Event()
         with mock.patch.object(MA, "_base_yaw_deg", side_effect=lambda: yaw["v"]), \
-                mock.patch.object(MA.motion, "done_result",
-                                  side_effect=lambda s: done["v"], create=True), \
+                mock.patch.object(MA.motion_controller, "last_come_result",
+                                  side_effect=lambda: (42, done["v"])), \
                 mock.patch("hardware.servos.set_motion_profile"), \
                 mock.patch("hardware.servos.set_servos",
                            side_effect=lambda d: writes.append(dict(d))), \
@@ -2246,8 +2246,7 @@ class ComeDriveGazeTest(unittest.TestCase):
         poses = []
         stop = threading.Event()
         with mock.patch.object(MA, "_base_yaw_deg", return_value=0.0), \
-                mock.patch.object(MA.motion, "done_result", return_value=None,
-                                  create=True), \
+                mock.patch.object(MA.motion_controller, "last_come_result", return_value=(42, None)), \
                 mock.patch("hardware.servos.set_motion_profile"), \
                 mock.patch("hardware.servos.set_servos"), \
                 mock.patch("hardware.servos.set_face_tracking_baseline"), \
@@ -2259,7 +2258,7 @@ class ComeDriveGazeTest(unittest.TestCase):
             time.sleep(0.3)
             stop.set()
             worker.join(timeout=2.0)
-        self.assertEqual(poses, [("center", "down-slight")])   # no exit recentre
+        self.assertEqual(poses, [("center", "level")])   # no exit recentre
 
     def test_kill_switch_blocks_the_worker(self):
         with mock.patch.object(config, "MOTION_COME_GAZE_COMP_ENABLED", False,

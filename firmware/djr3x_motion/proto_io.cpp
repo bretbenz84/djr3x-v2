@@ -87,7 +87,7 @@ void emit_hello() {
   doc["proto"] = MOTION_PROTO_VERSION;
   doc["fw"] = MOTION_FW_VERSION;
   JsonArray caps = doc["caps"].to<JsonArray>();
-  caps.add("drive"); caps.add("turn"); caps.add("move"); caps.add("come"); caps.add("stop");
+  caps.add("drive"); caps.add("turn"); caps.add("move"); caps.add("stop");
   if (battery_gauge_available()) caps.add("batt_full");
   if (battery_gauge_available()) caps.add("batt_soc");
   if (battery_gauge_available()) caps.add("chg_assert");
@@ -208,7 +208,6 @@ void emit_config_ack(uint32_t seq, bool clamped, const MotionParams& p) {
   e["max_ang"] = p.max_ang;
   e["slow_zone_m"] = p.slow_zone_m;
   e["stop_zone_m"] = p.stop_zone_m;
-  e["come_stop_at_m"] = p.come_stop_at_m;
   e["default_turn_deg"] = p.default_turn_deg;
   e["default_turn_rate"] = p.default_turn_rate;
   e["watchdog_ms"] = p.watchdog_ms;
@@ -400,23 +399,6 @@ static void dispatch(const char* cmd, JsonDocument& doc, uint32_t seq) {
     float speed = IS_NUM(doc["speed"]) ? doc["speed"].as<float>() : P.max_lin;
     speed = clamp_flag(speed, 0.0f, P.max_lin, cl);
     ctl_move(dist, speed, seq);
-    emit_ack(seq, true, cl ? R_CLAMPED : ACK_OK);
-    return;
-  }
-
-  if (!strcmp(cmd, "come")) {
-    if (gate != ACK_OK) { emit_ack(seq, false, gate); return; }
-    MotionParams P; LOCK_STATE(); P = g_ctx.params; UNLOCK_STATE();
-    bool cl = false;
-    float heading = IS_NUM(doc["heading"]) ? doc["heading"].as<float>() : 0.0f;
-    heading = clamp_flag(heading, -180.0f, 180.0f, cl);
-    float stop_at = IS_NUM(doc["stop_at"]) ? doc["stop_at"].as<float>() : P.come_stop_at_m;
-    stop_at = clamp_flag(stop_at, 0.05f, 5.0f, cl);
-    // Optional approach speed (2026-08-19, saunter support) — absent/0 keeps the
-    // historical behavior (max_lin), so older hosts are unaffected.
-    float speed = IS_NUM(doc["speed"]) ? doc["speed"].as<float>() : P.max_lin;
-    speed = clamp_flag(speed, 0.0f, P.max_lin, cl);
-    ctl_come(heading, stop_at, speed, seq);
     emit_ack(seq, true, cl ? R_CLAMPED : ACK_OK);
     return;
   }

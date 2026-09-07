@@ -167,10 +167,16 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
                        and enough_margin and ev.accept_tier in {"hard", "known_floor", "roster"})
     corroborated = (candidate is not None and enough_margin
                     and ev.raw_best_score >= ev.known_floor and visual == candidate)
-    if short_voice_switch_needs_confirmation(ev.as_dict()) and not corroborated:
+    face_supported = _guarded_face_voice(ev)
+    short_switch = short_voice_switch_needs_confirmation(ev.as_dict())
+    if short_switch and not (corroborated or face_supported):
         return Resolution("ambiguous", None, None,
                           "brief voice cannot establish a different speaker",
                           ["insufficient speech for an uncorroborated speaker change"])
+    if short_switch and face_supported and not corroborated:
+        return Resolution("known", candidate, ev.raw_best_name,
+                          "brief enrolled voice supported by continuous sole known face",
+                          learning_allowed=False)
     if strong or corroborated or supported_voice:
         if (ev.bearing_selected_pid is not None and ev.bearing_selected_pid != candidate
                 or ev.bearing_contradiction and candidate in ev.visible_known_ids):
@@ -182,7 +188,7 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
         return Resolution("known", candidate, ev.raw_best_name,
                           "strong voice" if strong else ("voice with interval visual corroboration"
                           if corroborated else "accepted voice score and margin"))
-    if _guarded_face_voice(ev):
+    if face_supported:
         return Resolution("known", candidate, ev.raw_best_name,
                           "enrolled voice supported by continuous sole known face",
                           learning_allowed=False)

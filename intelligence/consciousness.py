@@ -874,6 +874,7 @@ def note_speaker_gaze_intent(
     reason: str = "speech",
     force_search: Optional[bool] = None,
     bearing_deg: Optional[float] = None,
+    track_id: Optional[str] = None,
 ) -> None:
     """Tell the gaze loop that recent speech should guide head target choice.
 
@@ -913,6 +914,7 @@ def note_speaker_gaze_intent(
         _speaker_gaze_intent.clear()
         _speaker_gaze_intent.update({
             "person_id": pid,
+            "track_id": track_id,
             "unknown_voice": bool(unknown_voice),
             "reason": str(reason or "speech"),
             "requested_at": now,
@@ -12196,6 +12198,7 @@ def _visible_face_tracking_candidates(people: Optional[list[dict]] = None) -> li
         x, y, w, h = box
         candidates.append({
             "key": _face_tracking_key(person, idx),
+            "track_id": person.get("id"),
             "person_id": person.get("person_db_id"),
             "box": box,
             "center": (x + w / 2.0, y + h / 2.0),
@@ -12957,6 +12960,11 @@ def _candidate_matches_speaker_gaze(candidate: dict, intent: Optional[dict]) -> 
     if not intent:
         return False
     person_id = intent.get("person_id")
+    if (intent.get("track_id") is not None and candidate.get("track_id") == intent["track_id"]
+            and (person_id is None or candidate.get("person_id") in (None, person_id))):
+        return True
+    if intent.get("track_id") is not None and person_id is None:
+        return False  # a different unnamed face cannot inherit the acquired track
     if person_id is not None:
         try:
             return int(candidate.get("person_id")) == int(person_id)
@@ -12975,12 +12983,15 @@ def _candidate_matches_speaker_gaze(candidate: dict, intent: Optional[dict]) -> 
 
 
 def _speaker_gaze_intent_needs_specific_target(intent: Optional[dict]) -> bool:
-    return bool(intent and (intent.get("person_id") is not None or intent.get("unknown_voice")))
+    return bool(intent and (intent.get("person_id") is not None or intent.get("unknown_voice")
+                            or intent.get("track_id") is not None))
 
 
 def _speaker_gaze_lock_matches_intent(intent: Optional[dict]) -> bool:
     if not intent:
         return False
+    if intent.get("track_id") is not None:
+        return _candidate_matches_speaker_gaze(_face_tracking_lock, intent)
     person_id = intent.get("person_id")
     if person_id is not None:
         try:
@@ -13003,6 +13014,9 @@ def _speaker_gaze_request_search(now: float) -> Optional[dict]:
 def _speaker_gaze_candidate(candidates: list[dict], intent: Optional[dict]) -> Optional[dict]:
     if not intent or not candidates:
         return None
+    if intent.get("track_id") is not None:
+        matches = [item for item in candidates if _candidate_matches_speaker_gaze(item, intent)]
+        return max(matches, key=lambda item: item["area"]) if matches else None
     person_id = intent.get("person_id")
     if person_id is not None:
         matches = []
@@ -14333,6 +14347,7 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         _prev_lock_pid = _face_tracking_lock.get("person_id") if _face_tracking_lock else None
         _face_tracking_lock = {
             "key": candidate["key"],
+            "track_id": candidate.get("track_id"),
             "person_id": candidate.get("person_id"),
             "last_seen_at": now,
         }

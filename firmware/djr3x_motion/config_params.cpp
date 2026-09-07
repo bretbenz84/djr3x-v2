@@ -30,7 +30,6 @@ bool apply_config(JsonObjectConst cmd, MotionParams& out) {
   clamped |= take_f(cmd, "max_ang",        0.0f, HARDCAP_MAX_ANGULAR_RAD_S, p.max_ang);  // rad/s on the wire
   clamped |= take_f(cmd, "slow_zone_m",    0.0f, 5.0f,                      p.slow_zone_m);
   clamped |= take_f(cmd, "stop_zone_m",    0.0f, 5.0f,                      p.stop_zone_m);
-  clamped |= take_f(cmd, "come_stop_at_m", 0.0f, 5.0f,                      p.come_stop_at_m);
   clamped |= take_f(cmd, "default_turn_deg",  0.0f, 360.0f,                 p.default_turn_deg);
   clamped |= take_f(cmd, "default_turn_rate", 0.0f, HARDCAP_MAX_TURN_RATE_DPS, p.default_turn_rate);
   clamped |= take_u(cmd, "watchdog_ms",     50u, HARDCAP_WATCHDOG_MS,       p.watchdog_ms);

@@ -43,6 +43,24 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(verdict.person_id, 1)
         self.assertFalse(verdict.learning_allowed)
 
+    def test_come_gaze_follows_same_track_when_recognition_changes(self):
+        intent = {'person_id': 1, 'track_id': 'person_1', 'unknown_voice': False}
+        for pid in (None, 1, None):
+            candidate = {'person_id': pid, 'track_id': 'person_1', 'area': 100}
+            self.assertTrue(C._candidate_matches_speaker_gaze(candidate, intent))
+            self.assertIs(C._speaker_gaze_candidate([candidate], intent), candidate)
+            with patch.object(C, '_face_tracking_lock', candidate):
+                self.assertTrue(C._speaker_gaze_lock_matches_intent(intent))
+        self.assertFalse(C._candidate_matches_speaker_gaze(
+            {'person_id': 4, 'track_id': 'person_1'}, intent))
+        self.assertFalse(C._candidate_matches_speaker_gaze(
+            {'person_id': None, 'track_id': 'other'},
+            {'person_id': None, 'track_id': 'guest', 'unknown_voice': True}))
+        # An anonymous caller becoming recognized should satisfy the same gaze.
+        self.assertTrue(C._candidate_matches_speaker_gaze(
+            {'person_id': 1, 'track_id': 'guest'},
+            {'person_id': None, 'track_id': 'guest', 'unknown_voice': True}))
+
     def test_come_command_defers_identity_even_when_legacy_parser_misses(self):
         with patch.object(I.command_parser, 'parse', return_value=None):
             self.assertTrue(I._turn_should_defer_identity_prompts('Come here.'))

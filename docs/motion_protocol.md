@@ -76,7 +76,7 @@ The link is **session-oriented**: the Mac re-establishes it every time it opens 
 ```
 Mac opens serial
 Mac  → {"v":1,"cmd":"hello","seq":1,"host":"djr3x","proto":1}
-ESP32→ {"v":1,"type":"hello","proto":1,"fw":"0.3.1","caps":["drive","turn","move","come","gamepad"],"boot_id":7741}
+ESP32→ {"v":1,"type":"hello","proto":1,"fw":"0.3.1","caps":["drive","turn","move","stop"],"boot_id":7741}
         (… then telemetry begins streaming …)
 ```
 
@@ -85,8 +85,7 @@ ESP32→ {"v":1,"type":"hello","proto":1,"fw":"0.3.1","caps":["drive","turn","mo
 - **No `hello` reply, or `proto` the Mac can't speak → motion is DISABLED** for the
   session (logged like an unplugged servo bus; `connect()` returns `False`). The robot
   still runs; it just won't move.
-- `caps` lets the Mac feature-gate optional commands (e.g. don't expose "come here" if
-  `"come"` isn't advertised). The minimal viable `caps` is `["drive","stop"]` (Phase 0/1).
+- `caps` lets the Mac feature-gate physical commands; come-here uses `drive`/`turn`. The minimal viable `caps` is `["drive","stop"]` (Phase 0/1).
 - `boot_id` is a random/counter value that changes on every ESP32 reset. If the Mac sees
   `boot_id` change mid-session (in telemetry or a new `hello`), the ESP32 rebooted → the
   Mac re-runs handshake and treats prior odometry as invalid.
@@ -105,16 +104,13 @@ Decided once, here, so firmware and Python never disagree.
 - **Linear velocity / distance:** metres, m/s. **`+` = forward, `−` = reverse.**
 - **Angular velocity / angle:** **`+` = LEFT / counter-clockwise (CCW), `−` = RIGHT /
   clockwise (CW)** (right-hand rule about +z). This is the *one* convention used
-  everywhere: `drive.ang`, `turn.deg`, `come.heading`, and `odom.theta`.
+  everywhere: `drive.ang`, `turn.deg`, and `odom.theta`.
   - So `turn deg:+90` rotates **90° to the LEFT**; `turn deg:-90` rotates 90° right.
   - `drive ang:+0.5` curves left.
-- **Angle units:** `drive.ang` is **rad/s**; `turn.deg`, `turn.rate`, `come.heading`,
+- **Angle units:** `drive.ang` is **rad/s**; `turn.deg`, `turn.rate`,
   `default_turn_deg` are **degrees / deg·s⁻¹**. `odom.theta` is **radians**, wrapped to
   `(−π, π]`. (Rationale: continuous control is SI; human-facing discrete commands are
   degrees.)
-- **`come.heading` frame:** degrees **relative to the robot's current heading at the
-  moment the command is received** (0 = straight ahead, + = left). It is a one-shot
-  point-then-go hint, not a world bearing.
 - **Time `t`:** ESP32 **milliseconds since boot**, `uint32`. Wraps at ~49.7 days; both
   sides treat `t` as monotonic-with-wrap (use unsigned subtraction for deltas, never
   assume it only grows). Telemetry carries `t`; the Mac never sends wall-clock time.
@@ -189,19 +185,24 @@ Drives `dist` metres (sign = direction), ToF-gated in the travel direction, then
 During forward travel, the side pairs and split front view add a bounded hallway-centering
 correction; reverse travel is not auto-centered. **Finite** → `done`.
 
-### 5.5 `come` — advance toward a heading, stop at social distance
-```json
-{"v":1,"cmd":"come","seq":46,"heading":0,"stop_at":0.6}
-```
-| Field | Type | Units | Required | Default |
-| --- | --- | --- | --- | --- |
-| `heading` | float | degrees, +left, robot-relative | no | `0` (straight ahead) |
-| `stop_at` | float | m from nearest fwd obstacle | no | `MOTION_COME_STOP_AT_M` |
-| `speed` | float | m/s advance pace, clamped to `max_lin` | no | `max_lin` (added 2026-08-19; absent/`0` keeps the historical pace, older firmware ignores it) |
+### 5.5 Come-here is a Mac behavior (removed from firmware 0.2.0)
 
-Turn toward `heading` (one-shot), then advance until the nearest forward ToF reads
-`stop_at`, then stop. **Finite** → `done` (`completed` on reaching `stop_at`, `blocked`
-if it can't proceed). Optional capability (`caps` must include `"come"`).
+The ESP32 does not accept or advertise `come`. The Mac selects and retains the
+camera target, optionally sends a physical `turn`, and refreshes `drive` setpoints
+every 150 ms. `intelligence/approach.py` owns pace, heading restoration, caller
+loss, and arrival; `motion_controller.py` owns the stream's lifetime. A stop or
+new command cancels the stream before another setpoint can be sent. Gamepad
+ownership, stale telemetry, missing front clearance, and a disconnected link
+end the host approach. Drive expiry and the firmware watchdog remain independent.
+
+Caller distance is an approximate camera estimate from face width, frame width,
+and camera FOV (configurable `MOTION_COME_FACE_WIDTH_M`, default .16 m). Explicit
+requests use `MOTION_COME_REQUEST_STOP_AT_M` (1.30 m). Near-target evidence must
+persist across at least three fresh face observations and 0.6 s with low speed.
+ToF provides collision clearance, not proof that a person has been reached.
+A transient front block holds the target; a persistent block ends with `blocked`,
+never `completed`. Camera loss has a brief grace then holds; 8 s lost, 20 s total,
+or 4 m travel bounds the attempt. These limits and judgments all run on the Mac.
 
 ### 5.6 `stop` — controlled stop
 ```json
@@ -216,7 +217,7 @@ emits `done result:"superseded"`). Acked.
 {"v":1,"cmd":"estop","seq":48}
 ```
 Cuts motor drive immediately and latches `state:"estop"`. **No further motion** (drive/
-turn/move/come are acked-rejected `reason:"estop"`) until a `clear` (§5.8). Mirrors the
+turn/move are acked-rejected `reason:"estop"`) until a `clear` (§5.8). Mirrors the
 physical e-stop. Acked.
 
 ### 5.8 `clear` — clear estop / latched fault
@@ -331,7 +332,7 @@ The Mac SHOULD wait for `ack` (typ. < 50 ms) before considering a command in fli
 MUST tolerate a missing ack (treat as not-applied after a short timeout; safety never
 depends on an ack arriving).
 
-### 6.3 `done` — finite-command completion (`turn`/`move`/`come`)
+### 6.3 `done` — finite-command completion (`turn`/`move`)
 ```json
 {"v":1,"type":"done","seq":44,"result":"completed","odom":{"x":0.0,"y":0.0,"theta":-1.57}}
 ```
@@ -395,7 +396,7 @@ them in `config.py` so policy and firmware agree.**
 - A `drive` setpoint **expires `MOTION_DRIVE_EXPIRY_MS` (default 300 ms)** after receipt.
   Without a refreshing `drive`, the base ramps to a controlled stop. `ping` does **not**
   refresh it.
-- Finite commands (`turn`/`move`/`come`) are **not** subject to drive-expiry — they run to
+- Finite commands (`turn`/`move`) are **not** subject to drive-expiry — they run to
   their target — but they **are** subject to the heartbeat watchdog (lose comms mid-turn →
   abort + stop, `done result:"aborted"`).
 
@@ -433,7 +434,7 @@ Mac → turn(seq=N)        ESP32 → ack(seq=N, accepted)
 | `state` | Meaning | Accepts motion cmds? |
 | --- | --- | --- |
 | `idle` | Stopped, ready. | yes |
-| `moving` | Executing drive/turn/move/come. | yes (supersedes) |
+| `moving` | Executing drive/turn/move. | yes (supersedes) |
 | `blocked` | Reflex STOP/CLIFF active in travel dir. | only motion *away* from block |
 | `estop` | Latched hard stop. | no (until `clear`) |
 | `fault` | Latched fault (§9). | no (until resolved + `clear`) |
@@ -477,17 +478,13 @@ each; `config` can tighten but never exceed it.** The ack echoes effective value
 | `max_lin` | `MOTION_MAX_LINEAR_MS` | m/s | 0.40 | board limit |
 | `max_ang` | `MOTION_MAX_ANGULAR_DEG_S` → rad/s | (key is deg/s) | 85 | board limit |
 
-`max_lin`/`max_ang` cap **autonomous** motion only (Mac drive/turn/move/come). MANUAL
+`max_lin`/`max_ang` cap **autonomous** motion only (Mac drive/turn/move). MANUAL
 gamepad teleop clamps to the firmware's own ceilings (`calib.h GAMEPAD_MAX_LIN_MS` /
 `GAMEPAD_MAX_ANG_RADS`, bounded by the hard caps) — so the Mac pushing conservative
 autonomous caps no longer slows the human operator.
 | `slow_zone_m` | `MOTION_SLOW_ZONE_M` | m | 0.60 | — |
 | `stop_zone_m` | `MOTION_STOP_ZONE_M` | m | 0.15 | — |
-| `come_stop_at_m` | `MOTION_COME_STOP_AT_M` | m | 0.6 | — |
 
-The host may override `stop_at` per command. The explicit person-seeking voice sequence
-uses `MOTION_COME_REQUEST_STOP_AT_M` (1.0 m by default), while spontaneous social
-approach retains the shorter `MOTION_COME_STOP_AT_M` default.
 | `default_turn_deg` | `MOTION_DEFAULT_TURN_DEG` | deg | 90 | — |
 | `default_turn_rate` | `MOTION_DEFAULT_TURN_RATE` | deg/s | 40 | board limit |
 | `heartbeat_ms` | `MOTION_HEARTBEAT_MS` | ms | 150 | — (Mac-side send rate) |
@@ -541,7 +538,7 @@ tuned over the wire: `WHEEL_DIAMETER_MM`, `COUNTS_PER_REV`, and the per-wheel
 | Unsupported `v` | `ack accepted:false reason:"bad_version"`, no action. |
 | Command needs an unadvertised cap | `ack accepted:false reason:"unsupported_cap"`. |
 | Motion cmd while `estop`/`fault` | `ack accepted:false reason:"estop"`/`"fault"`. |
-| drive/turn/move/come while `owner:"manual"` | `ack accepted:false reason:"manual_override"` (but `stop`/`estop`/`config`/`ping`/`clear`/`batt_full` still accepted). |
+| drive/turn/move while `owner:"manual"` | `ack accepted:false reason:"manual_override"` (but `stop`/`estop`/`config`/`ping`/`clear`/`batt_full` still accepted). |
 | Line > 512 B | Discard through next `\n`, `errs`++. |
 
 **Principle:** the protocol degrades safe and quiet. The only thing that should ever make
@@ -595,7 +592,7 @@ The BT gamepad is paired to the **ESP32**, not the Mac (motion_system.md §11). 
 **no wire traffic** — the Mac learns about it only by reading telemetry/events:
 
 - Meaningful gamepad input → ESP32 sets `owner:"manual"`, emits `owner_change`, and
-  **ignores** Mac drive/turn/move/come (acked `reason:"manual_override"`). It still honors
+  **ignores** Mac drive/turn/move (acked `reason:"manual_override"`). It still honors
   `stop`/`estop`/`config`/`ping`/`clear`/`batt_full`.
 - The Mac's obligation: when `owner == "manual"`, **stop issuing autonomous motion
   commands** (a voice "come here" is dropped or queued, the controller's choice) and
@@ -642,7 +639,7 @@ flag them as decisions still owed:
    (`fl,fr`) + 2 REAR pair (`rl,rr`) at ±22.5° off each axis, and 2 short-range VL53L0X
    LEFT pair (`lf,lb`) + 2 RIGHT pair (`rf,rb`), all on a TCA9548A mux (ch 0-3 short,
    4-7 long). The side pairs feed forward hallway steering for manual gamepad drive,
-   finite `move`, and the forward phase of `come`.
+   finite `move`, and Mac `drive` setpoints.
    This dropped the down-facing cliff sensor — **cliff/drop-off detection is no longer
    available** (the `cliff` zone/event remain in the enum but are never produced).
 
@@ -663,7 +660,7 @@ flag them as decisions still owed:
       snapshot (thread-safe, servo-pattern), route `ack`/`done`/`event`/`log`.
 - [ ] Heartbeat thread: `ping` every `MOTION_HEARTBEAT_MS`.
 - [ ] `seq` allocator; `ack`/`done` correlation with timeouts.
-- [ ] Send helpers: `drive/turn/move/come/stop/estop/clear/config` with clamping mirror.
+- [ ] Send helpers: `drive/turn/move/stop/estop/clear/config` with clamping mirror.
 - [ ] Policy gates: suppress AUTO motion while `owner=="manual"`, while
       `INTERACTION_PAUSED`/family-safe, or `MOTION_ENABLED` off.
 - [ ] Unit tests against a **mocked serial** (no hardware), mirroring the servo tests.
@@ -726,10 +723,10 @@ ESP32→ {"v":1,"type":"done","seq":2,"result":"completed","odom":{"x":0,"y":0,"
 Mac  → {"v":1,"cmd":"ping","seq":3}        (every 150 ms; not acked)
 
 # spoken "come here" but someone grabs the gamepad mid-move
-Mac  → {"v":1,"cmd":"come","seq":4,"heading":0,"stop_at":0.6}
+Mac  → {"v":1,"cmd":"drive","seq":4,"lin":0.3,"ang":0}
 ESP32→ {"v":1,"type":"ack","seq":4,"accepted":true,"reason":null}
 ESP32→ {"v":1,"type":"event","t":18420,"event":"owner_change","owner":"manual"}
-ESP32→ {"v":1,"type":"done","seq":4,"result":"superseded","odom":{...}}   # gamepad took over
+# Mac marks its approach superseded; drive has no finite firmware done event
 Mac  → {"v":1,"cmd":"drive","seq":5,"lin":0.1,"ang":0}
 ESP32→ {"v":1,"type":"ack","seq":5,"accepted":false,"reason":"manual_override"}
        … Mac stops sending AUTO motion, keeps pinging, shows "MANUAL (gamepad)" …

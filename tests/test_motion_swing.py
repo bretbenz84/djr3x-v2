@@ -161,11 +161,13 @@ class ControllerWiringTest(_MotionTestBase):
 
     def test_come_heading_refused_when_its_spin_is_blocked(self):
         self._connect_posed(CORNERED)
-        self.assertIsNone(mc.come(heading=90.0))
+        target = {'id': 'caller', 'person_db_id': 1, 'face_box': (0, 0, 100, 100)}
+        self.assertIsNone(mc.come(heading=90.0, target=target))
         self.assertIsNone(self._last("come"))
-        # A straight-ahead come has no spin to check.
-        self.assertIsNotNone(mc.come(heading=0.0))
-        self.assertIsNotNone(self._last("come"))
+        # A straight-ahead approach starts a Mac-owned drive, no firmware come.
+        self.assertIsNotNone(mc.come(heading=0.0, target=target))
+        self.assertIsNotNone(self._last("drive"))
+        self.assertIsNone(self._last("come"))
 
     def test_arc_swing_is_shortened_not_the_curve(self):
         self._connect_posed(CORNERED)

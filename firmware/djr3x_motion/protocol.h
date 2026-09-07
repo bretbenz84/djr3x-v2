@@ -10,12 +10,11 @@
 
 // ---- Version ---------------------------------------------------------------
 #define MOTION_PROTO_VERSION 1
-#define MOTION_FW_VERSION    "0.1.0-skeleton"
+#define MOTION_FW_VERSION    "0.2.0-motor-only"
 
-// Capabilities advertised in the `hello` reply. The skeleton runs the full
-// command set against a stubbed plant, so it advertises everything. As real
-// hardware lands, this list stays the same — the commands already work.
-#define MOTION_CAPS_JSON     "[\"drive\",\"turn\",\"move\",\"come\",\"stop\"]"
+// Physical capabilities advertised in hello. Person-directed behaviors live on
+// the Mac and compose these primitives; firmware has no come-here semantics.
+#define MOTION_CAPS_JSON     "[\"drive\",\"turn\",\"move\",\"stop\"]"
 
 // ---- Wire limits -----------------------------------------------------------
 #define MOTION_MAX_LINE_BYTES 512   // a longer line is dropped through the next '\n'
@@ -53,7 +52,7 @@ enum AckReason : uint8_t {
 // Finite command kind (control-layer bookkeeping; not a wire enum).
 // CMD_WHEEL is the single-wheel bring-up jog (raw duty on ONE H-bridge, time-bounded;
 // docs/motion_protocol.md §5.10) — a diagnostic, NOT part of the advertised caps.
-enum CmdKind : uint8_t { CMD_NONE = 0, CMD_DRIVE, CMD_TURN, CMD_MOVE, CMD_COME, CMD_WHEEL };
+enum CmdKind : uint8_t { CMD_NONE = 0, CMD_DRIVE, CMD_TURN, CMD_MOVE, CMD_WHEEL };
 
 // ---- enum -> wire string ---------------------------------------------------
 inline const char* state_str(MotionState s) {

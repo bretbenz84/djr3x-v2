@@ -103,7 +103,7 @@ class ComeHereRegressionTest(_ComeFixture):
         self.turn.assert_not_called()
         self._tick()
         self.turn.assert_not_called()
-        self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M)
+        self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY)
         self.assertIsNone(MA._requested_come["voice_world"])
 
     def test_field_evidence_reaches_motion_without_promoting_identity(self):
@@ -261,7 +261,12 @@ class ComeHereRegressionTest(_ComeFixture):
         with mock.patch.object(MA.motion_controller, "last_come_result", return_value=(8, "completed")), \
              mock.patch("sequences.animations.travel_glance_pose") as head:
             self._tick()
-        self.assertFalse(MA.requested_come_active())
+        self.assertTrue(MA.requested_come_active(), 'hold target while the camera settles')
+        lost_at = MA._requested_come['lost_since']
+        with mock.patch.object(MA.motion_controller, 'last_come_result', return_value=(8, 'completed')), \
+             mock.patch.object(MA.time, 'monotonic', return_value=lost_at+9.):
+            self._tick()
+        self.assertFalse(MA.requested_come_active(), 'loss remains bounded')
         self.turn.assert_not_called()
         head.assert_not_called()
         self.come.assert_called_once()

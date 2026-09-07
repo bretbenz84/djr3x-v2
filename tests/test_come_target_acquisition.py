@@ -92,6 +92,35 @@ class ComeTargetAcquisitionTest(_ComeFixture):
         self.assertEqual(MA._requested_come, before)
         self.come.assert_called_once()
 
+    def test_weak_repeated_caller_keeps_acquired_approach(self):
+        self.scene = _snapshot(db_id=1)
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        MA.motion_controller.stop.reset_mock()
+        before = dict(MA._requested_come)
+        self.assertTrue(MA.request_come_here(person_id=None, voice_bearing_deg=156.,
+            speaker_evidence=field_evidence(raw_best_id=1, raw_best_score=.488,
+                known_floor=.45, previous_speaker_pid=None, engaged_pid=None,
+                bearing_contradiction=True)))
+        self.assertEqual(MA._requested_come, before)
+        from intelligence import motion_sequence
+        with mock.patch.object(IX, '_cancel_motion_sequence', side_effect=motion_sequence.cancel), \
+             mock.patch.object(IX, '_recent_voice_bearing', return_value=None), \
+             mock.patch.object(motion_sequence, '_cancel', None):
+            self.assertEqual(IX._handle_router_motion_action(
+                IX.action_router.classify_explicit_motion('Come here.'), requester_person_id=1), 'On my way.')
+        MA.motion_controller.stop.assert_not_called()
+        self.come.assert_called_once()
+
+    def test_arrival_hands_gaze_back_to_acquired_track(self):
+        from intelligence import consciousness
+        self.scene = _snapshot(db_id=1, slot='caller')
+        self.assertTrue(MA.request_come_here(person_id=1))
+        consciousness.note_speaker_gaze_intent.reset_mock()
+        MA.cancel_requested_come('arrived and facing caller')
+        consciousness.note_speaker_gaze_intent.assert_called_once_with(
+            1, unknown_voice=False, reason='come_target', force_search=False, track_id='caller')
+
     def test_known_voice_can_approach_sole_unidentified_camera_track(self):
         self.scene = _snapshot(db_id=None, slot='visible-bret')
         self.assertTrue(MA.request_come_here(
@@ -100,10 +129,42 @@ class ComeTargetAcquisitionTest(_ComeFixture):
         self._tick()
         self.assertTrue(MA._requested_come['acquired'])
         self.assertEqual(MA._requested_come['requester_track'], 'visible-bret')
-        self.assertIsNone(MA._requested_come['requester_id'])
+        self.assertEqual(MA._requested_come['requester_id'], 1)
         self.turn.assert_not_called()
         self.come.assert_called_once()
         self.assertIsNone(self.scene['people'][0]['person_db_id'])
+
+    def test_known_voice_track_survives_unrecognized_and_recognized_frames(self):
+        self.scene = _snapshot(db_id=None, slot='person_1')
+        self.assertTrue(MA.request_come_here(person_id=1, speaker_evidence=field_evidence(
+            raw_best_id=1, raw_best_score=.661, voiced_secs=1.02)))
+        self._tick()
+        self.assertEqual(MA._requested_come['requester_id'], 1)
+        for pid in (None, 1, None, 1):
+            self.scene = _snapshot(db_id=pid, slot='person_1')
+            self.assertIsNotNone(MA._observe_come_target(self.scene, time.monotonic()))
+        self.scene = _snapshot(db_id=4, slot='person_1')
+        self.assertIsNone(MA._observe_come_target(self.scene, time.monotonic()))
+
+    def test_logged_repeats_use_location_even_when_identity_abstains(self):
+        self.scene = _snapshot(db_id=1)
+        for score, secs in ((.488, 3.18), (.499, .63)):
+            ev = field_evidence(raw_best_id=1, raw_best_name='Bret', raw_best_score=score,
+                voiced_secs=secs, margin=1.+score, known_floor=.45,
+                previous_speaker_pid=None, engaged_pid=None, bearing_contradiction=True)
+            self.assertIsNotNone(MA._visible_come_requester(self.scene, None, ev, 156.))
+            for change in ({'raw_best_id': 4}, {'mixed_speakers': True},
+                           {'bearing_selected_pid': 4}, {'visual_latch_pid': 4},
+                           {'margin': .01}, {'raw_best_score': .2}):
+                self.assertIsNone(MA._visible_come_requester(self.scene, None, dict(ev, **change), 156.))
+            with mock.patch.object(IX, '_recent_voice_bearing', return_value={'bearing_deg': 156., 'share': .8}), \
+                 mock.patch.object(IX, '_current_turn_speaker_evidence', {'motion_evidence': ev}):
+                reply = IX._handle_router_motion_action(
+                    IX.action_router.classify_explicit_motion('Come here.'), requester_person_id=None)
+            self.assertEqual(reply, 'On my way.')
+            MA.cancel_requested_come('next fixture')
+        self.scene['people'].append(_snapshot(db_id=4, slot='other')['people'][0])
+        self.assertIsNone(MA._visible_come_requester(self.scene, None, ev, 156.))
 
     def test_unenrolled_caller_is_acquired_from_face_and_microphone(self):
         self.scene = _snapshot(db_id=None, slot='guest-7')
@@ -187,12 +248,12 @@ class ComeTargetAcquisitionTest(_ComeFixture):
         self.assertTrue(MA._requested_come["acquired"])
         self.assertEqual(MA._requested_come["requester_id"], 1)
         MA.motion_controller.stop.assert_called_once()
-        self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M)
+        self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY)
         # Recognition flickers and the radar still offers a 155-degree leg.
         self.scene = {"people": []}
         with mock.patch.object(MA.motion_controller, "last_come_result", return_value=(8, "completed")):
             self._tick()
-        self.assertFalse(MA.requested_come_active())
+        self.assertTrue(MA.requested_come_active(), "retain caller through camera settling")
         self.assertEqual(self.turn.call_count, 1, "no turns after the caller was acquired")
 
     def test_legacy_short_voice_label_can_be_reconciled_when_bret_is_found(self):

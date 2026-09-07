@@ -9601,6 +9601,8 @@ MOTION_COME_STOP_AT_M = 0.60
 # sits under/inside the front sensors' floor-rejection band, so distance is the
 # only real margin).
 MOTION_COME_REQUEST_STOP_AT_M = 1.30
+MOTION_COME_FACE_WIDTH_M = .16       # approximate adult face width for camera range
+MOTION_COME_CAMERA_FRESH_SECS = 1.5  # stale camera boxes cannot drive an approach
 # 45 -> 90: each stop now also runs a NECK sweep during its dwell (see
 # MOTION_COME_NECK_SWEEP_ENABLED), so per-stop coverage is roughly ±(neck
 # half-span + camera half-FOV) and the body legs can be twice as far apart —
@@ -9709,7 +9711,7 @@ MOTION_COME_GAZE_COMP_DEADBAND_QUS = 40.0 # skip sub-deadband servo writes
 MOTION_COME_GAZE_COMP_MAX_SECS = 30.0     # worker failsafe deadline
 MOTION_COME_GAZE_COMP_SERVO_SPEED = 60    # gentle glide, not tracking-speed snaps
 MOTION_COME_GAZE_COMP_SERVO_ACCEL = 10
-MOTION_COME_DRIVE_PITCH = "down-slight"   # camera pitch during the drive ("level" = off)
+MOTION_COME_DRIVE_PITCH = "level"        # retain the caller; ToF owns obstacle clearance
 # ── RADAR-FIRST come-here search (owner spec 2026-08-15) ──────────────────────
 # The LD2450 ring (hardware/radar.py) says where BODIES are, in the base frame,
 # so the search no longer turns blind: with no face on camera it turns straight

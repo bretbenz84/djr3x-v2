@@ -1,7 +1,6 @@
 #include "control.h"
 #include "proto_io.h"
 #include "hal.h"
-#include "come_arrival.h"
 #include <math.h>
 
 #ifndef M_PI
@@ -54,9 +53,7 @@ static int16_t nearest_capped(int16_t a, int16_t b, int16_t cap) {
 static float hall_assist_correction(const MotionContext& c, float lin_t) {
   if (!c.params.assist_enabled) return 0.0f;
   const bool supported_mode =
-      (c.owner == OWNER_MANUAL && c.cmd_mode == CMD_DRIVE) ||
-      c.cmd_mode == CMD_MOVE ||
-      (c.cmd_mode == CMD_COME && !c.finite.come_turning);
+      c.cmd_mode == CMD_DRIVE || c.cmd_mode == CMD_MOVE;
   if (!supported_mode) return 0.0f;
   if (lin_t <= ASSIST_MIN_LIN_MS) return 0.0f;      // forward drive only
   if (c.full_override) return 0.0f;                 // operator explicitly bypassing ToF
@@ -64,18 +61,15 @@ static float hall_assist_correction(const MotionContext& c, float lin_t) {
   if (eng <= 0) return 0.0f;
   const int16_t l_side = nearest_capped(c.tof.lf, c.tof.lb, eng);
   const int16_t r_side = nearest_capped(c.tof.rf, c.tof.rb, eng);
-  // COME anticipates front-half imbalance sooner. fl/fr include the
-  // floor-rejected 8x8 matrix: a table on the right gently bends travel left.
-  const int16_t front_eng = (c.cmd_mode == CMD_COME)
-      ? (int16_t)fmaxf(fmaxf(eng, COME_FRONT_ASSIST_ENGAGE_MM),
-                       (c.finite.come_stop_at + .6f) * 1000.f) : eng;
+  // Front obstacle avoidance is physical protection for forward motion.
+  const int16_t front_eng = (int16_t)fmaxf(eng, ASSIST_FRONT_ENGAGE_MM);
   const int16_t l_frnt = nearest_capped(c.tof.fl, -1, front_eng);
   const int16_t r_frnt = nearest_capped(c.tof.fr, -1, front_eng);
   // Imbalance in metres: positive (l - r) = the left side is more open (right wall
   // closer) -> steer LEFT (+ang, REP-103) toward the open side; negative mirrors.
   const float side_turn = c.params.assist_gain * (float)(l_side-r_side) * 0.001f;
   float front_turn = c.params.assist_gain * ASSIST_FRONT_WEIGHT * (float)(l_frnt-r_frnt) * 0.001f;
-  if (c.cmd_mode == CMD_COME) front_turn = clampf(front_turn, -0.25f, 0.25f);
+  front_turn = clampf(front_turn, -0.25f, 0.25f);
 
   // Close-wall REPULSION (ASSIST_REPEL_MM, ~5 in): a side wall this close pushes back
   // hard on its own, independent of the other side. The imbalance term alone reads
@@ -101,7 +95,6 @@ static float hall_assist_correction(const MotionContext& c, float lin_t) {
 static MotionDir finite_travel_dir(const FiniteCmd& f) {
   switch (f.kind) {
     case CMD_MOVE: return f.target_dist >= 0 ? DIR_FRONT : DIR_REAR;
-    case CMD_COME: return f.come_turning ? DIR_NONE : DIR_FRONT;  // advance is forward
     default:       return DIR_NONE;
   }
 }
@@ -222,20 +215,6 @@ void control_tick(float dt) {
       case CMD_MOVE:
         lin_t = signf(c.finite.target_dist) * c.finite.speed;
         break;
-      case CMD_COME:
-        if (c.finite.come_turning)
-          ang_t = signf(c.finite.target_dtheta)
-                  * turn_decel_rate(c.finite, c.params.accel_ang);
-        else {
-#if MOTION_HW_PRESENT
-          lin_t = ComeArrival::speed(ComeArrival::range_m(c.tof.fl, c.tof.fr),
-                                     c.finite.come_stop_at, c.finite.speed,
-                                     c.params.accel_lin);
-#else
-          lin_t = c.finite.speed;
-#endif
-        }
-        break;
       default: break;
     }
   }
@@ -245,20 +224,6 @@ void control_tick(float dt) {
   // the stub build produce exactly zero correction.
   if (!halted) {
     float assist = hall_assist_correction(c, lin_t);
-    if (c.cmd_mode == CMD_COME && !c.finite.come_turning && lin_t > ASSIST_MIN_LIN_MS
-        && !c.full_override && c.params.assist_enabled) {
-      // Restore only after BOTH front halves and both sides clear the avoidance
-      // envelope. A balanced narrow passage is not permission to turn into its wall.
-      const float front_clear = fmaxf(
-          fmaxf(c.params.assist_engage_mm, COME_FRONT_ASSIST_ENGAGE_MM),
-          (c.finite.come_stop_at + .6f) * 1000.f) + 100.f;
-      const float side_clear = c.params.assist_engage_mm + 100.f;
-      const bool clear = c.tof.fl >= front_clear && c.tof.fr >= front_clear
-          && c.tof.lf >= side_clear && c.tof.lb >= side_clear
-          && c.tof.rf >= side_clear && c.tof.rb >= side_clear;
-      assist = c.finite.come_heading.correction(DEG2RAD(c.imu.yaw), c.imu.ok,
-                                                dt, clear, assist);
-    }
     ang_t += assist;
   }
 
@@ -373,46 +338,6 @@ void control_tick(float dt) {
           c.finite = FiniteCmd(); c.cmd_mode = CMD_NONE;
         }
         break;
-      case CMD_COME:
-        if (c.finite.come_turning) {
-          c.finite.progress_dtheta += fabsf(c.odom.ang) * dt;
-          if (c.finite.imu_verify && c.imu.ok) {
-            const float dyaw = wrap_deg(c.imu.yaw - c.finite.imu_yaw_last_deg);
-            c.finite.imu_yaw_last_deg = c.imu.yaw;
-            c.finite.imu_progress_rad += DEG2RAD(dyaw);
-          }
-          if (turn_verify_timed_out(c.finite, now)) {
-            emitDone = true; dres = DONE_ABORTED; dseq = c.finite.seq; dodom = c.odom;
-            turnVerifyTimeout = true;
-            c.finite = FiniteCmd(); c.cmd_mode = CMD_NONE;
-          } else {
-            const float progress = c.finite.imu_verify
-                ? signf(c.finite.target_dtheta) * c.finite.imu_progress_rad
-                : c.finite.progress_dtheta;
-            const float threshold = fmaxf(
-                0.0f, fabsf(c.finite.target_dtheta) - DEG2RAD(TURN_VERIFY_TOLERANCE_DEG));
-            if (progress >= threshold)
-              c.finite.come_turning = false;        // physical heading reached -> advance
-          }
-        } else {
-          c.finite.progress_dist += fabsf(c.odom.lin) * dt;
-#if MOTION_HW_PRESENT
-          const float front = ComeArrival::range_m(c.tof.fl, c.tof.fr);
-          const bool arrived = ComeArrival::arrived(front, c.finite.come_stop_at);
-          const bool abort = front <= 0.f || c.finite.progress_dist >= 4.f
-              || (uint32_t)(now - c.finite.come_started_ms) >= 20000;
-#else
-          const float front = c.finite.come_sim_wall - c.finite.progress_dist;
-          const bool arrived = front <= c.finite.come_stop_at;
-          const bool abort = false;
-#endif
-          if (arrived || abort) {
-            emitDone = true; dres = arrived ? DONE_COMPLETED : DONE_ABORTED;
-            dseq = c.finite.seq; dodom = c.odom;
-            c.finite = FiniteCmd(); c.cmd_mode = CMD_NONE;
-          }
-        }
-        break;
       case CMD_WHEEL:
         // Time-bounded (NOT encoder-bounded — the whole point is to work with an
         // unvalidated encoder). Rollover-safe unsigned elapsed compare, like the
@@ -457,7 +382,7 @@ void control_tick(float dt) {
       if (br2 && s_ramp_lin < 0) s_ramp_lin = 0;
     }
     if (c.charging) { s_ramp_lin = 0; s_ramp_ang = 0; }   // charging: hard zero, no coast
-    // Slew every ordinary command (manual drive and finite move/turn/come). This
+    // Slew every ordinary command (manual drive and finite move/turn). This
     // removes the autonomous one-tick launch while preserving the hard safety cut
     // above. Feedforward keeps the low end responsive despite the gentler envelope.
     const float al = c.params.accel_lin * dt;
@@ -545,30 +470,6 @@ void ctl_move(float dist, float speed, uint32_t seq) {
   if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
 }
 
-void ctl_come(float heading_deg, float stop_at, float speed, uint32_t seq) {
-  bool sup = false; uint32_t sseq = 0; Odom sodom;
-  LOCK_STATE();
-  sup = begin_finite_locked(sseq, sodom);
-  FiniteCmd f;
-  f.kind = CMD_COME; f.seq = seq;
-  f.target_dtheta = DEG2RAD(heading_deg);
-  f.rate = DEG2RAD(g_ctx.params.default_turn_rate);
-  // Host-tunable approach pace (saunter); <=0 or absent keeps the historical cap.
-  f.speed = (speed > 0.01f) ? fabsf(speed) : g_ctx.params.max_lin;
-  f.come_stop_at = stop_at;
-  f.come_started_ms = millis();
-#if !MOTION_HW_PRESENT
-  f.come_sim_wall = stop_at + 0.6f;       // simulation only
-#endif
-  f.come_turning = (fabsf(heading_deg) > 1.0f);
-  if (f.come_turning) arm_turn_verification(f);
-  g_ctx.finite = f;
-  g_ctx.cmd_mode = CMD_COME;
-  g_ctx.cmd_seq = seq;
-  if (g_ctx.state == ST_IDLE) g_ctx.state = ST_MOVING;
-  UNLOCK_STATE();
-  if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
-}
 
 void ctl_wheel_test(int side, float frac, uint32_t ms, uint32_t seq) {
   // Single-wheel bring-up jog: arm CMD_WHEEL for `ms` ms, then control_tick auto-stops
@@ -641,7 +542,7 @@ bool ctl_clear(uint32_t seq) {
 // ---- Manual (gamepad) control (docs §11) ---------------------------------
 // Driven from gamepad.cpp on the ESP32 — entirely independent of the Mac link, so
 // it works even with the USB unplugged. owner=MANUAL makes proto_io's motion_gate
-// reject Mac drive/turn/move/come; stop/estop/config/ping still pass.
+// reject Mac drive/turn/move; stop/estop/config/ping still pass.
 
 // A live pad input takes over from a dead Mac link (field fix 2026-07-11): when Rex
 // shuts down, the heartbeat watchdog latches ST_COMMS_LOST, which control_tick treats

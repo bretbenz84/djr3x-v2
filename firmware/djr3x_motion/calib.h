@@ -373,7 +373,7 @@
 // authority; the Z_STOP reflex still hard-blocks a head-on wall regardless.
 #define ASSIST_ENGAGE_MM      450.0f    // walls farther than this don't steer
 #define ASSIST_GAIN           2.0f      // rad/s per METER of left-right imbalance
-#define COME_FRONT_ASSIST_ENGAGE_MM 900.0f // earlier matrix/front avoidance during COME
+#define ASSIST_FRONT_ENGAGE_MM 900.0f // front avoidance for forward motion
 #define ASSIST_FRONT_WEIGHT   0.7f      // front-pair contribution vs the side pairs
 #define ASSIST_MAX_ANG_FRAC   0.6f      // correction cap as a fraction of max_ang
 #define ASSIST_MIN_LIN_MS     0.02f     // assist only while actually driving forward

@@ -420,6 +420,21 @@ def _visible_come_requester(snapshot: dict, person_id: Optional[int],
             return visible[0]
         if not provisional:
             return None
+    # LOCATION can use an enrolled voice candidate and the sole matching face
+    # even when identity abstains (e.g. uncertain/rearward DOA). No name or
+    # learning permission is granted here, and a competing face/voice still wins.
+    if len(visible) == 1 and evidence and not evidence.get("text_input"):
+        pid = visible[0].get("person_db_id")
+        if (pid is not None and evidence.get("raw_best_id") == pid
+                and not evidence.get("mixed_speakers")
+                and evidence.get("bearing_selected_pid") in (None, pid)
+                and evidence.get("visual_latch_pid") in (None, pid)
+                and float(evidence.get("raw_best_score") or 0.) >= float(evidence.get("known_floor", .45))
+                and float(evidence.get("margin") or 0.) >= float(evidence.get("required_margin", .07))):
+            _log.info("[motion_agency] come location: sole face %s supported by enrolled voice %.3f; "
+                      "direction conflict=%s, identity unchanged", pid,
+                      evidence["raw_best_score"], bool(evidence.get("bearing_contradiction")))
+            return visible[0]
     located = _directional_come_target(snapshot, bearing, evidence)
     if located is not None:
         return located
@@ -511,6 +526,7 @@ def request_come_here(person_id: "int | None" = None, *,
             and not behind and side_deg is None
             and not (speaker_evidence or {}).get("mixed_speakers")):
         _log.info("[motion_agency] repeated come request: continuing existing approach to person %s", person_id)
+        _restore_come_gaze_intent()
         return True
     release_user_hold("come-here request")
     note_traction_recovered("come-here request")
@@ -531,6 +547,18 @@ def request_come_here(person_id: "int | None" = None, *,
                     and (voice_share is None or float(voice_share) >= _num("MOTION_COME_VOICE_MIN_SHARE", 0.4)))
     target = _visible_come_requester(snapshot, person_id, speaker_evidence,
                                    voice_bearing_deg if usable_voice else None)
+    if (target is not None and requested_come_active() and not behind and side_deg is None
+            and not (speaker_evidence or {}).get("mixed_speakers")
+            and ((target.get("person_db_id") is not None
+                  and target["person_db_id"] == _requested_come.get("requester_id"))
+                 or (_come_track_key(target) is not None
+                     and _come_track_key(target) == _requested_come.get("requester_track")))):
+        _log.info("[motion_agency] repeated come request: continuing acquired camera target %s",
+                  _come_track_key(target))
+        _restore_come_gaze_intent()
+        return True
+    if requested_come_active():
+        motion_controller.stop()  # new/ambiguous destination supersedes the old errand
     if (person_id is None and target is None and _any_visible_face(snapshot)
             and not behind and not side_deg):
         cancel_requested_come("caller ambiguous with faces on camera")
@@ -539,8 +567,8 @@ def request_come_here(person_id: "int | None" = None, *,
             "Say 'Rex, come here' again."
         )
         return False
-    if target is not None:
-        person_id = target.get("person_db_id")  # identity optional; bind track at acquisition
+    if target is not None and target.get("person_db_id") is not None:
+        person_id = target["person_db_id"]  # motion target only; never overwrite known caller with None
     # Radar frames from BEFORE the request are usable only if the base was
     # already still (they are in the current frame); a base mid-motion means
     # wait for a settled sample instead.
@@ -719,9 +747,22 @@ def _adopt_voice_bearing_turn(seq: "int | None", where: str) -> None:
               "adopting the turn as a search leg", where)
 
 
+def _restore_come_gaze_intent() -> None:
+    """A later uncertain utterance must not leave an acquired caller's gaze unnamed."""
+    try:
+        from intelligence import consciousness
+        pid = _requested_come.get("requester_id")
+        consciousness.note_speaker_gaze_intent(pid, unknown_voice=pid is None,
+            reason="come_target", force_search=False, track_id=_requested_come.get("requester_track"))
+    except Exception:
+        pass
+
+
 @_come_serialized
 def cancel_requested_come(reason: str = "cancelled") -> None:
     if _requested_come["active"]:
+        if reason.startswith("arrived"):
+            _restore_come_gaze_intent()
         _log.info("[motion_agency] requested come: %s", reason)
         try:
             from intelligence import consciousness
@@ -750,15 +791,13 @@ def _observe_come_target(snapshot: dict, now: float) -> Optional[dict]:
     requester = _requested_come["requester_id"]
     if _requested_come["acquired"]:
         track = _requested_come.get("requester_track")
-        if requester is not None:
-            person = _visible_known_person(snapshot, requester)
-        elif track is not None:
+        person = _visible_known_person(snapshot, requester) if requester is not None else None
+        if person is None and track is not None:
             person = next((p for p in snapshot.get("people") or []
                            if isinstance(p, dict) and _come_track_key(p) == track
+                           and (requester is None or p.get("person_db_id") in (None, requester))
                            and p.get("face_visible") is not False and not p.get("face_missing")
                            and _face_offset_fraction(p) is not None), None)
-        else:
-            person = _visible_known_person(snapshot, requester) if requester is not None else None
     else:
         evidence = _requested_come.get("speaker_evidence")
         if evidence is not None:
@@ -791,7 +830,7 @@ def _acquire_come_target(person: dict, now: float) -> None:
     target_world = (_wrap180(heading-bearing)
                     if heading is not None and bearing is not None else None)
     was_search = _requested_come.get("last_turn_kind") == "search"
-    _requested_come.update(acquired=True, requester_id=person.get("person_db_id"),
+    _requested_come.update(acquired=True, requester_id=person.get("person_db_id") if person.get("person_db_id") is not None else previous,
                            requester_track=_come_track_key(person),
                            last_seen_at=now, lost_since=0., target_world=target_world,
                            voice_bearing_deg=None, voice_world=None, voice_used=True,
@@ -805,9 +844,10 @@ def _acquire_come_target(person: dict, now: float) -> None:
         _requested_come.update(pending_turn_seq=None, turn_done_at=now, last_turn_kind=None)
     try:
         from intelligence import consciousness
-        consciousness.note_speaker_gaze_intent(person.get("person_db_id"),
-                                              unknown_voice=person.get("person_db_id") is None,
-                                              reason="come_target", force_search=False)
+        consciousness.note_speaker_gaze_intent(_requested_come["requester_id"],
+                                              unknown_voice=_requested_come["requester_id"] is None,
+                                              reason="come_target", force_search=False,
+                                              track_id=person.get("id"))
     except Exception:
         pass
     _log.info("[motion_agency] requested come: camera acquired person %s (voice target was %s); "
@@ -1241,8 +1281,7 @@ def _stop_come_dwell_gaze(recenter: bool = False) -> None:
 # counter-pans the neck by the base's yaw deviation from the travel heading
 # (IMU gyro, + = left/CCW), so the gaze stays pinned on where he is GOING while
 # the wheels find their way around the clutter (owner spec 2026-08-19). It also
-# dips the camera slightly (down-slight) so floor obstacles directly ahead are
-# in frame during the drive. The errand already owns the head (face-tracking
+# keeps the camera level so the acquired caller stays in frame during the drive. The errand already owns the head (face-tracking
 # steering suspended), so there is exactly one neck writer while this runs; it
 # self-terminates when the drive's `done` lands and glides back to the
 # canonical centre-level pose the alignment measurement expects.
@@ -1297,8 +1336,8 @@ def _come_drive_gaze_loop(stop_event: threading.Event, seq: int,
         from sequences import animations
     except Exception:
         return
-    # Drive pose: camera dips a touch so floor clutter ahead is visible.
-    pitch = str(getattr(config, "MOTION_COME_DRIVE_PITCH", "down-slight"))
+    # Keep the caller in frame; floor clearance belongs to the ToF sensors.
+    pitch = str(getattr(config, "MOTION_COME_DRIVE_PITCH", "level"))
     try:
         animations.travel_glance_pose("center", pitch)
     except Exception:
@@ -1315,8 +1354,9 @@ def _come_drive_gaze_loop(stop_event: threading.Event, seq: int,
     profile_set = False
     while not stop_event.is_set() and time.monotonic() < deadline:
         try:
-            if motion.done_result(int(seq)) is not None:
-                break                    # drive ended — the errand decides what's next
+            current, result = motion_controller.last_come_result()
+            if current != seq or result is not None:
+                break                    # Mac approach ended — errand decides final facing
         except Exception:
             break
         yaw = _base_yaw_deg()
@@ -1371,7 +1411,9 @@ def _completed_come_holds(person: Optional[dict]) -> bool:
             _requested_come.update(arrival_only=True, recenter_reacquire=True, lost_since=0.)
             _log.info("[motion_agency] approach completed: restoring acquired caller heading without advancing")
             return False
-        cancel_requested_come("approach completed — holding position, caller out of view")
+        # The drive gaze is returning to level now. Keep the acquired target
+        # through that camera gap; do not release the head to an unrelated scan.
+        _hold_acquired_caller(time.monotonic())
         return True
     if person.get("distance_zone") != "public":
         bearing = _come_bearing_deg(person, head_locked=False)
@@ -1388,7 +1430,7 @@ def _completed_come_holds(person: Optional[dict]) -> bool:
         hits = int(_requested_come["front_near_hits"]) + 1
         _requested_come["front_near_hits"] = hits
         if hits >= 2:
-            cancel_requested_come("arrived (front reads %.2fm)" % front)
+            cancel_requested_come("front clearance reached (%.2fm); caller still visually far" % front)
         return True       # hold STILL while confirming; never align first
     _requested_come["front_near_hits"] = 0
     _log.info("[motion_agency] requested come: drive completed but requester still "
@@ -1504,6 +1546,9 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         _, last_result = motion_controller.last_come_result()
         if last_result is None:
             return True                       # approach still in flight
+        detail = motion_controller.last_come_detail()
+        if last_result == "completed" and isinstance(detail, dict) and detail.get("arrival"):
+            _requested_come["arrival_only"] = True
         if last_result == "completed" and _completed_come_holds(person):
             return True
     if person is None:
@@ -1697,7 +1742,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
 
     stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
     travel_yaw = _base_yaw_deg()
-    seq = motion_controller.come(approach_heading, stop_at=stop_at)
+    seq = motion_controller.come(approach_heading, stop_at=stop_at, target=person)
     if seq is not None:
         # Keep the camera-established travel bearing across an obstacle curve.
         # Only real IMU heading can measure that curve after the face leaves view.
@@ -2740,7 +2785,7 @@ def _maybe_startup_approach(person: dict, facing_them: bool,
     if _flag("MOTION_APPROACH_SPEED_JITTER", True):
         speed = _num("MOTION_MAX_LINEAR_MS", 0.40) * random.uniform(
             _num("MOTION_APPROACH_SPEED_JITTER_LOW", 0.55), 1.0)
-    seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed)
+    seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed, target=person)
     if seq is not None:
         _state["startup_approach_done"] = True
         _state["last_approach_at"] = now
@@ -3635,7 +3680,7 @@ def _step_inner(snapshot: dict, profile) -> None:
             if _flag("MOTION_APPROACH_SPEED_JITTER", True):
                 speed = _num("MOTION_MAX_LINEAR_MS", 0.40) * random.uniform(
                     _num("MOTION_APPROACH_SPEED_JITTER_LOW", 0.55), 1.0)
-            seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed)
+            seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed, target=person)
             if seq is not None:
                 _log.info(
                     "[motion_agency] approach: person %s at public distance -> come "

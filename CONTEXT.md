@@ -3341,3 +3341,46 @@ Physical approach smoothness still needs a live run.
 Firmware flashed successfully to the configured motion ESP32 (USB serial 110);
 upload hashes verified, post-reset telemetry idle with zero motion and no fault.
 The battery launch agent was restored after upload. No live movement test run.
+
+
+### 2026-09-07 02:55 run and ownership correction
+
+The .661 voice correctly identified Bret, but acquiring his unnamed camera track
+replaced the caller ID with None. Keep the known requester ID and track separately;
+recognition flicker can use that same unnamed track, while a different recognized
+person still blocks it. Gaze can bind a camera track through recognition changes.
+Keep the drive camera level and allow bounded reacquisition at completion.
+
+Repeated requests scored .488/.499 with a sole recognized Bret face and rearward
+DOA conflicting by 149–172 degrees. For invited LOCATION only, the sole matching
+face plus enrolled voice above the existing known floor/margin can select a target
+without a prior conversational speaker. Identity/learning remain separate. The
+new-short-speaker veto now checks guarded face/voice evidence before abstaining.
+The router previously stopped the base BEFORE duplicate-request handling; now it
+lets the active errand compare destinations first, including weak repeat voices.
+
+Owner clarified that the Mac owns all come-here semantics. This supersedes the
+previous firmware-arrival entries. Firmware 0.2.0 removes COME entirely: only motor
+primitives, slew, obstacle avoidance, manual priority and watchdog remain. The Mac
+approach decider streams short-lived drive commands and estimates caller distance
+from camera face width/FOV (approximate, .16m configurable reference face width).
+It distinguishes arrival from an obstacle pause, logs the target range and ToF
+readings, and requires fresh visual confirmation plus low speed before arrival.
+Camera loss, stale telemetry, manual takeover, cancellation and time/travel limits
+end or hold the stream on the Mac. ESP32 drive expiry independently stops stale
+commands. Voice identity is never learned from movement-target selection.
+
+The 02:55 firmware done log lacks the arrival-trigger range, so the exact sensor
+reading behind that initial stop cannot be recovered. New Mac approach logs make
+both caller-range estimates and obstacle readings visible. There was no live
+movement verification during this implementation.
+
+Validation for the final Mac-owned implementation: 650 focused tests passed,
+including fake-serial transport, motion/swing, voice attribution, gaze ownership,
+and the Mac approach simulator/cancellation tests. No live driving was performed.
+Motor-only firmware built and flashed with MOTION_HW_PRESENT, MOTION_TOF_PRESENT,
+MOTION_TOF_MATRIX_PRESENT and MOTION_GAMEPAD_PRESENT all enabled. Upload hashes
+verified; post-reset telemetry reported zero wheel motion and no fault. Battery
+launch agent restored. Restart the Mac application to run the new approach owner.
+Read-only hello verified firmware `0.2.0-motor-only`, advertising drive/turn/move/stop
+(and battery capabilities), with no come capability. No motion commands sent.
