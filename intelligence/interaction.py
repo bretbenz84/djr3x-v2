@@ -12808,7 +12808,7 @@ def _voice_sample_line(name: Optional[str] = None) -> str:
 def _maybe_request_voice_sample(person_id, name) -> None:
     """Arm a voice-sample ask for a KNOWN visible face with no voice print.
 
-    Fired from the voiceless_face_wins resolution branch. The ask itself is
+    Fired from CAM++ bootstrap or voiceless_face_wins resolution. The ask itself is
     spoken by the post-response hook (after Rex's reply to the current turn),
     which stamps asked_at and opens the capture window. Once per person per
     session, and never while an intro voice-capture is already pending."""
@@ -14810,6 +14810,12 @@ def _maybe_bootstrap_campplus(audio_array, text):
         return finish("conflicting_speakers")
     visible = visible_identity(world_state.get("people") or [])
     diag["visible_person_id"] = visible
+    if visible is not None and speaker_id.comparable_print_count(visible) == 0:
+        # A cold CAM++ database has no cross-match, so the old voiceless_face_wins
+        # branch never armed its enrollment prompt. Seeing a face permits an ASK,
+        # not a speaker verdict or writing a print from this uncertain turn.
+        person = people_memory.get_person(visible) or {}
+        _maybe_request_voice_sample(visible, person.get("name"))
     explicit_id = None
     name = _extract_self_identified_name(str(text))
     if name:

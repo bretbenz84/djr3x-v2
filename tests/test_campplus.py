@@ -139,6 +139,28 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(I._maybe_bootstrap_campplus(np.ones(48000), 'Nice to meet you Rex.'))
         self.assertEqual(people.count_native_voice_prints(pid), 1)
 
+    def test_cold_roster_short_speech_arms_ask_without_learning(self):
+        from intelligence import interaction as I
+        from audio.transcription import Transcript
+        face = {'person_db_id': 1, 'face_id': 'Bret', 'face_visible': True}
+        with patch.object(speaker_id, '_active_backend', 'campplus'), \
+             patch.object(I, '_utterance_observations', {'visual': []}), \
+             patch.object(I, '_last_scan_secs', {'voiced': .3}), \
+             patch.object(I, '_last_scan_windows', []), \
+             patch.object(I, '_pending_voice_sample_capture', None), \
+             patch.object(I, '_pending_intro_voice_capture', None), \
+             patch.object(I, '_voice_sample_requested_pids', set()), \
+             patch.object(I.world_state, 'get', return_value=[face]), \
+             patch.object(I, '_safe_enroll_voice') as enroll:
+            self.assertFalse(I._maybe_bootstrap_campplus(
+                np.ones(48000), Transcript('Can you hear me?', confident=False)))
+            self.assertIsNone(I._pending_voice_sample_capture)
+            self.assertFalse(I._maybe_bootstrap_campplus(np.ones(48000), 'Can you hear me?'))
+            self.assertEqual(I._pending_voice_sample_capture['person_id'], 1)
+            self.assertIsNone(I._pending_voice_sample_capture['asked_at'])
+            enroll.assert_not_called()
+            self.assertEqual(people.count_native_voice_prints(1), 0)
+
     def test_bootstrap_rejects_untrusted_short_mixed_or_disabled(self):
         from intelligence import interaction as I
         from audio.transcription import Transcript

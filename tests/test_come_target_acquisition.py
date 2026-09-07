@@ -71,6 +71,15 @@ class ComeTargetAcquisitionTest(_ComeFixture):
     def _tick(self):
         MA.step(self.scene, _profile())
 
+    def test_refused_caller_suppresses_later_startup_approach(self):
+        self.scene = _snapshot(db_id=1)
+        MA._state['startup_approach_done'] = False
+        with mock.patch.object(MA, '_visible_come_requester', return_value=None):
+            self.assertFalse(MA.request_come_here())
+        self.assertTrue(MA._state['startup_approach_done'])
+        self.assertGreater(MA._state['user_motion_at'], 0)
+        self.come.assert_not_called()
+
     def test_unenrolled_caller_is_acquired_from_face_and_microphone(self):
         self.scene = _snapshot(db_id=None, slot='guest-7')
         self.assertTrue(MA.request_come_here(voice_bearing_deg=0., voice_share=.9,

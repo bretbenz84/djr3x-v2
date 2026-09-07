@@ -3226,3 +3226,22 @@ Post-boot read-only monitoring confirmed live radial ToF, 73 matrix frames,
 `imu.ok` and `mag.ok`, idle state, and “Bluepad32 ready” (no controller connected
 at verification). Battery menu-bar service restored afterward. No driving test
 was performed; physical curved-approach behavior still needs validation.
+
+### 2026-09-07 far-field and movement follow-up
+
+Simultaneous speech capture at 8 feet / 45° right found Silero speech duration
+12.034 s on Flex channel 0 versus 6.260 s on channel 1. Robot-local .env now
+uses AUDIO_AEC_INPUT_CHANNEL=0 (board AGC); host gain remains 1.5. Restart app
+and supervisor to apply. See docs/respeaker_flex_xvf3800.md for evidence and
+talk-over/noise-floor caveats. Stationary direction tests validate the existing
+sign/offset; live rearward bearings remain unexplained.
+
+CAM++ bootstrap now arms the existing voice-sample request for a sole known
+visible face missing CAM++ prints, including an empty roster. This asks after
+the normal reply; it does not learn or name an uncertain short turn from face
+presence alone. Explicit come requests suppress subsequent autonomous startup
+approach even if caller acquisition fails. Flinch retreat now requires temporal
+closure on an independent radial sensor; a stationary close table or absent
+radial evidence cannot authorize retreat. Firmware obstacle stops remain active.
+These host changes have offline regression coverage; physical behavior and
+attribution after a completed sample still need a live run.

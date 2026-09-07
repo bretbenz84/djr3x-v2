@@ -1394,6 +1394,8 @@ class FlinchTest(unittest.TestCase):
             self._tof["rl"] = rl_mm
         if rr_mm is not None:
             self._tof["rr"] = rr_mm
+        self._tof['fl_radial'] = self._tof['fl']
+        self._tof['fr_radial'] = self._tof['fr']
         if state is not None:
             self._state_val = state
         MA.step({"people": []}, profile or _profile())
@@ -1679,7 +1681,8 @@ class FlinchEndToEndDefaultsTest(unittest.TestCase):
             mock.patch.object(MA.motion_controller, "move", return_value=9),
             mock.patch.object(MA.motion, "telemetry", side_effect=lambda: {
                 "tof_mm": {"fl": int(self._front_m * 1000), "fr": int(self._front_m * 1000),
-                           "rl": 4000, "rr": 4000}}),
+                           "rl": 4000, "rr": 4000, "fl_radial": int(self._front_m * 1000),
+                           "fr_radial": int(self._front_m * 1000)}}),
         ]
         self.available, self.state, self.move, self.telemetry = [
             p.start() for p in self._patches

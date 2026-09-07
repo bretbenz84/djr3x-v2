@@ -484,6 +484,8 @@ def request_come_here(person_id: "int | None" = None, *,
     if no_drive_room() is not None:
         _log.info("[motion_agency] come-here refused — room is flagged no-drive")
         return False
+    _state["user_motion_at"] = time.monotonic()
+    _state["startup_approach_done"] = True
     release_user_hold("come-here request")
     note_traction_recovered("come-here request")
     # An explicit "come here" outranks the autonomous explorer — stop it and take
@@ -3027,6 +3029,9 @@ def _reset_flinch() -> None:
     _flinch_state["clear_run"]["fl"] = 0
     _flinch_state["clear_run"]["fr"] = 0
     _flinch_state["hits"] = 0
+    for side in ("fl_radial", "fr_radial"):
+        _flinch_state["baseline"][side] = None
+        _flinch_state["clear_run"][side] = 0
 
 
 def _flinch_side_m(v) -> Optional[float]:
@@ -3079,7 +3084,7 @@ def _update_baseline(side: str, d: Optional[float]) -> None:
 def _side_intrudes(side: str, d: Optional[float]) -> bool:
     """True if this side shows a genuine intrusion: inside the trigger AND closed by
     at least MOTION_FLINCH_APPROACH_DROP_M vs its frozen open-distance baseline."""
-    b = _flinch_state["baseline"][side]
+    b = _flinch_state["baseline"].get(side)
     if d is None or b is None or d >= _num("MOTION_FLINCH_TRIGGER_M", 0.45):
         return False
     return (b - d) >= _num("MOTION_FLINCH_APPROACH_DROP_M", 0.20)
@@ -3098,10 +3103,10 @@ def _log_uncorroborated_flinch(front: Optional[float], now: float, kind: str) ->
     _flinch_state["last_veto_log_at"] = now
     _log.info(
         "[motion_agency] flinch (%s) held: front reads %s but the independent "
-        "radial front sees %s — matrix-only intrusions are not worth reversing for",
+        "radial front sees %s without a corroborated approach — holding position",
         kind,
         "n/a" if front is None else "%.2fm" % front,
-        "open floor" if _radial_front_m() is None else "%.2fm" % _radial_front_m(),
+        "unavailable" if _radial_front_m() is None else "%.2fm" % _radial_front_m(),
     )
 
 
@@ -3116,16 +3121,15 @@ def _flinch_corroborated() -> bool:
     0.07-0.11 m from >0.6 m. The radial pair watches the same personal space from a
     different sensor, so a real shin or dog registers on both.
 
-    Fails OPEN when the firmware does not publish the independent pair: no second
-    opinion means no veto, which is exactly today's behavior rather than a new
-    blind spot. Also fails open when corroboration is disabled.
+    A stationary nearby table is not corroboration of an approach: an independent
+    radial channel must itself show temporal closure. Missing evidence holds still;
+    firmware obstacle stopping remains active regardless of the host reflex.
     """
     if not _flag("MOTION_FLINCH_REQUIRE_CORROBORATION", True):
         return True
-    radial = _radial_front_m()
-    if radial is None:
-        return True                     # no independent reading — don't veto
-    return radial <= _num("MOTION_FLINCH_CORROBORATION_MAX_M", 0.60)
+    tof = (motion.telemetry() or {}).get("tof_mm") or {}
+    return any(_side_intrudes(side, _flinch_side_m(tof.get(side)))
+               for side in ("fl_radial", "fr_radial"))
 
 
 def _flinch_gated(profile, now: float) -> bool:
@@ -3207,6 +3211,10 @@ def _maybe_flinch(profile, now: float, state: str) -> bool:
     tof = tele.get("tof_mm")
     if not isinstance(tof, dict):
         return False
+    for side in ("fl_radial", "fr_radial"):
+        _flinch_state["baseline"].setdefault(side, None)
+        _flinch_state["clear_run"].setdefault(side, 0)
+        _update_baseline(side, _flinch_side_m(tof.get(side)))
     rear = _min_valid_m(tof.get("rl"), tof.get("rr"))
     if state == "blocked":
         fl = _flinch_side_m(tof.get("fl"))

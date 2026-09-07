@@ -34,8 +34,10 @@ signals. Averaging all six (what the old blank `AUDIO_AEC_INPUT_CHANNEL` did,
 and what the supervisor did before this change) would be dominated by the AGC
 channel's hot floor.
 
-**Pipeline channel: 1.** ASR-tuned, echo-cancelled, beamformed, no AGC pumping
-the noise floor into the scene analyzer's "sudden loud sound" detector.
+**Pipeline channel: 0 as of 2026-09-07.** The simultaneous far-field test below
+showed substantially better speech detection with the Conference output’s AGC.
+Channel 1 was originally selected to avoid AGC noise-floor pumping; that tradeoff
+and talk-over performance need checking during the next live run.
 
 ### DSP parameters as shipped (read 2026-09-02, `tools/flex_ctl.py`)
 
@@ -58,8 +60,8 @@ after `SAVE_CONFIGURATION`.
 ```
 AUDIO_DEVICE_NAME=ReSpeaker          # substring-matches the Flex's name
 AUDIO_OUTPUT_DEVICE_NAME=ReSpeaker   # playback THROUGH the Flex = AEC reference
-AUDIO_AEC_INPUT_CHANNEL=1            # ASR beam (was blank on the Lite)
-AUDIO_INPUT_GAIN=1.5                 # owner: no host gain — trial the board's AGC instead
+AUDIO_AEC_INPUT_CHANNEL=0            # Conference beam, with board AGC
+AUDIO_INPUT_GAIN=1.5                 # unchanged host gain used in the comparison
 WAKE_WORD_ALLOW_DURING_TTS=false     # unchanged; a separate talk-over decision
 ```
 
@@ -67,7 +69,7 @@ WAKE_WORD_ALLOW_DURING_TTS=false     # unchanged; a separate talk-over decision
 so every AEC-gated behavior (short deaf window, VAD 0.4, 1.0 s pre-roll, eager
 motion endpoint, during-DJ command listener) stays on exactly as with the Lite.
 `config.AUDIO_INPUT_CHANNELS=2` means the main app opens channels 0–1 only and
-reads column 1; the supervisor opens all six and reads column 1
+reads column 0; the supervisor opens all six and reads column 0
 (`rex_supervisor._frames_to_mono`).
 
 ## What was measured on 2026-09-02 (and what it does not prove)
@@ -578,3 +580,29 @@ See [the investigation](come_here_2026-09-06.md) for evidence and remaining unce
   `python_control/xvf_host.py`), `respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY`
   (host_control binaries incl. `mac_arm64`, DFU guide), XMOS XVF3800 user guide
   v3.2.1 for the parameter semantics.
+
+## Field comparison, 2026-09-07
+
+Bret spoke normally at approximately 8 feet, 45° to Rex’s right. A simultaneous
+15-second, 16 kHz stereo capture compared both processed USB channels, with
+the existing 1.5 host gain applied before Silero VAD.
+
+| Measurement | Channel 0 (Conference) | Channel 1 (ASR) |
+|---|---:|---:|
+| Raw RMS | 0.011932 | 0.000809 |
+| Raw peak | 0.211914 | 0.006500 |
+| Silero speech duration | 12.034 s | 6.260 s |
+
+Channel 1 missed the early speech regions. Board reads confirmed AGC enabled
+and gain 32, but that AGC only applies to channel 0. The local robot .env now
+selects channel 0; restart the app and supervisor to load it. No DSP settings
+were written. This measures speech detection, not transcription accuracy,
+speaker identification, or talk-over performance. An earlier capture was
+invalid for speech comparison because Bret had not started speaking.
+
+Four stationary direction tests gave raw DOA / auto-beam medians: front
+359°/360°, left 73°/74°, rear 173°/174°, right 267°/267°. Old directions lingered
+during pauses/position transitions. Five production capture-only front windows
+all selected approximately -1°. Retain the existing zero offset and sign.
+These tests do not explain the rearward bearings in the 01:43:49 live run;
+direction during normal robot operation remains a live-validation item.

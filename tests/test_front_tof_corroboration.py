@@ -73,38 +73,40 @@ class FlinchCorroborationTests(unittest.TestCase):
     def test_open_radial_vetoes_the_retreat(self):
         with (
             mock.patch.object(config, "MOTION_FLINCH_REQUIRE_CORROBORATION", True),
-            mock.patch.object(ma, "_radial_front_m", return_value=4.0),
+            mock.patch.object(ma.motion, "telemetry",
+                              return_value=_tele(fl=80, fr=80, fl_radial=4000, fr_radial=4000)),
         ):
             self.assertFalse(ma._flinch_corroborated(),
                              "reversed away from something only the matrix can see")
 
-    def test_near_radial_allows_the_retreat(self):
-        with (
-            mock.patch.object(config, "MOTION_FLINCH_REQUIRE_CORROBORATION", True),
-            mock.patch.object(ma, "_radial_front_m", return_value=0.22),
-        ):
-            self.assertTrue(ma._flinch_corroborated(),
-                            "a real shin registers on both sensors — must still flinch")
-
-    def test_missing_radial_fails_open(self):
-        """Old firmware must behave exactly as before, not gain a blind spot."""
-        with (
-            mock.patch.object(config, "MOTION_FLINCH_REQUIRE_CORROBORATION", True),
-            mock.patch.object(ma, "_radial_front_m", return_value=None),
-        ):
+    def test_radial_must_show_approach_not_just_nearby_furniture(self):
+        ma._reset_flinch()
+        self.addCleanup(ma._reset_flinch)
+        with mock.patch.object(config, "MOTION_FLINCH_REQUIRE_CORROBORATION", True), \
+             mock.patch.object(ma.motion, "telemetry", return_value=_tele(fl_radial=220, fr_radial=4000)):
+            ma._flinch_state['baseline']['fl_radial'] = .22
+            self.assertFalse(ma._flinch_corroborated())
+            ma._flinch_state['baseline']['fl_radial'] = 1.2
             self.assertTrue(ma._flinch_corroborated())
+
+    def test_missing_radial_holds_instead_of_reversing(self):
+        with mock.patch.object(config, "MOTION_FLINCH_REQUIRE_CORROBORATION", True), \
+             mock.patch.object(ma.motion, "telemetry", return_value=_tele(fl=80, fr=80)):
+            self.assertFalse(ma._flinch_corroborated())
 
     def test_kill_switch_restores_old_behaviour(self):
         with (
             mock.patch.object(config, "MOTION_FLINCH_REQUIRE_CORROBORATION", False),
-            mock.patch.object(ma, "_radial_front_m", return_value=4.0),
+            mock.patch.object(ma.motion, "telemetry",
+                              return_value=_tele(fl=80, fr=80, fl_radial=4000, fr_radial=4000)),
         ):
             self.assertTrue(ma._flinch_corroborated())
 
     def test_veto_is_logged_but_throttled(self):
         ma._flinch_state["last_veto_log_at"] = 0.0
         with (
-            mock.patch.object(ma, "_radial_front_m", return_value=4.0),
+            mock.patch.object(ma.motion, "telemetry",
+                              return_value=_tele(fl=80, fr=80, fl_radial=4000, fr_radial=4000)),
             mock.patch.object(ma._log, "info") as info,
         ):
             ma._log_uncorroborated_flinch(0.08, 1000.0, "approach")
