@@ -9902,6 +9902,18 @@ def _safe_enroll_voice(
         transcript_text=transcript_text,
         confirmed=confirmed,
     )
+    if (audio_array is not None and speaker_id.active_backend() == "campplus"
+            and confirmed and source in {"new_person", "identity_alias_refresh", "dual_intro"}
+            and _turn_transcript_trusted() and speaker_id.comparable_print_count(person_id) == 0):
+        from intelligence import voice_bootstrap as bootstrap
+        voiced = speaker_id.voiced_secs(audio_array)
+        if voiced < float(getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0)):
+            if (voiced >= .2 and getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
+                    and bootstrap.target(observations=_utterance_observations.get("visual") or [],
+                                         windows=_last_scan_windows, explicit_person_id=person_id) == person_id):
+                bootstrap.remember_introduction(person_id, speaker_id.get_embedding(audio_array),
+                                                conv_memory.transcript_version()[0])
+            allowed, reason = False, "awaiting_longer_sample"
     if not allowed:
         _log.info(
             "[identity] skipped voice enrollment person_id=%s source=%s reason=%s",
@@ -14788,13 +14800,13 @@ def _maybe_bootstrap_campplus(audio_array, text):
         return finish("disabled")
     if not text or not bool(getattr(text, "confident", True)) or _is_non_speech_vocalization(str(text)):
         return finish("untrusted_or_non_speech")
-    if diag["voiced_secs"] < float(getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0)):
-        return finish("insufficient_voiced_audio")
     # A raw short-window cosine difference is logged by speaker_id, but is not
     # proof of multiple talkers. Positively identified switches still block.
     visual_ids = set(diag["active_speaker_ids"])
     window_ids = {r.get("person_id") for r in _last_scan_windows if r.get("person_id") is not None}
     if len(visual_ids)>1 or len(window_ids)>1 or any(r.get("change_suspected") for r in _last_scan_windows):
+        from intelligence import voice_bootstrap
+        voice_bootstrap.clear_pending()
         return finish("conflicting_speakers")
     visible = visible_identity(world_state.get("people") or [])
     diag["visible_person_id"] = visible
@@ -14813,9 +14825,36 @@ def _maybe_bootstrap_campplus(audio_array, text):
             person = people_memory.get_person(visible)
             if person and bare.casefold() == str(person.get("name") or "").casefold():
                 explicit_id = visible
+    from intelligence import voice_bootstrap as bootstrap
+    session_id = conv_memory.transcript_version()[0]
+    if explicit_id is not None and visible not in (None, explicit_id):
+        bootstrap.clear_pending()
+        return finish("conflicting_visible_identity")
+    pending = bootstrap.pending_person(session_id)
+    if pending is not None and visible != pending:
+        bootstrap.clear_pending()
+    if (explicit_id is not None and target(observations=observations,
+            windows=_last_scan_windows, explicit_person_id=explicit_id) != explicit_id):
+        bootstrap.clear_pending()
+        return finish("conflicting_introduction")
+    if (explicit_id is not None and .2 <= diag["voiced_secs"] < float(
+            getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0))
+            and speaker_id.comparable_print_count(explicit_id) == 0):
+        bootstrap.remember_introduction(explicit_id, speaker_id.get_embedding(audio_array), session_id)
+    followup = None
+    if explicit_id is None and bootstrap.pending_person(session_id) is not None:
+        followup = bootstrap.followup_target(speaker_id.get_embedding(audio_array), session_id,
+            visible_person_id=visible, observations=observations, windows=_last_scan_windows)
+    if diag["voiced_secs"] < float(getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0)):
+        diag["pending_person_id"] = bootstrap.pending_person(session_id)
+        return finish("awaiting_longer_sample" if diag["pending_person_id"] is not None
+                      else "insufficient_voiced_audio")
     pid = target(observations=observations, windows=_last_scan_windows,
                  explicit_person_id=explicit_id)
     source = "self_identification" if explicit_id is not None else "interval_active_speaker"
+    if pid is None and followup is not None:
+        pid = followup
+        source = "confirmed_introduction_followup"
     if pid is None and visible is not None and explicit_id is None:
         if speaker_id.comparable_print_count(visible) > 0:
             return finish("profile_already_present")
@@ -14834,6 +14873,8 @@ def _maybe_bootstrap_campplus(audio_array, text):
         return finish("profile_already_present")
     ok = _safe_enroll_voice(pid, audio_array, transcript_text=str(text),
                             source="campplus_first_voice:" + source, confirmed=True)
+    if ok:
+        bootstrap.clear_pending()
     return finish("first_profile_enrolled" if ok else "sample_or_storage_rejected", ok)
 
 

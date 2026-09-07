@@ -2419,7 +2419,7 @@ QWEN_ASR_CONTEXT_BIAS_ENABLED = _env_bool("QWEN_ASR_CONTEXT_BIAS_ENABLED", True)
 QWEN_ASR_CONTEXT_VOCAB = (
     "Bret", "Rex", "DJ R3X", "Lake Folsom", "Folsom", "Sacramento", "Exudica Royale",
 )
-QWEN_ASR_CONTEXT_REX_LINES = 2     # how many of Rex's recent lines to include
+QWEN_ASR_CONTEXT_REX_LINES = 0     # vocabulary only: full Rex lines can become fabricated transcripts
 # When a Qwen3-ASR decode is rejected as context regurgitation (or as an
 # impossible speaking rate, the same failure seen from the other side), decode
 # the SAME audio once more with no biasing prompt before giving up. The bias is

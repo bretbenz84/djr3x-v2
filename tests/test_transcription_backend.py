@@ -33,6 +33,7 @@ class QwenBackendTest(unittest.TestCase):
     def test_qwen_result_is_used_and_whisper_not_called(self):
         with mock.patch.object(tr, "_qwen_transcribe",
                                return_value=("Come here.", -0.01)) as q, \
+             mock.patch.object(tr, "_MLX_AVAILABLE", True), \
              mock.patch.object(tr, "mlx_whisper") as mw:
             out = tr.transcribe(AUDIO)
         q.assert_called_once()
@@ -61,6 +62,7 @@ class QwenBackendTest(unittest.TestCase):
     def test_qwen_failure_falls_back_to_local_whisper(self):
         with mock.patch.object(tr, "_qwen_transcribe", side_effect=RuntimeError("boom")), \
              mock.patch.object(tr, "_local_model_ready", return_value=True), \
+             mock.patch.object(tr, "_MLX_AVAILABLE", True), \
              mock.patch.object(tr, "mlx_whisper") as mw:
             mw.transcribe.return_value = {"text": "Hello there, my friend.", "segments": []}
             out = tr.transcribe(AUDIO)
@@ -81,6 +83,7 @@ class QwenBackendTest(unittest.TestCase):
         with mock.patch.object(tr, "_qwen_ready", return_value=False), \
              mock.patch.object(tr, "_qwen_transcribe") as q, \
              mock.patch.object(tr, "_local_model_ready", return_value=True), \
+             mock.patch.object(tr, "_MLX_AVAILABLE", True), \
              mock.patch.object(tr, "mlx_whisper") as mw:
             mw.transcribe.return_value = {"text": "Fallback words spoken.", "segments": []}
             out = tr.transcribe(AUDIO)
@@ -93,6 +96,7 @@ class WhisperBackendUnchangedTest(unittest.TestCase):
         with mock.patch.object(config, "TRANSCRIPTION_BACKEND", "whisper", create=True), \
              mock.patch.object(tr, "_qwen_transcribe") as q, \
              mock.patch.object(tr, "_local_model_ready", return_value=True), \
+             mock.patch.object(tr, "_MLX_AVAILABLE", True), \
              mock.patch.object(tr, "mlx_whisper") as mw:
             mw.transcribe.return_value = {"text": "Regular whisper result here.",
                                           "segments": [{"avg_logprob": -0.3,
@@ -154,9 +158,18 @@ class ContextBiasTest(unittest.TestCase):
 
     def test_context_prompt_includes_vocab_and_rex_lines(self):
         tr.note_rex_line("Hey Bret, Lake Folsom today.")
-        prompt = tr._asr_context_prompt()
+        with mock.patch.object(config, "QWEN_ASR_CONTEXT_REX_LINES", 2):
+            prompt = tr._asr_context_prompt()
         self.assertIn("Lake Folsom", prompt)
         self.assertIn("just said", prompt)
+
+    def test_default_context_cannot_feed_startup_sentences_to_decoder(self):
+        tr.note_rex_line("Loaded and ready. Fair warning: I remember everything now.")
+        tr.note_rex_line("Almost ready — just defragmenting forty years of embarrassing memories.")
+        prompt = tr._asr_context_prompt()
+        self.assertIn("Bret", prompt)
+        self.assertNotIn("Loaded and ready", prompt)
+        self.assertNotIn("defragmenting", prompt)
 
     def test_kill_switch(self):
         with mock.patch.object(

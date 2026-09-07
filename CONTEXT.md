@@ -3153,3 +3153,25 @@ target holds for 8 s then ends with an explanation. Come turns disable delayed
 compass correction and queued swing escape, preserving firmware yaw and obstacle
 checks. End-to-end regression: `come_target_acquisition`. Full field timeline:
 `docs/come_here_2026-09-06.md`. No physical test or profile/database edits performed.
+
+
+## Short introduction enrollment handoff (2026-09-07)
+
+The 00:57:30 field run never saved a CAM++ print: “Bret Benziger” had only
+0.63 seconds of voiced audio, below the 1-second enrollment floor. A spoken
+acknowledgment was not evidence of enrollment. Confirmed introductions now retain
+an in-memory acoustic reference for at most 60 seconds in the same transcript
+session. The next sufficiently voiced, trusted utterance can save the first
+CAM++ print when the introduced person is the sole visible named face and its
+embedding agrees (cosine >= 0.35). This is corroboration of an introduction,
+not a change to ordinary voice recognition thresholds. Conflicting voice or
+visual evidence cancels the handoff; available capture snapshots must all agree.
+Mouth motion is not required. New-person, alias, and dual-introduction enrollment
+also defer short clips. Pending enrollment is included in brain context so Rex
+can request a full sentence instead of claiming a voiceprint was saved.
+
+Qwen ASR now defaults to vocabulary-only context (`QWEN_ASR_CONTEXT_REX_LINES=0`).
+The field run contained startup lines in the reverse order used by the ASR prompt,
+consistent with context regurgitation; this does not prove audible speaker echo.
+Existing transcript trust and echo guards remain. Live microphone validation of
+the handoff and actual CAM++ short-utterance accuracy is still needed.

@@ -20,6 +20,9 @@ def unit(index=0):
 
 class StorageTests(unittest.TestCase):
     def setUp(self):
+        from intelligence import voice_bootstrap
+        voice_bootstrap.clear_pending()
+        self.addCleanup(voice_bootstrap.clear_pending)
         from setup_assets import DB_SCHEMA
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -88,6 +91,53 @@ class StorageTests(unittest.TestCase):
             result = I._process_audio(audio, pretranscribed='What are we doing tomorrow?')
             self.assertEqual(result[1], 1)
             self.assertEqual(people.count_native_voice_prints(1), 1)
+
+    def test_short_introduction_followup_enrolls_and_attributes_without_mouth_motion(self):
+        from intelligence import interaction as I, voice_bootstrap as bootstrap
+        from contextlib import ExitStack
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("UPDATE people SET name='Bret Benziger' WHERE id=1")
+        audio = np.ones(int(config.AUDIO_SAMPLE_RATE * 2), dtype=np.float32) * .1
+        with ExitStack() as stack:
+            for obj, key, value in [(speaker_id, '_active_backend', 'campplus'),
+                    (I, '_utterance_observations', {'visual': []}),
+                    (I, '_last_confident_voice_at', {})]:
+                stack.enter_context(patch.object(obj, key, value))
+            stack.enter_context(patch.object(speaker_id, 'get_embedding', return_value=unit()))
+            stack.enter_context(patch.object(speaker_id, 'window_evidence', return_value=[]))
+            stack.enter_context(patch.object(I.world_state, 'get', return_value=[
+                {'person_db_id': 1, 'face_id': 'bret-face', 'face_visible': True}]))
+            with patch.object(speaker_id, 'voiced_secs', return_value=.63):
+                I._process_audio(audio, pretranscribed='Bret Benziger.')
+            self.assertEqual(people.count_native_voice_prints(1), 0)
+            self.assertEqual(bootstrap.pending_person(I.conv_memory.transcript_version()[0]), 1)
+            with patch.object(speaker_id, 'voiced_secs', return_value=2):
+                result = I._process_audio(audio, pretranscribed='I am going to the store tomorrow.')
+            self.assertEqual(result[1:3], (1, 'Bret Benziger'))
+            self.assertEqual(people.count_native_voice_prints(1), 1)
+            self.assertIsNone(bootstrap.pending_person(I.conv_memory.transcript_version()[0]))
+
+    def test_new_person_short_voice_is_deferred(self):
+        from intelligence import interaction as I, voice_bootstrap as bootstrap
+        pid, _ = people.find_or_create_person('New Visitor')
+        with patch.object(speaker_id, '_active_backend', 'campplus'), \
+             patch.object(speaker_id, 'get_embedding', return_value=unit()), \
+             patch.object(speaker_id, 'voiced_secs', return_value=.63), \
+             patch.object(I, '_turn_transcript_trusted', return_value=True), \
+             patch.object(I, '_last_scan_windows', []):
+            self.assertFalse(I._safe_enroll_voice(pid, np.ones(48000),
+                             source='new_person', confirmed=True))
+        self.assertEqual(people.count_native_voice_prints(pid), 0)
+        self.assertEqual(bootstrap.pending_person(I.conv_memory.transcript_version()[0]), pid)
+        with patch.object(speaker_id, '_active_backend', 'campplus'), \
+             patch.object(speaker_id, 'get_embedding', return_value=unit()), \
+             patch.object(I, '_utterance_observations', {'visual': []}), \
+             patch.object(I, '_last_scan_secs', {'voiced': 2}), \
+             patch.object(I, '_last_scan_windows', []), \
+             patch.object(I.world_state, 'get', return_value=[
+                 {'person_db_id': pid, 'face_id': 'new-face', 'face_visible': True}]):
+            self.assertTrue(I._maybe_bootstrap_campplus(np.ones(48000), 'Nice to meet you Rex.'))
+        self.assertEqual(people.count_native_voice_prints(pid), 1)
 
     def test_bootstrap_rejects_untrusted_short_mixed_or_disabled(self):
         from intelligence import interaction as I
@@ -274,3 +324,53 @@ class EncoderTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class IntroductionHandoffTests(unittest.TestCase):
+    def setUp(self):
+        from intelligence import voice_bootstrap as b
+        self.b = b
+        b.clear_pending()
+        self.addCleanup(b.clear_pending)
+        b.remember_introduction(1, unit(), 7, now=100)
+
+    def follow(self, **kwargs):
+        defaults = dict(embedding=unit(), session_id=7, visible_person_id=1,
+                        observations=[], windows=[], now=101)
+        defaults.update(kwargs)
+        return self.b.followup_target(**defaults)
+
+    def test_matching_sole_face_and_voice(self):
+        self.assertEqual(self.follow(), 1)
+
+    def test_conflicting_evidence_retires_reference(self):
+        for conflict in (dict(embedding=unit(1)), dict(visible_person_id=None),
+                dict(visible_person_id=2), dict(windows=[{'change_suspected': True}]),
+                dict(windows=[{'person_id': 2}]), dict(observations=[{'faces': []}])):
+            with self.subTest(conflict=conflict):
+                self.b.remember_introduction(1, unit(), 7, now=100)
+                self.assertIsNone(self.follow(**conflict))
+                self.assertIsNone(self.b.pending_person(7, now=101))
+
+    def test_session_and_expiry(self):
+        self.assertIsNone(self.follow(now=161))
+        self.b.remember_introduction(1, unit(), 7, now=100)
+        self.assertIsNone(self.follow(session_id=8))
+
+    def test_context_reports_pending_not_recognition(self):
+        from intelligence import brain_context
+        with patch('memory.conversations.transcript_version', return_value=(7, 0)), \
+             patch('memory.people.get_person', return_value={'name': 'Bret'}), \
+             patch.object(self.b.time, 'monotonic', return_value=101):
+            context = '\n'.join(brain_context.lines(None))
+        self.assertIn('Voice enrollment pending for Bret', context)
+        self.assertIn('Do not claim their voice is enrolled or recognized', context)
+
+    def test_explicit_name_cannot_override_another_identified_voice(self):
+        self.assertIsNone(self.b.target(observations=[], windows=[{'person_id': 2}],
+                                       explicit_person_id=1))
+
+    def test_bad_embedding_cannot_arm(self):
+        self.b.clear_pending()
+        self.assertFalse(self.b.remember_introduction(1, np.zeros(192), 7))
+        self.assertIsNone(self.b.pending_person(7))

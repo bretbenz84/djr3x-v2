@@ -90,7 +90,7 @@ def _asr_context_prompt() -> "str | None":
     if not bool(getattr(config, "QWEN_ASR_CONTEXT_BIAS_ENABLED", True)):
         return None
     vocab = [str(v) for v in getattr(config, "QWEN_ASR_CONTEXT_VOCAB", ()) if v]
-    n_lines = int(getattr(config, "QWEN_ASR_CONTEXT_REX_LINES", 2))
+    n_lines = int(getattr(config, "QWEN_ASR_CONTEXT_REX_LINES", 0))
     with _context_lock:
         lines = list(_recent_rex_lines)[-n_lines:] if n_lines > 0 else []
     parts = []
