@@ -3384,3 +3384,53 @@ verified; post-reset telemetry reported zero wheel motion and no fault. Battery
 launch agent restored. Restart the Mac application to run the new approach owner.
 Read-only hello verified firmware `0.2.0-motor-only`, advertising drive/turn/move/stop
 (and battery capabilities), with no come capability. No motion commands sent.
+
+### 2026-09-07 16:09 run: prompted voiceprint contamination
+
+The runtime log and active `assets/memory/people.db` confirm that biometric 59
+(PJ, CAM++) was written at 16:12:21 from “Says it's a pretty good pizza.” The
+prompt at 16:11:26 asked PJ to repeat a specific sentence; neither “Yeah, yeah”
+nor the pizza remark matched it. Generic CAM++ bootstrap correctly abstained,
+but the legacy voice-sample handler enrolled anyway. The bad print then scored
+.518 against Bret's .552 on the first come request, failing the .07 identity
+margin; later it misidentified “Do you know who's speaking?” as PJ (.688).
+
+Prompted enrollment now requires the full requested sentence (punctuation, case,
+and spacing may differ), trusted transcription, audio beginning after playback,
+continuous sole-target face evidence during the audio, no mixed/foreign speaker
+evidence, and sufficient voiced audio. A matching off-camera enrolled voice also
+blocks it. Unrelated replies do not enroll or extend the deadline. The central
+storage adapter prevents other enrollment paths bypassing a pending request.
+The sample handler runs before generic introduction handlers, logs a successful
+sample only once, and opens retry capture only after the retry has been spoken.
+Independent automatic enrollment remains available outside the prompted window.
+
+A raw dual-intro face rescan no longer claims both people are strangers while
+one known person is visible/recently visible. Invited approach location can use
+a positive best voice match plus the same sole named face throughout the command
+when the voice identity margin is too close; this grants no identity/learning.
+Mixed captures, competing faces, another best voice, and ties still abstain.
+The Mac approach also retains camera observations during obstacle holds, avoiding
+an artificial second camera-loss pause when front clearance returns.
+
+Local repair: SQLite-consistent people/rex backups and a repair manifest are in
+`assets/memory/backups/voice-repair-20260907T233157Z/`. Removed only CAM++ biometric
+59, duplicate wrong-speaker conversation row 6172, and PJ's misplaced summary 123
+(the same Bret conversation already has summary 122). Corrected row 6183 to Bret
+based on the immediate explicit correction. No PJ-linked CAM++ signatures exist.
+Retained all faces, all legacy voices, Bret CAM++ biometric 58, and other memories.
+The repair is local data; ignored databases/backups are not distributed by git.
+
+The later accepted approach stopped on a separate issue: the front-right RADIAL
+sensor repeatedly reported 61–85 mm (e.g. fr=65, fr_radial=65 at 16:13:32).
+This is not solely an 8x8 bottom-row/floor rejection problem. LF/LB also remained
+unavailable (-1), so full-clearance heading restoration could not engage. Do not
+ignore these readings or claim the carpet is confirmed as their cause. No sensor
+thresholds or firmware changed. Stationary sensor inspection and live movement
+validation remain necessary; unit tests cannot establish physical clearance.
+
+Validation: 655 focused tests passed across 19 isolated modules, including the
+actual speech-turn -> prompted enrollment -> temporary SQLite handoff, exact
+field rejection phrases, enrollment bypasses, caller selection with the logged
+score margin, and obstacle-hold camera continuity. Real hardware/network/audio
+were blocked. Added prompted-sample and dual-intro modules to run_lean_checks.

@@ -425,12 +425,24 @@ def _visible_come_requester(snapshot: dict, person_id: Optional[int],
     # learning permission is granted here, and a competing face/voice still wins.
     if len(visible) == 1 and evidence and not evidence.get("text_input"):
         pid = visible[0].get("person_db_id")
+        from intelligence.voice_bootstrap import visible_identity
+        interval = evidence.get("visual_observations") or []
+        sole_interval_face = (pid is not None and len(interval) >= 3
+            and all(visible_identity(row.get("faces") or []) == pid
+                    and row.get("person_db_id") in (None, pid) for row in interval))
+        # Identity needs a separating voice margin. An invited destination can
+        # instead use the best matching voice plus the same sole face throughout
+        # the command. This grants location only, never identity or learning.
+        location_supported = (
+            float(evidence.get("margin") or 0.) >= float(evidence.get("required_margin", .07))
+            or (sole_interval_face and float(evidence.get("margin") or 0.) > 0.
+                and float(evidence.get("raw_best_score") or 0.) >= float(evidence.get("hard_threshold", .50))))
         if (pid is not None and evidence.get("raw_best_id") == pid
                 and not evidence.get("mixed_speakers")
                 and evidence.get("bearing_selected_pid") in (None, pid)
                 and evidence.get("visual_latch_pid") in (None, pid)
                 and float(evidence.get("raw_best_score") or 0.) >= float(evidence.get("known_floor", .45))
-                and float(evidence.get("margin") or 0.) >= float(evidence.get("required_margin", .07))):
+                and location_supported):
             _log.info("[motion_agency] come location: sole face %s supported by enrolled voice %.3f; "
                       "direction conflict=%s, identity unchanged", pid,
                       evidence["raw_best_score"], bool(evidence.get("bearing_contradiction")))

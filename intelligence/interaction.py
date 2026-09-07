@@ -768,11 +768,11 @@ _pending_intro_voice_capture: Optional[dict] = None
 
 # Voice-sample request flow (the enrollment half of the voiceless-face rule):
 # a KNOWN visible face with no voice print got cross-matched to someone else's
-# print, so after replying Rex asks them for a line and the next qualifying
-# utterance is enrolled onto their row. Armed by _maybe_request_voice_sample
+# print, so after replying Rex asks them to repeat a specific sentence. Only
+# that verified repetition may be enrolled onto their row. Armed by _maybe_request_voice_sample
 # (asked_at stays None until the ask is actually spoken by the post-response
-# hook); consumed by _handle_voice_sample_capture. Once per person per session.
-#   keys: person_id, name, armed_at, asked_at
+# hook); only a verified repetition can enroll. Once per person per session.
+#   keys: person_id, name, armed_at, asked_at, expected_text
 _pending_voice_sample_capture: Optional[dict] = None
 _voice_sample_requested_pids: set[int] = set()
 
@@ -9907,6 +9907,20 @@ def _safe_enroll_voice(
     source: str,
     confirmed: bool = False,
 ) -> bool:
+    # The prompted capture owns enrollment until it completes/expires. Generic
+    # bootstrap and self-introduction paths run before its reply handler, so
+    # they must not turn a partial/wrong response into a durable print either.
+    pending_sample = _pending_voice_sample_capture
+    if source == "voice_sample_request":
+        reason = _voice_sample_enrollment_rejection(transcript_text)
+        if not reason and _safe_int((pending_sample or {}).get("person_id")) != person_id:
+            reason = "requested_person_mismatch"
+        if reason:
+            _log.info("[voice_sample] enrollment rejected: %s", reason)
+            return False
+    elif _voice_sample_capture_fresh(pending_sample):
+        _log.info("[identity] skipped voice enrollment source=%s: prompted sample pending", source)
+        return False
     allowed, reason = _voice_enrollment_sample_allowed(
         audio_array,
         transcript_text=transcript_text,
@@ -10345,6 +10359,14 @@ def _ask_dual_unknown_intro(text: str, faces: list[dict]) -> bool:
     global _pending_dual_intro, _dual_intro_cooldown_until, _session_exchange_count
     now = time.monotonic()
     if now < _dual_intro_cooldown_until:
+        return False
+    # A second raw face scan has none of the tracker's identity persistence.
+    # Never let one failed match erase a person we can see or just spoke with.
+    recent_ids = set(_session_person_ids)
+    recent_ids.update(p.get("person_db_id") for p in (world_state.get("people") or [])
+                      if p.get("person_db_id") is not None and not p.get("face_missing"))
+    if any(_known_person_visible_recently(pid) for pid in recent_ids):
+        _log.info("[identity] dual intro suppressed: a known person is still/recently visible")
         return False
     ordered = sorted(faces, key=lambda f: f["x"])   # Rex's left first (smaller x)
     ask_text = None
@@ -12846,7 +12868,16 @@ def _voice_sample_capture_fresh(ctx: Optional[dict]) -> bool:
     if not ctx or ctx.get("asked_at") is None:
         return False
     ttl = float(getattr(config, "VOICE_SAMPLE_REQUEST_WINDOW_SECS", 45.0))
-    return (time.monotonic() - float(ctx["asked_at"])) <= ttl
+    return 0 <= (time.monotonic() - float(ctx["asked_at"])) <= ttl
+
+
+def _voice_sample_enrollment_rejection(text: str) -> Optional[str]:
+    from intelligence.voice_bootstrap import prompted_sample_rejection
+    return prompted_sample_rejection(
+        _pending_voice_sample_capture, text, _utterance_observations,
+        _last_scan_windows, _last_scan_ranked, now=time.monotonic(),
+        ttl=float(getattr(config, "VOICE_SAMPLE_REQUEST_WINDOW_SECS", 45.0)),
+        trusted=_turn_transcript_trusted(), match_threshold=_voice_score.match_threshold())
 
 
 def _handle_voice_sample_capture(
@@ -12856,13 +12887,7 @@ def _handle_voice_sample_capture(
     raw_best_id: Optional[int],
     speaker_score: float,
 ) -> Optional[str]:
-    """Consume the reply to Rex's "give me a line so I can learn your voice" ask.
-
-    Enrolls the utterance onto the requested person when the camera still backs
-    them (their face on frame now/recently) and no OTHER known person is both
-    confidently voice-matched AND on camera. A cross-match onto an off-camera
-    print does NOT disqualify — that cross-match is the exact symptom the flow
-    exists to cure (print-less PJ read as Bret at 0.79-0.94, 2026-08-23)."""
+    """Enroll only a verified repetition of the requested person's sentence."""
     global _pending_voice_sample_capture
 
     ctx = _pending_voice_sample_capture
@@ -12880,22 +12905,14 @@ def _handle_voice_sample_capture(
         _log.info("[voice_sample] declined by reply — dropping request for %s", target_name)
         _pending_voice_sample_capture = None
         return None
-    if not _known_person_visible_recently(target_id):
-        # The person stepped away — don't blind-enroll a room voice onto them.
-        return None
-    confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
-    rb = _safe_int(raw_best_id)
-    if (
-        rb is not None
-        and rb != target_id
-        and float(speaker_score or 0.0) >= confident
-        and _known_person_visible_recently(rb)
-    ):
-        _log.info(
-            "[voice_sample] reply confidently matches VISIBLE person %s — not "
-            "enrolling it onto %s",
-            rb, target_name,
-        )
+    reason = _voice_sample_enrollment_rejection(text)
+    if not reason and person_id not in (None, target_id):
+        reason = "resolved_other_speaker"
+    if (not reason and raw_best_id not in (None, target_id)
+            and float(speaker_score or 0.) >= _voice_score.match_threshold()):
+        reason = "competing_enrolled_voice"
+    if reason:
+        _log.info("[voice_sample] skipped reply for %s: %s", target_name, reason)
         return None
 
     # A sample this short makes a print too weak to separate close voices —
@@ -12908,7 +12925,7 @@ def _handle_voice_sample_capture(
     duration = _voiced_duration_secs(audio_array)
     words = len((text or "").split())
     if duration < min_secs or words < min_words:
-        ctx["asked_at"] = time.monotonic()
+        ctx["asked_at"] = None  # reopened only after the retry finishes playing
         first = _first_name_or(target_name, "there")
         line = str(ctx.get("expected_text") or "") or _voice_sample_line(target_name)
         ctx["expected_text"] = line
@@ -12932,7 +12949,7 @@ def _handle_voice_sample_capture(
     )
     first = _first_name_or(target_name, "there")
     if not ok:
-        ctx["asked_at"] = time.monotonic()
+        ctx["asked_at"] = None
         line = str(ctx.get("expected_text") or "") or _voice_sample_line(target_name)
         ctx["expected_text"] = line
         return (
@@ -12950,12 +12967,6 @@ def _handle_voice_sample_capture(
         consciousness.note_person_spoke(target_id)
     except Exception:
         pass
-    try:
-        conv_memory.add_to_transcript(target_name, text)
-        conv_log.log_heard(target_name, text)
-        print(f"[HEARD] {target_name}: {text}", flush=True)
-    except Exception as exc:
-        _log.debug("voice sample transcript log failed: %s", exc)
     try:
         topic_thread.note_user_turn(text, target_id)
         user_energy.note_user_turn(text, target_id)
@@ -29075,6 +29086,40 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("[lean] deferral capture failed: %s", exc)
 
+        pending_sample_for_turn = _pending_voice_sample_capture
+        voice_sample_response = _handle_voice_sample_capture(
+            text,
+            audio_array,
+            person_id,
+            raw_best_id,
+            speaker_score,
+        )
+        if voice_sample_response:
+            if pending_sample_for_turn is not None and _pending_voice_sample_capture is None:
+                person_id = pending_sample_for_turn["person_id"]
+                person_name = pending_sample_for_turn["name"]
+                anonymous_speaker_label = None
+                _current_turn_speaker_evidence["resolution"] = {
+                    "status": "known", "person_id": person_id, "name": person_name,
+                    "basis": "verified_requested_voice_sample", "learning_allowed": True,
+                    "conflicts": [],
+                }
+            _record_heard_turn_once()
+            _speak_blocking(
+                voice_sample_response,
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", voice_sample_response)
+            conv_log.log_rex(voice_sample_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(voice_sample_response)
+            if _pending_voice_sample_capture is not None:
+                _pending_voice_sample_capture["asked_at"] = time.monotonic()
+            final_executed_path = "identity.voice_sample_capture"
+            return
+
         name_merge_response, name_merge_person_id, name_merge_name = (None, None, None)
         if not game_conversation_lock:
             name_merge_response, name_merge_person_id, name_merge_name = (
@@ -29807,28 +29852,6 @@ def _handle_speech_segment(
             conv_log.log_rex(intro_voice_response)
             _session_exchange_count += 1
             _register_rex_utterance(intro_voice_response)
-            return
-
-        voice_sample_response = _handle_voice_sample_capture(
-            text,
-            audio_array,
-            person_id,
-            raw_best_id,
-            speaker_score,
-        )
-        if voice_sample_response:
-            _record_heard_turn_once()
-            _speak_blocking(
-                voice_sample_response,
-                emotion="happy",
-                pre_beat_ms=100,
-                post_beat_ms_override=200,
-            )
-            conv_memory.add_to_transcript("Rex", voice_sample_response)
-            conv_log.log_rex(voice_sample_response)
-            _session_exchange_count += 1
-            _register_rex_utterance(voice_sample_response)
-            final_executed_path = "identity.voice_sample_capture"
             return
 
         # Targeted-forget confirmation, in the same pending-slot ladder as the scene
@@ -32391,7 +32414,7 @@ def _handle_speech_segment(
         # visible face with no voice print, so their speech cross-matched
         # someone else's print. Ask them for a line now — the capture window
         # opens when the ask is spoken, and _handle_voice_sample_capture
-        # enrolls their next utterance.
+        # enrolls only a verified repetition of that sentence.
         voice_sample_ask_fired = False
         pending_vs = _pending_voice_sample_capture
         if (
@@ -32405,8 +32428,7 @@ def _handle_speech_segment(
             # DICTATE a line: "give me a line" froze PJ into a two-word
             # "Hey Rex" (field 2026-08-25), and a 1s sample left him reading
             # as Bret for the whole Jeopardy game. A concrete sentence to
-            # repeat gets a usable sample on the first try; any full sentence
-            # still enrolls (the line is a crutch, not a rule).
+            # repeat gets a usable sample; unrelated conversation never trains it.
             vs_line = _voice_sample_line(pending_vs.get("name"))
             pending_vs["expected_text"] = vs_line
             ask_text = (

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = (
     "conversational_persona relationship_tone sharp_roast_tier conversation_revamp response_length_variation comedy_modes "
     "dev_mac_identity_room field_2026_09_07_handoffs place_recognition place_questions "
-    "campplus voice_backend voice_signatures speaker_id_margin identity_instrumentation passive_voice_enroll "
+    "campplus voice_backend voice_signatures speaker_id_margin identity_instrumentation passive_voice_enroll voiceless_face_wins dual_intro "
     "conversation_arc lean_context_state speech_generations delivery_contract "
     "optional_local_work turn_coordinator runtime_report gap_speech "
     "action_results_and_attribution memory_semantic memory_unified_retrieval "

@@ -4057,11 +4057,11 @@ IDENTITY_PROMPT_DEMOTION_ENABLED = True
 # camera moments ago or the visual active-speaker latch contradicts the face.
 VOICELESS_FACE_WINS_ENABLED = True
 
-# The enrollment half of the same fix: on a voiceless-face turn Rex owes the
-# person a voice print, so after replying he asks them for a line and the next
-# qualifying utterance (their face on camera, no confidently-matched OTHER
-# person also on camera, sample quality gates) is enrolled onto their row.
-# Once per person per session; window mirrors the intro voice capture.
+# Prompted enrollment requires the dictated sentence, captured after the ask,
+# the requested person's sole face throughout the audio, no competing voice,
+# and sample quality gates. Unrelated replies never become voiceprints.
+# Once per person per session; automatic first-profile enrollment still works
+# from independent identity evidence when no prompted sample is pending.
 VOICE_SAMPLE_REQUEST_ENABLED = True
 VOICE_SAMPLE_REQUEST_WINDOW_SECS = 45.0
 # Minimum size for an enrollable voice sample. A two-word "Hey Rex" (~1s) makes
@@ -4075,7 +4075,7 @@ VOICE_SAMPLE_MIN_WORDS = 4
 # ask. The line carries the person's OWN NAME ({name}) — a sentence about
 # yourself is the easiest thing to repeat verbatim on first hearing (the
 # pangram flunked that test). Short, natural, ~3-4s spoken, past the floors
-# above. Any full sentence still enrolls — the line is a crutch, not a rule.
+# above. The full sentence must match (ignoring punctuation, spacing and case).
 VOICE_SAMPLE_LINE_TEMPLATES = [
     "My name is {name}, and this is what my voice sounds like.",
     "Hey Rex, it's {name} — remember my voice, not just my face.",

@@ -576,3 +576,21 @@ The firmware still independently enforces drive expiry, watchdog, motor slew,
 physical move/turn completion and obstacle avoidance. Target location does not
 authorize biometric or personal-memory learning. Camera range remains approximate
 and live approach/final-facing equivalence still needs physical validation.
+
+### Field correction: unanswered voice-sample request (2026-09-07 16:09)
+
+The old prompted voice-capture adapter bypassed the resolver's enrollment abstention:
+it enrolled an unrelated pizza remark as PJ. It now requires the complete dictated
+sentence and independent interval identity/quality checks; all other storage paths
+are blocked while that sample request is pending. Verified sample replies precede
+generic name-introduction handling and produce one correctly attributed transcript
+entry. Dual-intro rescans cannot erase a recently visible known person. Regression
+coverage includes the real speech-turn/storage handoff, not only pure predicates.
+
+Invited movement still has separate location and learning decisions. A sole face
+throughout a command can corroborate its best voice candidate for destination
+selection even when the identity margin is ambiguous. Obstacle holds retain fresh
+caller observations. Mac ownership of approach and ESP32 danger avoidance remain.
+The recorded radial front-right 61–85 mm returns and missing left-side sensors
+require physical inspection; floor rejection in the 8x8 alone cannot fix them.
+See CONTEXT.md's 16:09 incident entry for evidence, local DB repair, and validation.

@@ -17,7 +17,7 @@ Under test:
     face's person has no voice print, unless the matched person was themselves
     on camera moments ago or the visual latch contradicts the face.
   - _maybe_request_voice_sample / _handle_voice_sample_capture: Rex asks the
-    person for a line and enrolls the next qualifying utterance onto their row.
+    person for a line and enrolls only a verified repetition onto their row.
 """
 
 from __future__ import annotations
@@ -159,152 +159,174 @@ class VoiceSampleRequestTest(unittest.TestCase):
         self.assertIsNone(I._pending_voice_sample_capture)
 
 
-class VoiceSampleCaptureTest(unittest.TestCase):
+class VoiceSampleCaptureTest(_TempPeopleDb):
+    """The 16:12 pizza capture must not train PJ, through the real storage path."""
+    phrase = "Hey Rex, it's PJ — remember my voice, not just my face."
+
     def setUp(self):
-        I._pending_voice_sample_capture = None
-        I._voice_sample_requested_pids.clear()
-        # VOICED audio (the min-length guard measures speech frames, not buffer).
-        t = np.arange(40000, dtype=np.float32) / 16000.0
-        self._audio = (0.1 * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32)
+        super().setUp()
+        from contextlib import ExitStack
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.face = {'person_db_id': 7, 'face_id': 'PJ', 'face_visible': True}
+        self.ctx = dict(person_id=7, name='PJ Thomas', armed_at=89., asked_at=90.,
+                        expected_text=self.phrase)
+        self.capture = dict(started_at=92., ended_at=95., visual=[
+            {'monotonic_at': 92.+i*.25, 'person_db_id': None, 'confidence': 0.,
+             'faces': [dict(self.face)]} for i in range(13)])
+        for name, value in {
+            '_pending_voice_sample_capture': self.ctx, '_utterance_observations': self.capture,
+            '_last_scan_windows': [], '_last_scan_ranked': [(1, 'Bret', .354, 1)],
+            '_last_scan_secs': {'voiced': 3.}, '_last_confident_voice_at': {},
+            '_session_person_ids': set(), '_pending_intro_voice_capture': None,
+        }.items():
+            self.stack.enter_context(mock.patch.object(I, name, value))
+        self.stack.enter_context(mock.patch.object(I.time, 'monotonic', return_value=100.))
+        self.stack.enter_context(mock.patch.object(I, '_turn_transcript_trusted', return_value=True))
+        self.stack.enter_context(mock.patch.object(speaker_id.voice_score, '_active_backend', 'campplus'))
+        for obj, method in ((I.consciousness, 'mark_engagement'), (I.consciousness, 'note_person_spoke'),
+                            (I.topic_thread, 'note_user_turn'), (I.user_energy, 'note_user_turn')):
+            self.stack.enter_context(mock.patch.object(obj, method))
+        with sqlite3.connect(self._path) as conn:
+            conn.executemany('insert into people(id,name) values (?,?)', [(1, 'Bret'), (7, 'PJ Thomas')])
+        vec = np.zeros(192, dtype=np.float32); vec[0] = 1.
+        self.embedding = self.stack.enter_context(mock.patch.object(speaker_id, 'get_embedding', return_value=vec))
+        t = np.arange(48000, dtype=np.float32)/16000.
+        self.audio = (.1*np.sin(2*np.pi*180*t)).astype(np.float32)
 
-    def tearDown(self):
-        I._pending_voice_sample_capture = None
-        I._voice_sample_requested_pids.clear()
+    def count(self):
+        with sqlite3.connect(self._path) as conn:
+            return conn.execute("select count(*) from biometrics where type like 'voice%'").fetchone()[0]
 
-    def _asked_ctx(self):
-        return {
-            "person_id": 7,
-            "name": "PJ Thomas",
-            "armed_at": time.monotonic(),
-            "asked_at": time.monotonic(),
-        }
+    def capture_reply(self, text=None, *, person_id=None, raw_id=1, score=.354):
+        return I._handle_voice_sample_capture(
+            self.phrase if text is None else text, self.audio, person_id, raw_id, score)
 
-    def test_not_consumed_before_the_ask_is_spoken(self):
-        I._pending_voice_sample_capture = {
-            "person_id": 7, "name": "PJ Thomas",
-            "armed_at": time.monotonic(), "asked_at": None,
-        }
-        resp = I._handle_voice_sample_capture("hello there", self._audio, 1, 1, 0.85)
-        self.assertIsNone(resp)
-        self.assertIsNotNone(I._pending_voice_sample_capture)
-
-    def test_cross_match_to_off_camera_print_still_enrolls_target(self):
-        # The exact field shape: PJ replies, scores 0.85 as (not-visible) Bret.
-        I._pending_voice_sample_capture = self._asked_ctx()
-        visible = {7: True, 1: False}
-        with mock.patch.object(I, "_known_person_visible_recently", side_effect=lambda p: visible.get(I._safe_int(p), False)), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll, \
-             mock.patch.object(I.consciousness, "mark_engagement"), \
-             mock.patch.object(I.consciousness, "note_person_spoke"), \
-             mock.patch.object(I.topic_thread, "note_user_turn"), \
-             mock.patch.object(I.user_energy, "note_user_turn"):
-            resp = I._handle_voice_sample_capture(
-                "The Kings are winning it all this year.", self._audio, 1, 1, 0.851
-            )
-        self.assertTrue(resp)
-        self.assertTrue(enroll.called)
-        self.assertEqual(enroll.call_args.args[0], 7)
+    def test_qualifying_requested_sentence_reaches_real_enrollment_storage(self):
+        self.assertIn('Got it, PJ', self.capture_reply())
+        self.assertEqual(self.count(), 1)
         self.assertIsNone(I._pending_voice_sample_capture)
 
-    def test_confident_match_on_visible_other_person_skips(self):
-        # Bret is ALSO on camera and the reply confidently matches him — that
-        # is Bret talking, not the target; never enroll it onto PJ.
-        I._pending_voice_sample_capture = self._asked_ctx()
-        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
-            resp = I._handle_voice_sample_capture(
-                "go ahead, say something", self._audio, 1, 1, 0.90
-            )
-        self.assertIsNone(resp)
-        self.assertFalse(enroll.called)
-        self.assertIsNotNone(I._pending_voice_sample_capture)
+    def test_field_replies_never_enroll_or_renew_request(self):
+        for text in ['Yeah, yeah.', "Says it's a pretty good pizza.", 'My name is PJ.']:
+            self.assertIsNone(self.capture_reply(text))
+            self.assertEqual(self.ctx['asked_at'], 90.)
+        self.assertEqual(self.count(), 0)
+        self.embedding.assert_not_called()
 
-    def test_target_off_camera_skips(self):
-        I._pending_voice_sample_capture = self._asked_ctx()
-        with mock.patch.object(I, "_known_person_visible_recently", return_value=False), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
-            resp = I._handle_voice_sample_capture("hello", self._audio, 1, 1, 0.85)
-        self.assertIsNone(resp)
-        self.assertFalse(enroll.called)
+    def test_punctuation_case_and_name_spacing_are_tolerated(self):
+        self.assertTrue(self.capture_reply("hey rex its P. J. remember my voice not just my face"))
+        self.assertEqual(self.count(), 1)
 
-    def test_refusal_drops_the_request(self):
-        I._pending_voice_sample_capture = self._asked_ctx()
-        resp = I._handle_voice_sample_capture("not right now, Rex", self._audio, None, None, 0.0)
-        self.assertIsNone(resp)
+    def test_extra_conversation_or_wrong_name_rejected(self):
+        for text in [self.phrase+' It is good pizza.', self.phrase.replace('PJ', 'Bret'), 'Repeat after me: '+self.phrase]:
+            self.assertIsNone(self.capture_reply(text))
+        self.assertEqual(self.count(), 0)
+
+    def test_off_camera_known_voice_cannot_be_enrolled_as_target(self):
+        I._last_scan_ranked = [(1, 'Bret', .851, 1)]
+        self.assertIsNone(self.capture_reply(score=.851, person_id=1))
+        self.assertEqual(self.count(), 0)
+        self.assertFalse(I._safe_enroll_voice(7, self.audio, transcript_text=self.phrase,
+                                            source='voice_sample_request'))
+
+    def test_resolved_other_speaker_rejected(self):
+        self.assertIsNone(self.capture_reply(person_id=1))
+        self.assertEqual(self.count(), 0)
+
+    def test_second_face_or_changed_face_during_capture_rejected(self):
+        for change in [{'person_db_id': 1, 'face_id': 'Bret', 'face_visible': True},
+                       {'person_db_id': None, 'face_visible': True}]:
+            self.capture['visual'][5]['faces'] = [dict(self.face), change]
+            self.assertIsNone(self.capture_reply())
+        self.assertEqual(self.count(), 0)
+
+    def test_no_interval_camera_or_incomplete_coverage_rejected(self):
+        rows = self.capture['visual']
+        for limited in [[], rows[8:], rows[:4]+rows[10:]]:
+            self.capture['visual'] = limited
+            self.assertIsNone(self.capture_reply())
+        self.assertEqual(self.count(), 0)
+
+    def test_mixed_audio_rejected(self):
+        I._last_scan_windows = [{'change_suspected': True}]
+        self.assertIsNone(self.capture_reply())
+        I._last_scan_windows = [{'person_id': 1}]
+        self.assertIsNone(self.capture_reply())
+        self.assertEqual(self.count(), 0)
+
+    def test_pre_ask_audio_and_unsaid_ask_rejected(self):
+        self.capture['started_at'] = 89.
+        self.assertIsNone(self.capture_reply())
+        self.ctx['asked_at'] = None
+        self.assertIsNone(self.capture_reply())
+        self.assertEqual(self.count(), 0)
+
+    def test_expired_or_missing_phrase_never_guesses(self):
+        self.ctx.pop('expected_text')
+        self.assertIsNone(self.capture_reply())
+        self.ctx['asked_at'] = 1.
+        self.assertIsNone(self.capture_reply())
         self.assertIsNone(I._pending_voice_sample_capture)
+        self.assertEqual(self.count(), 0)
 
-    def test_expired_window_clears(self):
-        ctx = self._asked_ctx()
-        ctx["asked_at"] = time.monotonic() - 10_000.0
-        I._pending_voice_sample_capture = ctx
-        resp = I._handle_voice_sample_capture("hello", self._audio, None, None, 0.0)
-        self.assertIsNone(resp)
+    def test_untrusted_transcript_rejected(self):
+        with mock.patch.object(I, '_turn_transcript_trusted', return_value=False):
+            self.assertIsNone(self.capture_reply())
+        self.assertEqual(self.count(), 0)
+
+    def test_quality_failure_reasks_only_after_phrase_and_identity_pass(self):
+        self.audio = np.zeros(48000, dtype=np.float32)
+        self.assertIn('Repeat after me', self.capture_reply())
+        self.assertIsNone(self.ctx['asked_at'])  # retry must finish playing first
+        self.assertEqual(self.count(), 0)
+
+    def test_other_enrollment_paths_cannot_bypass_pending_sentence(self):
+        for source in ['new_person', 'passive', 'campplus_first_voice:self_identification', 'identity_alias_refresh']:
+            self.assertFalse(I._safe_enroll_voice(7, self.audio, transcript_text='My name is PJ.',
+                                                 source=source, confirmed=True))
+        self.assertFalse(I._safe_enroll_voice(1, self.audio, transcript_text=self.phrase,
+                                             source='voice_sample_request'))
+        self.assertFalse(I._safe_enroll_voice(7, self.audio, transcript_text='Yeah, yeah.',
+                                             source='voice_sample_request'))
+        self.assertEqual(self.count(), 0)
+
+    def test_refusal_drops_request(self):
+        self.assertIsNone(self.capture_reply('Not right now, Rex.'))
         self.assertIsNone(I._pending_voice_sample_capture)
+        self.assertEqual(self.count(), 0)
 
-    def test_too_short_a_sample_reasks_instead_of_enrolling(self):
-        # Field 2026-08-25: PJ enrolled from a ~1s "Hey Rex." and spent the whole
-        # Jeopardy game being read as Bret. A blink of a sample re-asks for a
-        # full sentence; the window stays open for the retry.
-        I._pending_voice_sample_capture = self._asked_ctx()
-        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
-            resp = I._handle_voice_sample_capture(
-                "Hey Rex.", np.zeros(16000, dtype=np.float32), None, None, 0.0
-            )
-        self.assertIsNotNone(resp)
-        self.assertIn("sentence", resp)
-        self.assertFalse(enroll.called)
-        self.assertIsNotNone(I._pending_voice_sample_capture)
+    def test_templates_do_not_decline_their_own_reply(self):
+        import re
+        decline = re.compile(r"\b(no|nope|not now|not right now|later|wait|hold on|can'?t|cannot)\b")
+        for template in config.VOICE_SAMPLE_LINE_TEMPLATES:
+            self.assertIsNone(decline.search(template.format(name='PJ').lower()))
 
-    def test_short_transcript_reasks_even_with_long_audio(self):
-        # Duration alone can lie (leading room tone) — a two-word transcript is
-        # not enough signal either way.
-        I._pending_voice_sample_capture = self._asked_ctx()
-        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
-            resp = I._handle_voice_sample_capture(
-                "Hey Rex.", np.zeros(64000, dtype=np.float32), None, None, 0.0
-            )
-        self.assertIsNotNone(resp)
-        self.assertFalse(enroll.called)
-
-    def test_short_sample_pushback_dictates_a_line(self):
-        # "Give me a line" froze PJ into "Hey Rex" — the pushback must tell the
-        # person exactly what to say (owner call 2026-08-26).
-        ctx = self._asked_ctx()
-        ctx["expected_text"] = "The quick brown fox jumps over the lazy dog."
-        I._pending_voice_sample_capture = ctx
-        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True):
-            resp = I._handle_voice_sample_capture(
-                "Hey Rex.", np.zeros(16000, dtype=np.float32), None, None, 0.0
-            )
-        self.assertIn("Repeat after me", resp)
-        self.assertIn("quick brown fox", resp)
-
-    def test_pushback_without_a_stored_line_picks_one(self):
-        I._pending_voice_sample_capture = self._asked_ctx()   # no expected_text
-        with mock.patch.object(I, "_known_person_visible_recently", return_value=True), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True):
-            resp = I._handle_voice_sample_capture(
-                "Hey Rex.", np.zeros(16000, dtype=np.float32), None, None, 0.0
-            )
-        self.assertIn("Repeat after me", resp)
-        self.assertEqual(
-            I._pending_voice_sample_capture.get("expected_text"),
-            resp.split("Repeat after me: ", 1)[1],
-            "the dictated line is stored so the next pushback repeats the SAME line",
-        )
-
-    def test_dictated_lines_never_trip_the_decline_detector(self):
-        # The decline regex drops the request on "no|not now|wait|..." — a
-        # dictated line echoed back must never read as a refusal.
-        import re as _re
-        decline = _re.compile(
-            r"\b(no|nope|not now|not right now|later|wait|hold on|can'?t|cannot)\b"
-        )
-        for line in getattr(config, "VOICE_SAMPLE_LINES", []):
-            self.assertIsNone(decline.search(line.lower()), line)
+    def test_full_turn_handles_verified_sample_before_generic_name_introduction(self):
+        # Exercise the real turn handoff and DB write; only I/O is mocked.
+        old_people = I.world_state.get('people')
+        self.addCleanup(I.world_state.update, 'people', old_people)
+        I.world_state.update('people', [dict(self.face, id='pj-track', face_box=(860,400,200,200))])
+        for name, value in {
+            '_shutdown_requested': False, '_looks_like_own_echo': False,
+            '_game_suppresses_conversation': False, '_audio_group_chatter_active': False,
+            '_speak_blocking': None, '_maybe_auto_refresh_voice': None,
+        }.items():
+            self.stack.enter_context(mock.patch.object(I, name, return_value=value))
+        self.stack.enter_context(mock.patch.object(I.consciousness, 'note_speaker_gaze_intent'))
+        self.stack.enter_context(mock.patch.object(I.consciousness, 'consume_identity_prompt_request', return_value=False))
+        self.stack.enter_context(mock.patch.object(I, '_last_speaker_turn', None))
+        self.stack.enter_context(mock.patch.object(I, '_pending_offscreen_identify', None))
+        self.stack.enter_context(mock.patch.object(I, '_register_rex_utterance'))
+        self.stack.enter_context(mock.patch.object(I.conv_log, 'log_rex'))
+        heard = self.stack.enter_context(mock.patch.object(I.conv_log, 'log_heard'))
+        generic = self.stack.enter_context(mock.patch.object(I, '_handle_pending_name_merge_confirmation'))
+        self.stack.enter_context(mock.patch.object(I.llm, 'get_response', return_value='Okay.'))
+        I._handle_speech_segment(self.audio, transcribed_text=self.phrase,
+            raw_best_id_override=1, raw_best_name_override='Bret', speaker_score_override=.354)
+        self.assertEqual(self.count(), 1)
+        generic.assert_not_called()
+        heard.assert_called_once_with('PJ Thomas', self.phrase)
 
 
 if __name__ == "__main__":

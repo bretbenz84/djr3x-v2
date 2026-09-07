@@ -58,6 +58,21 @@ class ApproachTests(unittest.TestCase):
         self.assertEqual(plan.step(2, telemetry(2), None, None).lin, 0)
         self.assertEqual(plan.step(9, telemetry(9), None, None).result, 'aborted')
 
+    def test_front_right_hold_keeps_fresh_caller_observations(self):
+        plan = Approach(0, 1.3, .4)
+        plan.step(.1, telemetry(.1), 3., 0)
+        for tick in range(2, 30):
+            now = tick*.1
+            held = telemetry(now)
+            held['tof_mm'].update(fr=65, fr_radial=65)
+            result = plan.step(now, held, 2.8, 0, target_stamp=now)
+            self.assertEqual(result.lin, 0.)
+            self.assertIsNone(result.result)
+        # Clearance returns between camera frames: no artificial second pause.
+        resumed = plan.step(3., telemetry(3.), None, None)
+        self.assertGreater(resumed.lin, 0.)
+        self.assertAlmostEqual(plan.last_range, 2.8)
+
     def test_one_cached_near_face_cannot_finish_arrival(self):
         plan = Approach(0, 1.3, .4)
         for tick in range(1, 12):

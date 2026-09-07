@@ -181,6 +181,27 @@ class ComeTargetAcquisitionTest(_ComeFixture):
         self.assertIsNone(MA._observe_come_target(self.scene, time.monotonic()))
         self.assertEqual(MA._requested_come['requester_track'], 'guest-7')
 
+    def test_close_voice_margin_uses_interval_face_for_location_only(self):
+        self.scene = _snapshot(db_id=1)
+        face = dict(self.scene['people'][0], face_id='Bret')
+        ev = field_evidence(raw_best_id=1, raw_best_score=.552, margin=.034,
+            voiced_secs=.90, words=4, known_floor=.45, bearing_contradiction=True,
+            visual_observations=[{'person_db_id': None, 'faces': [face]} for _ in range(16)])
+        with mock.patch.object(IX, '_recent_voice_bearing', return_value={'bearing_deg': 151., 'share': .3}), \
+             mock.patch.object(IX, '_current_turn_speaker_evidence', {'motion_evidence': ev}):
+            reply = IX._handle_router_motion_action(
+                IX.action_router.classify_explicit_motion('Can you come here?'), requester_person_id=None)
+        self.assertEqual(reply, 'On my way.')
+        self._tick()
+        self.come.assert_called_once()
+        self.assertEqual(MA._requested_come['requester_track'], self.scene['people'][0]['id'])
+        self.assertNotIn('resolution', ev)
+        for change in ({'mixed_speakers': True}, {'margin': 0.}, {'raw_best_id': 7},
+                       {'visual_observations': []}, {'raw_best_score': .45}):
+            self.assertIsNone(MA._visible_come_requester(self.scene, None, dict(ev, **change), 151.))
+        ev['visual_observations'][5] = {'faces': [face, dict(face, person_db_id=7)]}
+        self.assertIsNone(MA._visible_come_requester(self.scene, None, ev, 151.))
+
     def test_router_passes_unknown_caller_direction_to_approach(self):
         self.scene = _snapshot(db_id=None, slot='visitor')
         with mock.patch.object(IX, '_recent_voice_bearing', return_value={'bearing_deg': 0., 'share': .9}):

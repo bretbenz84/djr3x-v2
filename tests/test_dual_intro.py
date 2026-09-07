@@ -102,6 +102,18 @@ class DualIntroReplyTest(unittest.TestCase):
         foc.assert_not_called()
         self.assertIsNone(I._pending_dual_intro)
 
+    def test_raw_unknown_scan_cannot_erase_recently_known_partner(self):
+        with mock.patch.object(I, '_dual_intro_cooldown_until', 0.), \
+             mock.patch.object(I, '_session_person_ids', {1}), \
+             mock.patch.object(I, '_known_person_visible_recently', return_value=True), \
+             mock.patch.object(I.world_state, 'get', return_value=[]), \
+             mock.patch.object(I.llm, 'get_response') as llm, \
+             mock.patch.object(I, '_speak_blocking') as speak:
+            self.assertFalse(I._ask_dual_unknown_intro('There is pizza nearby.', _faces()))
+        llm.assert_not_called()
+        speak.assert_not_called()
+        self.assertIsNone(I._pending_dual_intro)
+
     def test_name_extraction_forms(self):
         self.assertEqual(I._dual_intro_name_from_reply("I'm Sarah"), "Sarah")
         self.assertEqual(I._dual_intro_name_from_reply("This is Mike"), "Mike")

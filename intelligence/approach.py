@@ -70,6 +70,16 @@ class Approach:
         fronts = [float(tof[k])*.001 for k in ('fl', 'fr') if tof.get(k, -1) > 0]
         if not fronts:
             return Decision(result='aborted', reason='front clearance unavailable')
+        # Continue observing the caller while danger avoidance holds the base.
+        # Otherwise a brief obstacle erases fresh camera evidence and adds a
+        # second, artificial camera-loss pause after clearance returns.
+        stamp = now if target_stamp is None else target_stamp
+        if target_range is not None and stamp != self.sample_stamp:
+            self.sample_stamp = stamp
+            self.sample_count += 1
+            self.last_seen = now
+            self.ranges = (self.ranges + [target_range])[-3:]
+            self.last_range = median(self.ranges)
         front = min(fronts)
         blocked = (telemetry.get('state') == 'blocked'
                    and telemetry.get('blocked_dir') in ('front', 'both')) or front <= .2
@@ -80,13 +90,6 @@ class Approach:
             return Decision(result='blocked' if now-self.block_since >= 6 else None,
                             reason='front obstacle; holding caller')
         self.block_since = None
-        stamp = now if target_stamp is None else target_stamp
-        if target_range is not None and stamp != self.sample_stamp:
-            self.sample_stamp = stamp
-            self.sample_count += 1
-            self.last_seen = now
-            self.ranges = (self.ranges + [target_range])[-3:]
-            self.last_range = median(self.ranges)
         if now-self.last_seen >= 8:
             return Decision(result='aborted', reason='caller lost')
         if now-self.last_seen > 1.2 or self.last_range is None:

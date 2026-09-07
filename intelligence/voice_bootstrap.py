@@ -11,6 +11,53 @@ import threading
 import numpy as np
 
 
+def requested_phrase_matches(text, expected):
+    """Require the dictated words; tolerate only STT punctuation/case/spacing."""
+    def normalize(value):
+        return ''.join(c for c in str(value or '').casefold() if c.isalnum())
+    return bool(normalize(expected)) and normalize(text) == normalize(expected)
+
+
+def prompted_sample_rejection(ctx, text, capture, windows, ranked, *, now,
+                             ttl, trusted, match_threshold):
+    """A pending ask is not evidence that the next room voice belongs to its target.
+
+    Require the complete requested phrase, post-playback capture, the target's
+    sole face throughout that capture, and no competing speaker evidence. Mouth
+    motion is optional; current cameras do not reliably provide it.
+    """
+    if not ctx or ctx.get('asked_at') is None:
+        return 'request_not_spoken'
+    asked = float(ctx['asked_at'])
+    if not 0 <= now - asked <= ttl:
+        return 'request_expired'
+    if not trusted:
+        return 'untrusted_transcript'
+    if not requested_phrase_matches(text, ctx.get('expected_text')):
+        return 'requested_phrase_mismatch'
+    start, end = capture.get('started_at'), capture.get('ended_at')
+    if start is None or end is None or not asked <= start < end <= now:
+        return 'capture_outside_request'
+    pid = ctx['person_id']
+    rows = capture.get('visual') or []
+    # Check actual interval coverage, not a face snapshot taken after STT.
+    if (len(rows) < 3 or any(visible_identity(r.get('faces') or []) != pid for r in rows)
+            or any(r.get('person_db_id') not in (None, pid) for r in rows)):
+        return 'target_not_sole_interval_face'
+    stamps = sorted(float(r['monotonic_at']) for r in rows if r.get('monotonic_at') is not None)
+    if (len(stamps) != len(rows) or stamps[0] < start or stamps[-1] > end
+            or stamps[0] - start > 1. or end - stamps[-1] > 1.
+            or any(b-a > 1. for a, b in zip(stamps, stamps[1:]))):
+        return 'incomplete_camera_interval'
+    if any(r.get('change_suspected') or r.get('person_id') not in (None, pid) for r in windows):
+        return 'conflicting_speaker_windows'
+    if any(r[0] != pid and float(r[2]) >= match_threshold for r in ranked):
+        # Off-camera partners can speak too. Visibility never excuses a match
+        # to another enrolled voice.
+        return 'competing_enrolled_voice'
+    return None
+
+
 def target(*, observations, windows, explicit_person_id=None):
     visual_ids = {r.get('person_db_id') for r in observations if r.get('person_db_id') is not None}
     window_ids = {r.get('person_id') for r in windows if r.get('person_id') is not None}
