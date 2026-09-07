@@ -80,6 +80,18 @@ class ComeTargetAcquisitionTest(_ComeFixture):
         self.assertGreater(MA._state['user_motion_at'], 0)
         self.come.assert_not_called()
 
+    def test_repeated_same_caller_does_not_stop_and_restart_approach(self):
+        self.scene = _snapshot(db_id=1)
+        self.assertTrue(MA.request_come_here(person_id=1))
+        self._tick()
+        self.assertTrue(MA._requested_come['acquired'])
+        before = dict(MA._requested_come)
+        MA.motion_controller.stop.reset_mock()
+        self.assertTrue(MA.request_come_here(person_id=1))
+        MA.motion_controller.stop.assert_not_called()
+        self.assertEqual(MA._requested_come, before)
+        self.come.assert_called_once()
+
     def test_known_voice_can_approach_sole_unidentified_camera_track(self):
         self.scene = _snapshot(db_id=None, slot='visible-bret')
         self.assertTrue(MA.request_come_here(

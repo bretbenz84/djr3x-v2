@@ -129,6 +129,7 @@ struct FiniteCmd {
   TravelHeading come_heading;  // fixed at the start of forward travel
   bool     come_turning  = false;  // phase 1: rotating to heading
   float    come_stop_at  = 0;      // m
+  uint32_t come_started_ms = 0; // bounded real-sensor approach lifetime
   float    come_sim_wall = 0;      // m, stub-only virtual wall ahead at start
   // wheel bring-up jog bookkeeping (CMD_WHEEL): raw single-wheel duty, time-bounded
   uint8_t  wheel_side    = 0;      // 0 = left, 1 = right

@@ -182,6 +182,10 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
         return Resolution("known", candidate, ev.raw_best_name,
                           "strong voice" if strong else ("voice with interval visual corroboration"
                           if corroborated else "accepted voice score and margin"))
+    if _guarded_face_voice(ev):
+        return Resolution("known", candidate, ev.raw_best_name,
+                          "enrolled voice supported by continuous sole known face",
+                          learning_allowed=False)
     if _guarded_short_continuity(ev):
         return Resolution("known", candidate, ev.raw_best_name,
                           "short reply with recent verified speaker and continuous sole face",
@@ -197,6 +201,27 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
                           "sustained mouth motion during this utterance; weak voice evidence")
     return Resolution("ambiguous" if candidate is not None else "unknown", None, None,
                       "insufficient utterance-bound identity evidence")
+
+
+def _guarded_face_voice(ev):
+    """First-turn conversational identity from two agreeing sensors; never learn."""
+    pid = ev.raw_best_id
+    if (not ev.allow_short_continuity or pid is None or ev.raw_best_score < ev.known_floor
+            or ev.margin < ev.required_margin or ev.bearing_contradiction
+            or ev.bearing_selected_pid not in (None, pid)
+            or set(ev.visible_known_ids) != {pid}
+            or not 0 < ev.voiced_secs <= 3.0 or not 0 < ev.words <= 6
+            or len(ev.visual_observations) < 3):
+        return False
+    for row in ev.visual_observations:
+        if row.get("person_db_id") not in (None, pid):
+            return False
+        faces = [f for f in row.get("faces", []) if not f.get("face_missing")
+                 and f.get("face_visible") is not False
+                 and (f.get("face_visible") or f.get("face_box"))]
+        if len(faces) != 1 or faces[0].get("person_db_id") != pid:
+            return False
+    return True
 
 
 def _guarded_short_continuity(ev):

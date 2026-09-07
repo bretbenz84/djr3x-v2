@@ -26,6 +26,24 @@ def evidence(**changes):
 
 
 class ShortReplyTests(unittest.TestCase):
+    def test_first_greeting_uses_enrolled_voice_and_continuous_face_without_learning(self):
+        ev = evidence(text="Hey Rex, how are you?", raw_best_score=.468,
+                      known_floor=.45, words=5, voiced_secs=.66,
+                      previous_speaker_pid=None, continuity_age_secs=None)
+        result = A.resolve_authoritative(ev)
+        self.assertEqual(result.person_id, 1)
+        self.assertFalse(result.learning_allowed)
+        for change in (
+            dict(visual_observations=[]), dict(visible_known_ids=[]),
+            dict(visual_observations=[{'faces': [face(), face(2)]}]*5),
+            dict(bearing_contradiction=True), dict(bearing_selected_pid=2),
+            dict(mixed_speakers=True), dict(raw_best_score=.30),
+            dict(allow_short_continuity=False),
+        ):
+            with self.subTest(change=change):
+                self.assertIsNone(A.resolve_authoritative(replace(ev, **change)).person_id)
+
+
     def test_reported_short_replies_preserve_name_but_never_learn(self):
         for text, score, words, secs, age in (
             ('This is the bedroom.', .490, 4, 1.08, 67.8),

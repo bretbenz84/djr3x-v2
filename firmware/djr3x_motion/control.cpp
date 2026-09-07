@@ -1,6 +1,7 @@
 #include "control.h"
 #include "proto_io.h"
 #include "hal.h"
+#include "come_arrival.h"
 #include <math.h>
 
 #ifndef M_PI
@@ -66,7 +67,8 @@ static float hall_assist_correction(const MotionContext& c, float lin_t) {
   // COME anticipates front-half imbalance sooner. fl/fr include the
   // floor-rejected 8x8 matrix: a table on the right gently bends travel left.
   const int16_t front_eng = (c.cmd_mode == CMD_COME)
-      ? (int16_t)fmaxf(eng, COME_FRONT_ASSIST_ENGAGE_MM) : eng;
+      ? (int16_t)fmaxf(fmaxf(eng, COME_FRONT_ASSIST_ENGAGE_MM),
+                       (c.finite.come_stop_at + .6f) * 1000.f) : eng;
   const int16_t l_frnt = nearest_capped(c.tof.fl, -1, front_eng);
   const int16_t r_frnt = nearest_capped(c.tof.fr, -1, front_eng);
   // Imbalance in metres: positive (l - r) = the left side is more open (right wall
@@ -224,7 +226,15 @@ void control_tick(float dt) {
         if (c.finite.come_turning)
           ang_t = signf(c.finite.target_dtheta)
                   * turn_decel_rate(c.finite, c.params.accel_ang);
-        else lin_t = c.finite.speed;   // always forward
+        else {
+#if MOTION_HW_PRESENT
+          lin_t = ComeArrival::speed(ComeArrival::range_m(c.tof.fl, c.tof.fr),
+                                     c.finite.come_stop_at, c.finite.speed,
+                                     c.params.accel_lin);
+#else
+          lin_t = c.finite.speed;
+#endif
+        }
         break;
       default: break;
     }
@@ -239,7 +249,9 @@ void control_tick(float dt) {
         && !c.full_override && c.params.assist_enabled) {
       // Restore only after BOTH front halves and both sides clear the avoidance
       // envelope. A balanced narrow passage is not permission to turn into its wall.
-      const float front_clear = fmaxf(c.params.assist_engage_mm, COME_FRONT_ASSIST_ENGAGE_MM) + 100.f;
+      const float front_clear = fmaxf(
+          fmaxf(c.params.assist_engage_mm, COME_FRONT_ASSIST_ENGAGE_MM),
+          (c.finite.come_stop_at + .6f) * 1000.f) + 100.f;
       const float side_clear = c.params.assist_engage_mm + 100.f;
       const bool clear = c.tof.fl >= front_clear && c.tof.fr >= front_clear
           && c.tof.lf >= side_clear && c.tof.lb >= side_clear
@@ -384,9 +396,19 @@ void control_tick(float dt) {
           }
         } else {
           c.finite.progress_dist += fabsf(c.odom.lin) * dt;
-          float front = c.finite.come_sim_wall - c.finite.progress_dist;  // stub wall
-          if (front <= c.finite.come_stop_at) {
-            emitDone = true; dres = DONE_COMPLETED; dseq = c.finite.seq; dodom = c.odom;
+#if MOTION_HW_PRESENT
+          const float front = ComeArrival::range_m(c.tof.fl, c.tof.fr);
+          const bool arrived = ComeArrival::arrived(front, c.finite.come_stop_at);
+          const bool abort = front <= 0.f || c.finite.progress_dist >= 4.f
+              || (uint32_t)(now - c.finite.come_started_ms) >= 20000;
+#else
+          const float front = c.finite.come_sim_wall - c.finite.progress_dist;
+          const bool arrived = front <= c.finite.come_stop_at;
+          const bool abort = false;
+#endif
+          if (arrived || abort) {
+            emitDone = true; dres = arrived ? DONE_COMPLETED : DONE_ABORTED;
+            dseq = c.finite.seq; dodom = c.odom;
             c.finite = FiniteCmd(); c.cmd_mode = CMD_NONE;
           }
         }
@@ -534,7 +556,10 @@ void ctl_come(float heading_deg, float stop_at, float speed, uint32_t seq) {
   // Host-tunable approach pace (saunter); <=0 or absent keeps the historical cap.
   f.speed = (speed > 0.01f) ? fabsf(speed) : g_ctx.params.max_lin;
   f.come_stop_at = stop_at;
-  f.come_sim_wall = stop_at + 0.6f;       // stub: advance ~0.6 m then stop
+  f.come_started_ms = millis();
+#if !MOTION_HW_PRESENT
+  f.come_sim_wall = stop_at + 0.6f;       // simulation only
+#endif
   f.come_turning = (fabsf(heading_deg) > 1.0f);
   if (f.come_turning) arm_turn_verification(f);
   g_ctx.finite = f;

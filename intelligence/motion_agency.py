@@ -506,6 +506,12 @@ def request_come_here(person_id: "int | None" = None, *,
         return False
     _state["user_motion_at"] = time.monotonic()
     _state["startup_approach_done"] = True
+    if (requested_come_active() and person_id is not None
+            and _requested_come.get("requester_id") == person_id
+            and not behind and side_deg is None
+            and not (speaker_evidence or {}).get("mixed_speakers")):
+        _log.info("[motion_agency] repeated come request: continuing existing approach to person %s", person_id)
+        return True
     release_user_hold("come-here request")
     note_traction_recovered("come-here request")
     # An explicit "come here" outranks the autonomous explorer — stop it and take

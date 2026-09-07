@@ -3310,3 +3310,34 @@ camera, motion, and ownership modules. The broad audio_and_conversation_gating
 module has three failures reproduced unchanged on pre-fix HEAD: shutdown LEDs,
 common-name log attribution, and the old startup-thinking-loop expectation.
 No firmware flash, model replacement, or person-database edits in this change.
+
+
+### 2026-09-07 02:41 run: first-turn attribution and stop-start approach
+
+The first greeting had a .468 Bret voice match (below the .50 voice-only hard
+threshold), .66 voiced seconds, and 17 visual observations but no prior speaker.
+A guarded first-turn face/voice path now accepts the existing .45 known floor
+and runner margin only with the same sole known face in at least three interval
+observations, no direction/mouth conflict, and <=3 voiced seconds / <=6 words.
+It uses the existing CAM++ short-continuity enable flag and blocks biometric and
+personal-memory learning. Mixed, missing-face, and competing-face evidence still
+rejects it. No database changes or enrollment reset are needed.
+
+The real firmware was accidentally using the simulated stop_at + .6m wall,
+completing every approach after about .6m of odometry. Hardware arrival now uses
+the nearest valid front ToF range, a 3cm tolerance, and a braking-distance speed
+taper through normal slew. Simulation retains its virtual wall. Missing range,
+4m travel, or 20 seconds aborts. COME front avoidance begins at least .6m beyond
+its stand-off distance, with heading restoration waiting for that envelope to
+clear. The front sensors can see obstacles rather than the caller; this is not
+person-distance ranging. Existing emergency stops are unchanged.
+
+A repeated come request from the same identified caller now keeps the active
+approach instead of stopping/rebuilding it; a different caller or explicit new
+side/behind target still routes normally. Validation: 398 focused identity,
+motion, and handoff tests passed, including a compiled C++ arrival/slew simulation;
+the full hardware build passed with motion, radial ToF, 8x8 ToF, and gamepad enabled.
+Physical approach smoothness still needs a live run.
+Firmware flashed successfully to the configured motion ESP32 (USB serial 110);
+upload hashes verified, post-reset telemetry idle with zero motion and no fault.
+The battery launch agent was restored after upload. No live movement test run.

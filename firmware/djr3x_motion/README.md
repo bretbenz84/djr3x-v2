@@ -108,7 +108,8 @@ pure turns, and deliberate arcs are not auto-centered. The operator's stick adds
 in manual mode, and B/e-stop + the stop reflex always win.
 
 During autonomous `come`, the matrix-fused front halves now anticipate asymmetric
-obstacles out to 900 mm (ordinary hallway side sensing stays unchanged). Front
+obstacles out to the larger of 900 mm, the configured assist range, or the requested
+stop distance plus 600 mm (ordinary hallway side sensing stays unchanged). Front
 steering is capped at 0.25 rad/s, with existing close-side repulsion and stop
 reflexes still authoritative. The approach remembers its initial forward IMU
 bearing: obstacle avoidance wins while either side/front remains crowded, then
@@ -116,6 +117,13 @@ after 0.4 seconds of clearance it gently restores that bearing while rolling.
 IMU loss disables restoration for that command rather than changing references.
 This restores orientation, not the original geometric path after a lateral offset;
 the host camera loop finishes facing the caller at arrival without another advance.
+Hardware `come` now measures arrival using the nearer valid matrix-fused front ToF
+range, with a 30 mm arrival tolerance and a braking-distance speed taper through
+the normal acceleration slew. It no longer completes after a simulated 0.6 m:
+that virtual wall exists only in hardware-free builds. Missing both front ranges,
+4 m of forward travel, or 20 seconds without arrival aborts the command. A nearby
+object can determine the stopping distance; these sensors do not measure person
+identity or guarantee a clear path around furniture. Hard obstacle stops remain.
 Requires rebuilding/flashing the motion ESP32; a Python restart alone cannot apply it.
 
 Finite turns use the LSM6DS3 gyro yaw as the physical completion signal when the IMU is
