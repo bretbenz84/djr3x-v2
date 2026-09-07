@@ -164,3 +164,18 @@ class PresenceLockWaitTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CandidateValidityTest(unittest.TestCase):
+    def test_identity_resolved_during_tts_precache_drops_stale_prompt(self):
+        from audio import tts, speech_queue, barge_guard
+        with mock.patch.object(consciousness, "_can_proactive_speak", return_value=True), \
+             mock.patch.object(tts, "ensure_cached"), \
+             mock.patch.object(barge_guard, "user_speaking_now", return_value=False), \
+             mock.patch.object(speech_engine.config, "PROACTIVE_SPEECH_YIELD_ENABLED", True), \
+             mock.patch.object(speech_queue, "enqueue") as enqueue:
+            valid = mock.Mock(side_effect=[True, False])
+            self.assertFalse(speech_engine.speak_async(
+                "What is your name?", governed=False, still_valid=valid))
+        enqueue.assert_not_called()
+        self.assertFalse(consciousness._proactive_speech_pending.is_set())

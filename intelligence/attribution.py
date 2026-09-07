@@ -204,7 +204,7 @@ def _guarded_short_continuity(ev):
     import config
     pid = ev.raw_best_id
     if (not ev.allow_short_continuity or pid is None or pid != ev.previous_speaker_pid
-            or not 0 < ev.voiced_secs <= 1.5 or not 0 < ev.words <= 4
+            or not 0 < ev.voiced_secs <= 3.0 or not 0 < ev.words <= 6
             or ev.continuity_age_secs is None
             or not 0 <= ev.continuity_age_secs <= float(getattr(config, "SHORT_CLIP_LAST_SPEAKER_SECS", 90))
             or ev.raw_best_score < float(getattr(config, "CAMPPLUS_SHORT_REPLY_MIN_COSINE", .20))

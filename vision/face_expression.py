@@ -555,7 +555,9 @@ def process_frame(frame) -> list[dict]:
     expressions = detect_expressions(frame)
     matches: list = []
     merge_expressions_into_world_state(expressions, collect_matches=matches)
-    if expressions and bool(getattr(config, "ACTIVE_SPEAKER_ENABLED", True)):
+    # Landmarks often disappear at conversational distances. Still record the
+    # camera's face presence for this interval, with no visual speaker winner.
+    if bool(getattr(config, "ACTIVE_SPEAKER_ENABLED", True)):
         _run_active_speaker(expressions, matches)
     return expressions
 

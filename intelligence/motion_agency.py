@@ -399,10 +399,27 @@ def _visible_come_requester(snapshot: dict, person_id: Optional[int],
     """
     from intelligence.attribution import short_voice_switch_needs_confirmation
     provisional = bool(evidence and short_voice_switch_needs_confirmation(evidence))
+    visible = [p for p in snapshot.get("people") or [] if isinstance(p, dict)
+               and p.get("face_visible") is not False and not p.get("face_missing")
+               and _face_offset_fraction(p) is not None]
     if person_id is not None:
         matched = _visible_known_person(snapshot, person_id)
-        if matched is not None or not provisional:
+        if matched is not None:
             return matched
+        # Voice identity and a camera track are different things. The sole
+        # unidentified face can be the invited destination without enrolling
+        # that face or pretending its identity was visually confirmed.
+        if (not provisional and len(visible) == 1
+                and visible[0].get("person_db_id") is None
+                and _come_track_key(visible[0]) is not None
+                and evidence and not evidence.get("mixed_speakers")
+                and evidence.get("visual_latch_pid") in (None, person_id)
+                and evidence.get("bearing_selected_pid") in (None, person_id)):
+            _log.info("[motion_agency] come location: known voice %s, sole unnamed camera track %s; camera takes precedence over raw DOA",
+                      person_id, _come_track_key(visible[0]))
+            return visible[0]
+        if not provisional:
+            return None
     located = _directional_come_target(snapshot, bearing, evidence)
     if located is not None:
         return located
@@ -430,7 +447,10 @@ def _visible_come_requester(snapshot: dict, person_id: Optional[int],
         return None         # unresolved strong/conflicting evidence needs a repeat
     scores = [float(row[2]) for row in evidence.get("scoreboard") or []
               if len(row) >= 3 and row[0] == pid]
-    if (not scores or max(scores) < _num("SHORT_CLIP_ROSTER_FLOOR", 0.40)
+    location_floor = (_num("CAMPPLUS_SHORT_REPLY_MIN_COSINE", .20)
+                      if evidence.get("allow_short_continuity") and evidence.get("raw_best_id") == pid
+                      else _num("SHORT_CLIP_ROSTER_FLOOR", .40))
+    if (not scores or max(scores) < location_floor
             or not provisional and best - max(scores) > _num("SHORT_CLIP_ROSTER_MARGIN", 0.06)):
         return None
     _log.info("[motion_agency] come target: visible conversational partner %s "
@@ -2233,13 +2253,9 @@ def _wake_orientation_guard(reason: str) -> Optional[str]:
     """A bare name call has no resolved caller identity or movement instruction.
 
     Keep an active approach and a visible person ahead of an acoustic bearing
-    that disagrees with the camera. Explicit "over here" still localizes an
-    off-camera caller through the existing path.
+    that disagrees with the camera, including "over here". With nobody visible,
+    the existing microphone localization path still applies.
     """
-    if requested_come_active() and _requested_come["acquired"]:
-        return "come_active"
-    if not reason.startswith("wake"):
-        return None
     if requested_come_active():
         return "come_active"
     try:

@@ -138,6 +138,7 @@ _followup_lock = threading.Lock()
 
 # Pending identity prompt for unknown-person enrollment.
 _pending_identity_prompt = threading.Event()
+_identity_prompt_generation = 0
 _identity_prompt_in_flight = threading.Event()
 # When the in-flight latch was set. A governor-REJECTED candidate never runs its
 # speak_fn, so no callback clears the latch — a stale timestamp is the recovery
@@ -1225,7 +1226,8 @@ def consume_identity_prompt_request() -> bool:
 
 def clear_pending_identity_prompts(*, reason: str = "") -> bool:
     """Drop identity/relationship reply windows that no longer fit the live turn."""
-    global _identity_prompt_reply_until
+    global _identity_prompt_reply_until, _identity_prompt_generation
+    _identity_prompt_generation += 1
     changed = (
         _pending_identity_prompt.is_set()
         or _identity_prompt_in_flight.is_set()
@@ -5687,6 +5689,13 @@ def _maybe_prompt_unknown_identity(
     if _known_face_recently_locked():
         _solo_unknown_since = 0.0
         return
+    # Recognition flicker during an invited approach is not a new arrival.
+    # A recent known conversation also takes precedence over a solo face's
+    # temporarily missing embedding match. This suppresses a question only.
+    from intelligence import motion_agency
+    if motion_agency.requested_come_active() or get_recent_engagement(window_secs=90.) is not None:
+        _solo_unknown_since = 0.0
+        return
     if _pending_identity_prompt.is_set():
         return
     if _identity_prompt_in_flight.is_set():
@@ -5741,6 +5750,13 @@ def _maybe_prompt_unknown_identity(
     _identity_prompt_in_flight.set()
     _identity_prompt_in_flight_at = now
 
+    prompt_generation = _identity_prompt_generation
+
+    def _identity_prompt_valid() -> bool:
+        return (prompt_generation == _identity_prompt_generation
+                and not motion_agency.requested_come_active()
+                and get_recent_engagement(window_secs=90.) is None)
+
     def _identity_prompt_spoke() -> None:
         # Arm the re-ask cooldown only when the line is actually committed to the
         # speech queue. speak_async returns True on governor SUBMISSION, so arming
@@ -5751,6 +5767,8 @@ def _maybe_prompt_unknown_identity(
 
     def _identity_prompt_done() -> None:
         global _identity_prompt_reply_until
+        if not _identity_prompt_valid():
+            return
         wait_secs = float(getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0) or 0.0)
         _pending_identity_prompt.set()
         _identity_prompt_reply_until = time.monotonic() + max(0.0, wait_secs)
@@ -5767,6 +5785,7 @@ def _maybe_prompt_unknown_identity(
         force_salient=True,
         on_done=_identity_prompt_done,
         on_spoke=_identity_prompt_spoke,
+        still_valid=_identity_prompt_valid,
     )
     if not queued:
         _identity_prompt_in_flight.clear()

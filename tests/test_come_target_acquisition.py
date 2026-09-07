@@ -80,6 +80,19 @@ class ComeTargetAcquisitionTest(_ComeFixture):
         self.assertGreater(MA._state['user_motion_at'], 0)
         self.come.assert_not_called()
 
+    def test_known_voice_can_approach_sole_unidentified_camera_track(self):
+        self.scene = _snapshot(db_id=None, slot='visible-bret')
+        self.assertTrue(MA.request_come_here(
+            person_id=1, voice_bearing_deg=170., voice_share=.9,
+            speaker_evidence=field_evidence(raw_best_id=1, raw_best_score=.635, voiced_secs=2.16)))
+        self._tick()
+        self.assertTrue(MA._requested_come['acquired'])
+        self.assertEqual(MA._requested_come['requester_track'], 'visible-bret')
+        self.assertIsNone(MA._requested_come['requester_id'])
+        self.turn.assert_not_called()
+        self.come.assert_called_once()
+        self.assertIsNone(self.scene['people'][0]['person_db_id'])
+
     def test_unenrolled_caller_is_acquired_from_face_and_microphone(self):
         self.scene = _snapshot(db_id=None, slot='guest-7')
         self.assertTrue(MA.request_come_here(voice_bearing_deg=0., voice_share=.9,

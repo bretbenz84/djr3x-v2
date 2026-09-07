@@ -176,6 +176,7 @@ def speak_async(
     on_spoke: Optional[Callable[[], None]] = None,
     force_salient: bool = False,
     reactive: bool = False,
+    still_valid: Optional[Callable[[], bool]] = None,
 ) -> bool:
     # `on_spoke` fires once the line is committed to the speech queue (only the
     # ENFORCE winner reaches here) — the place for "I fired this" bookkeeping that
@@ -188,6 +189,9 @@ def speak_async(
     # can_proactive_speak); it still yields to live speech / music / games.
     def _do_speak(candidate_id: Optional[str]) -> bool:
         try:
+            if still_valid is not None and not still_valid():
+                _c._mark_governor_candidate(candidate_id, "dropped", "stale_candidate")
+                return False
             if not _c._can_proactive_speak(salient=force_salient, reactive=reactive):
                 _c._mark_governor_candidate(candidate_id, "dropped", "can_proactive_speak_false")
                 return False
@@ -229,6 +233,10 @@ def speak_async(
             # log_text=False: we log_rex this line at enqueue (below). Without this
             # tts.speak would ALSO log it at playback, double-printing every proactive
             # line in the conversation log (the cosmetic "duplicate" in the field log).
+            if still_valid is not None and not still_valid():
+                _c._proactive_speech_pending.clear()
+                _c._mark_governor_candidate(candidate_id, "dropped", "stale_candidate")
+                return False
             done = speech_queue.enqueue(text, emotion, priority=0, log_text=False)
             # The reply model reads conv_memory's transcript — a proactive line
             # missing from it is invisible to the NEXT turn. Field 2026-08-01:

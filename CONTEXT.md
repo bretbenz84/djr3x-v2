@@ -3272,3 +3272,41 @@ No person database was rewritten. All changes here are host-side; no reflash.
 The third right-turn request at 02:13:04 was dropped as a fuzzy echo of Rex's
 "Turning right." Explicit motion requests now bypass fuzzy echo similarity;
 verbatim containment and concatenated-playback rejection remain enabled.
+
+### 2026-09-07 02:23 run: identity and movement handoffs
+
+Voice matching repeatedly resolved Bret correctly (.624–.666), but legacy
+challenge/gaze behavior and independent unknown-face prompts still interfered.
+Final known resolver results now clear stale identity prompts/challenge flags,
+refresh the legacy continuity timestamp only when learning is allowed, and
+publish gaze only AFTER final attribution. Explicit motion parsing now defers
+identity prompts even when the legacy command parser misses "Come here".
+The full speech-turn regression includes a pending name prompt, a .636 voice
+match, final known gaze, continuity bookkeeping, and arrival at motion dispatch.
+
+Face-expression process_frame previously skipped active_speaker.update when no
+landmarks were detected. Every run showed zero interval visual observations:
+guarded conversational continuity could not work. Empty landmark results now
+still publish actual world-state face presence, with NO mouth-motion winner.
+Continuity covers up to 3 voiced seconds / 6 words, requires the same recent
+verified speaker and sole known face throughout observed capture frames, and
+still blocks conflicting/mixed evidence and all biometric/personal learning.
+
+Proactive stranger prompts yield during a come errand or a recent known
+conversation (90 s), without assigning identity to an unknown face. Prompt
+generations and a before-playback validity check prevent a stale candidate or
+completion callback from reopening an obsolete identity request.
+
+Movement can bind a sole unidentified camera track when the caller's voice is
+known; this does not name/enroll the face. A recent same-candidate weak voice
+may also locate the sole known conversation partner at the existing CAM++ short
+reply floor; competing people/voices still block this fallback. "Over here"
+no longer rotates away from a visible face just because the raw mic reports
++170 degrees. The live rearward mic readings remain unexplained; no fixed
+offset was changed and obstacle guards remain active.
+
+Validation: tests/test_field_2026_09_07_handoffs.py plus existing identity,
+camera, motion, and ownership modules. The broad audio_and_conversation_gating
+module has three failures reproduced unchanged on pre-fix HEAD: shutdown LEDs,
+common-name log attribution, and the old startup-thinking-loop expectation.
+No firmware flash, model replacement, or person-database edits in this change.

@@ -9414,6 +9414,8 @@ def _turn_should_defer_identity_prompts(text: str) -> bool:
         return False
     if _extract_introduced_name(cleaned, allow_bare_name=False):
         return False
+    if action_router.classify_explicit_motion(cleaned) is not None:
+        return True
     if command_parser.parse(cleaned) is not None:
         return True
     if _speech_is_directed_to_rex(cleaned):
@@ -9464,7 +9466,7 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     # and newcomer-vs-introducer gating and releases the turn if it isn't them.
     # Without this, a newcomer introduced off-camera never got a voice print and
     # their hello was misattributed to the introducer (live-logged 2026-06-15).
-    preserve_intro_voice = reason == "direct_turn" and _intro_voice_capture_fresh(
+    preserve_intro_voice = reason in ("direct_turn", "authoritative_known_speaker") and _intro_voice_capture_fresh(
         _pending_intro_voice_capture
     )
 
@@ -28783,18 +28785,6 @@ def _handle_speech_segment(
                 directed, text,
             )
 
-        if not text_input:
-            try:
-                _voice = _recent_voice_bearing()
-                consciousness.note_speaker_gaze_intent(
-                    person_id,
-                    unknown_voice=(person_id is None or off_camera_unknown),
-                    reason="off_camera_unknown" if off_camera_unknown else "speech",
-                    bearing_deg=(_voice["bearing_deg"] if _voice else None),
-                )
-            except Exception as exc:
-                _log.debug("speaker gaze intent note failed: %s", exc)
-
         _current_turn_anonymous = None
         _current_turn_speaker_evidence = {
             "raw_best_id": raw_best_id,
@@ -28923,6 +28913,14 @@ def _handle_speech_segment(
                 speaker_label_for_turn = person_name
                 anonymous_speaker_label = None
                 off_camera_unknown = False
+                voice_challenge_fired = False
+                # The resolver owns the result, including downstream identity
+                # questions. A legacy challenge must not survive a known verdict.
+                if resolution.get("learning_allowed", True):
+                    _last_confident_voice_at[int(person_id)] = time.monotonic()
+                if not _identity_prompt_reply_names_third_party(text):
+                    _clear_pending_identity_prompts("authoritative_known_speaker")
+                    identity_prompt_active = False
             if person_id is None:
                 suppress_memory_learning = True
                 identity_resolution_for_turn = "utterance_uncertain"
@@ -28951,6 +28949,18 @@ def _handle_speech_segment(
                 anonymous_speaker_label=anonymous_speaker_label,
                 anonymous_speaker_match_score=anonymous_speaker_match_score,
             )
+
+        if not text_input:
+            try:
+                _voice = _recent_voice_bearing()
+                consciousness.note_speaker_gaze_intent(
+                    person_id,
+                    unknown_voice=(person_id is None or off_camera_unknown),
+                    reason="off_camera_unknown" if off_camera_unknown else "speech",
+                    bearing_deg=(_voice["bearing_deg"] if _voice else None),
+                )
+            except Exception as exc:
+                _log.debug("speaker gaze intent note failed: %s", exc)
 
         # Any non-empty user utterance means we should stop waiting for a reply.
         try:
