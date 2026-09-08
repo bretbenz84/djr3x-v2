@@ -12201,11 +12201,35 @@ def _visible_face_tracking_candidates(people: Optional[list[dict]] = None) -> li
             "track_id": person.get("id"),
             "person_id": person.get("person_db_id"),
             "box": box,
+            "recognized_face": bool(person.get("face_id")) and bool(
+                person.get("face_visible") or person.get("gui_live_tracked") or person.get("live_tracked")
+            ),
             "center": (x + w / 2.0, y + h / 2.0),
             "area": w * h,
             "live_tracked": bool(person.get("gui_live_tracked") or person.get("live_tracked")),
         })
     return candidates
+
+
+def _game_player_gaze_candidate(candidates: list[dict]) -> Optional[dict]:
+    """Prefer the roster's current player only with a recognized visible face.
+
+    This is a per-frame preference, not a speaker/search intent or identity
+    observation: losing the face cannot launch a scan or label another person.
+    """
+    if not bool(getattr(config, "GAME_PLAYER_GAZE_ENABLED", True)):
+        return None
+    try:
+        from features import games
+        pid = games.active_game_gaze_player_id()
+        if pid is None:
+            return None
+        return _speaker_gaze_candidate(
+            [c for c in candidates if c.get("recognized_face")], {"person_id": pid}
+        )
+    except Exception as exc:
+        _log.debug("game-player gaze lookup failed: %s", exc)
+        return None
 
 
 def _current_servo_position(name: str) -> int:
@@ -14196,6 +14220,18 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         # get stuck. Read the flag under the lock to honor the _idle_wander protocol.
         with _idle_wander_lock:
             wander_active = bool(_idle_wander.get("active"))
+        candidates = _visible_face_tracking_candidates(people) if frame is not None else []
+        game_candidate = _game_player_gaze_candidate(candidates)
+        if game_candidate is not None:
+            # Explicit head control still owns the servos. Game focus replaces
+            # only spontaneous glances/wandering; it uses normal smooth tracking.
+            if getattr(servo_mod, "manual_override_enabled", lambda: False)() or directed_gaze_hold_active(now):
+                return
+            if wander_active:
+                _finish_idle_head_wander(now, allow_regreet=False)
+                wander_active = False
+            _object_glance_release()
+            _gaze_release()
         if wander_active:
             _drive_idle_head_wander(servo_mod, now)
             return
@@ -14203,7 +14239,7 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         # Object-directed glance ("what's in the bowl?" spoken AT the bowl):
         # like the wander it needs no frame and must be able to finish its
         # return leg, so it runs before the frame/listening early-returns.
-        if _drive_object_glance(servo_mod, now):
+        if game_candidate is None and _drive_object_glance(servo_mod, now):
             return
 
         if frame is None:
@@ -14222,17 +14258,16 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         # (look away to think, glance up to visualize a complex reply, down to absorb
         # what was said, then return to hand over the floor), it drives the head this
         # tick and we suspend centering — exactly like the idle-wander hook above.
-        if _maybe_drive_gaze(servo_mod, now, speech_active):
+        if game_candidate is None and _maybe_drive_gaze(servo_mod, now, speech_active):
             return
 
-        candidates = _visible_face_tracking_candidates(people)
-        speaker_intent = _speaker_gaze_current_intent(now)
+        speaker_intent = None if game_candidate is not None else _speaker_gaze_current_intent(now)
         lock_key = _face_tracking_lock.get("key")
         last_seen = float(_face_tracking_lock.get("last_seen_at") or 0.0)
         lost_hold_secs = float(getattr(config, "FACE_TRACKING_LOST_HOLD_SECS", 4.0) or 0.0)
         lost_search_after = float(getattr(config, "SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS", 0.45) or 0.0)
 
-        candidate = _speaker_gaze_candidate(candidates, speaker_intent)
+        candidate = game_candidate or _speaker_gaze_candidate(candidates, speaker_intent)
 
         # User told Rex to hold a gaze (e.g. "look down"), OR the OpenAI presence
         # sweep is driving the head between captures. While that's true and nobody
@@ -14340,8 +14375,8 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             _record_face_tracking_state(locked=False, visible=False)
             return
 
-        speaker_target = _candidate_matches_speaker_gaze(candidate, speaker_intent)
-        if speaker_target:
+        speaker_target = game_candidate is not None or _candidate_matches_speaker_gaze(candidate, speaker_intent)
+        if speaker_target and game_candidate is None:
             _speaker_gaze_note_acquired(candidate)
 
         _prev_lock_pid = _face_tracking_lock.get("person_id") if _face_tracking_lock else None

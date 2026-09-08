@@ -3535,3 +3535,27 @@ share the transform; other lines keep their existing cache entries. Supported
 previous-text stitching uses the same spoken spelling.
 Validation: 90 tests across pronunciation/cache delivery, v3 audio tags, streaming
 TTS, two-chunk delivery and TTS-tail modules. API/audio transports are mocked.
+
+### Jeopardy player head tracking and roster nicknames (2026-09-07)
+
+`GAME_PLAYER_GAZE_ENABLED` defaults on. The head centers on the current
+contestant's recognized, visible face using the existing smooth face tracker,
+including its gentler movement during speech. Turn changes override the previous
+face lock and spontaneous gaze breaks; Final wagers/answers and setup voice
+checks follow their own player queues. Solo play works too. Manual control,
+explicit held looks, listening motion and exploration retain head ownership.
+When the player's recognized face is absent, normal gaze behavior resumes.
+Game focus does not create speaker/search intents or identify a voice.
+
+Roster setup resolves stored full names, unique first names and aliases, then
+the `people.nickname` field before built-in nickname guesses. Dictated initials
+such as "J T" normalize to "JT" before lookup. Stored nicknames such as JT,
+Peaceful-P and DJ Smitty reuse the existing person ID, connecting the player to
+their face and enrolled voiceprints. Duplicate nickname matches do not select
+an arbitrary existing person.
+
+Validation: 342 tests passed across 12 isolated modules covering roster lookup,
+actual head-tracking selection and mocked servo commands, gaze/listening/wander
+ownership, speaker gaze and Jeopardy. The new module has 18 tests, including
+turn changes, visibility loss, speech, manual control, config-off behavior and
+speaker-intent isolation. No physical head or camera test was performed.

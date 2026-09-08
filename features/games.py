@@ -1310,14 +1310,25 @@ def _jeopardy_find_or_create_player(name: str) -> tuple[Optional[int], str]:
     # outright makes the fix independent of whether the row is ever deleted.
     try:
         from memory.name_validation import normalize_person_name
-        if not normalize_person_name(name):
+        normalized_name = normalize_person_name(name)
+        if not normalized_name:
             _log.info("[jeopardy] refusing non-name player candidate=%r", name)
             return None, _jeopardy_player_display_name(name)
+        name = normalized_name  # includes dictated initials: "J T" -> "JT"
     except Exception:
         pass
 
-    candidates = [name]
-    candidates.extend(_JEOPARDY_NICKNAME_CANDIDATES.get((name or "").strip().lower(), []))
+    # Explicit DB names/aliases/nicknames take precedence over the built-in
+    # nickname guesses (e.g. a stored "Bill" nickname need not mean William).
+    try:
+        existing = (people_memory.find_person_by_name(name)
+                    or people_memory.find_person_by_nickname(name))
+    except Exception:
+        existing = None
+    if existing:
+        return int(existing["id"]), _jeopardy_player_display_name(str(existing["name"]))
+
+    candidates = _JEOPARDY_NICKNAME_CANDIDATES.get((name or "").strip().lower(), [])
     for candidate in candidates:
         try:
             existing = people_memory.find_person_by_name(candidate)
@@ -3751,6 +3762,34 @@ def active_game_current_player_id() -> "Optional[int]":
         return int(pid) if pid is not None else None
     except (AttributeError, TypeError, ValueError):
         return None
+
+
+def active_game_gaze_player_id() -> Optional[int]:
+    """Whom the host is addressing, separate from acoustic speaker attribution.
+
+    Supports solo play, roster voice checks and Final's own answer/wager order.
+    The head controller must independently require a recognized visible face.
+    """
+    with _lock:
+        if _active_game != "jeopardy":
+            return None
+        phase = _game_state.get("phase")
+        if phase in ("final_wager", "final_answer", "voice_enroll"):
+            queue_key = "voice_enroll_queue" if phase == "voice_enroll" else "final_queue"
+            queue = _game_state.get(queue_key) or []
+            if not queue:
+                return None
+            idx = queue[0]
+        elif phase in ("selecting", "awaiting_answer", "awaiting_wager"):
+            idx = _game_state.get("current_player_idx", 0)
+        else:
+            return None
+        try:
+            player = (_game_state.get("players") or [])[int(idx)]
+            pid = player.get("person_id")
+            return int(pid) if pid is not None else None
+        except (IndexError, TypeError, ValueError, AttributeError):
+            return None
 
 
 def jeopardy_answer_window_open() -> bool:

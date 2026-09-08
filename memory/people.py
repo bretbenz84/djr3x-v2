@@ -342,6 +342,16 @@ def find_person_by_name(name: str) -> Optional[dict]:
     return None
 
 
+def find_person_by_nickname(name: str) -> Optional[dict]:
+    """Resolve an explicitly stored nickname without guessing between people."""
+    norm = _normalize_name(name)
+    if not norm:
+        return None
+    rows = db.fetchall("SELECT * FROM people WHERE nickname IS NOT NULL AND trim(nickname) != ''")
+    matches = [dict(row) for row in rows if _normalize_name(row["nickname"]) == norm]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _person_score(person: dict) -> tuple[int, int, float, int]:
     face_count = int(person.get("face_count") or 0)
     voice_count = int(person.get("voice_count") or 0)

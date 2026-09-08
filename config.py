@@ -9295,6 +9295,9 @@ GAME_BARGE_KEEP_ONSET_ENABLED = True
 # players as a reason to go looking, and turned Rex away from the Jeopardy
 # board mid-round (field 2026-08-25). Flinch and explicit come-here still run.
 MOTION_HOLD_DURING_GAMES = True
+# Follow Jeopardy's current contestant with the head when their face is known
+# and visible. Uses roster identity only for gaze, never to identify speech.
+GAME_PLAYER_GAZE_ENABLED = True
 # LLM fallback judge (2026-07-07): answers arrive via SPEECH, so a RIGHT answer
 # can reach the deterministic matcher phonetically mangled ("day cart" for
 # Descartes) or phrased in a way fuzzy matching can't score. When the
