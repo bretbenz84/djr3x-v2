@@ -9222,11 +9222,10 @@ JEOPARDY_ANSWER_TIMEOUT_SECS = 12.0
 JEOPARDY_AUDIO_OUTPUT_SAMPLE_RATE = 44100
 JEOPARDY_AUDIO_MUSIC_GAIN = 0.22
 JEOPARDY_AUDIO_STINGER_GAIN = 0.75
-# The thinking-theme bed under the answer window. The clip on disk is ~31s;
-# playback truncates it here. Matched to JEOPARDY_ANSWER_TIMEOUT_SECS (owner
-# note 2026-08-25: at 6s the music died halfway through the window) so the
-# music runs right up to the time's-up beeper; a player answering sooner
-# barges it out mid-note, which is the show's own rhythm.
+# The answer clock owns the thinking bed: loop until an answer is submitted
+# or time expires, including speech-in-flight grace. Incidental speech leaves
+# it playing on hardware-AEC input. This cap applies only to standalone file
+# playback; it no longer limits an active answer window.
 JEOPARDY_THEME_MAX_SECS = 12.0
 JEOPARDY_PLAY_THINKING_THEME = True
 # The Daily Double sting is queued AHEAD of the announcement + clue, and the

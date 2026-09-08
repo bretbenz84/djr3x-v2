@@ -94,6 +94,9 @@ def _complete_text_without_audio(
 
 def _drop_item(item, reason: str) -> None:
     """Set an item's done event as DROPPED (never played)."""
+    loop_stop = getattr(item, "loop_stop", None)
+    if loop_stop is not None:
+        loop_stop.set()
     try:
         item.done.drop(reason)
     except AttributeError:
@@ -194,7 +197,7 @@ class _Item:
         "done", "tag", "pre_beat_ms", "post_beat_ms", "voice_settings",
         "on_start", "log_text", "on_audio_end",
         "comedy_mode", "suppress_audio_tag", "previous_text", "voice_ref",
-        "on_synth_start", "generation",
+        "on_synth_start", "generation", "loop_stop",
     )
 
     def __init__(
@@ -218,6 +221,7 @@ class _Item:
         voice_ref: Optional[object] = None,
         on_synth_start: Optional[Callable[[], None]] = None,
         generation: Optional[int] = None,
+        loop_stop: Optional[threading.Event] = None,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -243,6 +247,7 @@ class _Item:
         self.on_synth_start = on_synth_start
         # Speech generation this item belongs to (None = never stale-dropped).
         self.generation = generation
+        self.loop_stop = loop_stop
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -266,6 +271,7 @@ class _SpeechQueue:
         self._last_speech_end_at: float = 0.0  # monotonic time the last line FINISHED playing
         self._current_priority: int = -1
         self._current_audio_path: Optional[str] = None
+        self._current_loop_stop: Optional[threading.Event] = None
         self._startup_chime_queued: bool = False
 
         threading.Thread(
@@ -337,10 +343,12 @@ class _SpeechQueue:
         pre_beat_ms: int = 0,
         post_beat_ms: int = 0,
         on_start: Optional[Callable[[], None]] = None,
+        loop_stop: Optional[threading.Event] = None,
     ) -> threading.Event:
-        """Enqueue an audio file for direct playback. Returns an Event set when done."""
+        """Play a file, optionally looping until its owner's loop_stop is set."""
         return self._add(
-            None, "neutral", path, priority, tag, pre_beat_ms, post_beat_ms, None, on_start
+            None, "neutral", path, priority, tag, pre_beat_ms, post_beat_ms, None, on_start,
+            loop_stop=loop_stop,
         )
 
     def drop_by_tag(self, tag: str) -> int:
@@ -437,6 +445,7 @@ class _SpeechQueue:
         voice_ref: Optional[object] = None,
         on_synth_start: Optional[Callable[[], None]] = None,
         generation: Optional[int] = None,
+        loop_stop: Optional[threading.Event] = None,
     ) -> threading.Event:
         done = DoneEvent()
         if _state_suppresses_output():
@@ -458,7 +467,8 @@ class _SpeechQueue:
             # waiting items with the same tag (coalesce stale reactions).
             keep = []
             for item in self._heap:
-                if item.priority < priority or (tag is not None and item.tag == tag):
+                if (item.priority < priority or (tag is not None and item.tag == tag)
+                        or (text and item.loop_stop is not None and priority >= item.priority)):
                     _drop_item(item, "preempted" if item.priority < priority else "coalesced")
                 else:
                     keep.append(item)
@@ -469,6 +479,12 @@ class _SpeechQueue:
             # Preempt current playback if it has lower priority
             if self._speaking and self._current_priority < priority:
                 should_preempt = True
+            # A waiting bed must never strand a spoken response behind an
+            # indefinite loop. Normal game answers stop it themselves; this
+            # also covers explicit controls and speech-error recovery.
+            if (text and self._speaking and getattr(self, "_current_loop_stop", None) is not None
+                    and priority >= self._current_priority):
+                self._current_loop_stop.set()
 
             if text and not self._startup_chime_queued:
                 self._maybe_add_startup_chime_locked(priority)
@@ -480,7 +496,8 @@ class _SpeechQueue:
                 _Item(priority, seq, text, emotion, audio_path, done, tag,
                       pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
                       on_audio_end, comedy_mode, suppress_audio_tag, previous_text,
-                      voice_ref, on_synth_start=on_synth_start, generation=generation),
+                      voice_ref, on_synth_start=on_synth_start, generation=generation,
+                      loop_stop=loop_stop),
             )
             self._not_empty.notify()
 
@@ -568,6 +585,7 @@ class _SpeechQueue:
                 self._speaking = True
                 self._current_priority = item.priority
                 self._current_audio_path = item.audio_path
+                self._current_loop_stop = getattr(item, "loop_stop", None)
 
             start_callbacks_fired = False
 
@@ -630,7 +648,9 @@ class _SpeechQueue:
                     _t.sleep(item.pre_beat_ms / 1000.0)
 
                 if item.audio_path:
-                    self._play_file(item.audio_path, on_start=_fire_item_start)
+                    loop_stop = getattr(item, "loop_stop", None)
+                    options = {"loop_stop": loop_stop} if loop_stop is not None else {}
+                    self._play_file(item.audio_path, on_start=_fire_item_start, **options)
                 elif item.text:
                     from audio import tts
                     if item.on_synth_start is not None:
@@ -699,6 +719,7 @@ class _SpeechQueue:
                     self._last_speech_end_at = time.monotonic()
                     self._current_priority = -1
                     self._current_audio_path = None
+                    self._current_loop_stop = None
                 item.done.set()
 
     def _play_file(
@@ -706,6 +727,7 @@ class _SpeechQueue:
         path: str,
         *,
         on_start: Optional[Callable[[], None]] = None,
+        loop_stop: Optional[threading.Event] = None,
     ) -> None:
         try:
             import math
@@ -716,6 +738,8 @@ class _SpeechQueue:
             from audio import echo_cancel, output_gate
             import config
 
+            if loop_stop is not None and loop_stop.is_set():
+                return  # its answer window ended before this item reached playback
             audio, samplerate = sf.read(str(path), dtype="float32", always_2d=False)
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
@@ -744,7 +768,7 @@ class _SpeechQueue:
                     "jeopardy-final-jeopardy-thinking-music.mp3": "JEOPARDY_FINAL_THINK_MAX_SECS",
                 }
                 cap_key = clip_caps.get(path_obj.name)
-                if cap_key:
+                if cap_key and loop_stop is None:
                     max_secs = float(getattr(config, cap_key, 0.0) or 0.0)
                     if max_secs > 0:
                         audio = audio[: int(max_secs * samplerate)]
@@ -780,7 +804,7 @@ class _SpeechQueue:
                     logger.debug("speech_queue: playback skipped — output gate busy")
                     return
                 try:
-                    if not delivery.allowed():
+                    if not delivery.allowed() or (loop_stop is not None and loop_stop.is_set()):
                         return
                     echo_cancel.set_playing(True)
                     if on_start is not None:
@@ -795,14 +819,27 @@ class _SpeechQueue:
                     sd.play(
                         audio, samplerate,
                         blocksize=int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
+                        **({"loop": True} if loop_stop is not None else {}),
                     )
                     delivery.started()
+                    if loop_stop is not None:
+                        # PortAudio loops within one stream: no decode/requeue
+                        # gaps, and no independent clip duration racing the clock.
+                        playback = sd.get_stream()
+                        while playback.active and not echo_cancel.was_canceled() and delivery.allowed():
+                            if loop_stop.wait(0.025):
+                                break
+                        if playback.active:
+                            playback.stop()
                     sd.wait()
                     delivery.finish(canceled=echo_cancel.was_canceled())
                 finally:
                     echo_cancel.set_playing(False)
         except Exception as exc:
             logger.error("speech_queue: failed to play file %s: %s", path, exc)
+        finally:
+            if loop_stop is not None:
+                loop_stop.set()
 
 
 # ── Playback lifecycle hooks ───────────────────────────────────────────────────
@@ -866,9 +903,11 @@ def enqueue_audio_file(
     pre_beat_ms: int = 0,
     post_beat_ms: int = 0,
     on_start: Optional[Callable[[], None]] = None,
+    loop_stop: Optional[threading.Event] = None,
 ) -> threading.Event:
     """Enqueue an audio file for playback. Returns an Event set when done."""
-    return _queue.enqueue_audio_file(path, priority, tag, pre_beat_ms, post_beat_ms, on_start)
+    return _queue.enqueue_audio_file(path, priority, tag, pre_beat_ms, post_beat_ms, on_start,
+                                     loop_stop=loop_stop)
 
 
 def reset_startup_chime_for_tests() -> None:

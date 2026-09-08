@@ -1383,7 +1383,57 @@ def _jeopardy_advance_player() -> dict:
     return players[idx]
 
 
-def _jeopardy_cancel_timeout() -> None:
+def _jeopardy_stop_answer_music() -> None:
+    stop = _game_state.pop("answer_music_stop", None)
+    if stop is not None:
+        stop.set()
+
+
+def _jeopardy_start_answer_music() -> None:
+    # Regular/Daily Double/rebound clocks all own the same music lifecycle.
+    # Legacy callers still consume after-response stingers (including Final).
+    if _game_state.get("pending_after_response_clip") == "theme":
+        _game_state.pop("pending_after_response_clip", None)
+    existing = _game_state.get("answer_music_stop")
+    if existing is not None and not existing.is_set():
+        return  # ignored chatter re-armed the clock; keep the same audible bed
+    _jeopardy_stop_answer_music()
+    if not bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
+        return
+    path = _jeopardy_clip_path("theme")
+    if not path:
+        return
+    from audio import speech_queue
+    stop = threading.Event()
+    _game_state["answer_music_stop"] = stop
+    speech_queue.enqueue_audio_file(path, priority=1, tag="jeopardy:answer_music", loop_stop=stop)
+
+
+def keep_answer_music_during_capture(path: Optional[str]) -> bool:
+    """Whether this file belongs to the still-open answer clock, not a sting."""
+    with _lock:
+        stop = _game_state.get("answer_music_stop")
+        return bool(_active_game == "jeopardy" and path
+                    and _game_state.get("phase") == "awaiting_answer"
+                    and stop is not None and not stop.is_set()
+                    and Path(path).name == _JEOPARDY_CLIPS["theme"]
+                    and Path(path).parent.name == "jeopardy")
+
+
+def resume_answer_music_after_capture() -> None:
+    """Restore a bed interrupted by the software-AEC stop-to-listen fallback."""
+    with _lock:
+        if (_active_game == "jeopardy"
+                and _game_state.get("phase") == "awaiting_answer"
+                and _game_state.get("answer_timer_token")
+                and not _game_state.get("awaiting_prompt_delivery")
+                and not _game_state.get("stop_confirm_at")):
+            _jeopardy_start_answer_music()
+
+
+def _jeopardy_cancel_timeout(*, stop_music: bool = True) -> None:
+    if stop_music:
+        _jeopardy_stop_answer_music()
     timer = _game_state.pop("answer_timer", None)
     _game_state.pop("answer_timer_token", None)
     _game_state.pop("answer_timer_deadline", None)
@@ -2305,6 +2355,7 @@ def _jeopardy_timeout_fired(token: str) -> None:
         _game_state.pop("answer_timer_deadline", None)
         _game_state.pop("answer_timer", None)
         _game_state.pop("answer_timer_token", None)
+        _jeopardy_stop_answer_music()
         correct_response = _jeopardy_correct_response_text(clue)
         timed_out_idx = int(_game_state.get("current_player_idx", 0))
         # A Daily Double belongs to its picker alone — no rebound (show rules).
@@ -2362,6 +2413,7 @@ def _jeopardy_arm_timeout() -> None:
     # player's, not a late grace answer from whoever timed out.
     _game_state.pop("timeout_rebound", None)
     timeout = float(getattr(config, "JEOPARDY_ANSWER_TIMEOUT_SECS", 14.0))
+    _jeopardy_start_answer_music()
     if timeout <= 0:
         return
     token = f"{time.monotonic():.6f}:{random.random():.6f}"
@@ -2783,7 +2835,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         _log.info("[jeopardy] ignoring %r — %s (clock still running)", text, ignore_reason)
         return ("", False)
 
-    _jeopardy_cancel_timeout()
+    _jeopardy_cancel_timeout(stop_music=False)
 
     players = _game_state.get("players") or [{"name": "Player", "score": 0}]
     # TIMEOUT-REBOUND GRACE: this answer landed after the time's-up beeper but
@@ -2818,6 +2870,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     # "Say that again" is a request, not a guess. These shapes are never a valid
     # "What is X?" response, so they are safe to intercept before scoring.
     if jeopardy_bank is not None and jeopardy_bank.is_clue_repeat_request(text):
+        _jeopardy_stop_answer_music()
         return (_jeopardy_repeat_clue_reply(clue, player, prefix="Once more. "), False)
 
     correct, passed = _jeopardy_grade(text, clue)
@@ -2825,6 +2878,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     if not correct and not passed and _jeopardy_unclear_answer(text, clue):
         retry = _jeopardy_request_repeat(text)
         if retry:
+            _jeopardy_stop_answer_music()
             _game_state["awaiting_prompt_delivery"] = True
             return (retry, False)
         # Repeated undecodable audio/API failures settle as a pass, never a fine.
@@ -2863,6 +2917,8 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         )
         _game_state.pop("ignored_turns", None)
         passed = True    # falls into the no-answer branch below
+
+    _jeopardy_stop_answer_music()
 
     # "What are the categories?" / "what's left in pop culture?" / "what's the
     # score?" asked a beat late — questions, not wrong answers. Checked only
@@ -2972,6 +3028,7 @@ def _jeopardy_handle(text: str, person_id: Optional[int], audio_array=None) -> t
         return _jeopardy_handle_selection(text, person_id)
     if phase == "awaiting_answer":
         return _jeopardy_handle_answer(text, person_id)
+    _jeopardy_cancel_timeout()
     _game_state.clear()
     return ("Jeopardy state went sideways. Game over before the lawyers arrive.", True)
 
@@ -3139,6 +3196,7 @@ _GAME_HANDLERS: dict[str, dict] = {
 
 def _clear_game() -> None:
     global _active_game, _game_state
+    _jeopardy_stop_answer_music()
     # A still-armed answer timer must not outlive the game it belongs to — the
     # token checks make a stray fire harmless, but only until someone edits them.
     timer = _game_state.pop("answer_timer", None)
@@ -3354,6 +3412,7 @@ def start_game(game_name: str, person_id: Optional[int] = None) -> str:
         )
 
     with _lock:
+        _clear_game()
         _active_game = normalized
         _game_state = {}
 
@@ -3735,7 +3794,7 @@ def snapshot() -> dict:
         state = {
             key: copy.deepcopy(value)
             for key, value in _game_state.items()
-            if key not in {"answer_timer"}
+            if key not in {"answer_timer", "answer_music_stop"}
         }
 
     board = state.get("board") or {}

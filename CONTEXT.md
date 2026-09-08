@@ -3605,3 +3605,35 @@ roster test from audio_and_conversation_gating. Includes actual ASR filtering ->
 interaction -> scoring, voice-label mismatches, homophones, ambiguity, roster
 variants, identity write suppression, answer handoffs and normal enrollment
 regressions. Models/API/audio/hardware were mocked; no live robot test performed.
+
+### Jeopardy answer music and reliability audit (2026-09-07)
+
+Owner reports the thinking theme often ends before the time-up chime. The runtime
+log shows game-audio VAD interruptions and clock deferrals; the theme was also
+capped at 12 seconds despite the clock allowing another 10 seconds of speech
+grace. Regular/Daily Double/rebound answer clocks now own a `loop_stop` event on
+a direct-audio queue item. The full file loops in one PortAudio stream until the
+answer is resolved, a repeat is requested, time expires, or the game stops/switches.
+Ignored chatter and timer deferrals preserve the same stream. Pending expired
+beds are skipped; spoken controls preempt active or waiting loops.
+
+With ReSpeaker hardware AEC, capture no longer cuts off the active thinking bed.
+Without hardware AEC, the existing stop-to-listen path remains; after a capture,
+if the answer window is still open, the bed restarts without changing its clock.
+Final still has its separate finite theme and no timed answer expiry; completing
+that flow is part of the proposal, not this music fix.
+
+Validation: 361 tests passed across 14 isolated modules, including 21 new music
+clock/playback cases; network/audio/serial blocked and temporary DBs. No acoustic
+or live group validation. During development, queue generation/shutdown tests
+caught a new missing `_Item.__slots__` field; verified clean-HEAD baselines passed,
+added the field, and the final checks passed.
+
+The owner requested an adversarial review and proposed fixes. See
+`docs/jeopardy_live_reliability_review.md`. Offline probes reproduced broken timeout
+rebound grace (flag cleared before check), dropped-announcement clocks, consumed
+but unheard clues after failed playback, negated/multipart false accepts,
+ambiguous category selection, misparsed corrected wagers, duplicate alias seats,
+and Final non-answer/GUI inconsistencies. These are OPEN proposals; only the
+music behavior was authorized for implementation in this review. Do not describe
+the game as ready for another group session based on the music tests alone.

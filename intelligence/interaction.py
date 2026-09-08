@@ -4419,6 +4419,19 @@ def _effect_allows_listening() -> bool:
         return False                        # fail CLOSED: keep the old skip
 
 
+def _keep_game_music_during_capture(path: Optional[str]) -> bool:
+    # The ReSpeaker cancels the instrumental bed before VAD/ASR. A cough,
+    # thinking pause or ignored aside must not permanently silence its clock.
+    # Without hardware AEC, retain the existing stop-to-listen fallback.
+    if not hardware_aec.is_active():
+        return False
+    try:
+        from features import games as games_mod
+        return games_mod.keep_answer_music_during_capture(path)
+    except Exception:
+        return False
+
+
 def _is_interruptible_game_audio_path(path: Optional[str]) -> bool:
     if not path:
         return False
@@ -33069,7 +33082,9 @@ def _loop() -> None:
         # accumulating. Without this, the rolling buffer still holds ~seconds of
         # Rex's own voice which Whisper concatenates onto the user's utterance.
         if speech_queue.is_speaking() or output_gate.is_busy():
-            if _is_interruptible_game_audio_path(direct_audio_path):
+            if _keep_game_music_during_capture(direct_audio_path):
+                _pin_game_barge_capture_floor(speech_start)
+            elif _is_interruptible_game_audio_path(direct_audio_path):
                 game_barge_onset = speech_start
                 keep_game_onset = _pin_game_barge_capture_floor(game_barge_onset)
                 _interrupted.set()
@@ -33191,6 +33206,11 @@ def _loop() -> None:
             _gap_recovery_floor_at = 0.0  # one-shot — never outlive its segment
             _restore_dj_volume(_dj_restore_volume)
             _end_user_turn()
+            try:
+                from features import games as games_mod
+                games_mod.resume_answer_music_after_capture()
+            except Exception:
+                _log.debug("[jeopardy] answer music resume failed", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

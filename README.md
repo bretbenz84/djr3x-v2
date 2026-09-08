@@ -42,6 +42,12 @@ an offline pronunciation dictionary for homophones and spelling variants; uncert
 near-matches get a repeat request without a deduction. The dictionary is installed
 with `requirements.txt` by `setup_assets.py`.
 
+The thinking music follows the regular/Daily Double/rebound answer clock,
+including speech grace, and stops for feedback or the time-up chime. Hardware
+AEC lets it continue during player speech; without it, music pauses for capture
+and resumes if the turn remains open. Other proposed game reliability fixes are
+tracked in [the live reliability review](docs/jeopardy_live_reliability_review.md).
+
 See [CONTEXT.md](CONTEXT.md) for more detailed project features, architecture notes, hardware mappings, and behavior design.
 
 The restructuring status and remaining live validation are tracked in
