@@ -245,7 +245,7 @@ class BareStemPredicateTest(unittest.TestCase):
 
 
 class AnswerChargeTest(unittest.TestCase):
-    """A miss only costs the current player when it could plausibly be theirs."""
+    """The active turn owns answers regardless of acoustic speaker labels."""
 
     CLUE = {
         "category": "SAT", "value": 400, "effective_value": 400,
@@ -289,11 +289,11 @@ class AnswerChargeTest(unittest.TestCase):
         _response, players = self._wrong(None)
         self.assertEqual(players[0]["score"], -400)
 
-    def test_a_confident_other_contestant_costs_nobody(self):
+    def test_a_confident_other_label_still_charges_the_active_turn(self):
         response, players = self._wrong(7)
-        self.assertEqual(players[0]["score"], 0)
+        self.assertEqual(players[0]["score"], -400)
         self.assertEqual(players[1]["score"], 0)
-        self.assertIn("PJ", response)
+        self.assertNotIn("not your", response)
 
     def test_a_right_answer_from_a_helper_still_scores_for_the_turn(self):
         self._fresh()
@@ -304,9 +304,9 @@ class AnswerChargeTest(unittest.TestCase):
             games._jeopardy_handle_answer("What is spearmint?", 7)
         self.assertEqual(games._game_state["players"][0]["score"], 400)
 
-    def test_the_guard_is_switchable(self):
+    def test_stale_user_config_cannot_reenable_identity_rejection(self):
         with mock.patch.object(config, "JEOPARDY_ONLY_CHARGE_THE_ANSWERER",
-                               False, create=True):
+                               True, create=True):
             _response, players = self._wrong(7)
         self.assertEqual(players[0]["score"], -400)
 
@@ -538,7 +538,7 @@ class AnswerTimeoutCeilingTest(unittest.TestCase):
 
 
 class AnswerOwnershipDetailTest(unittest.TestCase):
-    """An interloper's wrong guess must not cost the current player their square."""
+    """An incorrect voice ID cannot keep a wrong answer's turn open forever."""
 
     CLUE = {
         "category": "SAT", "value": 400, "effective_value": 400,
@@ -571,16 +571,16 @@ class AnswerOwnershipDetailTest(unittest.TestCase):
              mock.patch.object(games, "_quick_call", return_value="no"):
             return games._jeopardy_handle_answer("What is a pyramid?", person_id)[0]
 
-    def test_the_square_stays_with_its_owner(self):
+    def test_wrong_answer_advances_to_rebound_despite_other_voice_id(self):
         self._wrong(7)
         self.assertIn("current_clue", games._game_state, "the square is not spent")
-        self.assertEqual(games._game_state["current_player_idx"], 0)
+        self.assertEqual(games._game_state["current_player_idx"], 1)
         self.assertEqual(games._game_state["phase"], "awaiting_answer")
         self.assertTrue(games._game_state.get("awaiting_prompt_delivery"))
 
-    def test_the_rebound_chance_is_not_burned(self):
+    def test_wrong_answer_records_the_current_players_attempt(self):
         self._wrong(7)
-        self.assertEqual(games._game_state.get("current_clue_attempts"), [])
+        self.assertEqual(games._game_state.get("current_clue_attempts"), [0])
 
     def test_an_off_roster_bystander_is_charged_as_before(self):
         self._wrong(8)

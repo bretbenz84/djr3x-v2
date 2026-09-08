@@ -88,6 +88,8 @@ rumps>=0.4.0
 
 # ── Fuzzy string matching (command parser + DJ vibe matching) ─────────────────
 rapidfuzz>=3.9.0
+# Offline pronunciation lookup for spoken game answers.
+cmudict==1.1.3
 
 # ── Audio metadata — ID3 tag reading for DJ music index ───────────────────────
 mutagen>=1.47.0

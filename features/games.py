@@ -1291,6 +1291,9 @@ _JEOPARDY_NICKNAME_CANDIDATES = {
 
 def _jeopardy_player_display_name(name: str) -> str:
     cleaned = " ".join((name or "Player").split()) or "Player"
+    words = cleaned.split()
+    if len(words) > 1 and len(words[0]) == 1:
+        return " ".join(words[:2])  # "T Joy" must never become just "T".
     return cleaned.split()[0]
 
 
@@ -1328,6 +1331,14 @@ def _jeopardy_find_or_create_player(name: str) -> tuple[Optional[int], str]:
     if existing:
         return int(existing["id"]), _jeopardy_player_display_name(str(existing["name"]))
 
+    try:
+        existing = people_memory.find_person_by_spoken_name_variant(name)
+    except Exception:
+        existing = None
+    if existing:
+        display = existing.get("matched_spoken_name") or existing["name"]
+        return int(existing["id"]), _jeopardy_player_display_name(str(display))
+
     candidates = _JEOPARDY_NICKNAME_CANDIDATES.get((name or "").strip().lower(), [])
     for candidate in candidates:
         try:
@@ -1348,60 +1359,15 @@ def _jeopardy_find_or_create_player(name: str) -> tuple[Optional[int], str]:
 
 def _jeopardy_prepare_players(names: list[str]) -> tuple[list[dict], list[int]]:
     players: list[dict] = []
-    needs_voice: list[int] = []
-    try:
-        from memory import people as people_memory
-    except Exception:
-        people_memory = None
-
     for raw_name in names:
         person_id, display_name = _jeopardy_find_or_create_player(raw_name)
         player = {"name": display_name, "score": 0}
         if person_id is not None:
             player["person_id"] = person_id
-            try:
-                if people_memory is not None and not people_memory.has_voice_biometric(person_id):
-                    needs_voice.append(len(players))
-            except Exception:
-                pass
         players.append(player)
-    return players, needs_voice
-
-
-def _jeopardy_voice_check_prompt(player: dict, *, prefix: str = "") -> str:
-    name = player.get("name") or "player"
-    return (
-        f"{prefix}I need a cleaner voice print for {name} before the board starts. "
-        f"{name}, say: \"My name is {name}, and I'm playing Jeopardy.\" "
-        f"Or say \"skip {name}\" to play without it."
-    )
-
-
-def _jeopardy_confident_other_speaker(person_id: Optional[int]) -> Optional[dict]:
-    """The registered player who spoke, when it is demonstrably NOT the player
-    whose turn it is. None when the speaker is unresolved, is the current
-    player, or is not on the roster.
-
-    Used to decide whose money is on the line, and ONLY in the losing
-    direction — see _jeopardy_handle_answer.
-    """
-    if person_id is None:
-        return None
-    players = _game_state.get("players") or []
-    if len(players) < 2:
-        return None
-    idx = int(_game_state.get("current_player_idx", 0)) % len(players)
-    for i, player in enumerate(players):
-        pid = (player or {}).get("person_id")
-        if pid is None:
-            continue
-        try:
-            if int(pid) != int(person_id):
-                continue
-        except (TypeError, ValueError):
-            continue
-        return None if i == idx else dict(player)
-    return None
+    # Roster IDs support face gaze and display only. Playing never requires
+    # voice enrollment; the open turn owns every answer regardless of voice ID.
+    return players, []
 
 
 def _jeopardy_current_player() -> dict:
@@ -1551,7 +1517,9 @@ def _jeopardy_llm_verdict(user_text: str, expected_answer: str, clue: dict) -> s
             "thing), allowing phonetic/transcription mangling, filler words and "
             "question phrasing. Bare answers are allowed: never require 'what is', "
             "'who is', or a particular question word. Accept a full name/title "
-            "when the key contains only its missing part (ABC Family for Family).\n"
+            "when the key contains only its missing part (ABC Family for Family). "
+            "Judge what was spoken, not its spelling: symbol/cymbal, "
+            "knight/night, and singular/plural variants are acceptable.\n"
             "no — they attempted an answer and it is a different answer, a broader "
             "category, or missing a required part of a multi-part answer.\n"
             "none — they were not answering the clue at all: talking to someone "
@@ -2425,6 +2393,7 @@ def _jeopardy_start(person_id: Optional[int]) -> str:
 
 
 def _jeopardy_begin_board_for_players(players: list[dict], person_id: Optional[int]) -> tuple[str, bool]:
+    _game_state.pop("voice_enroll_queue", None)
     round_line = _jeopardy_load_round(1, players, current_player_idx=0)
     if not round_line:
         _game_state.clear()
@@ -2453,14 +2422,7 @@ def _jeopardy_begin_board_for_players(players: list[dict], person_id: Optional[i
 
 
 def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[str, bool]:
-    players, needs_voice = _jeopardy_prepare_players(names)
-    if needs_voice:
-        _game_state.update({
-            "phase": "voice_enroll",
-            "players": players,
-            "voice_enroll_queue": needs_voice,
-        })
-        return (_jeopardy_voice_check_prompt(players[needs_voice[0]]), False)
+    players, _ = _jeopardy_prepare_players(names)
     return _jeopardy_begin_board_for_players(players, person_id)
 
 
@@ -2712,6 +2674,13 @@ def _jeopardy_grade(text: str, clue: dict) -> tuple[bool, bool]:
             correct = True
     if not correct and not passed:
         correct = _jeopardy_llm_judge(text, answer, clue)
+        if not correct and _LAST_JUDGE_VERDICT.get("verdict") in ("wrong", ""):
+            from features.spoken_answers import possible_mishearing
+            if any(possible_mishearing(jeopardy_bank.normalize_answer(text),
+                                      jeopardy_bank.normalize_answer(candidate))
+                   for candidate in jeopardy_bank.answer_candidates(answer)):
+                _LAST_JUDGE_VERDICT.update(key=(text.strip(), str(answer)), verdict="unclear")
+                _log.info("[jeopardy] pronunciation near-match needs repeat heard=%r expected=%r", text, answer)
     return correct, passed
 
 
@@ -2774,6 +2743,9 @@ def _jeopardy_ignore_non_answer(text: str, clue: dict) -> Optional[str]:
         # 20:13:45 — a bare "What is?" was graded as a miss and the real answer
         # then landed on the rebound player).
         return "bare question stem"
+    if re.fullmatch(r"(?:sh+h+|shush|h+m+)[.!?\s]*", text.strip(), re.IGNORECASE):
+        if not jeopardy_bank.is_correct(text, str(clue.get("answer") or "")):
+            return "non-answer vocalization"
     if jeopardy_bank.is_too_long_for_an_answer(text):
         # Past the length any Jeopardy response reaches. The rescue judge
         # already refused to rule on these; the miss simply stood (field
@@ -2838,6 +2810,8 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     idx = int(_game_state.get("current_player_idx", 0)) % len(players)
     player = players[idx]
     answer = clue.get("answer", "unknown")
+    _log.info("[jeopardy] answer owner=%s person_id=%s voice_label_id=%s heard=%r",
+              player.get("name"), player.get("person_id"), person_id, text)
     value = int(clue.get("effective_value", clue.get("value", 0)) or 0)
     correct_response = _jeopardy_correct_response_text(clue)
 
@@ -2949,40 +2923,9 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
             False,
         )
 
-    # WHOSE money is on the line. A wrong answer only COSTS the current player
-    # when it could plausibly be theirs — the speaker is unresolved (the common
-    # case) or resolves to them. A confident OTHER contestant shouting a guess
-    # is the room helping out, and this table plays that way: a right answer
-    # from a helper still counts, a wrong one is not billed to whoever's turn it
-    # happens to be (field 2026-08-26: PJ calling the dog took $400 off Bret).
-    # Credits are deliberately unchanged — asymmetric on purpose.
+    # Turn ownership is authoritative for both wins and losses. Voice ID may
+    # label the transcript, but cannot reject a player's answer or stall a turn.
     _body_beat("offended_recoil")
-    helper = (
-        _jeopardy_confident_other_speaker(person_id)
-        if bool(getattr(config, "JEOPARDY_ONLY_CHARGE_THE_ANSWERER", True))
-        else None
-    )
-    if helper is not None:
-        _log.info(
-            "[jeopardy] wrong answer came from %s, not %s — no deduction",
-            helper.get("name"), player.get("name"),
-        )
-        _jeopardy_queue_clip("wrong")
-        heckle = random.choice([
-            f"{helper['name']}, that's not your square, and it wasn't right either.",
-            f"Wrong, {helper['name']} — and it's not even your turn. No charge.",
-            f"Rejected, {helper['name']}. {player['name']} keeps the money.",
-        ])
-        # The square stays with its owner: nobody was charged, so nothing was
-        # spent. Rebounding here would let a heckler take the current player's
-        # square for free AND burn their single JEOPARDY_MAX_REBOUNDS chance.
-        # _jeopardy_repeat_clue_reply re-arms phase + awaiting_prompt_delivery,
-        # so on_response_spoken() restarts the clock through the normal path.
-        return (
-            _jeopardy_repeat_clue_reply(clue, player, prefix=f"{heckle} "),
-            False,
-        )
-
     player["score"] = int(player.get("score", 0)) - value
     _jeopardy_queue_clip("wrong")
     roast = _jeopardy_feedback(False)
@@ -3010,53 +2953,6 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     )
 
 
-def _jeopardy_handle_voice_enroll(
-    text: str,
-    person_id: Optional[int],
-    audio_array=None,
-) -> tuple[str, bool]:
-    players = _game_state.get("players") or []
-    queue = list(_game_state.get("voice_enroll_queue") or [])
-    if not players or not queue:
-        return _jeopardy_begin_board_for_players(players or [{"name": "Player", "score": 0}], person_id)
-
-    player_idx = int(queue.pop(0))
-    player = players[player_idx]
-    name = str(player.get("name") or "player")
-    normalized = " ".join((text or "").lower().split())
-    skipped = (
-        normalized in {"skip", "skip voice", "start anyway", "begin anyway", "play anyway"}
-        or normalized == f"skip {name.lower()}"
-    )
-
-    prefix = ""
-    if skipped:
-        prefix = f"Skipping {name}'s voice print. "
-    else:
-        pid = player.get("person_id")
-        if pid is None or audio_array is None:
-            queue.insert(0, player_idx)
-            _game_state["voice_enroll_queue"] = queue
-            return (_jeopardy_voice_check_prompt(player, prefix="I could not store that one. "), False)
-        try:
-            from audio import speaker_id
-            ok = speaker_id.enroll_voice(int(pid), audio_array, source="game_roster")
-        except Exception as exc:
-            _log.debug("[jeopardy] voice enrollment failed for %s: %s", name, exc)
-            ok = False
-        if not ok:
-            queue.insert(0, player_idx)
-            _game_state["voice_enroll_queue"] = queue
-            return (_jeopardy_voice_check_prompt(player, prefix="That voice print was too fuzzy. "), False)
-        player["voice_enrolled"] = True
-        prefix = f"Voice print stored for {name}. "
-
-    _game_state["voice_enroll_queue"] = queue
-    if queue:
-        return (_jeopardy_voice_check_prompt(players[int(queue[0])], prefix=prefix), False)
-    return _jeopardy_begin_board_for_players(players, person_id)
-
-
 def _jeopardy_handle(text: str, person_id: Optional[int], audio_array=None) -> tuple[str, bool]:
     phase = _game_state.get("phase")
     if phase == "awaiting_wager":
@@ -3068,7 +2964,10 @@ def _jeopardy_handle(text: str, person_id: Optional[int], audio_array=None) -> t
     if phase == "awaiting_players":
         return _jeopardy_handle_player_setup(text, person_id)
     if phase == "voice_enroll":
-        return _jeopardy_handle_voice_enroll(text, person_id, audio_array)
+        # Compatibility with an older in-memory/restored setup: skip the
+        # obsolete voice-print step without writing any biometrics.
+        players = _game_state.get("players") or [{"name": "Player", "score": 0}]
+        return _jeopardy_begin_board_for_players(players, person_id)
     if phase == "selecting":
         return _jeopardy_handle_selection(text, person_id)
     if phase == "awaiting_answer":

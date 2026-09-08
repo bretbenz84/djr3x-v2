@@ -43,6 +43,26 @@ class RosterNamesTest(unittest.TestCase):
         self.assertEqual(games._jeopardy_find_or_create_player("TJoy")[0], 3)
         self.assertEqual(games._jeopardy_find_or_create_player("Exudica Marbles")[0], 3)
 
+    def test_tjoy_spacing_and_apostrophe_variants_reuse_full_name(self):
+        self.db.execute("UPDATE people SET name=? WHERE id=3", ("T'Joy Jackson",))
+        for spelling in ("T Joy", "T-Joy", "T'Joy", "T’Joy", "Tjoy"):
+            with self.subTest(spelling=spelling):
+                roster, needs_voice = games._jeopardy_prepare_players(jeopardy.parse_player_names(f"{spelling}, Bret, and P J"))
+                self.assertEqual([p.get("person_id") for p in roster], [3, 1, 7])
+                self.assertEqual(roster[0]["name"], "T'Joy")
+                self.assertEqual(needs_voice, [])
+        self.create.assert_not_called()
+
+    def test_stored_full_name_alias_supports_spaced_first_name(self):
+        self.db.execute("DELETE FROM person_aliases")
+        self.db.execute("INSERT INTO person_aliases(person_id,alias,alias_norm) VALUES (3, ?, ?)",
+                        ("T'Joy Jackson", "t'joy jackson"))
+        pid, display = games._jeopardy_find_or_create_player("T Joy")
+        self.assertEqual((pid, display), (3, "T'Joy"))
+
+    def test_unresolved_compound_first_name_is_not_truncated(self):
+        self.assertEqual(games._jeopardy_player_display_name("T Joy"), "T Joy")
+
     def test_stored_nickname_beats_builtin_guess(self):
         self.db.executemany("INSERT INTO people(id,name,nickname) VALUES (?,?,?)", [
             (10, "Robert Jones", "Bill"), (11, "William Smith", None),

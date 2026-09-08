@@ -932,6 +932,14 @@ def is_correct(user_answer: str, expected_answer: str) -> bool:
             continue
         if user == expected:
             return True
+        # ASR alternates between E.T., E T and Et. Compare compact initials
+        # only when one side is explicitly a sequence of letters.
+        if any(2 <= len(s.split()) <= 6 and all(len(t) == 1 for t in s.split())
+               for s in (user, expected)) and user.replace(" ", "") == expected.replace(" ", ""):
+            return True
+        from features.spoken_answers import same_pronunciation
+        if same_pronunciation(user, expected):
+            return True
         # Spoken numbers/years: "fourteen ninety two" for 1492. Only when the
         # expected answer actually carries digits.
         if any(ch.isdigit() for ch in expected):

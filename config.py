@@ -9318,15 +9318,8 @@ JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS = 120  # longer turns aren't answer attempts
 # talking — PJ calling the dog ("Come here, Toby. Come here, baby.") took $400
 # off Bret, and a complaint about the game took $100 off T'Joy.
 JEOPARDY_IGNORE_NON_ANSWERS = True
-# A wrong answer only DEDUCTS from the current player when it could plausibly be
-# theirs: the speaker is unresolved (the common case at this room's voice-ID
-# scores) or resolves to them. A confidently-identified OTHER contestant is the
-# room helping out — this table plays that way, and a correct answer from a
-# helper still scores for whoever's turn it is. Asymmetric on purpose: it can
-# only prevent an unfair charge, never hand out money. Field 2026-08-26: PJ
-# calling the dog mid-clue took $400 off Bret. False restores flat turn-based
-# scoring.
-JEOPARDY_ONLY_CHARGE_THE_ANSWERER = True
+# Scores always belong to the active turn. Speaker-ID disagreements never
+# block a game answer, and game setup does not enroll voices.
 # How many judge-ruled non-answers in a row a single clue absorbs before it is
 # settled as a no-answer. The deterministic ignore lanes leave the live answer
 # clock running, but the judge lane re-arms a fresh one — so without a cap a

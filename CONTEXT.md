@@ -3559,3 +3559,49 @@ actual head-tracking selection and mocked servo commands, gaze/listening/wander
 ownership, speaker gaze and Jeopardy. The new module has 18 tests, including
 turn changes, visibility loss, speech, manual control, config-off behavior and
 speaker-intent isolation. No physical head or camera test was performed.
+
+### Jeopardy 20:58 run: turn ownership and spoken-answer repair (2026-09-07)
+
+Owner policy: every answer belongs to the open turn, independent of voice ID.
+Removed `JEOPARDY_ONLY_CHARGE_THE_ANSWERER` and the wrong-helper branch: PJ being
+misidentified as Bret can no longer trigger "not your turn" or loop the same
+square. Correct and incorrect answers both affect the active player's score.
+Voice labels remain observations; roster turn ownership is not biometric evidence.
+
+Game setup no longer checks for or captures voiceprints. General bootstrap,
+passive enrollment, pending voice samples and name updates also stand down during
+games. This supersedes the earlier setup voice-check behavior. Roster lookup
+supports unique spacing/punctuation variants of stored names and aliases, including
+T Joy / T-Joy / T'Joy; unresolved compound first names are not truncated to T.
+
+The log shows that E.T. was transcribed as `E.T.` at 21:00:55 and `Et.` at
+21:01:13, then discarded by the minimum-character/word filter. Live Jeopardy
+answer windows now allow short answers while retaining filler, repetition,
+context-echo and subtitle/noise filters. ASR confidence is not upgraded for learning.
+This fixes those specific dropped decodes; it does not guarantee every utterance
+will be captured or transcribed correctly.
+
+`features/spoken_answers.py` uses the bundled pronunciation data from
+[`cmudict`](https://github.com/prosegrinder/python-cmudict), installed through
+`requirements.txt` / `setup_assets.py`. Exact homophones and supported plural
+variants (symbol/cymbals) are accepted locally before LLM judging; initials
+E.T. / E T / Et also match. A close short-word pronunciation (flag/flood) can
+override a negative judge into a repeat request with no deduction, never into
+automatic credit. Distinct struts/frets remains wrong. Shushing does not consume
+a turn. Warm answer comparisons averaged 0.011 ms over 4,000 mixed comparisons
+on this Mac; dictionary loading is cached separately.
+
+Local database repair, backed up in
+`assets/memory/backups/jeopardy-repair-20260908T045106Z/` (people.db, rex.db and
+repair.json): the owner confirmed T'Joy spoke the 20:59:59 sample. Merged duplicate
+person 10 into original person 3, moved biometric 62 and linked conversations/
+episode, restored T'Joy Jackson, and retained Joy/T Joy/T-Joy/Tjoy aliases. Removed
+biometric 60, the 19:02:32 "Next stage" capture with 0.33 seconds of voiced audio.
+Her valid CAM++ prints 59 and 62 remain. PJ's records were untouched. Database
+integrity checks passed. This local repair is not distributed by git pull.
+
+Validation: 467 focused tests passed across 18 isolated modules plus the updated
+roster test from audio_and_conversation_gating. Includes actual ASR filtering ->
+interaction -> scoring, voice-label mismatches, homophones, ambiguity, roster
+variants, identity write suppression, answer handoffs and normal enrollment
+regressions. Models/API/audio/hardware were mocked; no live robot test performed.

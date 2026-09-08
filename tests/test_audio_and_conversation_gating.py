@@ -1265,7 +1265,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             players, needs_voice = games._jeopardy_prepare_players(["Will", "Jen", "Daniel", "Bret"])
 
         self.assertEqual([p["name"] for p in players], ["Will", "Jennifer", "Daniel", "Bret"])
-        self.assertEqual(needs_voice, [1])
+        self.assertEqual(needs_voice, [])
 
     def test_jeopardy_negative_scores_are_spoken_explicitly(self):
         from features import jeopardy

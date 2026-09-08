@@ -36,6 +36,12 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 - A back-off reflex — when Rex is parked and someone steps right up into his face, the front 8×8 ToF sensor feels the approach and he reflexively edges backward, the way an animal gives itself room. He only retreats as far as the rear ToF sensors say is safe — stopping short of the wall and simply holding his ground when he's cornered (toggle with `MOTION_FLINCH_ENABLED`; needs the drive base)
 - Music controls and verbal games: I Spy, 20 Questions, themed five-question Trivia rounds, Jeopardy, and Word Association
 
+Jeopardy scores every answer for the player whose turn is open, regardless of the
+voice-ID label. No voiceprint setup is required. Spoken-answer matching includes
+an offline pronunciation dictionary for homophones and spelling variants; uncertain
+near-matches get a repeat request without a deduction. The dictionary is installed
+with `requirements.txt` by `setup_assets.py`.
+
 See [CONTEXT.md](CONTEXT.md) for more detailed project features, architecture notes, hardware mappings, and behavior design.
 
 The restructuring status and remaining live validation are tracked in

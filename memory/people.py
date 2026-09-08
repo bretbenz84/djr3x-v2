@@ -11,6 +11,7 @@ Metric note:
 """
 
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -350,6 +351,38 @@ def find_person_by_nickname(name: str) -> Optional[dict]:
     rows = db.fetchall("SELECT * FROM people WHERE nickname IS NOT NULL AND trim(nickname) != ''")
     matches = [dict(row) for row in rows if _normalize_name(row["nickname"]) == norm]
     return matches[0] if len(matches) == 1 else None
+
+
+def find_person_by_spoken_name_variant(name: str) -> Optional[dict]:
+    """Unique punctuation/spacing variant of a stored name, alias or nickname.
+
+    Handles T Joy / T-Joy / T'Joy and spoken initials without fuzzy guessing.
+    This lookup does not create, rename, or learn an alias.
+    """
+    def compact(value):
+        return "".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
+
+    def first_name(value):
+        words = re.findall(r"[a-z0-9]+", (value or "").lower())
+        if len(words) > 1 and len(words[0]) == 1:
+            return "".join(words[:2])
+        return words[0] if words else ""
+
+    key = compact(name)
+    if len(key) < 2:
+        return None
+    rows = db.fetchall("SELECT * FROM people")
+    aliases = db.fetchall("SELECT person_id, alias FROM person_aliases") if _person_aliases_available() else []
+    matches = {}
+    for row in rows:
+        person = dict(row)
+        labels = [person.get("name"), person.get("nickname")]
+        labels.extend(a["alias"] for a in aliases if a["person_id"] == person["id"])
+        for label in filter(None, labels):
+            if key in (compact(label), first_name(label)):
+                matches[person["id"]] = {**person, "matched_spoken_name": label}
+                break
+    return next(iter(matches.values())) if len(matches) == 1 else None
 
 
 def _person_score(person: dict) -> tuple[int, int, float, int]:

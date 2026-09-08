@@ -476,7 +476,7 @@ _SUBTITLE_HALLUCINATION_RE = re.compile(
 )
 
 
-def _is_hallucination(text: str) -> bool:
+def _is_hallucination(text: str, *, allow_short_answer: bool = False) -> bool:
     lower = text.lower().strip()
     # Subtitle/credit boilerplate and stray URLs are always hallucinations.
     if _SUBTITLE_HALLUCINATION_RE.search(lower):
@@ -502,7 +502,7 @@ def _is_hallucination(text: str) -> bool:
         return True
     # Minimum meaningful content check — discard pure punctuation/whitespace junk.
     stripped = re.sub(r"[^a-z0-9]", "", normalized)
-    if len(stripped) < config.WHISPER_MIN_CHARS:
+    if not stripped or (not allow_short_answer and len(stripped) < config.WHISPER_MIN_CHARS):
         return True
 
     # Character-loop artifacts can arrive as one very long token rather than a
@@ -527,7 +527,7 @@ def _is_hallucination(text: str) -> bool:
     # Minimum meaningful word count — words longer than 2 characters are considered
     # substantive; short tokens like "uh", "um", "ah" do not count.
     meaningful = [w for w in re.findall(r"[a-zA-Z0-9']+", normalized) if len(w) > 2]
-    if len(meaningful) < config.WHISPER_MIN_WORDS:
+    if not allow_short_answer and len(meaningful) < config.WHISPER_MIN_WORDS:
         return True
 
     # Repetition pattern: a real Whisper loop repeats ONE word until it dominates the
@@ -804,7 +804,16 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
         )
         return Transcript("", backend=backend)
 
-    if _is_hallucination(raw):
+    # A live game can legitimately receive 'E.T.', 'Et', 'Pi', or a single
+    # letter/number. Relax only the length checks for a decoded game answer;
+    # context echo, filler, repetition and subtitle filters still apply.
+    allow_short_answer = False
+    try:
+        from features import games
+        allow_short_answer = games.jeopardy_answer_window_open()
+    except Exception:
+        pass
+    if _is_hallucination(raw, allow_short_answer=allow_short_answer):
         logger.info(
             "[transcription] hallucination filtered | backend=%s | raw=%r",
             backend, raw,

@@ -9128,6 +9128,8 @@ def _handle_name_update_request(
     person_name: Optional[str],
 ) -> Optional[str]:
     """Apply an explicit "call me / my name is / you got my name wrong" update."""
+    if _game_suppresses_conversation():
+        return None  # Answers/roster speech cannot rename a voice-matched person.
     new_name = _extract_name_update(text)
     if not new_name:
         return None
@@ -12757,6 +12759,8 @@ def _maybe_passive_voice_enroll(
     speaker_score: float,
 ) -> None:
     """Silently grow the voiceprint of the solo visible person. Never speaks."""
+    if _game_suppresses_conversation():
+        return
     if (speaker_id.active_backend() == "campplus"
             and not _campplus_growth_supported(person_id, raw_best_id, speaker_score)):
         return
@@ -12919,6 +12923,8 @@ def _handle_voice_sample_capture(
     """Enroll only a verified repetition of the requested person's sentence."""
     global _pending_voice_sample_capture
 
+    if _game_suppresses_conversation():
+        return None
     ctx = _pending_voice_sample_capture
     if ctx is None or ctx.get("asked_at") is None:
         return None
@@ -13157,6 +13163,8 @@ def _handle_intro_voice_capture(
 ) -> Optional[str]:
     global _pending_intro_voice_capture, _pending_intro_followup
 
+    if _game_suppresses_conversation():
+        return None
     ctx = _pending_intro_voice_capture
     if ctx is None:
         return None
@@ -14848,6 +14856,8 @@ def _maybe_bootstrap_campplus(audio_array, text):
         _log.info("[campplus] enrollment %s", json.dumps(diag, sort_keys=True))
         return bool(enrolled)
 
+    if _game_suppresses_conversation():
+        return finish("game_active")
     if not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True):
         return finish("disabled")
     if not text or not bool(getattr(text, "confident", True)) or _is_non_speech_vocalization(str(text)):
