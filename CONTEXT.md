@@ -3523,3 +3523,15 @@ prompt handling, audio handoffs, gap recovery and turn coordination). The broade
 `regex_routing_guards` module retains one unrelated `VisionHoldingFieldFailureTest`
 error: it searches for an old persona-prompt line. The same assertion fails with
 the committed HEAD config; none of this change modifies the persona prompt.
+
+### T'Joy pronunciation for ElevenLabs (2026-09-07)
+
+`ELEVENLABS_PRONUNCIATIONS` maps `T'Joy` to `Tee-Joy` only in the synthesis
+request, including straight/curly apostrophes, case variants and possessives.
+GUI text, conversation logs and diagnostic display text retain the original name.
+The transformed synthesis text is hashed before both MP3 and streamed WAV lookup;
+old T'Joy takes cannot mask the correction. Prefill, cache checks and live speech
+share the transform; other lines keep their existing cache entries. Supported
+previous-text stitching uses the same spoken spelling.
+Validation: 90 tests across pronunciation/cache delivery, v3 audio tags, streaming
+TTS, two-chunk delivery and TTS-tail modules. API/audio transports are mocked.

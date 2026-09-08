@@ -1734,6 +1734,10 @@ RUNNING_BIT_FRESHNESS = 1.0           # fixed selection weight for a running bit
 # Rex voice clone ID — find this in your ElevenLabs account after cloning the voice
 ELEVENLABS_VOICE_ID = "no5jvDWvnx2leN3dFOS7"
 
+# Speech-only spellings sent to ElevenLabs. GUI/transcripts keep the original.
+# Applied before the cache hash, so corrected pronunciations bypass old takes.
+ELEVENLABS_PRONUNCIATIONS = {"T'Joy": "Tee-Joy"}
+
 # ElevenLabs model to use for TTS.
 #   eleven_v3              — most expressive / most in-character (owner's pick), same per-character
 #                            cost as v2; ~+0.5s latency per uncached line and slightly more variable.

@@ -106,6 +106,23 @@ def _normalize_for_speech(text: str) -> str:
     return spoken
 
 
+def _elevenlabs_pronunciation_text(text: str) -> str:
+    """Render name aliases only for synthesis, never for logs or the GUI.
+
+    Match whole names, including straight/curly apostrophes and possessives.
+    The resulting text also keys the MP3/WAV cache and any prefetched take.
+    """
+    for name, pronunciation in (getattr(config, "ELEVENLABS_PRONUNCIATIONS", {}) or {}).items():
+        if not name or not pronunciation:
+            continue
+        pattern = "".join("['’‘ʼ]" if c in "'’‘ʼ" else re.escape(c) for c in name)
+        text = re.sub(
+            rf"(?<!\w){pattern}(?!\w)", lambda _m: pronunciation,
+            text, flags=re.IGNORECASE,
+        )
+    return text
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def spoken_form(text: str) -> str:
@@ -356,7 +373,7 @@ def _apply_audio_tags(
     reply's one leading tag rode chunk 1) or an inline tag already carries the delivery. Stability
     is NOT touched here — it is pinned globally by _pin_v3_stability to the Natural preset, which
     still lets tags land (only HIGH/Robust stability mutes them)."""
-    text = _sanitize_inline_tags(spoken_text)
+    text = _sanitize_inline_tags(_elevenlabs_pronunciation_text(spoken_text))
     if not _v3_tags_active():
         return text, voice_settings
     if not suppress_leading and not _AUDIO_TAG_RE.search(text):
@@ -1854,7 +1871,7 @@ def _stitch_previous_text(previous_text: Optional[str], model_id: str) -> str:
     cap = int(getattr(config, "TTS_V3_STITCH_MAX_CHARS", 400))
     # Normalize like the spoken text so the conditioning context matches what was actually said
     # (e.g. "WWII" -> "World War Two"), not the raw transcript form.
-    text = _normalize_for_speech(str(previous_text)).strip()
+    text = _elevenlabs_pronunciation_text(_normalize_for_speech(str(previous_text))).strip()
     return text[-cap:] if cap > 0 else text
 
 
@@ -1932,7 +1949,8 @@ def ensure_cached(
 
     `emotion` (and `comedy_mode`) must match what the line will be spoken with so the prefilled file
     lands under the same cache key the live turn looks up — including any v3 audio tag + its pinned
-    stability, applied identically here and in speak().
+    stability, applied identically here and in speak(). Pronunciation aliases
+    also share this synthesis/cache path; display text retains its spelling.
     """
     if not text or not text.strip():
         return False
@@ -1956,7 +1974,7 @@ def ensure_cached(
     if cache_file.exists():
         return True
 
-    logger.info("[tts] cache prefill miss — calling ElevenLabs API for %r", synth_text)
+    logger.info("[tts] cache prefill miss — calling ElevenLabs API for %r", strip_audio_tags(spoken_text))
     audio_bytes = _fetch_from_api(synth_text, voice_id, model_id, voice_settings, previous_text)
     if not audio_bytes:
         return False
