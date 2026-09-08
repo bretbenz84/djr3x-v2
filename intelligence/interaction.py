@@ -1529,6 +1529,13 @@ def _game_escape_command(text: str) -> Optional[command_parser.CommandMatch]:
     except Exception:
         match = None
     key = match.command_key if match is not None else None
+    if key and key.startswith("start_"):
+        try:
+            from features import games as games_mod
+            if games_mod.jeopardy_claims_selection(text):
+                return None
+        except Exception as exc:
+            _log.debug("game selection ownership check failed: %s", exc)
     normalized = " ".join((text or "").lower().split()).strip(" .!?")
     if normalized in _GAME_BARE_STOP_WORDS and key in (None, "dj_stop"):
         # A bare "stop"/"quit" parses as dj_stop (or as nothing at all); inside a
@@ -3344,7 +3351,8 @@ def _proactive_opener_repeats(text: str, purpose: Optional[str] = None) -> bool:
 
 def _post_tts_handoff_policy(text: Optional[str]) -> _PostTtsHandoffPolicy:
     asked_question = _assistant_asked_question(text or "")
-    fast_response_expected = _fast_response_handoff_expected(text)
+    # Clues are statements, but invite the fastest answers of the whole game.
+    fast_response_expected = _fast_response_handoff_expected(text) or _jeopardy_answer_window_open()
     delay_secs = float(getattr(config, "POST_SPEECH_LISTEN_DELAY_SECS", 0.35))
     # Statements no longer flush by default: a reply that began as Rex finished a
     # statement sits (un-attenuated) in the rolling buffer, and flushing deleted it.
@@ -3534,7 +3542,14 @@ def _arm_post_tts_window(item=None) -> None:
     its own playback, so releasing early costs nothing.
     """
     text = getattr(item, "text", None)
-    _apply_post_tts_handoff(text, source="speech_queue")
+    # An instrumental clip is not another spoken clue. On the hardware-AEC
+    # path its completion must not move the capture floor into a human answer,
+    # whether it was interrupted OR ended naturally while they were speaking.
+    game_music = hardware_aec.is_active() and _is_interruptible_game_audio_path(
+        getattr(item, "audio_path", None)
+    )
+    if not game_music:
+        _apply_post_tts_handoff(text, source="speech_queue")
     try:
         if bool(getattr(config, "AEC_RELEASE_ON_QUEUE_DRAIN", True)) and \
                 speech_queue.is_drained():
@@ -3629,6 +3644,20 @@ def _looks_like_own_echo(text: str) -> bool:
     """True when a transcript near-matches something Rex himself just said."""
     if not bool(getattr(config, "OWN_ECHO_REJECT_ENABLED", True)):
         return False
+    # Players repeat a category Rex just listed. Only exempt a real board pick
+    # captured wholly after playback/echo settle; overlapping audio still uses
+    # the normal echo guard. This grants no identity or enrollment permission.
+    try:
+        from features import games as games_mod
+        start = float(_utterance_observations.get("started_at") or 0.0)
+        end = float(_utterance_observations.get("ended_at") or 0.0)
+        playback_end = float(echo_cancel.last_playback_ended_at() or 0.0)
+        if (playback_end > 0 and start >= playback_end + 0.25
+                and end > start and 0 <= time.monotonic() - end <= 10.0
+                and games_mod.jeopardy_claims_selection(text)):
+            return False
+    except Exception:
+        pass
     norm = _normalize_echo_text(text)
     min_words = int(getattr(config, "OWN_ECHO_MIN_WORDS", 3))
     if not norm or len(norm.split()) < min_words:
@@ -15147,6 +15176,17 @@ def _speech_preroll_secs() -> float:
             float(getattr(config, "POST_QUESTION_SPEECH_PREROLL_SECS", preroll) or 0.0),
         )
     return max(0.0, preroll)
+
+
+def _pin_game_barge_capture_floor(speech_start: float) -> bool:
+    """Save the clue boundary BEFORE cancelling music can run its done callback."""
+    global _game_barge_floor_at
+    if not hardware_aec.is_active() or not getattr(config, "GAME_BARGE_KEEP_ONSET_ENABLED", True):
+        return False
+    _game_barge_floor_at = _listen_capture_floor_at or max(
+        0.0, speech_start - _speech_preroll_secs()
+    )
+    return True
 
 
 def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float] = None) -> float:
@@ -33021,6 +33061,7 @@ def _loop() -> None:
         if speech_queue.is_speaking() or output_gate.is_busy():
             if _is_interruptible_game_audio_path(direct_audio_path):
                 game_barge_onset = speech_start
+                keep_game_onset = _pin_game_barge_capture_floor(game_barge_onset)
                 _interrupted.set()
                 _turn_trace.cancel("game_barge")
                 speech_queue.invalidate_pending("game_barge")
@@ -33036,9 +33077,7 @@ def _loop() -> None:
                 except Exception:
                     pass
                 _interrupted.clear()
-                if hardware_aec.is_active() and bool(
-                    getattr(config, "GAME_BARGE_KEEP_ONSET_ENABLED", True)
-                ):
+                if keep_game_onset:
                     # The words spoken UNDER the clip are already in the rolling
                     # buffer, hardware-AEC'd clean (the theme is instrumental —
                     # its residual cannot transcribe). Resetting the onset to now
@@ -33047,10 +33086,6 @@ def _loop() -> None:
                     # floor to its pre-interrupt value so this clip's own
                     # done-callback restamp (anchored at the clip's end, INSIDE
                     # this utterance) can't clamp the reach-back.
-                    _game_barge_floor_at = (
-                        _listen_capture_floor_at
-                        or max(0.0, game_barge_onset - _speech_preroll_secs())
-                    )
                     speech_start = game_barge_onset
                 else:
                     # Software suppression: the buffer under the clip holds the
@@ -33072,34 +33107,35 @@ def _loop() -> None:
                 _end_user_turn()
                 _stop_event.wait(_CHUNK_SECS)
                 continue
-            _interrupted.set()
-            _turn_trace.cancel("vad_barge")
-            speech_queue.invalidate_pending("vad_barge")
-            try:
-                import sounddevice as sd
-                echo_cancel.request_cancel()
-                sd.stop()
-            except Exception:
-                pass
-            # Brief settle so the worker can clean up its finally block
-            time.sleep(0.1)
-            _interrupted.clear()
-            if direct_audio_path:
-                # Non-speech clips/music beds are interruptible: keep the user's
-                # current utterance instead of saying "yeah?" and forcing a repeat.
-                _log.info("[interaction] direct audio interrupted by user speech: %s", direct_audio_path)
             else:
-                _interrupt_ack()
+                _interrupted.set()
+                _turn_trace.cancel("vad_barge")
+                speech_queue.invalidate_pending("vad_barge")
+                try:
+                    import sounddevice as sd
+                    echo_cancel.request_cancel()
+                    sd.stop()
+                except Exception:
+                    pass
+                # Brief settle so the worker can clean up its finally block
+                time.sleep(0.1)
+                _interrupted.clear()
+                if direct_audio_path:
+                    # Non-speech clips/music beds are interruptible: keep the user's
+                    # current utterance instead of saying "yeah?" and forcing a repeat.
+                    _log.info("[interaction] direct audio interrupted by user speech: %s", direct_audio_path)
+                else:
+                    _interrupt_ack()
 
-                # Drop the polluted buffer and re-arm. The next user utterance must
-                # trigger VAD again; the original speech_start is discarded.
-                stream.flush()
-                _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
-                _post_tts_flush_needed = True
-                # The flush emptied the span the gap watch pointed at.
-                _disarm_gap_watch()
-                _end_user_turn()
-                continue
+                    # Drop the polluted buffer and re-arm. The next user utterance must
+                    # trigger VAD again; the original speech_start is discarded.
+                    stream.flush()
+                    _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
+                    _post_tts_flush_needed = True
+                    # The flush emptied the span the gap watch pointed at.
+                    _disarm_gap_watch()
+                    _end_user_turn()
+                    continue
 
         _dj_restore_volume = _duck_dj_for_speech()
         try:

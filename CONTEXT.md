@@ -3481,3 +3481,45 @@ Full Arduino build passed (810801 bytes flash, 90580 bytes globals). Flashed the
 configured ESP32 with motion, radial ToF, 8x8 ToF and gamepad all enabled; upload
 hashes verified and hello reported 0.2.1-tof-persistence with no come capability.
 Battery launch agent restored after both diagnostic and final uploads.
+
+### Jeopardy board ownership and fast-answer repair (2026-09-07)
+
+The 19:00:37 run exposed connected game failures:
+
+- LET'S PLAY A GAME picks escaped to generic `start_game` or `llm.stream`.
+  At 19:27 and 19:30 the general model spoke a clue without selecting a square,
+  explaining the two missing GUI clues. `jeopardy.is_category_pick` now gives
+  board categories priority over start commands through the shared game escape
+  helper. The check is non-mutating and includes spent squares. A value followed
+  by a category in a separate turn completes the pick.
+- After accepting ABC Family, the free-form board-question fallback invented
+  Freeform as a correction. Completed clues now remain available for repeated
+  answers without re-scoring. Board questions use an LLM intent classification
+  with deterministic state-based replies; table talk cannot generate game facts.
+- The music-barge path saved its supposed pre-cancel floor AFTER cancelling and
+  waiting for the completion callback, which had already moved the floor into
+  the answer. It now pins before cancellation, and hardware-AEC instrumental
+  completion never restamps the spoken-clue boundary. Declarative clues enable
+  fast reply recovery. Jeopardy answers allow 1.1 seconds of internal silence.
+  Software-AEC capture boundaries remain conservative. A category repeated in a
+  capture wholly after playback/settle is exempt from text-only echo matching.
+- Question phrasing was already optional, and is now stated at game setup and
+  in the judge contract. Ambiguous transcription or an empty/invalid judge result
+  prompts up to two repeats without deducting points, then passes the square;
+  an unjudgeable Final wager stays unchanged. Clear wrong answers still deduct.
+  Judge logs now include verdict, heard text, and the expected answer.
+- GUI play defaults to no selection/category-reminder readbacks; voice-only play
+  retains them. Explicit board questions still get a spoken answer. Feedback is
+  mostly short acknowledgments, with occasional teasing and no adjacent repeats;
+  the Alderaan line is removed.
+
+Regression module: `tests/test_jeopardy_september_run.py`, including the actual
+interaction handler -> game state -> GUI snapshot path and the music callback
+race. These offline checks do not establish live microphone transcription
+accuracy. The supplied log contains ASR text, not recordings of what was said.
+
+Validation: 310 tests passed across 10 isolated modules (Jeopardy, game roster/
+prompt handling, audio handoffs, gap recovery and turn coordination). The broader
+`regex_routing_guards` module retains one unrelated `VisionHoldingFieldFailureTest`
+error: it searches for an old persona-prompt line. The same assertion fails with
+the committed HEAD config; none of this change modifies the persona prompt.

@@ -1505,14 +1505,14 @@ _LAST_JUDGE_VERDICT: dict = {"key": None, "verdict": ""}
 
 
 def _jeopardy_llm_verdict(user_text: str, expected_answer: str, clue: dict) -> str:
-    """"correct" | "wrong" | "not_an_answer" | "" (no opinion).
+    """"correct" | "wrong" | "not_an_answer" | "unclear" | "" (disabled).
 
     Player answers arrive via SPEECH: a RIGHT answer can reach the matcher
     phonetically mangled ("day cart" for Descartes, "shack" for Shaq) or phrased
     in a way lexical fuzzy matching can't score. This gives the borderline miss
     ONE strict look before the value is deducted. It can only rescue a wrong
     verdict — the deterministic matcher's accepts are never re-litigated — and
-    any error fails safe to "wrong".
+    uncertain decodes and errors ask for a repeat without a deduction.
 
     "not_an_answer" is the third road (owner report 2026-08-26): the room talks
     over a live clue, and every one of those turns used to be a deduction — PJ
@@ -1538,31 +1538,44 @@ def _jeopardy_llm_verdict(user_text: str, expected_answer: str, clue: dict) -> s
             "Reply with ONLY one word:\n"
             "yes — the response identifies the SAME answer (same person, place or "
             "thing), allowing phonetic/transcription mangling, filler words and "
-            "question phrasing.\n"
+            "question phrasing. Bare answers are allowed: never require 'what is', "
+            "'who is', or a particular question word. Accept a full name/title "
+            "when the key contains only its missing part (ABC Family for Family).\n"
             "no — they attempted an answer and it is a different answer, a broader "
             "category, or missing a required part of a multi-part answer.\n"
             "none — they were not answering the clue at all: talking to someone "
             "else in the room or to a pet, complaining about the game, or "
-            "carrying on a side conversation.",
+            "carrying on a side conversation.\n"
+            "unclear — the transcript may be a clipped or misheard attempt at "
+            "the correct name, but cannot be judged reliably. Ask for a repeat "
+            "instead of guessing what the player meant. For example, 'Percy Crab' "
+            "for the Krusty Krab could be a misheard name; 'Boston' for Albany "
+            "is a clear different place and is no.",
             temperature=0,
             max_tokens=3,
         ).strip().lower()
     except Exception as exc:
         _log.debug("[jeopardy] LLM judge failed: %s", exc)
-        return ""
+        raw = ""
     if raw.startswith("yes"):
         verdict = "correct"
         _log.info(
             "[jeopardy] LLM judge rescued answer %r for expected %r",
             guess, expected_answer,
         )
+    elif raw.startswith("unclear"):
+        verdict = "unclear"
     elif raw.startswith("none"):
         verdict = "not_an_answer"
         _log.info("[jeopardy] LLM judge: %r was not an answer attempt", guess)
-    else:
+    elif raw.strip(" .!\n") == "no":
         verdict = "wrong"
+    else:
+        # An API failure/empty or invalid response is not a negative ruling.
+        verdict = "unclear"
     _LAST_JUDGE_VERDICT["key"] = (guess, str(expected_answer or ""))
     _LAST_JUDGE_VERDICT["verdict"] = verdict
+    _log.info("[jeopardy] judge=%s heard=%r expected=%r", verdict, guess, expected_answer)
     return verdict
 
 
@@ -1572,12 +1585,8 @@ def _jeopardy_llm_judge(user_text: str, expected_answer: str, clue: dict) -> boo
 
 
 def _jeopardy_categories_reminder() -> str:
-    # The fatigue curve below (not a blanket mute) is what keeps the reminder
-    # from being tiresome — it runs in BOTH modes. The old GUI mute is now
-    # opt-in only (JEOPARDY_READ_CATEGORIES_WITH_GUI=False), for a table that is
-    # actually looking at the JeopardyPanel: as a default it silently killed the
-    # read-out for players sitting around the ROBOT, and the 2026-08-26 game
-    # (a manual `main.py --gui --jeopardy`) spoke none at all.
+    # GUI players can read the board. Voice-only play retains the fatigue curve;
+    # explicit board questions are always answered in either mode.
     if bool(getattr(config, "GUI_ENABLED", False)) and not bool(
         getattr(config, "JEOPARDY_READ_CATEGORIES_WITH_GUI", False)
     ):
@@ -1708,7 +1717,7 @@ def _jeopardy_answer_board_question(text: str) -> Optional[str]:
 
 
 def _jeopardy_board_question_llm(text: str, person_id: Optional[int]) -> Optional[str]:
-    """LLM fallback for a board question no deterministic lane recognized.
+    """Classify a board question, then answer from game state only.
 
     Selecting phase ONLY (a live clue keeps strict deterministic grading), and
     only for value-free, question-shaped turns — a mangled pick keeps the
@@ -1722,8 +1731,7 @@ def _jeopardy_board_question_llm(text: str, person_id: Optional[int]) -> Optiona
         return None
     if jeopardy_bank.mentions_value(text):
         return None
-    # The STRICT gate, not looks_like_question: this lane hands the text to a
-    # free-form persona generation with no pattern-matching backstop, so a bare
+    # The STRICT gate, not looks_like_question: a bare
     # auxiliary opener with no question mark (the classic clipped-ASR fragment)
     # must not reach it.
     if not jeopardy_bank.looks_like_board_question(text):
@@ -1736,16 +1744,26 @@ def _jeopardy_board_question_llm(text: str, person_id: Optional[int]) -> Optiona
     except Exception:
         scores = "unavailable"
     round_no = int(_game_state.get("jeopardy_round", 1) or 1)
-    context = (
-        f'[GAME: Jeopardy — BOARD QUESTION] Mid-game, a player asked: "{text}". '
-        "Answer from THIS data only — never invent squares, values, or scores. "
-        f"Remaining board: {board_text or 'nothing — the board is empty'}. "
-        f"Scores: {scores}. Round {round_no}. It is {player['name']}'s turn to pick. "
-        f"Reply in one or two short sentences, then tell {player['name']} to pick "
-        "a category and dollar value."
-    )
-    response = _rex_respond(context, person_id)
-    return response or None
+    # Classify the request, then render actual state. Free-form persona replies
+    # invented both a Freeform answer and a clue while no square was selected.
+    intent = _quick_call(
+        "Classify a Jeopardy board question. Reply ONLY scores, turn, board, "
+        "advice, or other. Do not answer or judge a clue.\n"
+        f"Player question: {text!r}\nRemaining board: {board_text}. "
+        f"Scores: {scores}. Round {round_no}. Picker: {player['name']}.",
+        temperature=0, max_tokens=8,
+    ).strip().lower().strip(" .")
+    if intent == "scores":
+        fact = f"Scores: {scores}"
+    elif intent == "turn":
+        fact = f"It's {player['name']}'s pick."
+    elif intent == "advice":
+        fact = "Choose a subject you know; the lower values are a good place to start."
+    elif intent == "board":
+        fact = f"Still on the board: {board_text}."
+    else:
+        fact = "No clue is open right now."
+    return f"{fact} {player['name']}, pick a category and dollar value."
 
 
 def _jeopardy_table_talk_aside(text: str, person_id: Optional[int]) -> Optional[str]:
@@ -1765,15 +1783,7 @@ def _jeopardy_table_talk_aside(text: str, person_id: Optional[int]) -> Optional[
         if not jeopardy_bank.is_table_chatter(text, named_category):
             return None
         player = _jeopardy_current_player()
-        aside = _rex_respond(
-            f'[GAME: Jeopardy — TABLE TALK] Mid-game a player said: "{text}". '
-            "That is table talk, not a pick and not a question about the board. "
-            "React in ONE short line, in character, then tell "
-            f"{player['name']} to pick a category and dollar value. "
-            "Never change anyone's score.",
-            person_id,
-        )
-        return aside or None
+        return f"I'll hold the board. {player['name']}, pick a category and dollar value."
     except Exception as exc:
         _log.debug("[jeopardy] table-talk aside failed: %s", exc)
         return None
@@ -1785,11 +1795,19 @@ def _jeopardy_repeat_clue_reply(clue: dict, player: dict, prefix: str = "") -> s
     _game_state["awaiting_prompt_delivery"] = True
     if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
         _game_state["pending_after_response_clip"] = "theme"
-    return (
-        f"{prefix}{player['name']}, "
-        f"{_jeopardy_speak_category(clue.get('category'))} for ${clue.get('value')}. "
-        f"Clue: {clue.get('clue')}."
-    )
+    return f"{prefix}{player['name']}, {_jeopardy_clue_text(clue)}"
+
+
+def _jeopardy_clue_text(clue: dict) -> str:
+    selection = ""
+    if not getattr(config, "GUI_ENABLED", False) or getattr(
+        config, "JEOPARDY_READ_SELECTION_WITH_GUI", False
+    ):
+        selection = (
+            f"{_jeopardy_speak_category(clue.get('category'))} "
+            f"for ${clue.get('value')}. "
+        )
+    return f"{selection}Clue: {str(clue.get('clue') or '').rstrip(' .')}."
 
 
 def _jeopardy_offer_rebound() -> Optional[dict]:
@@ -1817,6 +1835,7 @@ def _jeopardy_offer_rebound() -> Optional[dict]:
         if next_idx in attempted:
             continue
         _game_state["current_player_idx"] = next_idx
+        _game_state.pop("unclear_answers", None)
         _game_state["phase"] = "awaiting_answer"
         _game_state["awaiting_prompt_delivery"] = True
         if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
@@ -1829,8 +1848,7 @@ def _jeopardy_offer_rebound() -> Optional[dict]:
 def _jeopardy_rebound_prompt(prefix: str, next_player: dict, clue: dict) -> str:
     return (
         f"{prefix}{next_player['name']}'s turn. "
-        f"{_jeopardy_speak_category(clue.get('category'))} for ${clue.get('value')}. "
-        f"Clue: {clue.get('clue')}."
+        f"{_jeopardy_clue_text(clue)}"
     )
 
 
@@ -1843,6 +1861,7 @@ def _jeopardy_finish_missed_clue(
     score_line: bool = True,
     score_player: Optional[dict] = None,
 ) -> tuple[str, bool]:
+    _game_state["last_clue"] = dict(_game_state.get("current_clue") or {})
     _game_state.pop("current_clue", None)
     _game_state.pop("current_clue_attempts", None)
     _game_state.pop("ignored_turns", None)
@@ -1953,6 +1972,8 @@ def _jeopardy_load_round(
     if current_player_idx is not None:
         update["current_player_idx"] = current_player_idx
     _game_state.update(update)
+    for key in ("last_clue", "current_clue", "pending_category", "pending_value", "unclear_answers"):
+        _game_state.pop(key, None)
     _jeopardy_queue_clip("board")
 
     categories_text = jeopardy_bank.format_categories(board, separator=". ")
@@ -2175,10 +2196,17 @@ def _jeopardy_handle_final_answer(text: str, person_id: Optional[int]) -> tuple[
 
     idx = int(queue[0])
     correct, passed = _jeopardy_grade(text, clue)
+    unjudged = not correct and not passed and _jeopardy_unclear_answer(text, clue)
+    if unjudged:
+        retry = _jeopardy_request_repeat(text)
+        if retry:
+            return (retry, False)
     final.setdefault("answers", {})[idx] = {
         "said": "no answer" if (passed and not correct) else text,
         "correct": bool(correct),
+        "unjudged": unjudged,
     }
+    _game_state.pop("unclear_answers", None)
     queue.pop(0)
     if queue:
         nxt = players[int(queue[0])]["name"]
@@ -2205,6 +2233,9 @@ def _jeopardy_reveal_final() -> tuple[str, bool]:
         entry = (final.get("answers") or {}).get(idx)
         wager = int((final.get("wagers") or {}).get(idx, 0) or 0)
         if entry is None:
+            continue
+        if entry.get("unjudged"):
+            bits.append(f"I couldn't judge {player['name']}'s audio reliably; the wager is unchanged. ")
             continue
         if entry.get("correct"):
             player["score"] = int(player.get("score", 0) or 0) + wager
@@ -2404,6 +2435,7 @@ def _jeopardy_begin_board_for_players(players: list[dict], person_id: Optional[i
     ])
     return (
         f"Contestants logged: {player_text}. {quip} "
+        "Plain answers are fine; you don't have to phrase them as questions. "
         f"{round_line}",
         False,
     )
@@ -2470,18 +2502,39 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
                 f"{player['name']}, pick a category and dollar value.",
                 False,
             )
+        # A repeated answer after scoring belongs to that actual square. Never
+        # send it to the persona model to invent another answer (ABC Family ->
+        # Freeform in the September 7 run). Scores stay unchanged.
+        last = _game_state.get("last_clue") or {}
+        if last and not jeopardy_bank.mentions_value(text) and not jeopardy_bank.is_category_pick(text, board) and (
+            re.match(r"^(?:what|who|where)\s+(?:is|are|was|were)\b", text.strip(), re.I)
+            or jeopardy_bank.is_correct(text, str(last.get("answer") or ""))
+        ):
+            player = _jeopardy_current_player()
+            return (
+                f"That clue is already scored. {_jeopardy_correct_response_text(last)}. "
+                f"{player['name']}, pick a category and dollar value.", False,
+            )
         # "Next round" / "final jeopardy" — the table votes for a fresh board
         # or the endgame instead of grinding all thirty clues.
         jump = jeopardy_bank.round_jump_request(text)
         if jump is not None:
             return _jeopardy_round_jump(jump)
         pending_category = _game_state.pop("pending_category", None)
+        pending_value = _game_state.pop("pending_value", None)
+        pick_text = text
+        if pending_value and not jeopardy_bank.mentions_value(text) and jeopardy_bank.is_category_pick(text, board):
+            pick_text = f"{text} for {pending_value}"
         clue, error = jeopardy_bank.parse_selection(
-            text,
+            pick_text,
             board,
             last_category=pending_category or _game_state.get("last_category"),
         )
         if not clue:
+            if "Which category?" in error:
+                _game_state["pending_value"] = jeopardy_bank._mentioned_any_value(pick_text)
+            elif pending_value:
+                _game_state["pending_value"] = pending_value
             # Remember the category a FAILED pick named, so the bare value that
             # usually follows ("Pop culture for 300" → "no $300 square" → "400")
             # completes THAT category — not the last one played (field
@@ -2510,6 +2563,8 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
         return (error, False)
 
     player = _jeopardy_current_player()
+    _game_state.pop("last_clue", None)
+    _game_state.pop("unclear_answers", None)
     daily = bool(clue.get("daily_double"))
     if daily and bool(getattr(config, "JEOPARDY_DD_WAGER_ENABLED", True)):
         return _jeopardy_begin_daily_double(clue, player)
@@ -2536,9 +2591,7 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
 
     daily_line = "Daily Double. Automatic double. " if daily else ""
     return (
-        f"{daily_line}{player['name']}, "
-        f"{jeopardy_bank.speak_category(clue.get('category') or '')} for ${clue.get('value')}. "
-        f"Clue: {clue.get('clue')}.",
+        f"{daily_line}{_jeopardy_clue_text(clue)}",
         False,
     )
 
@@ -2622,8 +2675,7 @@ def _jeopardy_handle_wager(text: str, person_id: Optional[int]) -> tuple[str, bo
         _game_state["pending_after_response_clip"] = "theme"
     _body_beat("thinking_tilt")
     return (
-        f"${wager} on the line. "
-        f"{_jeopardy_speak_category(clue.get('category'))}. Clue: {clue.get('clue')}.",
+        f"${wager} on the line. {_jeopardy_clue_text(clue)}",
         False,
     )
 
@@ -2639,6 +2691,7 @@ def _jeopardy_grade(text: str, clue: dict) -> tuple[bool, bool]:
         from features import jeopardy as jeopardy_bank
     except Exception:
         return (False, False)
+    _LAST_JUDGE_VERDICT.update(key=None, verdict="")
     answer = clue.get("answer", "unknown")
     passed = bool(jeopardy_bank.is_pass_or_timeout(text))
     correct = bool(jeopardy_bank.is_correct(text, answer))
@@ -2649,6 +2702,37 @@ def _jeopardy_grade(text: str, clue: dict) -> tuple[bool, bool]:
     if not correct and not passed:
         correct = _jeopardy_llm_judge(text, answer, clue)
     return correct, passed
+
+
+def _jeopardy_unclear_answer(text: str, clue: dict) -> bool:
+    return (
+        _LAST_JUDGE_VERDICT.get("key") == (text.strip(), str(clue.get("answer") or ""))
+        and _LAST_JUDGE_VERDICT.get("verdict") == "unclear"
+    )
+
+
+def _jeopardy_request_repeat(text: str) -> Optional[str]:
+    count = int(_game_state.get("unclear_answers", 0)) + 1
+    _game_state["unclear_answers"] = count
+    if count > int(getattr(config, "JEOPARDY_UNCLEAR_ANSWER_RETRIES", 2)):
+        return None
+    return f'I heard "{text.strip()}" but couldn\'t judge that reliably. Say your answer again; no points deducted.'
+
+
+def _jeopardy_feedback(correct: bool) -> str:
+    """Mostly plain feedback, with occasional brief teasing and no recent repeats."""
+    key = "right_feedback" if correct else "wrong_feedback"
+    count = int(_game_state.get(key + "_count", 0)) + 1
+    _game_state[key + "_count"] = count
+    lines = (["Correct.", "That's right.", "You got it."] if correct else
+             ["Not quite.", "That's not it.", "Sorry, that's incorrect."])
+    if count % 4 == 0:
+        lines = (["Correct. You've been holding out on me.", "Right. Nicely played."] if correct else
+                 ["Not quite. I liked the confidence, though.", "Wrong answer. Decisive delivery."])
+    previous = _game_state.get(key)
+    line = random.choice([s for s in lines if s != previous])
+    _game_state[key] = line
+    return line
 
 
 def _jeopardy_last_judge_said_not_an_answer(text: str, expected_answer: str) -> bool:
@@ -2753,6 +2837,14 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
 
     correct, passed = _jeopardy_grade(text, clue)
 
+    if not correct and not passed and _jeopardy_unclear_answer(text, clue):
+        retry = _jeopardy_request_repeat(text)
+        if retry:
+            _game_state["awaiting_prompt_delivery"] = True
+            return (retry, False)
+        # Repeated undecodable audio/API failures settle as a pass, never a fine.
+        passed = True
+
     # The judge's third verdict, from the call _jeopardy_grade just made: the
     # player was not answering at all. Re-arm the window and stay silent — the
     # deterministic lanes above cannot spot "Come here, Toby" said to a dog.
@@ -2828,15 +2920,12 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     if correct:
         _body_beat("tiny_victory_dance")
         player["score"] = int(player.get("score", 0)) + value
+        _game_state["last_clue"] = dict(clue)
         _game_state.pop("current_clue", None)
         _game_state.pop("current_clue_attempts", None)
         _game_state.pop("ignored_turns", None)
         _jeopardy_queue_clip("right")
-        flourish = random.choice([
-            "Correct. The organics survive another clue.",
-            "Correct. I am marking this as suspiciously competent.",
-            "Correct. The scoreboard briefly respects you.",
-        ])
+        flourish = _jeopardy_feedback(True)
         if done:
             return _jeopardy_complete_round_or_finish(f"{flourish} ")
         _game_state["phase"] = "selecting"
@@ -2885,11 +2974,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
 
     player["score"] = int(player.get("score", 0)) - value
     _jeopardy_queue_clip("wrong")
-    roast = random.choice([
-        "A bold miss.",
-        "The board accepts your sacrifice.",
-        "That answer landed somewhere near Alderaan.",
-    ])
+    roast = _jeopardy_feedback(False)
     # A Daily Double belongs to its picker alone — no rebound (show rules).
     next_player = None if clue.get("daily_double") else _jeopardy_offer_rebound()
     if next_player:
@@ -3678,6 +3763,17 @@ def jeopardy_answer_window_open() -> bool:
     with _lock:
         return _active_game == "jeopardy" and _game_state.get("phase") in (
             "awaiting_answer", "final_answer",
+        )
+
+
+def jeopardy_claims_selection(text: str) -> bool:
+    """A real board pick outranks a generic start-game regex, without consuming it."""
+    from features import jeopardy
+    with _lock:
+        return (
+            _active_game == "jeopardy"
+            and _game_state.get("phase") == "selecting"
+            and jeopardy.is_category_pick(text, _game_state.get("board") or {})
         )
 
 

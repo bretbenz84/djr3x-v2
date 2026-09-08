@@ -556,7 +556,7 @@ def _selection_query(text: str) -> str:
     query = re.sub(
         r"\b("
         r"i|ll|i'll|will|take|choose|pick|select|category|for|dollars?|please|"
-        r"give|me|lets|let|s|same|again"
+        r"give|me|lets|let|s|same|again|value"
         r")\b",
         " ",
         query,
@@ -600,6 +600,12 @@ def parse_selection(text: str, board: dict, last_category: Optional[str] = None)
 
     best_idx = None
     best_score = 0
+    # A spent square in an explicitly named category must not silently become a
+    # fuzzy pick in another category that happens to retain that dollar value.
+    exact_category = next((cat for cat in categories if query and
+        query == _selection_query(str(cat.get("name") or ""))), None)
+    if exact_category is not None and value not in (exact_category.get("clues") or {}):
+        return None, f"{speak_category(exact_category['name'])} for ${value} is already gone. Pick another square."
     for idx, category in enumerate(categories):
         clues = category.get("clues") or {}
         if value not in clues:
@@ -1309,6 +1315,20 @@ def selection_category_hint(text: str, board: dict) -> Optional[str]:
     if category is None:
         return None
     return str(category.get("name") or "") or None
+
+
+def is_category_pick(text: str, board: dict) -> bool:
+    """Non-mutating routing check, including category-only and spent-square picks.
+
+    A category can itself be an imperative (LET'S PLAY A GAME). Match its
+    selection form before allowing a generic game-start command to escape.
+    Use whole-query similarity, not partial matching a word in an unrelated ask.
+    """
+    query = _selection_query(text)
+    return bool(query) and any(
+        fuzz.ratio(query, _selection_query(str(cat.get("name") or ""))) >= 85
+        for cat in (board.get("categories") or [])
+    )
 
 
 # ── Wagers (Daily Double + Final Jeopardy) ────────────────────────────────────

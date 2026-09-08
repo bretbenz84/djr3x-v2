@@ -5221,18 +5221,9 @@ OWN_ECHO_SEAM_SIMILARITY = 0.65
 # backstop — and 0.85 is the known-good fallback.
 SILENCE_TIMEOUT_SECS = 0.65
 
-# Endpointing while a Jeopardy clue is live, for the case where a player says
-# "What is..." then pauses to think before the name. SHIPPED OFF (equal to
-# SILENCE_TIMEOUT_SECS): the 2026-08-26 postmortem chased that run's clipped
-# answers here and the log refuted it — the bare "What is?" came from the gap
-# catch-up, not the live endpointer, and two long answers WITH internal "um"
-# pauses survived 0.65 s intact in the same run. Raising it costs ~0.6 s on
-# EVERY game turn (against a 12 s answer clock), so it should be earned, not
-# assumed. If a game still shows tail-clipped answers, 1.25 is the smallest
-# value that clears a normal "What is... <name>" beat — and the new
-# "[capture] jeopardy answer window" log line reports the real capture window
-# per turn, which is the evidence this knob was missing.
-JEOPARDY_ANSWER_SILENCE_TIMEOUT_SECS = 0.65
+# A live clue allows a short thinking pause within an answer ("What is... X").
+# This adds 0.45 s to normal endpointing, scoped to Jeopardy answers.
+JEOPARDY_ANSWER_SILENCE_TIMEOUT_SECS = 1.1
 
 # Eager endpointing for explicit motion commands. At MOTION_EAGER_ENDPOINT_SILENCE_SECS
 # of silence (well before SILENCE_TIMEOUT_SECS) a background probe transcribes the
@@ -9307,8 +9298,9 @@ MOTION_HOLD_DURING_GAMES = True
 # yes/no gpt-4o-mini judge gets one look at transcript + clue + expected answer
 # before the miss is scored. Deterministic verdicts still decide everything the
 # matcher already accepts; the judge can only rescue, never overrule a correct.
-# Fail-safe: any error keeps the deterministic "wrong".
+# Unclear decodes and judge failures ask for a repeat without deducting points.
 JEOPARDY_LLM_JUDGE_ENABLED = True
+JEOPARDY_UNCLEAR_ANSWER_RETRIES = 2  # Ask again without deducting for an unclear decode/judge failure.
 JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS = 120  # longer turns aren't answer attempts
 # Score NOTHING for a turn that was not an answer attempt: a bare question stem
 # ("What is?" — the endpointer closed on a thinking pause), a turn past
@@ -9342,15 +9334,10 @@ JEOPARDY_IGNORE_STREAK_CAP = 4
 # the read-out even with the GUI (e.g. players sitting away from the screen).
 # The once-per-round board announcement (all six categories on a fresh board) is
 # unaffected either way.
-# Was False from 2026-07-07 to stop the reminder repeating on EVERY turn with
-# the panel on screen. The FULL_READS/EVERY fatigue curve below (2026-08-25)
-# now does that job in both modes, and the blanket GUI mute was killing the
-# reminder outright for players sitting around the ROBOT rather than the laptop:
-# the 2026-08-26 20:11 game (a manual `main.py --gui --jeopardy`) spoke ZERO
-# category read-outs across twelve scoring turns, while the 2026-08-25 game — a
-# supervisor launch, which is headless — read them normally.
-# Set False to mute it again for a screen-facing table.
-JEOPARDY_READ_CATEGORIES_WITH_GUI = True
+# Screen-facing play is quiet by default (owner request, 2026-09-07).
+JEOPARDY_READ_CATEGORIES_WITH_GUI = False
+# The GUI already shows the selected category/value; speak the clue directly.
+JEOPARDY_READ_SELECTION_WITH_GUI = False
 # Voice-only reminder fatigue curve (owner call 2026-08-25: repeating the list
 # every turn is great early game, tiresome once everyone knows the board). The
 # first FULL_READS scoring turns read the remaining categories every time; after
