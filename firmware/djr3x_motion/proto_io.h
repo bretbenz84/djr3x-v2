@@ -25,3 +25,5 @@ void emit_log(const char* lvl, const char* msg);
 // left). mm[64] row-major; rej[8] = per-row floor-rejection threshold (mm,
 // capped 4095). Encoded as hex (3 chars/zone) to keep the line ~250 B.
 void emit_tofmx(const uint16_t mm[64], const uint16_t rej[8]);
+// Opt-in, time-bounded front-right raw samples, emitted only while stationary.
+void emit_tofraw(int raw_mm, int status, int input_mm, int filtered_mm);

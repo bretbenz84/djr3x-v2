@@ -444,3 +444,44 @@ ranges ±0.8 A — useless for drive motors. Fit a 2 mΩ shunt inline in the mai
 battery lead, then build with `-DBATT_SHUNT_MICROOHM=2000`; telemetry gains a
 real `batt_ma` and the Mac side can coulomb-count true state of charge (LiFePO4
 voltage is too flat mid-pack for voltage-only percentages).
+
+## Front-right radial persistence (firmware 0.2.1)
+
+The front-right VL53L1X (mux channel 5, `fr_radial`) has its own filter in
+`tof_fr_filter.h`. The original shared guard accepted a sudden drop after two
+similar readings. The new guard requires a consistent run for 300 ms, at least
+three distinct sample timestamps, no inter-sample gap over 200 ms, and readings
+within 200 mm of the candidate. At the measured 80 ms sensor cadence, that means
+five readings over about 320 ms. Returning to the longer range or an invalid
+sample cancels the candidate. This applies to drops of at least 400 mm, and to
+drops of at least 100 mm into the below-300-mm band. Gradual approaches still
+update immediately. Cold start honors the first range conservatively.
+
+A large clearance increase needs 160 ms of confirmation, then releases at the
+existing 300 mm per-sample limit. Invalid phase/quality readings hold the previous
+range instead of becoming "4 metres clear"; `OutOfBoundsFail` still means nothing
+in range. Eight consecutive errors still publish -1 and reset the filter. The
+other seven radial channels, the 8x8 filter/floor mask, and all motion semantics
+are unchanged. The Mac continues to own person approach; firmware owns sensing,
+motor execution and danger avoidance.
+
+Raw diagnostic command (stationary, opt-in, no motor command):
+
+```json
+{"v":1,"cmd":"tof_debug","seq":51,"seconds":45}
+```
+
+`seconds` must be 0–120; zero disables the stream. Firmware emits one `tofraw`
+record per fresh front-right read, with `t` (board milliseconds), `raw_mm`, sensor
+`status`, status-qualified `input_mm`, and `filtered_mm`. A negative `input_mm`
+means an invalid observation. Streaming expires automatically and disables itself
+if motion begins. It is off by default and does not change filtering. The serial
+port must be exclusively owned by the recorder; quit/pause the battery menu app
+before connecting, then restore it afterward. Never use the moving smoke test as
+an alternative to a stationary capture.
+
+The 2026-09-07 pre-fix capture contained 543 raw readings (150–168 mm). Ten
+`WrapTargetFail` readings had incorrectly produced far/clear output. The sensor
+really reported a sustained near range in that capture, so this filter must keep
+that range; it cannot certify what physical object produced it. Raw fixture and
+compiled-firmware regressions: `tests/test_tof_fr_filter.py`.

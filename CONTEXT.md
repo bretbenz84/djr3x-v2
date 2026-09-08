@@ -3434,3 +3434,50 @@ actual speech-turn -> prompted enrollment -> temporary SQLite handoff, exact
 field rejection phrases, enrollment bypasses, caller selection with the logged
 score margin, and obstacle-hold camera continuity. Real hardware/network/audio
 were blocked. Added prompted-sample and dual-intro modules to run_lean_checks.
+
+### Front-right radial persistence and raw capture (2026-09-07)
+
+Owner reports longstanding false short bursts from the front-right radial sensor
+and requests stationary raw measurement before a firmware persistence fix. The
+old shared filter already required two agreeing readings for >=400-mm drops,
+but that admitted short bursts, and smaller drops below 400 mm were immediate.
+
+First recorded 45 seconds of existing telemetry (450 samples, zero wheel duty).
+Then flashed diagnostic-only firmware with filtering unchanged to expose each
+front-right raw measurement. That capture has 543 samples at 78–82 ms intervals:
+raw 150–168 mm, median 159 mm. Ten WrapTargetFail readings were incorrectly
+translated to 4000-mm clear inputs, causing filtered spikes up to 463 mm. This
+stationary position has a persistent near sensor return; the capture does not
+show the earlier run's isolated false near bursts or prove their physical cause.
+
+Firmware 0.2.1-tof-persistence adds a front-right-only filter. Sudden drops >=400 mm,
+or drops >=100 mm into the below-300-mm band, need 300 ms of consistent fresh
+readings (normally five samples), >=3 sample timestamps, <=200-ms gaps, and
+<=200-mm range spread from the candidate. Far/invalid/different-band readings
+break the candidate. Smooth approaches update immediately; cold start retains
+the first range conservatively. Large releases need 160 ms before the existing
+300-mm/sample slew. Invalid quality/phase readings hold the previous distance;
+only valid range or an explicit out-of-range result establishes new clearance.
+Eight consecutive invalid reads still publish -1 and reset this channel's filter.
+Other radial channels and the 8x8 filter/floor mask are unchanged. The Mac still
+owns come-here behavior; firmware owns sensing, motor execution and danger avoidance.
+
+Added opt-in stationary `tof_debug` command with <=120s expiry and per-sample
+`tofraw` data (raw_mm, status, input_mm, filtered_mm). Streaming disables on motion
+and is off by default. It does not change filtering or add a motion capability.
+
+Post-flash stationary capture: another 543 raw samples, 150–169 mm, 12 wrap errors,
+zero false far spikes (filtered also 150–169 mm). Both raw captures verified zero
+wheel duty and measured speed. Local recordings and comparison JSON are under
+`logs/tof-stationary-2026-09-07-*`; the sensor-only pre-fix raw fixture is committed
+at `tests/fixtures/tof_fr_stationary_2026_09_07.csv`. A steady near return remains
+an obstruction by design; a persistence filter cannot label a continuous bad
+measurement as false. No driving or staged physical obstacle test was performed.
+
+Validation: 180 focused tests passed, including 16 tests compiling the actual C++
+filter, recorded-data replay, short bursts, sustained obstacles, smooth approach,
+invalid/gapped/cached samples, wraparound timing, and bounded clearance release.
+Full Arduino build passed (810801 bytes flash, 90580 bytes globals). Flashed the
+configured ESP32 with motion, radial ToF, 8x8 ToF and gamepad all enabled; upload
+hashes verified and hello reported 0.2.1-tof-persistence with no come capability.
+Battery launch agent restored after both diagnostic and final uploads.

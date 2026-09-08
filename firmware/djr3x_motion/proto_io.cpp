@@ -6,6 +6,7 @@
 #include "battery.h"    // batt_full command — host-side "charger says full" SOC sync
 #include <ArduinoJson.h>
 #include <math.h>
+#include <atomic>
 
 #define IS_NUM(v) ((v).is<float>() || (v).is<int>())
 
@@ -13,6 +14,7 @@
 static char   s_line[MOTION_MAX_LINE_BYTES];
 static size_t s_len = 0;
 static bool   s_overflow = false;
+static std::atomic<uint32_t> s_tof_debug_until{0};
 
 static void inc_errs() { LOCK_STATE(); g_ctx.errs++; UNLOCK_STATE(); }
 
@@ -92,6 +94,22 @@ void emit_hello() {
   if (battery_gauge_available()) caps.add("batt_soc");
   if (battery_gauge_available()) caps.add("chg_assert");
   doc["boot_id"] = bid;
+  tx_line(doc);
+}
+
+void emit_tofraw(int raw_mm, int status, int input_mm, int filtered_mm) {
+  const uint32_t until = s_tof_debug_until.load();
+  if (!until || (int32_t)(millis() - until) >= 0) return;
+  LOCK_STATE();
+  const bool moving = g_ctx.state == ST_MOVING || g_ctx.wheels.dl || g_ctx.wheels.dr
+                      || fabsf(g_ctx.odom.lin) > .01f || fabsf(g_ctx.odom.ang) > .01f;
+  UNLOCK_STATE();
+  if (moving) { s_tof_debug_until.store(0); return; }
+  JsonDocument doc;
+  doc["v"] = MOTION_PROTO_VERSION; doc["type"] = "tofraw";
+  doc["t"] = millis(); doc["sensor"] = "fr";
+  doc["raw_mm"] = raw_mm; doc["status"] = status;
+  doc["input_mm"] = input_mm; doc["filtered_mm"] = filtered_mm;
   tx_line(doc);
 }
 
@@ -312,6 +330,15 @@ static void dispatch(const char* cmd, JsonDocument& doc, uint32_t seq) {
   }
 
   // Always-available regardless of motion gate:
+  if (!strcmp(cmd, "tof_debug")) {
+    if (!IS_NUM(doc["seconds"]) || !isfinite(doc["seconds"].as<float>())
+        || doc["seconds"].as<float>() < 0 || doc["seconds"].as<float>() > 120) {
+      emit_ack(seq, false, R_BAD_FIELD); return;
+    }
+    const uint32_t duration = (uint32_t)(doc["seconds"].as<float>() * 1000.f);
+    s_tof_debug_until.store(duration ? millis() + duration : 0);
+    emit_ack(seq, true, ACK_OK); return;
+  }
   if (!strcmp(cmd, "stop")) {
     ctl_stop(seq); emit_ack(seq, true, ACK_OK); return;
   }

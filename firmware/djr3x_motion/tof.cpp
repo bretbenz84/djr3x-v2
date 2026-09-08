@@ -46,6 +46,7 @@ static inline int16_t tof_front_combine(int16_t radial, int16_t matrix) {
 #include "pins.h"
 #include "calib.h"
 #include "tof_filter.h"
+#include "tof_fr_filter.h"
 #include "proto_io.h"       // emit_log — per-sensor bring-up diagnostics
 #include "i2c_trunk.h"
 #include <Arduino.h>
@@ -84,10 +85,12 @@ static bool    s_ok[TOF_COUNT] = {false};  // did this sensor init? gates reads 
 static int16_t s_dist[TOF_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 static uint8_t s_err_streak[TOF_COUNT] = {0};   // consecutive failed reads per sensor
 static int     s_next = 0;                  // round-robin cursor
+static int s_fr_raw_mm = -1, s_fr_status = -1, s_fr_input_mm = -1;
 
 // Per-sensor filter (tof_filter.h): fast-attack / slow-release + big-drop
 // confirmation, so a single-frame phantom near return can't flap the reflex.
 static TofFilt s_filt[TOF_COUNT];
+static TofFrFilter s_fr_filter;
 
 static inline uint8_t mux_ch(int i) { return (uint8_t)i; }   // sensor index -> mux channel
 
@@ -164,6 +167,7 @@ void hal_tof_init() {
 // Read one sensor by index. Returns mm, or -1 on a genuine read error / no comms.
 // A value at/over the per-type out-of-range cap means "nothing in range = clear".
 static int read_mm(int i) {
+  if (i == 5) { s_fr_raw_mm = -1; s_fr_status = -1; }
   if (!s_ok[i]) return -1;                        // dead sensor: skip the blocking I²C wait
   if (!mux_select(mux_ch(i))) return -1;           // mux NACK: channel didn't switch — don't trust it
 
@@ -176,6 +180,7 @@ static int read_mm(int i) {
 
   VL53L1X& s = s_long[i - TOF_SHORT_COUNT];        // VL53L1X
   const int mm = (int)s.read();                    // blocking read of the continuous result
+  if (i == 5) { s_fr_raw_mm = mm; s_fr_status = (int)s.ranging_data.range_status; }
   if (s.timeoutOccurred()) return -1;
   // Accept only plain valid + min-range-clipped. RangeValidNoWrapCheckFail is
   // REJECTED (treated as out-of-range): field data 2026-07-21 showed it is the
@@ -187,6 +192,12 @@ static int read_mm(int i) {
   const VL53L1X::RangeStatus rs = s.ranging_data.range_status;
   const bool valid = (rs == VL53L1X::RangeValid ||
                       rs == VL53L1X::RangeValidMinRangeClipped);
+  // The 2026-09-07 stationary raw capture had 150–168 mm returns throughout,
+  // but ten WrapTargetFail frames were converted into 4000 mm "clear". On this
+  // noisy channel an invalid phase/quality result must break confirmation and
+  // hold the last range, not manufacture clearance. OutOfBoundsFail explicitly
+  // means no target in range; it can still supply a clear observation.
+  if (i == 5) return tof_fr_input_mm(mm, valid, rs == VL53L1X::OutOfBoundsFail);
   if (!valid || mm >= TOF_L1X_OUT_OF_RANGE_MM) return TOF_L1X_OUT_OF_RANGE_MM;
   return mm;
 }
@@ -197,14 +208,17 @@ static void poll_one(int i) {
     return;
   }
   const int mm = read_mm(i);
+  if (i == 5) s_fr_input_mm = mm;
   if (mm >= 0) {
     s_err_streak[i] = 0;
     // tof_filter.h: nearer readings attack fast (a big one-frame drop needs a
     // confirming 2nd frame — anti-phantom), farther ones release at a bounded
     // rate. Kills both edge-of-beam strobing and single-frame speckle dips.
-    s_dist[i] = tof_filter_step(s_filt[i], (int16_t)mm);
+    s_dist[i] = i == 5 ? tof_fr_filter_step(s_fr_filter, (int16_t)mm, millis())
+                      : tof_filter_step(s_filt[i], (int16_t)mm);
     return;
   }
+  if (i == 5) tof_fr_filter_step(s_fr_filter, -1, millis());
   // Failed read: hold the last-good value through a TRANSIENT error, but not forever —
   // a sensor that dies while reading "clear" would otherwise freeze that clear distance
   // and silently disable the stop reflex in its direction. After a solid failure streak
@@ -213,6 +227,7 @@ static void poll_one(int i) {
   if (s_err_streak[i] < 255) s_err_streak[i]++;
   if (s_err_streak[i] == TOF_ERR_STREAK_STALE && s_dist[i] != -1) {
     s_dist[i] = -1;
+    if (i == 5) s_fr_filter = TofFrFilter();
     char buf[72];
     snprintf(buf, sizeof(buf), "tof[%d] %s: %u consecutive read errors - reporting -1",
              i, TOF_LABEL[i], (unsigned)TOF_ERR_STREAK_STALE);
@@ -233,6 +248,7 @@ void hal_read_tof(TofMm& out) {
   s_next = (s_next + 1) % TOF_SHORT_COUNT;
   poll_one(s);
   poll_one(l);
+  if (l == 5) emit_tofraw(s_fr_raw_mm, s_fr_status, s_fr_input_mm, s_dist[5]);
 
   out.lf = s_dist[0];   // short, mux 0 — left-front
   out.lb = s_dist[1];   // short, mux 1 — left-back

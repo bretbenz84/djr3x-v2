@@ -731,3 +731,18 @@ Mac  → {"v":1,"cmd":"drive","seq":5,"lin":0.1,"ang":0}
 ESP32→ {"v":1,"type":"ack","seq":5,"accepted":false,"reason":"manual_override"}
        … Mac stops sending AUTO motion, keeps pinging, shows "MANUAL (gamepad)" …
 ```
+
+### Stationary front-right raw diagnostic (firmware 0.2.1)
+
+`{"v":1,"cmd":"tof_debug","seq":51,"seconds":45}` enables a bounded stream
+without issuing motion. Numeric `seconds` must be within 0–120 (otherwise ack
+`bad_field`); zero disables. It is off by default and cancels if wheels/motion
+become active. Normal telemetry and 8x8 `tofmx` frames continue.
+
+Example: `{"v":1,"type":"tofraw","t":9023,"sensor":"fr","raw_mm":163,"status":7,"input_mm":-1,"filtered_mm":161}`.
+The sample timestamp is board milliseconds, `raw_mm` is the actual sensor return,
+`status` is its VL53L1X range status, `input_mm` is the reading after status
+validation, and `filtered_mm` is the radial filter output before matrix fusion.
+Invalid observations do not establish near/clear persistence. Ordinary
+`tof_mm.fr_radial` remains filtered, and `tof_mm.fr` still includes the matrix.
+This diagnostic is not a motion capability and is not added to `hello.caps`.
