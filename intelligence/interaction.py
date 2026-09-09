@@ -764,17 +764,25 @@ _pending_face_reveal_confirm: Optional[dict] = None
 # event, saves the relationship, and asks one natural "how did you meet?" beat.
 _pending_introduction: Optional[dict] = None
 _pending_intro_followup: Optional[dict] = None
-_pending_intro_voice_capture: Optional[dict] = None
 
-# Voice-sample request flow (the enrollment half of the voiceless-face rule):
-# a KNOWN visible face with no voice print got cross-matched to someone else's
-# print, so after replying Rex asks them to repeat a specific sentence. Only
-# that verified repetition may be enrolled onto their row. Armed by _maybe_request_voice_sample
-# (asked_at stays None until the ask is actually spoken by the post-response
-# hook); only a verified repetition can enroll. Once per person per session.
-#   keys: person_id, name, armed_at, asked_at, expected_text
-_pending_voice_sample_capture: Optional[dict] = None
-_voice_sample_requested_pids: set[int] = set()
+_voice_learning_runtime = None
+_voice_learner = None
+
+
+def _conversational_voice_enabled():
+    from intelligence.voice_learning_runtime import enabled
+    return enabled()
+
+
+def _conversational_voice_runtime():
+    global _voice_learning_runtime, _voice_learner
+    if _voice_learning_runtime is None:
+        import sys
+        from intelligence.voice_learning_runtime import Runtime
+        _voice_learning_runtime = Runtime(sys.modules[__name__])
+        _voice_learner = _voice_learning_runtime.learner
+    return _voice_learning_runtime
+
 
 # Impersonation live-capture flow: "do an impersonation of me" opens this slot,
 # Rex asks the person to repeat a fixed line, and the next speech segment from that
@@ -849,7 +857,6 @@ _face_reveal_declined: set[int] = set()
 # Per-session set of person_ids whose voice biometric was auto-refreshed this
 # session. Cap at one refresh per person per session so we don't spam new
 # biometric rows when someone speaks a lot.
-_voice_refreshed_this_session: set[int] = set()
 
 # Per-person grief / loss conversation flow. When the empathy classifier
 # detects a death/grief/illness event with an identifiable subject, Rex
@@ -3973,18 +3980,9 @@ def _retire_anonymous_speaker_slot(
 ) -> None:
     if not label:
         return
-    # Promotion: when this anonymous voice is finally identified, link its
-    # persisted signature to the now-known person so the cross-session voice
-    # memory belongs to them (their next-session match goes straight to the
-    # person; the caller also enrolls the audio as a real voice biometric).
-    retired = [slot for slot in _anonymous_speaker_slots if slot.label == label]
-    if person_id is not None:
-        for slot in retired:
-            if slot.signature_id is not None:
-                try:
-                    voice_signatures.attach_person(slot.signature_id, int(person_id))
-                except Exception as exc:
-                    _log.debug("[anonymous_speaker] signature promotion failed: %s", exc)
+    # Naming retires the temporary label only. A named voice is learned by the
+    # conversational sample chain; promoting this unverified signature would
+    # bypass its sample, identity and archive checks.
     before = len(_anonymous_speaker_slots)
     _anonymous_speaker_slots[:] = [
         slot for slot in _anonymous_speaker_slots if slot.label != label
@@ -8945,7 +8943,6 @@ def _clear_deleted_person_session_state(person_id: int) -> None:
     _session_forget_terms.pop(pid, None)
     _session_router_control_topics.pop(pid, None)
     _grief_flow_state.pop(pid, None)
-    _voice_refreshed_this_session.discard(pid)
     _face_reveal_declined.discard(pid)
     _common_first_name_prompted_this_session.discard(pid)
 
@@ -8953,24 +8950,21 @@ def _clear_deleted_person_session_state(person_id: int) -> None:
 def _clear_memory_related_pending_state() -> None:
     global _awaiting_followup_event, _pending_offscreen_identify
     global _pending_face_reveal_confirm, _pending_introduction
-    global _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_intro_followup
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
     global _identity_prompt_until
-    global _pending_voice_sample_capture
 
     _awaiting_followup_event = None
     _pending_post_greet_relationship[0] = None
-    _pending_voice_sample_capture = None
     _pending_offscreen_identify = None
     _pending_face_reveal_confirm = None
     global _pending_dual_intro
     _pending_dual_intro = None
     _pending_introduction = None
     _pending_intro_followup = None
-    _pending_intro_voice_capture = None
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
@@ -9078,7 +9072,6 @@ def _handle_pending_memory_wipe_confirmation(
             _session_router_control_topics.clear()
             _clear_anonymous_speaker_slots()
             _grief_flow_state.clear()
-            _voice_refreshed_this_session.clear()
             _face_reveal_declined.clear()
             _common_first_name_prompted_this_session.clear()
             _clear_memory_related_pending_state()
@@ -9498,21 +9491,8 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation, _pending_introduction
-    global _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_intro_followup
     global _pending_name_merge_confirmation, _identity_reask_count
-
-    # A fresh intro voice-capture window is a passive listening slot, not a
-    # question being deferred. When Rex just said "say hi so I can learn your
-    # voice," the newcomer's first reply ("hi, what's your name?") looks like a
-    # direct turn to Rex — but that reply IS the voice sample we want to enroll.
-    # Preserve the window across the direct-turn deferral so the downstream
-    # _handle_intro_voice_capture can still grab the print; it has its own TTL
-    # and newcomer-vs-introducer gating and releases the turn if it isn't them.
-    # Without this, a newcomer introduced off-camera never got a voice print and
-    # their hello was misattributed to the introducer (live-logged 2026-06-15).
-    preserve_intro_voice = reason in ("direct_turn", "authoritative_known_speaker") and _intro_voice_capture_fresh(
-        _pending_intro_voice_capture
-    )
 
     changed = any(
         item is not None
@@ -9526,7 +9506,6 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
             _pending_prompted_name_confirmation,
             _pending_introduction,
             _pending_intro_followup,
-            None if preserve_intro_voice else _pending_intro_voice_capture,
         )
     ) or _identity_prompt_until > 0.0
 
@@ -9543,8 +9522,6 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     _pending_prompted_name_confirmation = None
     _pending_introduction = None
     _pending_intro_followup = None
-    if not preserve_intro_voice:
-        _pending_intro_voice_capture = None
     try:
         changed = consciousness.clear_pending_identity_prompts(reason=reason) or changed
     except Exception as exc:
@@ -9925,89 +9902,16 @@ def _is_short_utterance(
     return False
 
 
-def _voice_enrollment_sample_allowed(
-    audio_array: Optional[np.ndarray],
-    *,
-    transcript_text: str = "",
-    confirmed: bool = False,
-) -> tuple[bool, str]:
-    min_secs = float(getattr(config, "IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS", 1.2) or 0.0)
-    min_words = int(getattr(config, "IDENTITY_VOICE_ENROLL_MIN_WORDS", 2) or 0)
-    duration = _audio_duration_secs(audio_array)
-    if duration < min_secs:
-        return False, f"audio_too_short:{duration:.2f}s<{min_secs:.2f}s"
-    if not confirmed and min_words > 0 and transcript_text:
-        words = _word_count(transcript_text)
-        if words < min_words:
-            return False, f"too_few_words:{words}<{min_words}"
-    return True, "ok"
-
-
-def _safe_enroll_voice(
-    person_id: int,
-    audio_array: Optional[np.ndarray],
-    *,
-    transcript_text: str = "",
-    source: str,
-    confirmed: bool = False,
-) -> bool:
-    # The prompted capture owns enrollment until it completes/expires. Generic
-    # bootstrap and self-introduction paths run before its reply handler, so
-    # they must not turn a partial/wrong response into a durable print either.
-    pending_sample = _pending_voice_sample_capture
-    if source == "voice_sample_request":
-        reason = _voice_sample_enrollment_rejection(transcript_text)
-        if not reason and _safe_int((pending_sample or {}).get("person_id")) != person_id:
-            reason = "requested_person_mismatch"
-        if reason:
-            _log.info("[voice_sample] enrollment rejected: %s", reason)
-            return False
-    elif _voice_sample_capture_fresh(pending_sample):
-        _log.info("[identity] skipped voice enrollment source=%s: prompted sample pending", source)
+def _begin_conversational_voice_learning(person_id, audio_array, *, source, confirmed=False, transcript_text=""):
+    """Name handlers contribute a provisional reference, never a durable print."""
+    if not _conversational_voice_enabled() or _game_suppresses_conversation():
         return False
-    allowed, reason = _voice_enrollment_sample_allowed(
-        audio_array,
-        transcript_text=transcript_text,
-        confirmed=confirmed,
-    )
-    if (audio_array is not None and speaker_id.active_backend() == "campplus"
-            and confirmed and source in {"new_person", "identity_alias_refresh", "dual_intro"}
-            and _turn_transcript_trusted() and speaker_id.comparable_print_count(person_id) == 0):
-        from intelligence import voice_bootstrap as bootstrap
-        voiced = speaker_id.voiced_secs(audio_array)
-        if voiced < float(getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0)):
-            if (voiced >= .2 and getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
-                    and bootstrap.target(observations=_utterance_observations.get("visual") or [],
-                                         windows=_last_scan_windows, explicit_person_id=person_id) == person_id):
-                bootstrap.remember_introduction(person_id, speaker_id.get_embedding(audio_array),
-                                                conv_memory.transcript_version()[0])
-            allowed, reason = False, "awaiting_longer_sample"
-    if not allowed:
-        _log.info(
-            "[identity] skipped voice enrollment person_id=%s source=%s reason=%s",
-            person_id,
-            source,
-            reason,
-        )
+    if source == "offscreen_identify":
+        return False  # another person's description cannot identify their voice
+    if not confirmed:
         return False
-    try:
-        enrolled = bool(speaker_id.enroll_voice(
-            person_id, audio_array, source=source, transcript=transcript_text,
-        ))
-    except Exception as exc:
-        _log.warning("voice enrollment failed for person_id=%s source=%s: %s", person_id, source, exc)
-        return False
-    if enrolled:
-        # Enrollment is ground truth: this exact audio was just saved as the
-        # person's print, so their voice has live credibility NOW. Without this
-        # anchor, a fresh single-sample print scores marginal (~0.5) on the very
-        # next turn and the who's-that challenge fires seconds after the person
-        # said who they are (live-logged 2026-07-07: enrolled at 10:55:17,
-        # challenged "who's talking?" at 10:56:05).
-        pid = _safe_int(person_id)
-        if pid is not None:
-            _last_confident_voice_at[pid] = time.monotonic()
-    return enrolled
+    person = people_memory.get_person(person_id) or {}
+    return _conversational_voice_runtime().seed(person_id, person.get("name") or "friend", audio_array)
 
 
 def _handle_pending_offscreen_identify_reply(
@@ -10224,32 +10128,6 @@ def _handle_pending_offscreen_identify_reply(
             # me, Bret" to the who's-that ask and HER voice clip (0.516 vs Bret's
             # real prints) was enrolled onto Bret, poisoning his print set. A brand
             # new person (created=True) or a print-less record still bootstraps.
-            claim_ok = True
-            if not created and enroll_audio is not None:
-                try:
-                    floor = float(getattr(
-                        config, "OFFSCREEN_IDENTIFY_CLAIM_VERIFY_FLOOR", 0.55))
-                    ranked = speaker_id.rank_speakers(enroll_audio)
-                    claimed = next(
-                        (r for r in ranked if int(r[0]) == int(new_pid)), None)
-                    if claimed is not None and float(claimed[2]) < floor:
-                        claim_ok = False
-                        _log.info(
-                            "[interaction] off-camera identify: claimed name %r is an "
-                            "existing person but the held clip scores %.3f against "
-                            "their prints (< %.2f) — NOT enrolling (attribution only)",
-                            intro_name, float(claimed[2]), floor,
-                        )
-                except Exception as exc:
-                    _log.debug("offscreen claim verification failed open: %s", exc)
-            if claim_ok:
-                _safe_enroll_voice(
-                    new_pid,
-                    enroll_audio,
-                    transcript_text=enroll_text,
-                    source="offscreen_identify",
-                    confirmed=from_engaged_person,
-                )
             first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
             if created and first_inc > 0:
                 people_memory.update_familiarity(new_pid, first_inc)
@@ -10470,14 +10348,13 @@ def _dual_intro_enroll(name: str, face: dict, audio_array, reply_text: str) -> O
         people_memory.add_biometric(pid, "face", face["encoding"])
     except Exception as exc:
         _log.warning("dual-intro face bind failed for %r: %s", name, exc)
-    _safe_enroll_voice(
+    _begin_conversational_voice_learning(
         pid,
         audio_array,
         transcript_text=reply_text,
         source="dual_intro",
         confirmed=True,
     )
-    _last_confident_voice_at[int(pid)] = time.monotonic()
     if created:
         first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
         if first_inc > 0:
@@ -11819,7 +11696,7 @@ def _attach_identity_sample_to_person(
     enroll_unknown_face: bool = False,
     defer_face_enrollment: bool = False,
 ) -> None:
-    _safe_enroll_voice(
+    _begin_conversational_voice_learning(
         person_id,
         audio_array,
         source="identity_alias_refresh",
@@ -12097,170 +11974,6 @@ def _handle_pending_prompted_name_confirmation(
     return None, None, None
 
 
-def _campplus_growth_supported(person_id, raw_best_id, score):
-    """Require an existing CAM++ voice match plus an actually visible face."""
-    from intelligence.voice_bootstrap import visible_identity
-    return bool(
-        person_id is not None and raw_best_id == person_id
-        and getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True)
-        and _turn_transcript_trusted()
-        and float(score) >= max(.75, speaker_id.voice_score.match_threshold())
-        and speaker_id.comparable_print_count(person_id) > 0
-        and visible_identity(world_state.get("people") or []) == person_id
-        and not any(r.get("change_suspected") for r in _last_scan_windows)
-        and all(r.get("person_id") in (None, person_id) for r in _last_scan_windows)
-    )
-
-
-def _maybe_auto_refresh_voice(
-    person_id: int,
-    voice_score: float,
-    audio_array: np.ndarray,
-    *,
-    face_confirmed: bool = False,
-    raw_best_id: Optional[int] = None,
-    visual_speaker_pid: Optional[int] = None,
-) -> None:
-    """
-    Append the current audio as an additional voice biometric row for this person,
-    up to a per-person cap, so the voiceprint improves over time without manual
-    re-enrollment.
-
-    Fires on EITHER a high voice score OR a confident FACE confirmation. The
-    face-confirmed path is the important one: a returning user's voice scores low
-    (~0.55), so the old "voice >= 0.90" gate never captured the exact hard samples
-    that would improve the print. When the face is the ground truth, capture the
-    sample even at a low voice score.
-
-    TWO anti-pollution guards protect the face-confirmed path (a visible face is NOT
-    proof this person is the one SPEAKING):
-      1. The VOICE's own best candidate must already BE this person
-         (``raw_best_id == person_id``). When someone off-camera or a not-yet-enrolled
-         newcomer talks while a known face is in frame, their audio is rejected.
-      2. The visual active-speaker latch must positively confirm this person is the
-         one talking on camera (``visual_speaker_pid == person_id``), gated by
-         ``AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER``. This is what stops a 3rd-party
-         voice (a TTS/AI voice like ChatGPT, a TV, another person) that merely *scores*
-         onto a visible person's print — passing guard 1 because it lands on that
-         person — from re-broadening the print. Refresh is opportunistic, so when the
-         camera cannot confirm the speaker the turn is simply skipped (a missed refresh
-         is harmless; a poisoned print is not).
-    Only strengthen a print with audio that BOTH the voice attributes to that person
-    AND the camera confirms that person actually spoke.
-
-    Runs asynchronously so re-embedding doesn't delay Rex's response. One refresh
-    per person per session — EXCEPT while bootstrapping an empty/thin print (below
-    AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES), where Guard 1 is relaxed and the once-per-session
-    budget is not consumed, so the print can build across several camera-confirmed turns.
-    """
-    if (speaker_id.active_backend() == "campplus"
-            and not _campplus_growth_supported(person_id, raw_best_id, voice_score)):
-        return
-    if person_id is None:
-        return
-    # SAMPLE-QUALITY gate: a refresh sample becomes part of the centroid FOREVER — a
-    # short or quiet VAD shard drags every future score down. Measured 2026-07-05: a
-    # print diluted with live shards scored ~0.08 BELOW a fresh clean enroll across
-    # every condition (0.742-0.830 vs 0.812-0.921), which is how "90%+ weeks ago"
-    # decayed. Only long-enough, loud-enough audio may seed or strengthen a print
-    # (applies to bootstrap too — a garbage first sample is the worst outcome).
-    resolution = (_current_turn_speaker_evidence or {}).get("resolution")
-    if resolution and (resolution.get("status") != "known" or resolution.get("person_id") != person_id
-                       or resolution.get("learning_allowed") is False):
-        return
-    try:
-        sr = float(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
-        sample_secs = float(len(audio_array)) / max(sr, 1.0)
-        sample_rms = float(np.sqrt(np.mean(np.asarray(audio_array, dtype=np.float64) ** 2)))
-    except Exception:
-        sample_secs, sample_rms = 0.0, 0.0
-    min_secs = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SECS", 2.5))
-    min_rms = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_RMS", 0.008))
-    if sample_secs < min_secs or sample_rms < min_rms:
-        _log.debug(
-            "[interaction] auto-refresh skipped: sample quality too low for a durable "
-            "print (secs=%.2f < %.2f or rms=%.4f < %.4f) person_id=%s",
-            sample_secs, min_secs, sample_rms, min_rms, person_id,
-        )
-        return
-    max_samples = int(getattr(config, "AUTO_VOICE_REFRESH_MAX_SAMPLES", 5))
-    # NATIVE-dimension prints only: after an embedder switch the stale legacy rows
-    # (skipped by every matcher) must not eat the cap or mask an empty print —
-    # they made the bootstrap unreachable (live-logged 2026-07-06-21-15).
-    current = people_memory.count_native_voice_prints(person_id)
-    if current >= max_samples:
-        _voice_refreshed_this_session.add(person_id)  # don't keep checking
-        return
-    # BOOTSTRAP: a face+camera-confirmed speaker whose print is empty/thin (freshly wiped or never
-    # enrolled) must be allowed to build one even though their voice currently matches SOMEONE ELSE —
-    # that near-neighbor mismatch is the whole reason the print is thin (chicken-and-egg). While below
-    # the floor we skip Guard 1 (voice-already-matches) but KEEP Guard 2 (camera confirms the talker),
-    # and we do NOT consume the once-per-session budget, so a print can form across several turns.
-    bootstrapping = bool(
-        face_confirmed
-        and getattr(config, "AUTO_VOICE_BOOTSTRAP_ENABLED", True)
-        and current < int(getattr(config, "AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES", 3))
-    )
-    if not bootstrapping and person_id in _voice_refreshed_this_session:
-        return
-    if face_confirmed:
-        # Guard 2 — the visible face is not proof of SPEAKING. Require the camera to confirm this
-        # person is the active on-camera talker, else a 3rd-party/AI voice that merely scores onto
-        # their print would poison it. This is the SOLE protection while bootstrapping, so it always
-        # applies (bootstrap included).
-        require_visual = bool(
-            getattr(config, "AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER", True)
-            and speaker_id.active_backend() != "campplus"
-        )
-        if require_visual and _safe_int(visual_speaker_pid) != _safe_int(person_id):
-            _log.debug(
-                "[interaction] auto-refresh skipped: visual active-speaker did not "
-                "confirm person_id=%s is the on-camera talker (visual_speaker=%s, "
-                "score=%.3f, bootstrap=%s) — not seeding/strengthening the print with "
-                "unconfirmed audio",
-                person_id, visual_speaker_pid, voice_score, bootstrapping,
-            )
-            return
-        # Guard 1 — only trust the SAMPLE if the voice already points at this person, otherwise we'd
-        # be teaching their print someone else's voice. Skipped while bootstrapping (see above).
-        if (
-            not bootstrapping
-            and raw_best_id is not None
-            and _safe_int(raw_best_id) != _safe_int(person_id)
-        ):
-            return
-    else:
-        min_score = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SCORE", 0.90))
-        if voice_score < min_score:
-            return
-
-    if not bootstrapping:
-        _voice_refreshed_this_session.add(person_id)
-    audio_copy = audio_array.copy()
-
-    def _task() -> None:
-        try:
-            ok = _safe_enroll_voice(
-                person_id,
-                audio_copy,
-                source="auto_voice_refresh",
-                confirmed=True,
-            )
-            if ok:
-                new_total = people_memory.count_native_voice_prints(person_id)
-                _log.info(
-                    "[interaction] auto-refreshed voice biometric for person_id=%s "
-                    "(score=%.3f, now %d native sample(s))",
-                    person_id, voice_score, new_total,
-                )
-        except Exception as exc:
-            _log.warning("auto-refresh voice enrollment failed: %s", exc)
-
-    threading.Thread(
-        target=_task, daemon=True, name=f"auto-voice-refresh-{person_id}"
-    ).start()
-
-
 def _enroll_new_person(
     name: str,
     audio_array: np.ndarray,
@@ -12293,8 +12006,7 @@ def _enroll_new_person(
     if (any(row.get("change_suspected") for row in _last_scan_windows)
             or len({row.get("person_id") for row in _last_scan_windows
                     if row.get("person_id") is not None}) > 1
-            or len({row.get("person_db_id") for row in visual
-                    if row.get("person_db_id") is not None}) > 1):
+):
         _log.warning("[identity] refusing enrollment from a suspect mixed capture")
         return None
     person_id, created = people_memory.find_or_create_person(name)
@@ -12306,7 +12018,7 @@ def _enroll_new_person(
     if created and first_inc > 0:
         people_memory.update_familiarity(person_id, first_inc)
 
-    _safe_enroll_voice(
+    _begin_conversational_voice_learning(
         person_id,
         audio_array,
         source="new_person",
@@ -12569,7 +12281,7 @@ def _intro_ack_and_followup(
     subject_kind: str = "person",
     visible_newcomer: bool = True,
 ) -> str:
-    global _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_intro_followup
 
     introducer_first = _first_name_or(introducer_name, "there")
     introduced_first = _first_name_or(introduced_name, "there")
@@ -12704,10 +12416,7 @@ def _intro_ack_and_followup(
                 f"deal — what are you into?"
             )
     if not visible_newcomer and not text.lower().startswith("nice to meet you"):
-        text = (
-            f"Nice to meet you, {introduced_first}. Give me a quick hello so "
-            f"I can file your voice somewhere more useful than 'mystery guest.'"
-        )
+        text = f"Nice to meet you, {introduced_first}. What have you been up to lately?"
 
     if introduced_id is not None and subject_kind == "person":
         pending = {
@@ -12719,379 +12428,12 @@ def _intro_ack_and_followup(
             "followup_kind": followup_kind,
             "asked_at": time.monotonic(),
         }
-        if not visible_newcomer:
-            _pending_intro_voice_capture = dict(pending)
-        else:
-            _pending_intro_followup = pending
+        _pending_intro_followup = pending
         try:
             consciousness.note_person_greeted_this_session(introduced_id)
         except Exception:
             pass
     return text
-
-
-def _intro_voice_capture_fresh(ctx: Optional[dict]) -> bool:
-    if not ctx:
-        return False
-    ttl = float(getattr(config, "INTRO_VOICE_CAPTURE_WINDOW_SECS", 45.0))
-    return (time.monotonic() - float(ctx.get("asked_at") or 0.0)) <= ttl
-
-
-def _intro_capture_window_open() -> bool:
-    """True while Rex is actively waiting for a just-introduced NEWCOMER to speak.
-
-    During this window Rex literally asked the new person to say hello, so the
-    next voice is expected to be them — NOT the introducer, even if the
-    introducer's face is still (or recently) on camera. Callers use this to stop
-    a sticky/visible introducer face from capturing the newcomer's turn.
-    """
-    return _intro_voice_capture_fresh(_pending_intro_voice_capture)
-
-
-# ── Passive voiceprint growth (owner spec 2026-08-26) ────────────────────────
-# "New people shouldn't have to sit and read lines to get a good voice ID. The
-# voice ID needs to build up naturally": when exactly one known face is on
-# camera, nobody else has been seen or heard for a while, and the turn's voice
-# matches nobody's prints well, that speech IS the visible person's — enroll it
-# silently. Also grows thin prints (PJ had 1 row while Bret had 5, and the thin
-# side loses every cross-match) until PASSIVE_VOICE_PRINT_TARGET rows exist.
-# The phantom-twin lessons (2026-07-05..08-23) stay encoded as guards: never
-# enroll speech that confidently matches a DIFFERENT person, never from short
-# clips, capped per session, spaced out, and every enrollment logs its numbers.
-
-_passive_enroll_last_at: dict[int, float] = {}
-_passive_enroll_session_counts: dict[int, int] = {}
-_recent_attributed_speaker_times: dict[int, float] = {}
-
-
-def _maybe_passive_voice_enroll(
-    text: str,
-    audio_array: Optional[np.ndarray],
-    person_id: Optional[int],
-    raw_best_id: Optional[int],
-    speaker_score: float,
-) -> None:
-    """Silently grow the voiceprint of the solo visible person. Never speaks."""
-    if _game_suppresses_conversation():
-        return
-    if (speaker_id.active_backend() == "campplus"
-            and not _campplus_growth_supported(person_id, raw_best_id, speaker_score)):
-        return
-    now = time.monotonic()
-    pid = _safe_int(person_id)
-    if pid is not None:
-        _recent_attributed_speaker_times[pid] = now
-    if not bool(getattr(config, "PASSIVE_VOICE_ENROLL_ENABLED", True)):
-        return
-    if audio_array is None:
-        return
-    # Phase 2B learning gate: reply permission is not learning permission. A turn
-    # whose speaker the resolver called ambiguous never grows anyone's voiceprint.
-    if _turn_speaker_uncertain():
-        _log.info("[passive_enroll] skipped — speaker attribution ambiguous this turn")
-        return
-    # A pending capture flow owns this audio — never double-consume it.
-    if _pending_voice_sample_capture is not None or _pending_impersonation_capture is not None:
-        return
-    if _voiced_duration_secs(audio_array) < float(getattr(config, "VOICE_SAMPLE_MIN_SECS", 2.0)):
-        return
-    if len((text or "").split()) < int(getattr(config, "VOICE_SAMPLE_MIN_WORDS", 4)):
-        return
-
-    solo_pid, solo_name = _single_visible_person_identity()
-    if solo_pid is None:
-        return
-    resolution = (_current_turn_speaker_evidence or {}).get("resolution")
-    if resolution and resolution.get("person_id") != solo_pid:
-        return
-    if _has_unknown_visible_person() or _other_known_visible_recently(solo_pid):
-        return
-    # Nobody else talking lately: an off-camera housemate is the classic way a
-    # wrong voice lands on the visible face (the whole Jeopardy table fails
-    # this check, which is the point — passive growth is a 1:1 behavior).
-    window = float(getattr(config, "PASSIVE_VOICE_ENROLL_SOLO_WINDOW_SECS", 90.0))
-    for other_pid, spoke_at in _recent_attributed_speaker_times.items():
-        if other_pid != solo_pid and (now - spoke_at) <= window:
-            return
-
-    try:
-        n_prints = int(speaker_id.comparable_print_count(solo_pid))
-    except Exception:
-        return
-    target = int(getattr(config, "PASSIVE_VOICE_PRINT_TARGET", 4))
-    if n_prints >= target:
-        return
-    if _passive_enroll_session_counts.get(solo_pid, 0) >= int(
-        getattr(config, "PASSIVE_VOICE_ENROLL_MAX_PER_SESSION", 3)
-    ):
-        return
-    spacing = float(getattr(config, "PASSIVE_VOICE_ENROLL_MIN_SPACING_SECS", 90.0))
-    if now - _passive_enroll_last_at.get(solo_pid, 0.0) < spacing:
-        return
-
-    score = float(speaker_score or 0.0)
-    rb = _safe_int(raw_best_id)
-    if rb is not None and rb != solo_pid:
-        # The voice points at SOMEONE ELSE. For a voiceless person a cross-match
-        # is expected (their speech can only land on a neighbor — the PJ/Bret
-        # twin band runs 0.55-0.80), so the face is trusted up to the confident
-        # bar. Once they have prints of their own, a foreign match this strong
-        # means an off-camera speaker — stand down at a lower bar.
-        bar = (
-            float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.75))
-            if n_prints == 0
-            else float(getattr(config, "PASSIVE_VOICE_ENROLL_LOW_BAR", 0.60))
-        )
-        if score >= bar:
-            return
-    elif rb == solo_pid and score >= float(
-        getattr(config, "PASSIVE_VOICE_ENROLL_REDUNDANT_BAR", 0.80)
-    ):
-        return    # already well-modeled; a near-duplicate row adds nothing
-
-    ok = _safe_enroll_voice(
-        solo_pid,
-        audio_array,
-        transcript_text=text,
-        source="passive",
-        confirmed=False,
-    )
-    if ok:
-        _passive_enroll_last_at[solo_pid] = now
-        _passive_enroll_session_counts[solo_pid] = (
-            _passive_enroll_session_counts.get(solo_pid, 0) + 1
-        )
-        _log.info(
-            "[passive_enroll] grew voiceprint for %s (person_id=%s): prints %d→%d "
-            "(turn scored best=%s at %.2f)",
-            solo_name or "?", solo_pid, n_prints, n_prints + 1, rb, score,
-        )
-
-
-def _voice_sample_line(name: Optional[str] = None) -> str:
-    """One dictated sentence for the voice-ID ask. An open-ended "give me a
-    line" froze PJ into a two-word "Hey Rex" (field 2026-08-25); a concrete
-    repeat-after-me line gets a usable sample on the first try. The line
-    carries the person's own name — the easiest thing to repeat verbatim."""
-    templates = list(getattr(config, "VOICE_SAMPLE_LINE_TEMPLATES", None) or [])
-    if not templates:
-        templates = ["My name is {name}, and this is what my voice sounds like."]
-    import random as _random
-    template = str(_random.choice(templates))
-    first = _first_name_or(name, "a friend of Rex")
-    try:
-        return template.format(name=first)
-    except Exception:
-        return f"My name is {first}, and this is what my voice sounds like."
-
-
-def _maybe_request_voice_sample(person_id, name) -> None:
-    """Arm a voice-sample ask for a KNOWN visible face with no voice print.
-
-    Fired from CAM++ bootstrap or voiceless_face_wins resolution. The ask itself is
-    spoken by the post-response hook (after Rex's reply to the current turn),
-    which stamps asked_at and opens the capture window. Once per person per
-    session, and never while an intro voice-capture is already pending."""
-    global _pending_voice_sample_capture
-    if not bool(getattr(config, "VOICE_SAMPLE_REQUEST_ENABLED", True)):
-        return
-    pid = _safe_int(person_id)
-    if pid is None or pid in _voice_sample_requested_pids:
-        return
-    if _pending_voice_sample_capture is not None or _pending_intro_voice_capture is not None:
-        return
-    _voice_sample_requested_pids.add(pid)
-    _pending_voice_sample_capture = {
-        "person_id": pid,
-        "name": name,
-        "armed_at": time.monotonic(),
-        "asked_at": None,
-    }
-    _log.info("[voice_sample] request armed for %r (person_id=%s)", name, pid)
-
-
-def _voice_sample_capture_fresh(ctx: Optional[dict]) -> bool:
-    if not ctx or ctx.get("asked_at") is None:
-        return False
-    ttl = float(getattr(config, "VOICE_SAMPLE_REQUEST_WINDOW_SECS", 45.0))
-    return 0 <= (time.monotonic() - float(ctx["asked_at"])) <= ttl
-
-
-def _voice_sample_enrollment_rejection(text: str) -> Optional[str]:
-    from intelligence.voice_bootstrap import prompted_sample_rejection
-    return prompted_sample_rejection(
-        _pending_voice_sample_capture, text, _utterance_observations,
-        _last_scan_windows, _last_scan_ranked, now=time.monotonic(),
-        ttl=float(getattr(config, "VOICE_SAMPLE_REQUEST_WINDOW_SECS", 45.0)),
-        trusted=_turn_transcript_trusted(), match_threshold=_voice_score.match_threshold())
-
-
-def _handle_voice_sample_capture(
-    text: str,
-    audio_array: np.ndarray,
-    person_id: Optional[int],
-    raw_best_id: Optional[int],
-    speaker_score: float,
-) -> Optional[str]:
-    """Enroll only a verified repetition of the requested person's sentence."""
-    global _pending_voice_sample_capture
-
-    if _game_suppresses_conversation():
-        return None
-    ctx = _pending_voice_sample_capture
-    if ctx is None or ctx.get("asked_at") is None:
-        return None
-    if not _voice_sample_capture_fresh(ctx):
-        _log.info("[voice_sample] capture window expired for %s", ctx.get("name"))
-        _pending_voice_sample_capture = None
-        return None
-
-    target_id = int(ctx["person_id"])
-    target_name = ctx.get("name") or "friend"
-    cleaned = (text or "").strip().lower()
-    if re.search(r"\b(no|nope|not now|not right now|later|wait|hold on|can'?t|cannot)\b", cleaned):
-        _log.info("[voice_sample] declined by reply — dropping request for %s", target_name)
-        _pending_voice_sample_capture = None
-        return None
-    reason = _voice_sample_enrollment_rejection(text)
-    if not reason and person_id not in (None, target_id):
-        reason = "resolved_other_speaker"
-    if (not reason and raw_best_id not in (None, target_id)
-            and float(speaker_score or 0.) >= _voice_score.match_threshold()):
-        reason = "competing_enrolled_voice"
-    if reason:
-        _log.info("[voice_sample] skipped reply for %s: %s", target_name, reason)
-        return None
-
-    # A sample this short makes a print too weak to separate close voices —
-    # field 2026-08-25: PJ enrolled from a ~1s "Hey Rex" and spent the whole
-    # Jeopardy game being read as Bret. Re-ask for a full sentence instead;
-    # the capture window machinery already handles the retry. VOICED length,
-    # not buffer length — padded segments defeat a raw-duration check.
-    min_secs = float(getattr(config, "VOICE_SAMPLE_MIN_SECS", 2.0))
-    min_words = int(getattr(config, "VOICE_SAMPLE_MIN_WORDS", 4))
-    duration = _voiced_duration_secs(audio_array)
-    words = len((text or "").split())
-    if duration < min_secs or words < min_words:
-        ctx["asked_at"] = None  # reopened only after the retry finishes playing
-        first = _first_name_or(target_name, "there")
-        line = str(ctx.get("expected_text") or "") or _voice_sample_line(target_name)
-        ctx["expected_text"] = line
-        _log.info(
-            "[voice_sample] sample too short to enroll (%.1fs, %d words) — re-asking %s",
-            duration, words, target_name,
-        )
-        # Push back WITH instructions — a short reply means the open ask didn't
-        # land, so dictate the sentence (owner call 2026-08-26).
-        return (
-            f"I need a whole sentence to learn your voice, {first}. "
-            f"Repeat after me: {line}"
-        )
-
-    ok = _safe_enroll_voice(
-        target_id,
-        audio_array,
-        transcript_text=text,
-        source="voice_sample_request",
-        confirmed=False,
-    )
-    first = _first_name_or(target_name, "there")
-    if not ok:
-        ctx["asked_at"] = None
-        line = str(ctx.get("expected_text") or "") or _voice_sample_line(target_name)
-        ctx["expected_text"] = line
-        return (
-            f"{first}, static ate that one. Once more, nice and clear: {line}"
-        )
-
-    _pending_voice_sample_capture = None
-    _log.info(
-        "[voice_sample] enrolled voice for %r (person_id=%s) from sample request",
-        target_name, target_id,
-    )
-    try:
-        _session_person_ids.add(target_id)
-        consciousness.mark_engagement(target_id)
-        consciousness.note_person_spoke(target_id)
-    except Exception:
-        pass
-    try:
-        topic_thread.note_user_turn(text, target_id)
-        user_energy.note_user_turn(text, target_id)
-    except Exception as exc:
-        _log.debug("voice sample turn tracking failed: %s", exc)
-    return (
-        f"Got it, {first} — voice locked in. My eyes and ears finally agree "
-        f"about you."
-    )
-
-
-def _intro_camera_contradicts_introducer(
-    introducer_id: Optional[int],
-    speaker_score: float,
-    looks_like_newcomer: bool,
-) -> bool:
-    """POSITIVE camera evidence that an intro-window reply is NOT the introducer.
-
-    Field 2026-08-23 18:17 (PJ run): PJ — un-enrolled, alone in front of the
-    camera, personally invited to say hello — scored 0.751 on Bret's print, so
-    the score-only "confidently the introducer" guard refused to enroll him
-    three turns running, the window expired, and PJ stayed attributed to Bret
-    all night. Score cannot separate a voice-twin newcomer from the introducer;
-    the camera can. Contradiction requires ALL of:
-      - a newcomer-shaped reply (the guard's text check already ran),
-      - an unknown face visible RIGHT NOW (the newcomer is standing there),
-      - the introducer NOT seen on camera recently (grace covers pans),
-      - the visual active-speaker latch not pointing at the introducer,
-      - the score below INTRO_VOICE_INTRODUCER_VISUAL_OVERRIDE_CEILING —
-        genuine-Bret turns landed 0.83–0.89 that session, PJ-as-Bret 0.60–0.75,
-        so a slam-dunk introducer match still wins.
-    With NO unknown face in frame this never fires, so the phantom-"Leaf" shape
-    (introducer's correction enrolled onto a newcomer nobody could see) stays
-    blocked exactly as before."""
-    if not bool(getattr(config, "INTRO_VOICE_VISUAL_NEWCOMER_OVERRIDE_ENABLED", True)):
-        return False
-    if not looks_like_newcomer:
-        return False
-    ceiling = float(
-        getattr(config, "INTRO_VOICE_INTRODUCER_VISUAL_OVERRIDE_CEILING", 0.87)
-    )
-    if float(speaker_score or 0.0) >= ceiling:
-        return False
-    if not _has_unknown_visible_person():
-        return False
-    if introducer_id is not None and _known_person_visible_recently(introducer_id):
-        return False
-    try:
-        from vision import active_speaker as _asp
-        vis_pid = _safe_int((_asp.recent_visual_speaker() or {}).get("person_db_id"))
-        if vis_pid is not None and vis_pid == _safe_int(introducer_id):
-            return False
-    except Exception as exc:
-        _log.debug("intro camera-contradiction visual lookup failed: %s", exc)
-    return True
-
-
-def _intro_voice_text_sounds_like_newcomer(text: str, name: str) -> bool:
-    cleaned = (text or "").strip().lower()
-    if not cleaned:
-        return False
-    # "PJ is not here. This is Bret." is the introducer correcting Rex, never the
-    # newcomer's voice sample. Checked first so the word-count fallback below
-    # can't wave a short denial through (field 2026-08-29 11:21:46).
-    if introductions.denies_introduction(text, introduced_name=name):
-        return False
-    if re.search(r"\b(no|nope|not now|not here|later|wait|hold on|can't|cannot)\b", cleaned):
-        return False
-    first = _first_name_or(name).lower()
-    if first and re.search(rf"\b(this is|that is|that's)\s+{re.escape(first)}\b", cleaned):
-        return False
-    if re.search(r"\b(he|she|they)\s+(is|isn't|was|wasn't|can't|cannot|will|won't)\b", cleaned):
-        return False
-    if re.search(r"\b(hi|hello|hey|yo|nice to meet|what'?s up|i'?m|i am|my name is)\b", cleaned):
-        return True
-    words = re.findall(r"[a-z']+", cleaned)
-    return 0 < len(words) <= 8
 
 
 def _bind_intro_visible_face_if_present(person_id: int, name: str) -> None:
@@ -13116,35 +12458,11 @@ def _bind_intro_visible_face_if_present(person_id: int, name: str) -> None:
 
 
 def _unwind_intro_capture(ctx: dict, text: str, *, reason: str) -> str:
-    """A human just DENIED the introduction's premise — retract what the open
-    window wrote and say so.
-
-    Clearing the pending state is not enough. By the time the correction lands,
-    the window may already have stored a voice print on the newcomer: field
-    2026-08-29 11:21:46, Rex was told "say hi to PJ", took BRET'S next sentence
-    as PJ's sample (Bret was the top raw match at 0.604, but the intro window had
-    suppressed his visible face so identity read "off-camera unknown" and the
-    introducer guard — which only checks a resolved person_id — never ran), and
-    PJ's print set carried Bret's voice out of the session. One turn later Bret's
-    correction was filed as their connection story. The retraction has to reach
-    the biometric row, not just the slot.
-    """
-    global _pending_intro_voice_capture, _pending_intro_followup
-
-    introduced_id = _safe_int(ctx.get("introduced_id"))
+    """Withdraw a mistaken social introduction and any provisional voice chain."""
+    global _pending_intro_followup
     introduced_name = ctx.get("introduced_name") or "the newcomer"
-    bio_id = _safe_int(ctx.get("enrolled_voice_biometric_id"))
-    if bio_id is not None:
-        try:
-            people_memory.delete_biometric(bio_id)
-            _log.info(
-                "[introduction] retracted voice print id=%s from person_id=%s (%s) "
-                "— introduction denied: %r",
-                bio_id, introduced_id, introduced_name, text,
-            )
-        except Exception as exc:
-            _log.warning("intro voice print retraction failed: %s", exc)
-    _pending_intro_voice_capture = None
+    if _voice_learner is not None:
+        _voice_learner.cancel("introduction_corrected")
     _pending_intro_followup = None
     _log.info(
         "[introduction] premise denied (%s) — standing down the %s window: %r",
@@ -13165,226 +12483,6 @@ def _unwind_intro_capture(ctx: dict, text: str, *, reason: str) -> str:
     except Exception as exc:
         _log.debug("intro unwind ack generation failed: %s", exc)
     return f"My mistake — scratch that. No {first} on the line."
-
-
-def _handle_intro_voice_capture(
-    text: str,
-    audio_array: np.ndarray,
-    person_id: Optional[int],
-    raw_best_id: Optional[int],
-    speaker_score: float,
-) -> Optional[str]:
-    global _pending_intro_voice_capture, _pending_intro_followup
-
-    if _game_suppresses_conversation():
-        return None
-    ctx = _pending_intro_voice_capture
-    if ctx is None:
-        return None
-    if not _intro_voice_capture_fresh(ctx):
-        _log.info("[introduction] voice capture window expired for %s", ctx.get("introduced_name"))
-        _pending_intro_voice_capture = None
-        return None
-    # A denial of the premise ("PJ is not here. This is Bret.", "wrong person",
-    # "that was me") is a correction, not a voice sample and not connection
-    # colour. It has to be caught BEFORE the enrollment guards below, because
-    # those reason about who is speaking and this reply is about who ISN'T.
-    if introductions.denies_introduction(
-        text, introduced_name=ctx.get("introduced_name")
-    ):
-        return _unwind_intro_capture(ctx, text, reason="voice_capture_window")
-
-    introduced_id = int(ctx["introduced_id"])
-    introduced_name = ctx.get("introduced_name") or "the newcomer"
-    introducer_id = ctx.get("introducer_id")
-    introducer_name = ctx.get("introducer_name") or "the introducer"
-    relationship = ctx.get("relationship")
-    self_explanatory_relationship = _intro_relationship_self_explanatory(relationship)
-    followup_kind = (
-        "relationship_color" if self_explanatory_relationship else "connection_story"
-    )
-
-    if person_id == introduced_id:
-        _pending_intro_voice_capture = None
-        followup = dict(ctx)
-        followup["followup_kind"] = followup_kind
-        followup["asked_at"] = time.monotonic()
-        _pending_intro_followup = followup
-        return None
-
-    # If the live speaker CONFIDENTLY resolves to the INTRODUCER, this utterance
-    # cannot be the newcomer's voice sample — never enroll it onto the newcomer.
-    # This closes the [SPEAKER_ID_CONFIDENT_THRESHOLD,
-    # INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD) band where identity said
-    # "confidently the introducer" (e.g. 0.707 >= 0.70) yet the intro gate's 0.75
-    # bar still called it "weak" and enrolled the introducer's voice onto a
-    # phantom newcomer (live-logged 2026-06-18: Bret's correction enrolled onto
-    # phantom "Leaf"). NOTE: keep INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD >=
-    # SPEAKER_ID_CONFIDENT_THRESHOLD or this band reopens.
-    # Guard floor is DECOUPLED from SPEAKER_ID_CONFIDENT_THRESHOLD: when that
-    # global was raised 0.70 -> 0.75 the [0.70, 0.75) band silently reopened and a
-    # 0.707 introducer match again enrolled the INTRODUCER'S voice onto the
-    # newcomer — the exact voiceprint-twin poisoning this guard was built against.
-    confident_id_threshold = min(
-        float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70)),
-        float(getattr(config, "INTRO_VOICE_INTRODUCER_GUARD_FLOOR", 0.70)),
-    )
-    looks_like_newcomer = _intro_voice_text_sounds_like_newcomer(text, introduced_name)
-    # Camera contradiction (field 2026-08-23, PJ run): an un-enrolled newcomer
-    # can land a "confident" cross-match on the introducer's print — 0.751 on a
-    # one-word "Hello." — and this guard then eats every capture attempt until
-    # the window expires, leaving the newcomer permanently attributed to the
-    # introducer. When the camera positively contradicts the score (newcomer's
-    # unknown face in frame, introducer unseen, sub-ceiling score), believe the
-    # window's expectation instead. See _intro_camera_contradicts_introducer.
-    camera_contradicts = _intro_camera_contradicts_introducer(
-        introducer_id, speaker_score, looks_like_newcomer
-    )
-    if (
-        introducer_id is not None
-        and person_id == introducer_id
-        and raw_best_id == introducer_id
-        and float(speaker_score or 0.0) >= confident_id_threshold
-        and not camera_contradicts
-    ):
-        _log.info(
-            "[introduction] intro voice-capture: live speaker is confidently the "
-            "introducer (score=%.3f) — not enrolling onto newcomer %s",
-            float(speaker_score or 0.0),
-            introduced_name,
-        )
-        return None
-    if camera_contradicts and float(speaker_score or 0.0) >= confident_id_threshold:
-        _log.info(
-            "[introduction] intro voice-capture: camera contradicts the confident "
-            "introducer match (score=%.3f, introducer unseen, unknown face in "
-            "frame) — treating the reply as newcomer %s",
-            float(speaker_score or 0.0),
-            introduced_name,
-        )
-
-    # Rex just invited the NEWCOMER to speak ("say hi so I can learn your
-    # voice"), so the next short hello is overwhelmingly likely to be them — not
-    # the introducer. Speaker-ID, hearing an unfamiliar voice with no print yet,
-    # tends to land it on the nearest known print (the introducer) at a mediocre
-    # score. Only a CONFIDENT introducer match should be believed over the
-    # window's expectation; below that, treat the reply as the newcomer and
-    # enroll it. Using the bare similarity floor (0.50) here made the window
-    # useless — the off-camera newcomer scored ~0.59–0.64 as the introducer and
-    # was never enrolled (live-logged 2026-06-15: "hi what's your name" credited
-    # to the introducer, who then introduced himself to his own guest).
-    confident_introducer_threshold = float(
-        getattr(config, "INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD", 0.75)
-    )
-    accepted_unknown = person_id is None
-    weak_introducer_match = (
-        person_id == introducer_id
-        and raw_best_id == introducer_id
-        and (speaker_score < confident_introducer_threshold or camera_contradicts)
-        and looks_like_newcomer
-    )
-    if not accepted_unknown and not weak_introducer_match:
-        return None
-
-    if not looks_like_newcomer and not accepted_unknown:
-        return None
-
-    ok = _safe_enroll_voice(
-        introduced_id,
-        audio_array,
-        transcript_text=text,
-        source="intro_voice_capture",
-        confirmed=False,
-    )
-    if not ok:
-        ctx["asked_at"] = time.monotonic()
-        first = _first_name_or(introduced_name)
-        return (
-            f"{first}, my voice scanner got a mouthful of static. Give me one "
-            f"more sentence so I can stop calling you theoretical."
-        )
-
-    # Carry the row id forward: this print was taken on the window's expectation
-    # of who was speaking, and the very next turn is where a human gets to say
-    # that expectation was wrong. _unwind_intro_capture deletes it then.
-    enrolled_bio_id = None
-    try:
-        enrolled_bio_id = people_memory.latest_biometric_id(introduced_id, "voice")
-    except Exception as exc:
-        _log.debug("intro voice print id lookup failed: %s", exc)
-
-    _pending_intro_voice_capture = None
-    followup = dict(ctx)
-    followup["enrolled_voice_biometric_id"] = enrolled_bio_id
-    followup["followup_kind"] = followup_kind
-    followup["asked_at"] = time.monotonic()
-    _pending_intro_followup = followup
-    _bind_intro_visible_face_if_present(introduced_id, introduced_name)
-    _log.info(
-        "[introduction] enrolled voice for introduced person %r (person_id=%s)",
-        introduced_name,
-        introduced_id,
-    )
-    try:
-        _session_person_ids.add(introduced_id)
-        consciousness.mark_engagement(introduced_id)
-        consciousness.note_person_spoke(introduced_id)
-    except Exception:
-        pass
-    try:
-        conv_memory.add_to_transcript(introduced_name, text)
-        conv_log.log_heard(introduced_name, text)
-        print(
-            f"[VOICE] Known voice detected: {introduced_name} (person_id={introduced_id})",
-            flush=True,
-        )
-        print(f"[HEARD] {introduced_name}: {text}", flush=True)
-        _log.info(
-            "[introduction] voice capture speech segment — speaker=%r person_id=%s text=%r",
-            introduced_name,
-            introduced_id,
-            text,
-        )
-    except Exception as exc:
-        _log.debug("intro voice capture transcript log failed: %s", exc)
-    try:
-        topic_thread.note_user_turn(text, introduced_id)
-        user_energy.note_user_turn(text, introduced_id)
-    except Exception as exc:
-        _log.debug("intro voice capture turn tracking failed: %s", exc)
-
-    intro_first = _first_name_or(introducer_name, "there")
-    introduced_first = _first_name_or(introduced_name, "there")
-    try:
-        if self_explanatory_relationship:
-            question_instruction = _intro_relationship_question_instruction(
-                relationship,
-                intro_first,
-                introduced_first,
-            )
-            return llm.get_response(
-                f"{introduced_first} just responded after {intro_first} introduced "
-                f"them as {intro_first}'s {relationship}. You successfully stored "
-                f"{introduced_first}'s voice print. In one or two short "
-                f"in-character Rex sentences, acknowledge {introduced_first} by "
-                f"name with a friendly quip. {question_instruction} Do NOT ask "
-                f"how they know each other. Do NOT imply they are related to Rex."
-            )
-        return llm.get_response(
-            f"{introduced_first} just responded after {intro_first} introduced them, "
-            f"and you successfully stored {introduced_first}'s voice print. In ONE "
-            f"short in-character Rex line, acknowledge {introduced_first} by name "
-            f"with a light quip, then ask how {introduced_first} and {intro_first} "
-            f"know each other."
-        )
-    except Exception as exc:
-        _log.debug("intro voice capture ack generation failed: %s", exc)
-    if self_explanatory_relationship:
-        return (
-            f"Got it, {introduced_first}. Voice filed. What should I know about "
-            f"{intro_first} from your side of the evidence locker?"
-        )
-    return f"Got it, {introduced_first}. Voice filed. So how did you and {intro_first} get tangled up?"
 
 
 def _handle_intro_followup_answer(text: str) -> Optional[str]:
@@ -14852,112 +13950,6 @@ def _short_clip_last_speaker() -> Optional[dict]:
 # Concurrent transcription + speaker identification
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _maybe_bootstrap_campplus(audio_array, text):
-    """Seed missing CAM++ profiles from independently established identity."""
-    if audio_array is None or speaker_id.active_backend() != "campplus":
-        return False
-    from intelligence.voice_bootstrap import target, visible_identity
-    observations = _utterance_observations.get("visual") or []
-    diag = {"visual_samples": len(observations),
-            "active_speaker_ids": sorted({r.get("person_db_id") for r in observations
-                                          if r.get("person_db_id") is not None}),
-            "voiced_secs": _last_scan_secs.get("voiced", 0)}
-
-    def finish(reason, enrolled=False):
-        diag.update(reason=reason, enrolled=bool(enrolled))
-        _turn_trace.set_value("campplus_enrollment", diag)
-        _log.info("[campplus] enrollment %s", json.dumps(diag, sort_keys=True))
-        return bool(enrolled)
-
-    if _game_suppresses_conversation():
-        return finish("game_active")
-    if not getattr(config, "CAMPPLUS_AUTO_ENROLL_ENABLED", True):
-        return finish("disabled")
-    if not text or not bool(getattr(text, "confident", True)) or _is_non_speech_vocalization(str(text)):
-        return finish("untrusted_or_non_speech")
-    # A raw short-window cosine difference is logged by speaker_id, but is not
-    # proof of multiple talkers. Positively identified switches still block.
-    visual_ids = set(diag["active_speaker_ids"])
-    window_ids = {r.get("person_id") for r in _last_scan_windows if r.get("person_id") is not None}
-    if len(visual_ids)>1 or len(window_ids)>1 or any(r.get("change_suspected") for r in _last_scan_windows):
-        from intelligence import voice_bootstrap
-        voice_bootstrap.clear_pending()
-        return finish("conflicting_speakers")
-    visible = visible_identity(world_state.get("people") or [])
-    diag["visible_person_id"] = visible
-    if visible is not None and speaker_id.comparable_print_count(visible) == 0:
-        # A cold CAM++ database has no cross-match, so the old voiceless_face_wins
-        # branch never armed its enrollment prompt. Seeing a face permits an ASK,
-        # not a speaker verdict or writing a print from this uncertain turn.
-        person = people_memory.get_person(visible) or {}
-        _maybe_request_voice_sample(visible, person.get("name"))
-    explicit_id = None
-    name = _extract_self_identified_name(str(text))
-    if name:
-        person = people_memory.find_person_by_name(name)
-        if person:
-            explicit_id = person["id"]
-    else:
-        # The field run ended with “Bret Benziger.” A full existing name spoken
-        # by its visible owner is also an identity statement; never parse an
-        # ordinary sentence or create a new person from this fallback.
-        bare = str(text).strip().rstrip(".!?").strip()
-        if visible is not None and len(bare.split()) >= 2:
-            person = people_memory.get_person(visible)
-            if person and bare.casefold() == str(person.get("name") or "").casefold():
-                explicit_id = visible
-    from intelligence import voice_bootstrap as bootstrap
-    session_id = conv_memory.transcript_version()[0]
-    if explicit_id is not None and visible not in (None, explicit_id):
-        bootstrap.clear_pending()
-        return finish("conflicting_visible_identity")
-    pending = bootstrap.pending_person(session_id)
-    if pending is not None and visible != pending:
-        bootstrap.clear_pending()
-    if (explicit_id is not None and target(observations=observations,
-            windows=_last_scan_windows, explicit_person_id=explicit_id) != explicit_id):
-        bootstrap.clear_pending()
-        return finish("conflicting_introduction")
-    if (explicit_id is not None and .2 <= diag["voiced_secs"] < float(
-            getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0))
-            and speaker_id.comparable_print_count(explicit_id) == 0):
-        bootstrap.remember_introduction(explicit_id, speaker_id.get_embedding(audio_array), session_id)
-    followup = None
-    if explicit_id is None and bootstrap.pending_person(session_id) is not None:
-        followup = bootstrap.followup_target(speaker_id.get_embedding(audio_array), session_id,
-            visible_person_id=visible, observations=observations, windows=_last_scan_windows)
-    if diag["voiced_secs"] < float(getattr(config, "CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS", 1.0)):
-        diag["pending_person_id"] = bootstrap.pending_person(session_id)
-        return finish("awaiting_longer_sample" if diag["pending_person_id"] is not None
-                      else "insufficient_voiced_audio")
-    pid = target(observations=observations, windows=_last_scan_windows,
-                 explicit_person_id=explicit_id)
-    source = "self_identification" if explicit_id is not None else "interval_active_speaker"
-    if pid is None and followup is not None:
-        pid = followup
-        source = "confirmed_introduction_followup"
-    if pid is None and visible is not None and explicit_id is None:
-        if speaker_id.comparable_print_count(visible) > 0:
-            return finish("profile_already_present")
-        if (getattr(config, "CAMPPLUS_LEGACY_BOOTSTRAP_ENABLED", True)
-                and diag["voiced_secs"] >= float(getattr(config, "CAMPPLUS_MIGRATION_MIN_VOICED_SECS", 2.0))
-                and visual_ids.issubset({visible})):
-            from audio import voice_migration
-            proof = voice_migration.verify(audio_array, visible)
-            diag["legacy_verification"] = proof
-            if proof["accepted"]:
-                pid, source = visible, "legacy_voice_and_face"
-    diag.update(person_id=pid, source=source if pid is not None else None)
-    if pid is None:
-        return finish("identity_not_established")
-    if speaker_id.comparable_print_count(pid) > 0:
-        return finish("profile_already_present")
-    ok = _safe_enroll_voice(pid, audio_array, transcript_text=str(text),
-                            source="campplus_first_voice:" + source, confirmed=True)
-    if ok:
-        bootstrap.clear_pending()
-    return finish("first_profile_enrolled" if ok else "sample_or_storage_rejected", ok)
-
 
 def _process_audio(
     audio_array: np.ndarray,
@@ -15034,19 +14026,6 @@ def _process_audio(
     t1.join()
     t2.join()
 
-    try:
-        if _maybe_bootstrap_campplus(audio_array, text_box[0]):
-            # The voice is now named by independent evidence, so attribute this
-            # first turn too instead of waiting for the next capture.
-            ranked = speaker_id.rank_speakers(audio_array)
-            _last_scan_ranked = list(ranked or [])
-            if ranked:
-                pid, name, score, _ = ranked[0]
-                second = ranked[1][2] if len(ranked)>1 else -1.0
-                speaker_box[:] = [pid, name, float(score), float(score-second),
-                                  speaker_id.required_ambiguity_margin(ranked)]
-    except Exception as exc:
-        _log.warning("[campplus] automatic enrollment unavailable: %s", exc)
 
     return (text_box[0] or "", speaker_box[0], speaker_box[1], speaker_box[2],
             speaker_box[3], speaker_box[4])
@@ -15987,6 +14966,8 @@ def _note_voice_bearing(t0: float, t1: float) -> Optional[dict]:
     global _last_voice_bearing
     global _utterance_observations
     _utterance_observations = {"started_at": float(t0), "ended_at": float(t1), "visual": []}
+    from vision import face_presence
+    _utterance_observations["faces"] = face_presence.between(t0, t1)
     try:
         from vision import active_speaker
         _utterance_observations["visual"] = active_speaker.evidence_between(t0, t1)
@@ -21385,11 +20366,14 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     the rolling per-exchange extractors already ran all session, and power-off must
     not wait on a chain of LLM calls.
     """
+    if _voice_learning_runtime is not None:
+        _voice_learning_runtime.learner.reset()
+        _voice_learning_runtime.last_sample = None
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _idle_outro_spoken, _lean_memory_mused_this_session
     global _lean_mood_shared_this_session
     global _lean_news_mentioned_this_session, _last_news_story_offered
-    global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_introduction, _pending_intro_followup
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
@@ -21437,7 +20421,6 @@ def _end_session(*, include_consolidation: bool = True) -> None:
         _close_onboarding("session reset")
         _recent_memory_candidates.clear()
         _clear_anonymous_speaker_slots()
-        _passive_enroll_session_counts.clear()
         _idle_outro_spoken = False
         _lean_memory_mused_this_session = False
         _lean_mood_shared_this_session = False
@@ -21494,7 +20477,6 @@ def _end_session(*, include_consolidation: bool = True) -> None:
         _awaiting_followup_event = None
         _pending_introduction = None
         _pending_intro_followup = None
-        _pending_intro_voice_capture = None
         _pending_common_first_name_identity = None
         _pending_common_first_name_introduction = None
         _pending_existing_common_first_name = None
@@ -21784,7 +20766,6 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     _awaiting_followup_event = None
     _pending_introduction = None
     _pending_intro_followup = None
-    _pending_intro_voice_capture = None
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
@@ -21793,7 +20774,6 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     _pending_prompted_name_confirmation = None
     _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
-    _voice_refreshed_this_session.clear()
     _face_reveal_declined.clear()
     _grief_flow_state.clear()
     _idle_plans_asked.clear()
@@ -25745,7 +24725,6 @@ def _boundary_fallback_topic(exclude_text: Optional[str] = None) -> Optional[str
         _pending_introduction is not None
         or _pending_dual_intro is not None
         or _pending_intro_followup is not None
-        or _pending_intro_voice_capture is not None
         or _pending_common_first_name_identity is not None
         or _pending_common_first_name_introduction is not None
         or _pending_existing_common_first_name is not None
@@ -25785,7 +24764,7 @@ def _boundary_fallback_topic(exclude_text: Optional[str] = None) -> Optional[str
 def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> None:
     """Close optional pending prompts when a person sets a boundary or declines."""
     global _pending_face_reveal_confirm, _pending_offscreen_identify
-    global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_introduction, _pending_intro_followup
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
@@ -25817,8 +24796,6 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
         _pending_introduction = None
     if _pending_intro_followup is not None:
         _pending_intro_followup = None
-    if _pending_intro_voice_capture is not None:
-        _pending_intro_voice_capture = None
     if _pending_common_first_name_identity is not None:
         _pending_common_first_name_identity = None
     if _pending_common_first_name_introduction is not None:
@@ -27620,7 +26597,7 @@ def _handle_speech_segment(
     Set only by the gap-speech catch-up for a slice cut from under Rex's own
     playback — see that call site."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
-    global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_introduction, _pending_intro_followup
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
@@ -27649,6 +26626,8 @@ def _handle_speech_segment(
     handler_error: Optional[str] = None
     final_executed_path: Optional[str] = None
     suppress_memory_learning = False
+    conversational_voice_person = None
+    conversational_voice_saved = False
     handled_active_game_turn = False
     # (set for real once the transcript exists — see the transcript_trusted note)
     used_agenda_llm = False
@@ -27952,6 +26931,22 @@ def _handle_speech_segment(
             character_trace.raw_best_name = raw_best_name
             character_trace.speaker_score = _safe_round_score(speaker_score)
 
+        if _conversational_voice_enabled() and not text_input:
+            runtime = _conversational_voice_runtime()
+            try:
+                voice_reply = runtime.process(audio_array, str(text))
+                conversational_voice_person = runtime.turn_person
+                conversational_voice_saved = runtime.saved
+                if conversational_voice_person and not conversational_voice_saved:
+                    suppress_memory_learning = True
+                if voice_reply:
+                    runtime.speak_response(voice_reply)
+                    final_executed_path = "identity.conversational_voice_confirmation"
+                    return
+            except Exception as exc:
+                runtime.learner.cancel("runtime_error")
+                _log.exception("[voice_learning] skipped: %s", exc)
+
         specific_forget_target_for_turn = forgetting.extract_specific_forget_target(text)
 
         echo_cancel.start_sequence()
@@ -28118,23 +27113,6 @@ def _handle_speech_segment(
             )
 
         # While an introduction is actively expecting the newcomer to speak, do
-        # NOT let the introducer's still-visible / recently-seen face drive
-        # attribution or refresh their voiceprint. The single-visible-face rule
-        # ("a visible face wins regardless of voice") is correct in normal turns,
-        # but here Rex just asked a NEW person to say hello — the camera may even
-        # have been turned to them — so the introducer's lingering face must not
-        # capture the newcomer's first words (which also got their audio appended
-        # to the introducer's print). Attribution falls to voice + the intro
-        # voice-capture handler instead. Live-logged 2026-06-15 (Exudica run).
-        if ws_person is not None and _intro_capture_window_open():
-            _log.info(
-                "[interaction] person resolution: introduction in progress — "
-                "suppressing sticky/visible face %r so the newcomer's turn isn't "
-                "bound to (or refreshing) the introducer",
-                ws_person.get("face_id") or ws_person.get("voice_id"),
-            )
-            ws_person = None
-
         # Detect "off-camera unknown voice": speaker-ID found no match AND nobody
         # unknown is visible AND the visible engaged person isn't the speaker
         # (because their voice print would have matched). Treat person_id=None
@@ -28409,14 +27387,6 @@ def _handle_speech_segment(
                     "[interaction] person resolution: voice+face agree — person_id=%s name=%r score=%.3f",
                     person_id, person_name, speaker_score,
                 )
-                try:
-                    _maybe_auto_refresh_voice(
-                        person_id, speaker_score, audio_array,
-                        face_confirmed=True, raw_best_id=raw_best_id,
-                        visual_speaker_pid=_voice_dec_visual_pid,
-                    )
-                except Exception as exc:
-                    _log.debug("auto voice-refresh skip: %s", exc)
             elif decision == "voice_agrees_no_refresh":
                 # Marginal match on the visible face, backed by recent CONFIDENT voice
                 # continuity (their own voice trailing into a short/mumbled turn).
@@ -28471,7 +27441,6 @@ def _handle_speech_segment(
                     "(voiceless-face rule); arming voice-sample request",
                     ws_name, voice_lost_pid, voice_lost_name, speaker_score,
                 )
-                _maybe_request_voice_sample(ws_pid, ws_name)
             elif decision == "voice_over_face_roster":
                 # A registered player in the live game — the roster is why the
                 # marginal off-camera match beats the one face in frame. No
@@ -28503,20 +27472,6 @@ def _handle_speech_segment(
                     speaker_score, person_id, person_name,
                     voice_lost_pid, voice_lost_name, _voice_dec_visual_pid,
                 )
-                # The voice matched the WRONG person only because this person's print is empty/thin
-                # (that mismatch IS the symptom). If the camera confirms they are the on-camera
-                # talker, this face-confirmed audio is exactly what BOOTSTRAPS their print — the only
-                # way out of the deadlock. _maybe_auto_refresh_voice bootstraps only below the sample
-                # floor and only with visual-speaker confirmation, so an established print is never
-                # polluted by this branch.
-                try:
-                    _maybe_auto_refresh_voice(
-                        person_id, speaker_score, audio_array,
-                        face_confirmed=True, raw_best_id=raw_best_id,
-                        visual_speaker_pid=_voice_dec_visual_pid,
-                    )
-                except Exception as exc:
-                    _log.debug("auto voice-bootstrap skip: %s", exc)
             elif decision == "corroborate":
                 # Voice weakly leans toward the one visible person — their own
                 # (weak) print, corroborated by their face.
@@ -28527,14 +27482,6 @@ def _handle_speech_segment(
                     "face — person_id=%s name=%r score=%.3f",
                     person_id, person_name, speaker_score,
                 )
-                try:
-                    _maybe_auto_refresh_voice(
-                        person_id, speaker_score, audio_array,
-                        face_confirmed=True, raw_best_id=raw_best_id,
-                        visual_speaker_pid=_voice_dec_visual_pid,
-                    )
-                except Exception as exc:
-                    _log.debug("auto voice-refresh skip: %s", exc)
             elif decision == "face_only_continuity":
                 # No voice candidate at all (no enrolled prints / clip too short to
                 # score) in a clean 1:1 — engagement continuity or the camera's
@@ -28551,14 +27498,6 @@ def _handle_speech_segment(
                     "face — person_id=%s name=%r (face-only continuity)",
                     person_id, person_name,
                 )
-                try:
-                    _maybe_auto_refresh_voice(
-                        person_id, speaker_score, audio_array,
-                        face_confirmed=True, raw_best_id=raw_best_id,
-                        visual_speaker_pid=_voice_dec_visual_pid,
-                    )
-                except Exception as exc:
-                    _log.debug("auto voice-bootstrap skip: %s", exc)
             elif decision == "short_face_wins":
                 # Clip too short to score; voice doesn't point elsewhere; one
                 # known face on camera → that face is the speaker. NO voice
@@ -28777,6 +27716,8 @@ def _handle_speech_segment(
             raw_best_id=raw_best_id,
             raw_best_score=speaker_score,
         )
+        if conversational_voice_person:
+            identity_prompt_active = True
         group_chatter_active = voice_group_chatter or _audio_group_chatter_active()
         if _should_ignore_idle_background_speech(
             from_idle_activation=from_idle_activation,
@@ -28886,7 +27827,14 @@ def _handle_speech_segment(
                 previous_speaker=_last_speaker_turn,
             )
             _current_turn_speaker_evidence["resolution"] = _res.as_dict()
-            _cstate.note_speaker_resolution(_res.as_dict())
+            if conversational_voice_person:
+                _cpid, _cname = conversational_voice_person
+                _current_turn_speaker_evidence["resolution"] = {
+                    "status": "known", "person_id": _cpid, "name": _cname,
+                    "basis": "conversational_voice_saved" if conversational_voice_saved else "provisional_voice_chain",
+                    "learning_allowed": bool(conversational_voice_saved), "conflicts": [],
+                }
+            _cstate.note_speaker_resolution(_current_turn_speaker_evidence["resolution"])
             if not _res.learning_allowed:
                 suppress_memory_learning = True
             if _res.status != "known":
@@ -29148,40 +28096,6 @@ def _handle_speech_segment(
                 _maybe_capture_engagement_deferral(text)
             except Exception as exc:
                 _log.debug("[lean] deferral capture failed: %s", exc)
-
-        pending_sample_for_turn = _pending_voice_sample_capture
-        voice_sample_response = _handle_voice_sample_capture(
-            text,
-            audio_array,
-            person_id,
-            raw_best_id,
-            speaker_score,
-        )
-        if voice_sample_response:
-            if pending_sample_for_turn is not None and _pending_voice_sample_capture is None:
-                person_id = pending_sample_for_turn["person_id"]
-                person_name = pending_sample_for_turn["name"]
-                anonymous_speaker_label = None
-                _current_turn_speaker_evidence["resolution"] = {
-                    "status": "known", "person_id": person_id, "name": person_name,
-                    "basis": "verified_requested_voice_sample", "learning_allowed": True,
-                    "conflicts": [],
-                }
-            _record_heard_turn_once()
-            _speak_blocking(
-                voice_sample_response,
-                emotion="happy",
-                pre_beat_ms=100,
-                post_beat_ms_override=200,
-            )
-            conv_memory.add_to_transcript("Rex", voice_sample_response)
-            conv_log.log_rex(voice_sample_response)
-            _session_exchange_count += 1
-            _register_rex_utterance(voice_sample_response)
-            if _pending_voice_sample_capture is not None:
-                _pending_voice_sample_capture["asked_at"] = time.monotonic()
-            final_executed_path = "identity.voice_sample_capture"
-            return
 
         name_merge_response, name_merge_person_id, name_merge_name = (None, None, None)
         if not game_conversation_lock:
@@ -29887,35 +28801,6 @@ def _handle_speech_segment(
                 _register_rex_utterance(relationship_response)
                 return
 
-        # Passive voiceprint growth: a pure side effect on every attributed turn
-        # (it also maintains the who-spoke-recently ledger its own guards use).
-        try:
-            _maybe_passive_voice_enroll(
-                text, audio_array, person_id, raw_best_id, speaker_score
-            )
-        except Exception as exc:
-            _log.debug("[passive_enroll] skipped: %s", exc)
-
-        intro_voice_response = _handle_intro_voice_capture(
-            text,
-            audio_array,
-            person_id,
-            raw_best_id,
-            speaker_score,
-        )
-        if intro_voice_response:
-            _record_heard_turn_once()
-            _speak_blocking(
-                intro_voice_response,
-                emotion="happy",
-                pre_beat_ms=100,
-                post_beat_ms_override=200,
-            )
-            conv_memory.add_to_transcript("Rex", intro_voice_response)
-            conv_log.log_rex(intro_voice_response)
-            _session_exchange_count += 1
-            _register_rex_utterance(intro_voice_response)
-            return
 
         # Targeted-forget confirmation, in the same pending-slot ladder as the scene
         # snapshot and ahead of it: this slot is only ever open for one turn after
@@ -32473,54 +31358,12 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("post-greet relationship ask error: %s", exc)
 
-        # Voice-sample ask (voiceless-face rule): this turn resolved to a known
-        # visible face with no voice print, so their speech cross-matched
-        # someone else's print. Ask them for a line now — the capture window
-        # opens when the ask is spoken, and _handle_voice_sample_capture
-        # enrolls only a verified repetition of that sentence.
-        voice_sample_ask_fired = False
-        pending_vs = _pending_voice_sample_capture
-        if (
-            pending_vs is not None
-            and pending_vs.get("asked_at") is None
-            and not _interrupted.is_set()
-            and not post_greet_fired
-            and _known_person_visible_recently(pending_vs.get("person_id"))
-        ):
-            vs_first = _first_name_or(pending_vs.get("name"), "friend")
-            # DICTATE a line: "give me a line" froze PJ into a two-word
-            # "Hey Rex" (field 2026-08-25), and a 1s sample left him reading
-            # as Bret for the whole Jeopardy game. A concrete sentence to
-            # repeat gets a usable sample; unrelated conversation never trains it.
-            vs_line = _voice_sample_line(pending_vs.get("name"))
-            pending_vs["expected_text"] = vs_line
-            ask_text = (
-                f"Oh, and {vs_first} — my eyes know you, but my ears don't yet. "
-                f"Repeat after me so I can learn your voice: {vs_line}"
-            )
-            try:
-                _speak_blocking(ask_text)
-                conv_memory.add_to_transcript("Rex", ask_text)
-                conv_log.log_rex(ask_text)
-                _register_rex_utterance(ask_text)
-                assistant_asked_question = True
-                question_recovery_text = ask_text
-                voice_sample_ask_fired = True
-                pending_vs["asked_at"] = time.monotonic()
-                _log.info(
-                    "[voice_sample] ask spoken for %r — capture window open",
-                    pending_vs.get("name"),
-                )
-            except Exception as exc:
-                _log.debug("voice sample ask error: %s", exc)
-
         # Curiosity routine — skip if we just asked a relationship question.
         if (
             match is None
             and response_text
             and not _interrupted.is_set()
             and not post_greet_fired
-            and not voice_sample_ask_fired
             and not used_agenda_llm
             and not used_classified_intent
         ):
@@ -32660,6 +31503,10 @@ def _loop() -> None:
 
     while not _stop_event.is_set():
         current_state = state_module.get_state()
+        if _voice_learning_runtime is not None:
+            _voice_learning_runtime.tick()
+            if current_state in (State.QUIET, State.SHUTDOWN):
+                _voice_learning_runtime.learner.cancel("quiet_or_shutdown")
 
         # ── SHUTDOWN ────────────────────────────────────────────────────────────
         if current_state == State.SHUTDOWN:
@@ -33337,7 +32184,7 @@ def stop() -> None:
     global _thread, _awaiting_followup_event, _identity_prompt_until
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
     global _post_question_retro_scan_at
-    global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_introduction, _pending_intro_followup
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
@@ -33368,7 +32215,6 @@ def stop() -> None:
     _recent_rex_questions.clear()
     _pending_introduction = None
     _pending_intro_followup = None
-    _pending_intro_voice_capture = None
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None

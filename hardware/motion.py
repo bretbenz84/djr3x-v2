@@ -362,6 +362,9 @@ def _next_seq() -> int:
 def send(obj: dict) -> "int | None":
     """Write one NDJSON command line. Adds v + seq. Returns the seq, or None if
     the link is down / the write failed (caller treats None as not-sent)."""
+    if obj.get("cmd") in {"turn", "move", "come", "drive"}:
+        from intelligence.voice_learning import mic_moved
+        mic_moved("base_motion")
     ser = _ser
     if ser is None:
         return None

@@ -39,11 +39,18 @@ _EXPECTED_TABLES = frozenset({
     "person_disposition_stats",
     "person_callback_material",
     "voice_signatures",
+    "voice_recordings",
 })
 
 # Inline migrations for schema additions introduced after initial deploy.
 # Idempotent: CREATE TABLE IF NOT EXISTS is safe on both new and old DBs.
 _MIGRATIONS = [
+    """CREATE TABLE IF NOT EXISTS voice_recordings (
+    id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL REFERENCES people(id),
+    digest TEXT NOT NULL, wav BLOB NOT NULL, metadata TEXT NOT NULL,
+    biometric_id INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(person_id, digest)
+)""",
     """
     CREATE TABLE IF NOT EXISTS person_relationships (
         id              INTEGER PRIMARY KEY,

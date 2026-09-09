@@ -1017,6 +1017,9 @@ def shutdown() -> None:
     head is stranded near where it was (≈ neutral). We reset to a brisk profile
     here so the physical servo can actually keep up and reach the rest pose.
     """
+    from intelligence.voice_learning import mic_moved
+    mic_moved("sleep_or_shutdown")
+    servos.release_voice_enrollment_hold()
     # The GUI's manual servo override freezes EVERY programmatic move — including
     # this one. If the operator shuts down with the override still on (field bug
     # 2026-07-16: droop silently no-oped, program exited with the head wherever
@@ -1088,6 +1091,9 @@ def sleep() -> None:
     sleep ack clip's end_speech_motion re-opened the visor around the glide
     and Rex "slept" with the visor visibly open.
     """
+    from intelligence.voice_learning import mic_moved
+    mic_moved("sleep_or_shutdown")
+    servos.release_voice_enrollment_hold()
     leds_chest.sleep()
     leds_head.sleep()
     servos.pause_arm_idle()

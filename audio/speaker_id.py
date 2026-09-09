@@ -163,8 +163,7 @@ def _warn_if_all_prints_are_other_backend() -> None:
         if not rows:
             if _active_backend == "campplus":
                 logger.info("[campplus] no CAM++ voices yet; first profiles will enroll "
-                            "from face/legacy-voice agreement, explicit self-identification, "
-                            "or active-speaker evidence")
+                            "through confirmed identity and consistent conversational samples")
             return
         native = sum(1 for r in rows if int(r["n"]) == native_bytes)
         if native == 0:

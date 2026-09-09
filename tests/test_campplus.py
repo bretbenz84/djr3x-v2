@@ -9,7 +9,6 @@ import numpy as np
 import config
 from audio import speaker_id, voice_score
 from memory import database as db, people, voice_signatures as signatures
-from intelligence.voice_bootstrap import target
 
 
 def unit(index=0):
@@ -20,9 +19,6 @@ def unit(index=0):
 
 class StorageTests(unittest.TestCase):
     def setUp(self):
-        from intelligence import voice_bootstrap
-        voice_bootstrap.clear_pending()
-        self.addCleanup(voice_bootstrap.clear_pending)
         from setup_assets import DB_SCHEMA
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -76,109 +72,10 @@ class StorageTests(unittest.TestCase):
         with patch.object(voice_score, '_active_backend', 'ecapa'):
             self.assertEqual(people.count_native_voice_prints(2), 1)
 
-    def test_production_first_turn_enrolls_and_attributes_then_recognizes(self):
-        from intelligence import interaction as I
-        audio = np.ones(int(config.AUDIO_SAMPLE_RATE * 2), dtype=np.float32) * .1
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(speaker_id, 'get_embedding', return_value=unit()), \
-             patch.object(speaker_id, 'window_evidence', return_value=[]), \
-             patch.object(speaker_id, 'voiced_secs', return_value=2), \
-             patch.object(I, '_utterance_observations', {'visual': []}), \
-             patch.object(I, '_last_confident_voice_at', {}):
-            result = I._process_audio(audio, pretranscribed="My name is Bret.")
-            self.assertEqual(result[1:3], (1, 'Bret'))
-            self.assertEqual(people.count_native_voice_prints(1), 1)
-            result = I._process_audio(audio, pretranscribed='What are we doing tomorrow?')
-            self.assertEqual(result[1], 1)
-            self.assertEqual(people.count_native_voice_prints(1), 1)
 
-    def test_short_introduction_followup_enrolls_and_attributes_without_mouth_motion(self):
-        from intelligence import interaction as I, voice_bootstrap as bootstrap
-        from contextlib import ExitStack
-        with sqlite3.connect(self.path) as conn:
-            conn.execute("UPDATE people SET name='Bret Benziger' WHERE id=1")
-        audio = np.ones(int(config.AUDIO_SAMPLE_RATE * 2), dtype=np.float32) * .1
-        with ExitStack() as stack:
-            for obj, key, value in [(speaker_id, '_active_backend', 'campplus'),
-                    (I, '_utterance_observations', {'visual': []}),
-                    (I, '_last_confident_voice_at', {})]:
-                stack.enter_context(patch.object(obj, key, value))
-            stack.enter_context(patch.object(speaker_id, 'get_embedding', return_value=unit()))
-            stack.enter_context(patch.object(speaker_id, 'window_evidence', return_value=[]))
-            stack.enter_context(patch.object(I.world_state, 'get', return_value=[
-                {'person_db_id': 1, 'face_id': 'bret-face', 'face_visible': True}]))
-            with patch.object(speaker_id, 'voiced_secs', return_value=.63):
-                I._process_audio(audio, pretranscribed='Bret Benziger.')
-            self.assertEqual(people.count_native_voice_prints(1), 0)
-            self.assertEqual(bootstrap.pending_person(I.conv_memory.transcript_version()[0]), 1)
-            with patch.object(speaker_id, 'voiced_secs', return_value=2):
-                result = I._process_audio(audio, pretranscribed='I am going to the store tomorrow.')
-            self.assertEqual(result[1:3], (1, 'Bret Benziger'))
-            self.assertEqual(people.count_native_voice_prints(1), 1)
-            self.assertIsNone(bootstrap.pending_person(I.conv_memory.transcript_version()[0]))
 
-    def test_new_person_short_voice_is_deferred(self):
-        from intelligence import interaction as I, voice_bootstrap as bootstrap
-        pid, _ = people.find_or_create_person('New Visitor')
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(speaker_id, 'get_embedding', return_value=unit()), \
-             patch.object(speaker_id, 'voiced_secs', return_value=.63), \
-             patch.object(I, '_turn_transcript_trusted', return_value=True), \
-             patch.object(I, '_last_scan_windows', []):
-            self.assertFalse(I._safe_enroll_voice(pid, np.ones(48000),
-                             source='new_person', confirmed=True))
-        self.assertEqual(people.count_native_voice_prints(pid), 0)
-        self.assertEqual(bootstrap.pending_person(I.conv_memory.transcript_version()[0]), pid)
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(speaker_id, 'get_embedding', return_value=unit()), \
-             patch.object(I, '_utterance_observations', {'visual': []}), \
-             patch.object(I, '_last_scan_secs', {'voiced': 2}), \
-             patch.object(I, '_last_scan_windows', []), \
-             patch.object(I.world_state, 'get', return_value=[
-                 {'person_db_id': pid, 'face_id': 'new-face', 'face_visible': True}]):
-            self.assertTrue(I._maybe_bootstrap_campplus(np.ones(48000), 'Nice to meet you Rex.'))
-        self.assertEqual(people.count_native_voice_prints(pid), 1)
 
-    def test_cold_roster_short_speech_arms_ask_without_learning(self):
-        from intelligence import interaction as I
-        from audio.transcription import Transcript
-        face = {'person_db_id': 1, 'face_id': 'Bret', 'face_visible': True}
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(I, '_utterance_observations', {'visual': []}), \
-             patch.object(I, '_last_scan_secs', {'voiced': .3}), \
-             patch.object(I, '_last_scan_windows', []), \
-             patch.object(I, '_pending_voice_sample_capture', None), \
-             patch.object(I, '_pending_intro_voice_capture', None), \
-             patch.object(I, '_voice_sample_requested_pids', set()), \
-             patch.object(I.world_state, 'get', return_value=[face]), \
-             patch.object(I, '_safe_enroll_voice') as enroll:
-            self.assertFalse(I._maybe_bootstrap_campplus(
-                np.ones(48000), Transcript('Can you hear me?', confident=False)))
-            self.assertIsNone(I._pending_voice_sample_capture)
-            self.assertFalse(I._maybe_bootstrap_campplus(np.ones(48000), 'Can you hear me?'))
-            self.assertEqual(I._pending_voice_sample_capture['person_id'], 1)
-            self.assertIsNone(I._pending_voice_sample_capture['asked_at'])
-            enroll.assert_not_called()
-            self.assertEqual(people.count_native_voice_prints(1), 0)
 
-    def test_bootstrap_rejects_untrusted_short_mixed_or_disabled(self):
-        from intelligence import interaction as I
-        from audio.transcription import Transcript
-        audio = np.ones(int(config.AUDIO_SAMPLE_RATE * 2), dtype=np.float32)
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(I, '_utterance_observations', {'visual': []}), \
-             patch.object(I, '_last_scan_secs', {'voiced': 2}), \
-             patch.object(I, '_last_scan_windows', []), \
-             patch.object(I, '_safe_enroll_voice') as enroll:
-            self.assertFalse(I._maybe_bootstrap_campplus(audio, Transcript('My name is Bret.', confident=False)))
-            with patch.dict(I._last_scan_secs, voiced=.2):
-                self.assertFalse(I._maybe_bootstrap_campplus(audio, 'My name is Bret.'))
-            with patch.object(I, '_last_scan_windows', [{'change_suspected': True}]):
-                self.assertFalse(I._maybe_bootstrap_campplus(audio, 'My name is Bret.'))
-            with patch.object(config, 'CAMPPLUS_AUTO_ENROLL_ENABLED', False):
-                self.assertFalse(I._maybe_bootstrap_campplus(audio, 'My name is Bret.'))
-            self.assertFalse(I._maybe_bootstrap_campplus(None, 'My name is Bret.'))
-            enroll.assert_not_called()
 
     def test_failed_storage_is_not_reported_as_enrollment(self):
         with patch.object(speaker_id, 'get_embedding', return_value=unit()), \
@@ -195,118 +92,13 @@ class StorageTests(unittest.TestCase):
         self.assertFalse(windows[1]['change_suspected'])
         self.assertIsNone(windows[0]['person_id'])
 
-    def test_cam_growth_cannot_use_merely_visible_face(self):
-        from intelligence import interaction as I
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(I, '_utterance_observations', {'visual': [{'faces': [{'person_db_id': 1}]}]}), \
-             patch.object(I, '_last_scan_windows', []), \
-             patch.object(I, '_safe_enroll_voice') as enroll:
-            I._maybe_auto_refresh_voice(1, .99, np.ones(48000), face_confirmed=True, visual_speaker_pid=1)
-            I._maybe_passive_voice_enroll('A clear full sentence.', np.ones(48000), 1, 1, .99)
-            enroll.assert_not_called()
-
-    def test_legacy_face_voice_agreement_seeds_without_mouth_motion(self):
-        from intelligence import interaction as I
-        from audio import voice_migration
-        # Existing ECAPA Bret profile; the already-created PJ legacy profile
-        # points in another direction. Neither is a CAM++ profile.
-        db.execute("INSERT INTO biometrics(person_id,type,encoding) VALUES (1,'voice',?)", (unit(1).tobytes(),))
-        face = {'person_db_id': 1, 'face_id': 'Bret', 'face_visible': True}
-        audio = np.ones(int(config.AUDIO_SAMPLE_RATE*4), dtype=np.float32) * .1
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(speaker_id, 'get_embedding', return_value=unit(2)), \
-             patch.object(speaker_id, 'voiced_secs', return_value=3.42), \
-             patch.object(voice_migration, '_embedding', return_value=unit(1)) as legacy, \
-             patch.object(I, '_utterance_observations', {'visual': []}), \
-             patch.object(I.world_state, 'get', return_value=[face]), \
-             patch.object(I, '_last_confident_voice_at', {}):
-            result = I._process_audio(audio, pretranscribed="It's good to see you too, Rex. How are you doing today?")
-            self.assertEqual(result[1:3], (1, 'Bret'))
-            self.assertEqual(people.count_native_voice_prints(1), 1)
-            legacy.assert_called_once()
-            result = I._process_audio(audio, pretranscribed="What's on your plate for the day?")
-            self.assertEqual(result[1], 1)
-            legacy.assert_called_once()  # CAM++ alone after the first print
-            self.assertEqual(voice_score.active_backend(), 'campplus')
-            self.assertEqual(db.fetchone("SELECT count(*) AS n FROM biometrics WHERE type='voice'")['n'], 2)
-
-    def test_legacy_foreign_voice_or_close_scores_cannot_seed_visible_owner(self):
-        from audio import voice_migration
-        db.execute("INSERT INTO biometrics(person_id,type,encoding) VALUES (1,'voice',?)", (unit(1).tobytes(),))
-        for query in (unit(0), (unit(0)+unit(1))/np.sqrt(2)):
-            with patch.object(voice_migration, '_embedding', return_value=query):
-                proof = voice_migration.verify(np.ones(32000), 1)
-            self.assertFalse(proof['accepted'])
-        self.assertEqual(people.count_native_voice_prints(1), 0)
-
-    def test_legacy_match_cannot_override_conflicting_explicit_identity(self):
-        from intelligence import interaction as I
-        from audio import voice_migration
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(I, '_utterance_observations', {'visual': [{'person_db_id': 2, 'confidence': .8}]*3}), \
-             patch.object(I, '_last_scan_windows', []), \
-             patch.object(I, '_last_scan_secs', {'voiced': 3}), \
-             patch.object(I.world_state, 'get', return_value=[{'person_db_id': 2, 'face_id': 'PJ', 'face_visible': True}]), \
-             patch.object(voice_migration, 'verify') as legacy:
-            self.assertFalse(I._maybe_bootstrap_campplus(np.ones(48000), 'My name is Bret.'))
-            legacy.assert_not_called()
-
-    def test_full_existing_name_reply_enrolls_without_mouth_or_legacy_model(self):
-        from intelligence import interaction as I
-        from audio import voice_migration
-        db.execute("UPDATE people SET name='Bret Benziger' WHERE id=1")
-        face = {'person_db_id': 1, 'face_id': 'Bret Benziger', 'face_visible': True}
-        audio = np.ones(int(config.AUDIO_SAMPLE_RATE*2.5), dtype=np.float32) * .1
-        with patch.object(speaker_id, '_active_backend', 'campplus'), \
-             patch.object(speaker_id, 'get_embedding', return_value=unit(1)), \
-             patch.object(speaker_id, 'voiced_secs', return_value=1.5), \
-             patch.object(I, '_utterance_observations', {'visual': []}), \
-             patch.object(I.world_state, 'get', return_value=[face]), \
-             patch.object(I, '_last_confident_voice_at', {}), \
-             patch.object(voice_migration, 'verify') as legacy:
-            result = I._process_audio(audio, pretranscribed='Bret Benziger.')
-            self.assertEqual(result[1:3], (1, 'Bret Benziger'))
-            self.assertEqual(people.count_native_voice_prints(1), 1)
-            legacy.assert_not_called()
-
-    def test_mouth_free_growth_requires_real_cam_voice_and_face_agreement(self):
-        from intelligence import interaction as I
-        people.add_biometric(1, 'voice', unit(1))
-        face = {'person_db_id': 1, 'face_id': 'Bret', 'face_visible': True}
-        with patch.object(I.world_state, 'get', return_value=[face]), \
-             patch.object(I, '_turn_transcript_trusted', return_value=True), \
-             patch.object(I, '_last_scan_windows', []):
-            self.assertTrue(I._campplus_growth_supported(1, 1, .85))
-            self.assertFalse(I._campplus_growth_supported(1, 2, .99))
-            self.assertFalse(I._campplus_growth_supported(1, 1, .4))
-            with patch.object(I, '_last_scan_windows', [{'person_id': 2}]):
-                self.assertFalse(I._campplus_growth_supported(1, 1, .85))
 
 
-class EvidenceTests(unittest.TestCase):
-    def test_visible_face_without_active_speaker_is_insufficient(self):
-        self.assertIsNone(target(observations=[{'faces': [{'person_db_id': 1}]}]*10, windows=[]))
 
-    def test_sustained_active_speaker_bootstraps(self):
-        self.assertEqual(target(observations=[{'person_db_id': 1, 'confidence': .8}]*3, windows=[]), 1)
 
-    def test_different_active_speakers_refuse_whole_clip(self):
-        rows = [{'person_db_id': p, 'confidence': .8} for p in (1, 1, 1, 2)]
-        self.assertIsNone(target(observations=rows, windows=[], explicit_person_id=1))
 
-    def test_unknown_speaker_change_blocks_first_print(self):
-        self.assertIsNone(target(observations=[], windows=[{'change_suspected': True}], explicit_person_id=1))
 
-    def test_conflicting_face_blocks_self_claim(self):
-        self.assertIsNone(target(observations=[{'person_db_id': 2}], windows=[], explicit_person_id=1))
 
-    def test_only_current_named_face_can_corroborate_legacy_voice(self):
-        from intelligence.voice_bootstrap import visible_identity
-        known = {'person_db_id': 1, 'face_id': 'Bret', 'face_visible': True}
-        self.assertEqual(visible_identity([known]), 1)
-        self.assertIsNone(visible_identity([dict(known, face_missing=True)]))
-        self.assertIsNone(visible_identity([{'person_db_id': 1, 'voice_id': 'Bret'}]))
-        self.assertIsNone(visible_identity([known, {'face_visible': True}]))
 
 
 class EncoderTests(unittest.TestCase):
@@ -346,53 +138,3 @@ class EncoderTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
-
-class IntroductionHandoffTests(unittest.TestCase):
-    def setUp(self):
-        from intelligence import voice_bootstrap as b
-        self.b = b
-        b.clear_pending()
-        self.addCleanup(b.clear_pending)
-        b.remember_introduction(1, unit(), 7, now=100)
-
-    def follow(self, **kwargs):
-        defaults = dict(embedding=unit(), session_id=7, visible_person_id=1,
-                        observations=[], windows=[], now=101)
-        defaults.update(kwargs)
-        return self.b.followup_target(**defaults)
-
-    def test_matching_sole_face_and_voice(self):
-        self.assertEqual(self.follow(), 1)
-
-    def test_conflicting_evidence_retires_reference(self):
-        for conflict in (dict(embedding=unit(1)), dict(visible_person_id=None),
-                dict(visible_person_id=2), dict(windows=[{'change_suspected': True}]),
-                dict(windows=[{'person_id': 2}]), dict(observations=[{'faces': []}])):
-            with self.subTest(conflict=conflict):
-                self.b.remember_introduction(1, unit(), 7, now=100)
-                self.assertIsNone(self.follow(**conflict))
-                self.assertIsNone(self.b.pending_person(7, now=101))
-
-    def test_session_and_expiry(self):
-        self.assertIsNone(self.follow(now=161))
-        self.b.remember_introduction(1, unit(), 7, now=100)
-        self.assertIsNone(self.follow(session_id=8))
-
-    def test_context_reports_pending_not_recognition(self):
-        from intelligence import brain_context
-        with patch('memory.conversations.transcript_version', return_value=(7, 0)), \
-             patch('memory.people.get_person', return_value={'name': 'Bret'}), \
-             patch.object(self.b.time, 'monotonic', return_value=101):
-            context = '\n'.join(brain_context.lines(None))
-        self.assertIn('Voice enrollment pending for Bret', context)
-        self.assertIn('Do not claim their voice is enrolled or recognized', context)
-
-    def test_explicit_name_cannot_override_another_identified_voice(self):
-        self.assertIsNone(self.b.target(observations=[], windows=[{'person_id': 2}],
-                                       explicit_person_id=1))
-
-    def test_bad_embedding_cannot_arm(self):
-        self.b.clear_pending()
-        self.assertFalse(self.b.remember_introduction(1, np.zeros(192), 7))
-        self.assertIsNone(self.b.pending_person(7))

@@ -5345,7 +5345,9 @@ def _step_person_recognition(frame) -> None:
                     return _mark_people_faces_missing(people, now_mono=now_mono)
                 return []
 
-            world_state.mutate("people", _hold_or_clear)
+            _observed_people = world_state.mutate("people", _hold_or_clear)
+            from vision import face_presence
+            face_presence.record(_observed_people)
             _previous_face_boxes.clear()
             if outcome["held"]:
                 return
@@ -5618,7 +5620,9 @@ def _step_person_recognition(frame) -> None:
                             slot[field] = cur[field]
                 return people
 
-            world_state.mutate("people", _commit)
+            _observed_people = world_state.mutate("people", _commit)
+            from vision import face_presence
+            face_presence.record(_observed_people)
 
         # Update solo identity snapshot for next tick's stickiness check.
         if len(detected) == 1 and any_identified_this_tick and recognized_names:
@@ -14690,6 +14694,8 @@ def _face_tracking_loop() -> None:
 
             frame = get_frame()
             people = _live_face_tracking_people(frame)
+            from vision import face_presence
+            face_presence.record(people if frame is not None else [])
             _step_face_tracking(frame, people)
         except Exception as exc:
             _log.debug("fast face tracking loop error: %s", exc)

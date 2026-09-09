@@ -2,6 +2,37 @@
 
 This file is a compact handoff for future AI/development sessions. It explains what the project is, how to run it, the main architecture, and the current design assumptions. It intentionally omits long personality transcripts, old planning notes, and exhaustive behavior specs.
 
+## Current voice enrollment (2026-09-08)
+
+[Conversational voice learning](docs/conversational_voice_learning.md) supersedes
+ALL older voice-enrollment notes below. `intelligence/voice_learning.py` is the
+single sample-chain state machine; `voice_learning_runtime.py` integrates it
+AFTER transcript/echo checks. Name answers and known-face yes/no confirmations
+start provisional acoustic references, then three consistent utterances / eight
+voiced seconds save a batch. No recitation, mouth evidence, or camera-angle to
+mic-angle matching. Several visible people and missing DoA are supported.
+
+The hero arm holds the midpoint of its configured safe range during a bounded
+60-second collection window. Captures during centering, robot speech or base
+movement do not count. Cancellation, expiry, manual control, games, sleep and
+shutdown release it. Face snapshots come from the face recognition/tracking
+loops independently of the mouth model (`vision/face_presence.py`).
+
+Original float32 WAVs and embeddings commit atomically in `people.db`;
+`voice_recordings` retains up to ten accepted clips per person, with capture and
+acceptance metadata. `tools/voice_recordings.py` lists, exports or re-embeds those
+clips (preview first, `--apply` to save new model-specific prints). Person merge,
+delete, voice clearing and individual bad-print deletion include the archive.
+No existing user data is migrated or reset by this code change.
+
+Removed: `voice_bootstrap.py`, `voice_migration.py`, the repeat-after-me handler,
+passive-enrollment handler, separate auto-refresh handler, and their settings.
+Automatic anonymous-signature promotion was removed too; named signatures no
+longer blend opportunistic samples. `audio.speaker_id.enroll_voice` remains an explicit CLI/admin utility, never an
+automatic conversation writer. Provisional speaker context disallows personal
+memory learning; it does not claim voice recognition. Tests: `voice_learning`
+plus retained identity/recognition/game/motion modules via `run_lean_checks.py`.
+
 ## Project Summary
 
 DJ-R3X v2 is a local, voice-first droid brain inspired by Rex from Star Tours and Oga's Cantina. It runs on macOS, combines live audio, camera perception, face and voice identity, persistent memory, LLM conversation, TTS, games, music, and physical droid hardware control.

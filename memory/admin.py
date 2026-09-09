@@ -213,14 +213,22 @@ def clear_biometrics(person_id: int, kind: str) -> bool:
     Useful to wipe a mis-enrolled biometric that's causing wrong recognition."""
     if kind not in ("face", "voice"):
         return False
-    if kind == "voice":
+    is_voice = kind == "voice"
+    if is_voice:
         from audio import voice_score
+        from memory.voice_recordings import invalidate_pending
         kind = voice_score.biometric_type()
-    db.execute(
-        "DELETE FROM biometrics WHERE person_id = ? AND type = ?",
-        (int(person_id), kind),
-    )
-    return True
+        invalidate_pending(person_id)
+    try:
+        with db.connection() as conn:
+            if is_voice:
+                conn.execute("DELETE FROM voice_recordings WHERE person_id=?", (int(person_id),))
+                conn.execute(f"DELETE FROM {voice_score.signature_table()} WHERE person_id=?", (int(person_id),))
+            conn.execute("DELETE FROM biometrics WHERE person_id=? AND type=?", (int(person_id), kind))
+        return True
+    except Exception as exc:
+        _log.warning("could not clear biometrics for %s: %s", person_id, exc)
+        return False
 
 
 def update_person_fields(person_id: int, *, name: Optional[str] = None, **fields) -> bool:

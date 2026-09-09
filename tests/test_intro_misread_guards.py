@@ -106,144 +106,8 @@ class DeniesIntroductionTest(unittest.TestCase):
         )
 
 
-class IntroVoiceCaptureDenialTest(unittest.TestCase):
-    """11:21:46 — the correction must not become the newcomer's voice print."""
-
-    def _ctx(self, **kw):
-        ctx = {
-            "introducer_id": 1,
-            "introducer_name": "Bret Benziger",
-            "introduced_id": 7,
-            "introduced_name": "PJ Thomas",
-            "relationship": None,
-            "asked_at": time.monotonic(),
-        }
-        ctx.update(kw)
-        return ctx
-
-    def test_denial_never_enrolls_and_clears_the_window(self):
-        audio = np.zeros(16000, dtype=np.float32)
-        with mock.patch.object(I, "_pending_intro_voice_capture", self._ctx()), \
-             mock.patch.object(I, "_pending_intro_followup", None), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll, \
-             mock.patch.object(I.people_memory, "delete_biometric") as delete_bio, \
-             mock.patch.object(I.llm, "get_response", return_value=None):
-            resp = I._handle_intro_voice_capture(
-                "PJ is not here. This is Bret.",
-                audio,
-                person_id=1,
-                raw_best_id=1,
-                speaker_score=0.811,
-            )
-        self.assertTrue(resp)
-        self.assertFalse(enroll.called)
-        # Nothing was enrolled by THIS window, so there is no row to retract.
-        self.assertFalse(delete_bio.called)
-        self.assertIsNone(I._pending_intro_voice_capture)
-        self.assertIsNone(I._pending_intro_followup)
-
-    def test_off_camera_unknown_denial_is_still_a_denial(self):
-        """The field shape: the open window suppressed the introducer's face, so
-        identity handed the turn over as person_id=None. `accepted_unknown` used
-        to make that an automatic enrollment."""
-        audio = np.zeros(16000, dtype=np.float32)
-        with mock.patch.object(I, "_pending_intro_voice_capture", self._ctx()), \
-             mock.patch.object(I, "_pending_intro_followup", None), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll, \
-             mock.patch.object(I.people_memory, "delete_biometric"), \
-             mock.patch.object(I.llm, "get_response", return_value=None):
-            resp = I._handle_intro_voice_capture(
-                "That's not PJ, wrong person.",
-                audio,
-                person_id=None,
-                raw_best_id=1,
-                speaker_score=0.604,
-            )
-        self.assertTrue(resp)
-        self.assertFalse(enroll.called)
-
-    def test_ordinary_hello_still_enrolls_the_newcomer(self):
-        audio = np.zeros(16000, dtype=np.float32)
-        with mock.patch.object(I, "_pending_intro_voice_capture", self._ctx()), \
-             mock.patch.object(I, "_pending_intro_followup", None), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll, \
-             mock.patch.object(
-                 I.people_memory, "latest_biometric_id", return_value=56
-             ), \
-             mock.patch.object(I, "_bind_intro_visible_face_if_present"), \
-             mock.patch.object(I.llm, "get_response", return_value="PJ! Welcome."), \
-             mock.patch.object(I.consciousness, "mark_engagement"), \
-             mock.patch.object(I.consciousness, "note_person_spoke"), \
-             mock.patch.object(I.consciousness, "note_person_greeted_this_session"), \
-             mock.patch.object(I.conv_memory, "add_to_transcript"), \
-             mock.patch.object(I.conv_log, "log_heard"), \
-             mock.patch.object(I.topic_thread, "note_user_turn"), \
-             mock.patch.object(I.user_energy, "note_user_turn"):
-            resp = I._handle_intro_voice_capture(
-                "Hi Rex, nice to meet you.",
-                audio,
-                person_id=None,
-                raw_best_id=None,
-                speaker_score=0.30,
-            )
-            # Read the armed follow-up INSIDE the patch, before it is restored.
-            followup = I._pending_intro_followup
-        self.assertTrue(resp)
-        enroll.assert_called_once()
-        self.assertEqual(enroll.call_args.args[0], 7)
-        # The row id rides forward so a correction on the NEXT turn can undo it.
-        self.assertEqual((followup or {}).get("enrolled_voice_biometric_id"), 56)
 
 
-class IntroWindowFieldSequenceTest(unittest.TestCase):
-    """The two field turns back to back: enroll, then get corrected.
-
-    Turn 12 takes the sample on the window's expectation (that band is genuinely
-    ambiguous — an un-enrolled newcomer cross-matches the introducer at the same
-    0.6 scores the introducer himself lands on a short clip, and blocking it
-    outright is what stranded PJ in the 2026-08-23 run). Turn 13 is the human
-    saying it was wrong, and that has to reach the row.
-    """
-
-    def test_enroll_then_deny_retracts_the_print(self):
-        audio = np.zeros(16000, dtype=np.float32)
-        ctx = {
-            "introducer_id": 1,
-            "introducer_name": "Bret Benziger",
-            "introduced_id": 7,
-            "introduced_name": "PJ",
-            "relationship": None,
-            "asked_at": time.monotonic(),
-        }
-        with mock.patch.object(I, "_pending_intro_voice_capture", ctx), \
-             mock.patch.object(I, "_pending_intro_followup", None), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True), \
-             mock.patch.object(
-                 I.people_memory, "latest_biometric_id", return_value=56
-             ), \
-             mock.patch.object(I.people_memory, "delete_biometric") as delete_bio, \
-             mock.patch.object(I.facts_memory, "add_fact") as add_fact, \
-             mock.patch.object(I, "_bind_intro_visible_face_if_present"), \
-             mock.patch.object(I.llm, "get_response", return_value="Filed."), \
-             mock.patch.object(I.consciousness, "mark_engagement"), \
-             mock.patch.object(I.consciousness, "note_person_spoke"), \
-             mock.patch.object(I.consciousness, "note_person_greeted_this_session"), \
-             mock.patch.object(I.conv_memory, "add_to_transcript"), \
-             mock.patch.object(I.conv_log, "log_heard"), \
-             mock.patch.object(I.topic_thread, "note_user_turn"), \
-             mock.patch.object(I.user_energy, "note_user_turn"):
-            # turn 12 — the sample lands on PJ
-            I._handle_intro_voice_capture(
-                "I didn't leave. I just turned around.",
-                audio, person_id=None, raw_best_id=1, speaker_score=0.604,
-            )
-            self.assertIsNotNone(I._pending_intro_followup)
-            # turn 13 — Bret corrects him
-            resp = I._handle_intro_followup_answer("PJ is not here. This is Bret.")
-
-        self.assertTrue(resp)
-        self.assertFalse(add_fact.called)
-        delete_bio.assert_called_once_with(56)
 
 
 class IntroFollowupDenialTest(unittest.TestCase):
@@ -263,21 +127,19 @@ class IntroFollowupDenialTest(unittest.TestCase):
         ctx.update(kw)
         return ctx
 
-    def test_denial_saves_no_fact_and_retracts_the_print(self):
+    def test_denial_saves_no_fact_and_leaves_established_prints_alone(self):
         with mock.patch.object(I, "_pending_intro_followup", self._ctx()), \
-             mock.patch.object(I, "_pending_intro_voice_capture", None), \
              mock.patch.object(I.facts_memory, "add_fact") as add_fact, \
              mock.patch.object(I.people_memory, "delete_biometric") as delete_bio, \
              mock.patch.object(I.llm, "get_response", return_value=None):
             resp = I._handle_intro_followup_answer("PJ is not here. This is Bret.")
         self.assertTrue(resp)
         self.assertFalse(add_fact.called)
-        delete_bio.assert_called_once_with(56)
+        delete_bio.assert_not_called()
         self.assertIsNone(I._pending_intro_followup)
 
     def test_real_connection_story_still_stores(self):
         with mock.patch.object(I, "_pending_intro_followup", self._ctx()), \
-             mock.patch.object(I, "_pending_intro_voice_capture", None), \
              mock.patch.object(I.facts_memory, "add_fact") as add_fact, \
              mock.patch.object(I.people_memory, "delete_biometric") as delete_bio, \
              mock.patch.object(I.llm, "get_response", return_value="Noted."):
@@ -316,7 +178,7 @@ class OffscreenSelfAttributionTest(unittest.TestCase):
                  I.people_memory, "find_or_create_person",
                  return_value=(resolved_pid, created),
              ), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True), \
+             mock.patch.object(I, "_begin_conversational_voice_learning", return_value=True), \
              mock.patch.object(I, "_person_previously_met", return_value=previously_met), \
              mock.patch.object(I.speaker_id, "rank_speakers", return_value=[]), \
              mock.patch.object(I, "_has_unknown_visible_person", return_value=False), \
@@ -343,7 +205,7 @@ class OffscreenSelfAttributionTest(unittest.TestCase):
         """Same drive, but assert nothing was minted or enrolled."""
         with mock.patch.object(
             I.people_memory, "find_or_create_person", return_value=(1, False)
-        ) as mint, mock.patch.object(I, "_safe_enroll_voice") as enroll:
+        ) as mint, mock.patch.object(I, "_begin_conversational_voice_learning") as enroll:
             consumed, ack, prompt = self._run(
                 text, extracted=extracted, speaker_pid=1, resolved_pid=1,
                 created=False, previously_met=True,
@@ -413,7 +275,7 @@ class OffscreenSelfAttributionTest(unittest.TestCase):
              mock.patch.object(
                  I.people_memory, "find_or_create_person", return_value=(99, True)
              ), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True), \
+             mock.patch.object(I, "_begin_conversational_voice_learning", return_value=True), \
              mock.patch.object(I.speaker_id, "rank_speakers", return_value=[]), \
              mock.patch.object(I, "_has_unknown_visible_person", return_value=False), \
              mock.patch.object(I, "_bind_world_state_identity"), \

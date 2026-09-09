@@ -93,7 +93,7 @@ class HandoffTests(unittest.TestCase):
                 '_shutdown_requested': False, '_looks_like_own_echo': False,
                 '_game_suppresses_conversation': False, '_audio_group_chatter_active': False,
                 '_handle_router_motion_action': 'On my way.',
-                '_speak_blocking': None, '_maybe_auto_refresh_voice': None,
+                '_speak_blocking': None,
             }.items():
                 stack.enter_context(patch.object(I, name, return_value=value))
             stack.enter_context(patch.object(I.motion_controller, 'available', return_value=True))

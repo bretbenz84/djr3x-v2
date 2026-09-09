@@ -43,6 +43,59 @@ _manual_override = threading.Event()
 _shutdown_latch = threading.Event()   # power-down pose reached — servos frozen
 _sleep_latch = threading.Event()      # sleep pose reached — frozen until wake
 
+# The microphone rotates with this arm. Enforce the lease at the wire and
+# commanded-position layers, so direct animation writes cannot bypass it.
+_voice_hold_until = 0.0
+_voice_hold_ready = 0.0
+_voice_hold_timer = None
+_voice_hold_lock = threading.RLock()
+
+
+def voice_enrollment_hold_active() -> bool:
+    return time.monotonic() < _voice_hold_until
+
+
+def release_voice_enrollment_hold() -> None:
+    global _voice_hold_until, _voice_hold_ready, _voice_hold_timer
+    with _voice_hold_lock:
+        _voice_hold_until = _voice_hold_ready = 0.0
+        if _voice_hold_timer:
+            _voice_hold_timer.cancel()
+            _voice_hold_timer = None
+
+
+def hold_voice_enrollment_mic(duration: float) -> float:
+    """Center the hero arm once; return earliest safe capture time. Bounded lease."""
+    global _voice_hold_until, _voice_hold_ready, _voice_hold_timer
+    with _voice_hold_lock:
+        now = time.monotonic()
+        if not SERVOS_ENABLED:
+            return now
+        if _program_servo_updates_blocked():
+            raise RuntimeError('servo control unavailable for voice enrollment')
+        if voice_enrollment_hold_active():
+            return _voice_hold_ready
+        _voice_hold_until = now + max(1., min(60., duration))
+        _voice_hold_ready = now + float(getattr(config, 'VOICE_LEARNING_SERVO_SETTLE_SECS', 1.5))
+        cfg = config.SERVO_CHANNELS['heroarm']
+        set_servo(cfg['ch'], (cfg['min'] + cfg['max']) // 2)
+        deadline = _voice_hold_until
+        def expire():
+            with _voice_hold_lock:
+                if _voice_hold_until == deadline:
+                    release_voice_enrollment_hold()
+        _voice_hold_timer = threading.Timer(max(0., deadline - time.monotonic()), expire)
+        _voice_hold_timer.daemon = True
+        _voice_hold_timer.start()
+        return _voice_hold_ready
+
+
+def _voice_hold_position(channel, position):
+    cfg = config.SERVO_CHANNELS['heroarm']
+    if channel == cfg['ch'] and voice_enrollment_hold_active():
+        return (cfg['min'] + cfg['max']) // 2
+    return position
+
 # breathing_thread stop event — set by shutdown()
 _stop_breathing = threading.Event()
 _breathing_emotion = "neutral"
@@ -273,6 +326,7 @@ def _derive_body_state(positions: dict) -> str:
 
 def _record_servo_positions(channel_dict: "dict[int, int]") -> None:
     """Mirror commanded servo positions into WorldState proprioception."""
+    channel_dict = {ch: _voice_hold_position(ch, pos) for ch, pos in channel_dict.items()}
     updates = {
         _CHANNEL_TO_NAME[ch]: _clamp(ch, int(pos))
         for ch, pos in channel_dict.items()
@@ -362,6 +416,10 @@ def manual_override_enabled() -> bool:
 def set_manual_override_enabled(enabled: bool) -> None:
     """Freeze programmatic servo target updates so GUI sliders can drive servos."""
     enabled = bool(enabled)
+    if enabled:
+        from intelligence.voice_learning import mic_moved
+        mic_moved("manual_servo_control")
+        release_voice_enrollment_hold()
     was_enabled = _manual_override.is_set()
     if enabled:
         _manual_override.set()
@@ -565,7 +623,7 @@ def connected() -> bool:
 
 def _send_set_target(channel: int, position: int) -> None:
     """Send Maestro compact protocol Set Target command (0x84)."""
-    _send_command_locked(_encode(_CMD_SET_TARGET, channel, _clamp(channel, int(position))))
+    _send_command_locked(_encode(_CMD_SET_TARGET, channel, _clamp(channel, int(_voice_hold_position(channel, position)))))
 
 
 def _send_set_speed(channel: int, speed: int) -> None:
@@ -581,14 +639,14 @@ def _send_set_acceleration(channel: int, acceleration: int) -> None:
 def _remember_positions(channel_dict: "dict[int, int]") -> None:
     for channel, position in channel_dict.items():
         if channel in _CHANNEL_TO_NAME:
-            _commanded_positions[channel] = _clamp(channel, int(position))
+            _commanded_positions[channel] = _clamp(channel, int(_voice_hold_position(channel, position)))
 
 
 def set_servo(channel: int, position: int) -> None:
     """Move channel to position (quarter-microseconds), clamped to channel limits."""
     if _program_servo_updates_blocked():
         return
-    position = _clamp(channel, position)
+    position = _clamp(channel, _voice_hold_position(channel, position))
     if not SERVOS_ENABLED:
         _log.debug("set_servo no-op: SERVOS_ENABLED=False (ch=%d pos=%d)", channel, position)
         if _gui_servo_sim_enabled():
@@ -677,7 +735,7 @@ def set_servos(channel_dict: "dict[int, int]") -> None:
     """Set multiple channels in one pass. channel_dict maps channel int → position."""
     if _program_servo_updates_blocked():
         return
-    channel_dict = {ch: _clamp(ch, int(pos)) for ch, pos in channel_dict.items()}
+    channel_dict = {ch: _clamp(ch, int(_voice_hold_position(ch, pos))) for ch, pos in channel_dict.items()}
     if not SERVOS_ENABLED:
         _log.debug("set_servos no-op: SERVOS_ENABLED=False")
         if _gui_servo_sim_enabled():
@@ -1634,5 +1692,8 @@ def stop_breathing() -> None:
 
 def shutdown() -> None:
     """Stop breathing thread and cleanly disconnect. Call before process exit."""
+    from intelligence.voice_learning import mic_moved
+    mic_moved("servo_shutdown")
+    release_voice_enrollment_hold()
     _stop_breathing.set()
     disconnect()

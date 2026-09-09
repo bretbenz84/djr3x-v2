@@ -3942,26 +3942,17 @@ FACE_UNKNOWN_MIN_CONFIDENCE = _env_float(
 # CAM++ Chinese/English ONNX runs on CPU; download via tools/download_campplus.py.
 # Select "ecapa" or "resemblyzer" to roll back, then restart Rex.
 # CAM++ prints/signatures live in separate storage; legacy prints are preserved.
-# Missing CAM++ profiles seed from face + legacy voice agreement, explicit
-# self-identification, or active-speaker evidence. See docs/campplus_voice_id.md.
+# Missing CAM++ profiles learn from a confirmed identity and a consistent
+# conversational sample chain. See docs/conversational_voice_learning.md.
 VOICE_EMBEDDER = (os.getenv("VOICE_EMBEDDER", "").strip().lower() or "campplus")
 CAMPPLUS_MODEL_PATH = "assets/models/campplus/campplus.onnx"
 CAMPPLUS_CPU_THREADS = 2
-CAMPPLUS_AUTO_ENROLL_ENABLED = True
-CAMPPLUS_AUTO_ENROLL_MIN_VOICED_SECS = 1.0
 # Raw cosine thresholds, initial deployment defaults pending live calibration.
 CAMPPLUS_MATCH_THRESHOLD = 0.50
 CAMPPLUS_MATCH_MARGIN = 0.07
 # Conversational name continuity only; these turns never train or learn facts.
 CAMPPLUS_SHORT_REPLY_CONTINUITY_ENABLED = True
 CAMPPLUS_SHORT_REPLY_MIN_COSINE = 0.20
-# First CAM++ print may use agreement between a known face and the old voice
-# model. These are RAW legacy cosines, with no ECAPA score offset.
-CAMPPLUS_LEGACY_BOOTSTRAP_ENABLED = True
-CAMPPLUS_MIGRATION_MIN_VOICED_SECS = 2.0
-CAMPPLUS_MIGRATION_ECAPA_MIN_COSINE = 0.45
-CAMPPLUS_MIGRATION_RESEMBLYZER_MIN_COSINE = 0.75
-CAMPPLUS_MIGRATION_MIN_MARGIN = 0.10
 ECAPA_MODEL_DIR = "assets/models/ecapa"
 # ECAPA genuine matches run ~0.30-0.75 raw (vs Resemblyzer 0.45-0.93); impostors
 # ~0.0-0.2 (vs 0.3-0.5). +0.25 lines the bands up with the thresholds below:
@@ -3998,46 +3989,9 @@ SPEAKER_ID_THIN_PRINT_MAX_ROWS = 1
 SPEAKER_ID_THIN_RUNNER_MARGIN_FACTOR = 0.5
 SPEAKER_ID_THIN_RUNNER_MIN_TOP_SCORE = 0.55
 
-# Load the Resemblyzer encoder during startup so the first live spoken turn
+# Load the selected speaker encoder during startup so the first live spoken turn
 # does not pay the model load cost.
 SPEAKER_ID_PRELOAD_ON_STARTUP = True
-
-# How long (seconds) a pending introduction stays open to capture the new
-# person's voice sample after their name is given (interaction intro handling).
-INTRO_VOICE_CAPTURE_WINDOW_SECS = 45.0
-
-# While that capture window is open, Rex has just asked the NEWCOMER to speak,
-# so a short hello is far more likely to be them than the introducer. An
-# unenrolled voice tends to score as the nearest known print (the introducer) at
-# a mediocre similarity. Only an introducer match at or above this confident
-# threshold is believed over the window's expectation; below it, the reply is
-# treated as the newcomer and their voice is enrolled. Set high enough to clear
-# the off-camera-newcomer-as-introducer band (~0.59–0.64 observed) while still
-# trusting a genuinely confident introducer re-take.
-INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD = 0.75
-# Floor for the "live speaker is confidently the introducer — never enroll this
-# onto the newcomer" guard in _handle_intro_voice_capture. Deliberately pinned at
-# the historical 0.70 and DECOUPLED from SPEAKER_ID_CONFIDENT_THRESHOLD: raising
-# that global to 0.75 silently reopened the [0.70, 0.75) band and re-enabled the
-# introducer-voice-onto-newcomer poisoning (the "Leaf" bug shape; see also the
-# Brat/Exudica twin chaos, logs 2026-07-23-19-50-57).
-INTRO_VOICE_INTRODUCER_GUARD_FLOOR = 0.70
-
-# Camera-contradiction override for that guard. Field 2026-08-23 18:17 (PJ run):
-# PJ — un-enrolled, standing alone in front of the camera, personally invited to
-# say hello — answered "Hello." and scored 0.751 on BRET's print, so the guard
-# above called him "confidently the introducer" three turns in a row, the window
-# expired, and PJ spent the whole night attributed to Bret. Score alone cannot
-# separate a voice-twin newcomer from the introducer, but the camera could: the
-# introducer had never been on camera while an unknown face was front and
-# center. When ALL of that independent evidence lines up (unknown face visible
-# NOW, introducer not seen recently, the visual active-speaker latch does not
-# say the introducer, newcomer-shaped text), a sub-ceiling "confident" match is
-# overridden and the reply is enrolled as the newcomer. The ceiling keeps
-# slam-dunk introducer turns safe: genuine Bret landed 0.83–0.89 in that same
-# session while PJ-as-Bret landed 0.60–0.75.
-INTRO_VOICE_VISUAL_NEWCOMER_OVERRIDE_ENABLED = True
-INTRO_VOICE_INTRODUCER_VISUAL_OVERRIDE_CEILING = 0.87
 
 # Same failure, one window earlier: Rex asked the visible unknown "What name
 # should I save for you?" and PJ's reply ("Call me Playa P") scored 0.602 on
@@ -4061,57 +4015,20 @@ IDENTITY_PROMPT_DEMOTION_ENABLED = True
 # camera moments ago or the visual active-speaker latch contradicts the face.
 VOICELESS_FACE_WINS_ENABLED = True
 
-# Prompted enrollment requires the dictated sentence, captured after the ask,
-# the requested person's sole face throughout the audio, no competing voice,
-# and sample quality gates. Unrelated replies never become voiceprints.
-# Once per person per session; automatic first-profile enrollment still works
-# from independent identity evidence when no prompted sample is pending.
-VOICE_SAMPLE_REQUEST_ENABLED = True
-VOICE_SAMPLE_REQUEST_WINDOW_SECS = 45.0
-# Minimum size for an enrollable voice sample. A two-word "Hey Rex" (~1s) makes
-# a print too weak to separate close voices — field 2026-08-25: PJ enrolled from
-# one, and every answer he gave during Jeopardy was attributed to Bret. Shorter
-# samples get another ask instead of enrolling.
-VOICE_SAMPLE_MIN_SECS = 2.0
-VOICE_SAMPLE_MIN_WORDS = 4
-# The voice-ID ask DICTATES a line (owner call 2026-08-26): "give me a line"
-# left PJ guessing and he offered "Hey Rex" — people freeze on an open-ended
-# ask. The line carries the person's OWN NAME ({name}) — a sentence about
-# yourself is the easiest thing to repeat verbatim on first hearing (the
-# pangram flunked that test). Short, natural, ~3-4s spoken, past the floors
-# above. The full sentence must match (ignoring punctuation, spacing and case).
-VOICE_SAMPLE_LINE_TEMPLATES = [
-    "My name is {name}, and this is what my voice sounds like.",
-    "Hey Rex, it's {name} — remember my voice, not just my face.",
-    "This is {name}, talking to the loudest droid in the galaxy.",
-]
-# Passive voiceprint growth (owner spec 2026-08-26): nobody reads lines — when
-# exactly one KNOWN face is on camera, nobody unknown is visible, nobody else
-# has been seen or heard for SOLO_WINDOW, and the turn is long enough, the
-# turn's audio silently becomes a voiceprint for the visible person:
-#  - voiceless person (0 prints): enrolled even when the voice cross-matches
-#    someone else (expected for close voices — PJ lands 0.55-0.80 on Bret's
-#    centroid), up to SPEAKER_ID_CONFIDENT_THRESHOLD.
-#  - thin prints (< PRINT_TARGET): grown while a foreign match stays under
-#    LOW_BAR and the self-match stays under REDUNDANT_BAR (a near-duplicate
-#    row adds nothing).
-# The phantom-twin guards stay: session cap, spacing, and every enrollment
-# logs its numbers as [passive_enroll].
-PASSIVE_VOICE_ENROLL_ENABLED = True
-PASSIVE_VOICE_PRINT_TARGET = 4
-PASSIVE_VOICE_ENROLL_LOW_BAR = 0.60
-PASSIVE_VOICE_ENROLL_REDUNDANT_BAR = 0.80
-PASSIVE_VOICE_ENROLL_MAX_PER_SESSION = 3
-PASSIVE_VOICE_ENROLL_MIN_SPACING_SECS = 90.0
-PASSIVE_VOICE_ENROLL_SOLO_WINDOW_SECS = 90.0
-
-# Off-screen "who was that?" claim verification: when the answer names an EXISTING
-# person who already has voice prints, the held clip must score at least this
-# against their prints to be ENROLLED onto them (conversation attribution is not
-# affected). A claimed name is testimony, not biometrics — field 2026-07-23 20:12:
-# a guest joked "obviously me, Bret" and her clip (0.516 vs Bret) was enrolled
-# onto Bret's record. Genuine same-person clips score well above this.
-OFFSCREEN_IDENTIFY_CLAIM_VERIFY_FLOOR = 0.55
+# Conversational CAM++ learning replaces recitation and single-clip bootstrap.
+VOICE_LEARNING_MIN_TURNS = 3
+VOICE_LEARNING_MIN_VOICED_SECS = 8.0
+VOICE_LEARNING_SAMPLE_MIN_VOICED_SECS = 2.0
+VOICE_LEARNING_ANCHOR_COSINE = 0.50
+VOICE_LEARNING_SHORT_ANCHOR_COSINE = 0.35
+VOICE_LEARNING_CLUSTER_COSINE = 0.55
+VOICE_LEARNING_FOREIGN_COSINE = 0.65
+VOICE_LEARNING_BEARING_TOLERANCE_DEG = 35.0
+VOICE_LEARNING_WINDOW_SECS = 60.0
+VOICE_LEARNING_RESUME_SECS = 300.0
+VOICE_LEARNING_SERVO_SETTLE_SECS = 1.5
+VOICE_LEARNING_MAX_RECORDINGS = 10
+VOICE_LEARNING_MAX_PRINTS = 10
 
 # VAD (Silero) — probability threshold above which speech is considered detected
 VAD_THRESHOLD = 0.5
@@ -7208,46 +7125,6 @@ SPEAKER_ID_GRIEF_FLOW_FLOOR = 0.30
 # Rex honestly admits he doesn't recognize the voice. Only affects the
 # query_who_is_speaking intent — not the acceptance logic.
 SPEAKER_ID_MAYBE_FLOOR = 0.50
-
-# Auto voice-refresh: when both face-ID AND voice-ID agree on a person with
-# voice score at or above this confidence, silently append the current audio
-# as an additional voice biometric row — up to MAX_SAMPLES per person. Builds
-# a more robust multi-sample voice print over time without manual re-enrollment.
-AUTO_VOICE_REFRESH_MIN_SCORE = 0.90
-AUTO_VOICE_REFRESH_MAX_SAMPLES = 5
-# Anti-poisoning gate for the FACE-CONFIRMED refresh path: a visible face is NOT
-# proof that this person is the one SPEAKING. A 3rd-party voice (a TTS/AI voice
-# like ChatGPT, a TV, or another person off-camera) that merely scores onto a
-# visible person's print would otherwise be appended, re-broadening it. When True,
-# a face-confirmed refresh additionally requires the visual active-speaker latch to
-# positively confirm THIS person is the one talking on camera (else the turn is
-# skipped — refresh is opportunistic, so a missed refresh is harmless but a poisoned
-# print is not). Set False to restore the old face-only behavior (e.g. if the
-# active-speaker detector is disabled and you accept the poisoning risk).
-AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER = _env_bool(
-    "AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER", True
-)
-# BOOTSTRAP a fresh/empty voiceprint. The normal refresh Guard 1 requires the voice to already
-# match this person — but a person with NO voiceprint (freshly wiped or never enrolled) matches
-# SOMEONE ELSE, so Guard 1 would lock them out forever (chicken-and-egg). While a person has fewer
-# than BOOTSTRAP_MIN_SAMPLES prints, skip Guard 1 and enroll their face+camera-confirmed audio so the
-# print can form. Guard 2 (the visual active-speaker must confirm THIS person is the on-camera
-# talker) still applies — it is the sole protection while Guard 1 is relaxed, so we never seed the
-# print with someone else's voice. Once at/above the floor, normal refresh rules resume.
-AUTO_VOICE_BOOTSTRAP_ENABLED = _env_bool("AUTO_VOICE_BOOTSTRAP_ENABLED", True)
-# Quality floor for ANY sample added to a voiceprint (refresh + bootstrap): shorter or
-# quieter clips than this drag the centroid off the person's true voice permanently
-# (measured 2026-07-05: a shard-diluted print scored ~0.08 below a clean enroll in
-# every condition). Duration is post-VAD audio length; RMS is float32 full-scale.
-AUTO_VOICE_REFRESH_MIN_SECS = _env_float("AUTO_VOICE_REFRESH_MIN_SECS", 2.5, min_value=0.0, max_value=30.0)
-AUTO_VOICE_REFRESH_MIN_RMS = _env_float("AUTO_VOICE_REFRESH_MIN_RMS", 0.008, min_value=0.0, max_value=1.0)
-AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES = _env_int("AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES", 3, min_value=1, max_value=20)
-
-# Voice enrollment samples should be long enough to represent a voice, not just
-# a one-word name or noisy aside. The person row/face can still be saved; the
-# voice biometric waits for a cleaner sample.
-IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS = 1.2
-IDENTITY_VOICE_ENROLL_MIN_WORDS = 2
 
 # If Rex asks a newcomer their name and they answer with only a very common
 # first name, ask for a last name before creating the memory row. This avoids
@@ -11125,7 +11002,7 @@ STARTUP_BOOT_TTS_LINE = STARTUP_BOOT_TTS_LINES[0]
 # SHORT_CLIP_ROSTER_FLOOR and trails the top candidate by at most
 # SHORT_CLIP_ROSTER_MARGIN wins; else an existing anonymous slot at its normal
 # bar; else whoever spoke within SHORT_CLIP_LAST_SPEAKER_SECS; else the turn is
-# left unattributed with no ask. Never print material (AUTO_VOICE_REFRESH_MIN_SECS).
+# left unattributed with no ask. Never voice enrollment material.
 SHORT_CLIP_CONTINUITY_ENABLED = _env_bool("SHORT_CLIP_CONTINUITY_ENABLED", True)
 SHORT_CLIP_MAX_WORDS = _env_int("SHORT_CLIP_MAX_WORDS", 3, min_value=0, max_value=10)
 SHORT_CLIP_MAX_SECS = _env_float("SHORT_CLIP_MAX_SECS", 1.5, min_value=0.0, max_value=10.0)

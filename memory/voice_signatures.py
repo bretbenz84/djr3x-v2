@@ -3,18 +3,18 @@ Cross-session memory for recurring UNKNOWN voices (voice-primary identity).
 
 A *voice signature* is one persisted, L2-normalized voice embedding that Rex has
 heard but has no name for yet. It lets him recognize a recurring voice across
-sessions ("I've heard you before") and, the moment that voice is finally named,
-link its accumulated samples to the new person — without ever creating a nameless
-person row (which would leak into greetings, memory injection, etc.).
+sessions ("I've heard you before") without creating a nameless person row. Naming
+now belongs to the conversational learner; anonymous samples are never promoted
+automatically into a named voiceprint.
 
 Lifecycle:
   - An anonymous session slot (``unknown_voice_N``) persists/refreshes a signature
     as it recurs (``record`` / ``bump``).
   - On a fresh unknown voice, ``match`` checks whether it resembles a signature
     seen in a previous session — that's the cross-session continuity hook.
-  - When the voice is finally identified (off-screen identify / self-intro),
-    ``attach_person`` links the signature to the person and its embedding is
-    enrolled as a real voice biometric by the caller.
+  - Existing named signatures remain readable and keep usage timestamps, but
+    their embeddings no longer grow through this path. ``attach_person`` is a
+    data/admin utility only; live name handlers do not call it.
 
 All reads/writes degrade gracefully if the ``voice_signatures`` table is missing
 (older DB) and are gated by ``VOICE_SIGNATURE_PERSIST_ENABLED``.
@@ -182,10 +182,16 @@ def bump(signature_id: int, embedding) -> None:
         return
     try:
         row = db.fetchone(
-            f"SELECT embedding, turns FROM {_voice_score.signature_table()} WHERE id=?",
+            f"SELECT embedding, turns, person_id FROM {_voice_score.signature_table()} WHERE id=?",
             (int(signature_id),),
         )
         if row is None:
+            return
+        if row["person_id"] is not None:
+            # Existing named signatures remain readable, but opportunistic
+            # blending must not become a second named-voice learning process.
+            db.execute(f"UPDATE {_voice_score.signature_table()} SET turns=turns+1, last_seen_at=? WHERE id=?",
+                       (_now(), int(signature_id)))
             return
         prior = _normalize(_from_blob(row["embedding"]))
         turns = int(row["turns"] or 1)

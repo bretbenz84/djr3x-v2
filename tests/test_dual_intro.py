@@ -47,7 +47,7 @@ class DualIntroReplyTest(unittest.TestCase):
                               side_effect=[(41, True), (42, True)]) as foc,
             mock.patch.object(I.people_memory, "add_biometric") as add_bio,
             mock.patch.object(I.people_memory, "update_familiarity"),
-            mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll,
+            mock.patch.object(I, "_begin_conversational_voice_learning", return_value=True) as enroll,
             mock.patch.object(I, "_retire_anonymous_speaker_slot") as retire,
             mock.patch.object(I, "_bind_world_state_identity"),
             mock.patch.object(I, "_episodic_person_enrolled"),

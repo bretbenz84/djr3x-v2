@@ -157,6 +157,13 @@ MEDIAPIPE_OBJECT_DETECTOR = {
 
 # ── Full database schema (mirrors Memory System section of CONTEXT.md) ────────
 DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS voice_recordings (
+    id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL REFERENCES people(id),
+    digest TEXT NOT NULL, wav BLOB NOT NULL, metadata TEXT NOT NULL,
+    biometric_id INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(person_id, digest)
+);
+
 CREATE TABLE IF NOT EXISTS people (
     id                      INTEGER PRIMARY KEY,
     name                    TEXT,

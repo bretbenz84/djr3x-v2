@@ -129,17 +129,12 @@ def lines(person_id: Optional[int], *, for_reply: bool = True) -> list[str]:
     except Exception as exc:
         _log.debug("[brain_context] presence lines failed: %s", exc)
     try:
-        from intelligence import voice_bootstrap
-        from memory import conversations, people
-        pending = voice_bootstrap.pending_person(conversations.transcript_version()[0])
-        if pending is not None:
-            person = people.get_person(pending) or {}
-            out.append("Voice enrollment pending for " + str(person.get("name") or "the introduced person")
-                         + ". Their introduction was too short to save a voiceprint. "
-                         "Do not claim their voice is enrolled or recognized. If this turn is their "
-                         "introduction, acknowledge the name and ask for one full sentence while "
-                         "facing you; the next suitable matching utterance enrolls automatically. "
-                         "This pending state is not proof of who spoke a later turn.")
+        from intelligence import interaction
+        runtime = interaction._voice_learning_runtime
+        if runtime is not None:
+            note = runtime.learner.context()
+            if note:
+                out.append(note)
     except Exception as exc:
         _log.debug("[brain_context] enrollment context failed: %s", exc)
     return out

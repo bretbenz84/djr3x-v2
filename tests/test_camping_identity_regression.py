@@ -39,7 +39,7 @@ class CampingIdentityRegression(unittest.TestCase):
     def test_bogus_name_cannot_reach_database_or_biometrics(self):
         with mock.patch.object(I, '_turn_transcript_trusted', return_value=True), \
                 mock.patch.object(I.people_memory,'find_or_create_person') as create, \
-                mock.patch.object(I,'_safe_enroll_voice') as enroll:
+                mock.patch.object(I,'_begin_conversational_voice_learning') as enroll:
             self.assertIsNone(I._enroll_new_person('Going Camping Tomorrow',np.zeros(20)))
         create.assert_not_called()
         enroll.assert_not_called()

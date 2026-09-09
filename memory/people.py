@@ -37,6 +37,7 @@ _log = logging.getLogger(__name__)
 
 # Tables that hold per-person data (excludes personality_settings, which is global).
 _PERSON_TABLES = [
+    "voice_recordings",
     "biometrics",
     "person_facts",
     "person_qa",
@@ -618,7 +619,9 @@ def delete_biometric(biometric_id: int) -> bool:
     so the retraction has to reach the row, not just the pending state."""
     if biometric_id is None:
         return False
-    db.execute("DELETE FROM biometrics WHERE id = ?", (int(biometric_id),))
+    with db.connection() as conn:
+        conn.execute("DELETE FROM voice_recordings WHERE biometric_id = ?", (int(biometric_id),))
+        conn.execute("DELETE FROM biometrics WHERE id = ?", (int(biometric_id),))
     return True
 
 
@@ -1222,6 +1225,8 @@ def delete_person(person_id: int) -> None:
             (person_id, person_id),
         )
         conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
+    from memory.voice_recordings import invalidate_pending
+    invalidate_pending(person_id)
     _purge_episodes_for_person(person_id)
 
 
@@ -1285,12 +1290,17 @@ def merge_person(survivor_id: int, victim_id: int) -> bool:
             "WHERE from_person_id = ? OR to_person_id = ?",
             (victim_id, victim_id),
         )
+        from memory.voice_recordings import prune
+        prune(conn, survivor_id)
         conn.execute("DELETE FROM people WHERE id = ?", (victim_id,))
     try:
         from memory import episodes
         episodes.repoint_person(victim_id, survivor_id)
     except Exception as exc:
         _log.debug("episode repoint skipped %s→%s: %s", victim_id, survivor_id, exc)
+    from memory.voice_recordings import invalidate_pending
+    invalidate_pending(victim_id)
+    invalidate_pending(survivor_id)
     _log.info(
         "[identity] merged person_id=%s into survivor_id=%s", victim_id, survivor_id
     )
@@ -1313,6 +1323,8 @@ def delete_all_people() -> None:
         conn.execute("DELETE FROM voice_signatures WHERE person_id IS NOT NULL")
         conn.execute("DELETE FROM proactive_topics_asked")
         conn.execute("DELETE FROM people")
+    from memory.voice_recordings import invalidate_pending
+    invalidate_pending()
     # Keep Rex's diary but sever the now-dangling person links (ids will be recycled).
     try:
         from memory import episodes

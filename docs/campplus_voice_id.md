@@ -35,47 +35,23 @@ per-bin time-mean subtraction. Embeddings are normalized 192-dimensional vectors
 The model can process short speech; the current input floor is 200 ms. This is
 not a guarantee of correct identification on every short word or vocalization.
 
-## Existing people and automatic enrollment
+## Existing people and conversational enrollment
 
-Old embeddings cannot be converted into CAM++ embeddings without the original
-audio. Legacy prints remain intact for rollback. CAM++ prints use biometric type
-`voice_campplus_zh_en_v1`, and anonymous signatures use `voice_signatures_campplus`.
-Both CAM++ and ECAPA output 192 floats, so all matching/counting paths separate
-models by storage namespace as well as dimension. Existing DBs gain the signature
-table through the normal migration path; no old person or print is deleted.
+Current behavior: [Conversational voice learning](conversational_voice_learning.md).
+A spoken name or a confirmation to a known face starts a provisional acoustic
+chain. At least three consistent utterances and eight voiced seconds are needed
+before an atomic batch saves named prints and original WAV audio. Multiple faces
+are supported, direction is optional, and mouth evidence is never used.
 
-With `CAMPPLUS_AUTO_ENROLL_ENABLED = True`, a missing CAM++ profile is created
-from a trusted spoken turn using any of these independent identity sources:
+The old single-clip bootstrap, legacy-model verification, prompted recitation,
+passive solo-face save and separate refresh handlers have been removed. Historical
+field notes below explain earlier failures; their enrollment recipes and test
+commands do not describe the current implementation.
 
-- One actually visible named face agrees with the strongest legacy voice match.
-  With `CAMPPLUS_LEGACY_BOOTSTRAP_ENABLED`, the captured audio is temporarily
-  verified against the person's old ECAPA or Resemblyzer prints. This needs two
-  seconds of voiced speech, a conservative raw-cosine threshold, and a margin
-  over other people. It never changes the active CAM++ backend or copies an old
-  vector into CAM++ storage. Once that person has a CAM++ print this path stops.
-- The speaker explicitly identifies themselves, such as “My name is Bret,”
-  and that name resolves to an existing person without conflicting visual evidence.
-  A complete existing name, such as “Bret Benziger,” also qualifies when that
-  named person is the sole visible face. Ordinary sentences cannot create people.
-- Interval mouth-motion evidence consistently identifies one existing person
-  (at least three observations at confidence 0.5 or higher), when available.
+Model storage remains `voice_campplus_zh_en_v1`, distinct from legacy prints even
+when their vector dimensions match. Existing prints and people are preserved.
 
-Mouth detection is optional. The owner reports that it has never worked reliably
-on these cameras/models, so enrollment and profile growth cannot depend on it.
-
-The first enrollment requires at least one second of voiced audio and the
-existing 1.2-second capture minimum. Recognized mixed-speaker captures, conflicting
-visual speakers, low-confidence transcripts, laughter, and typed GUI text cannot
-seed this profile. After saving, the same turn is rescored so it can immediately
-carry the speaker's name. Established enrollment/introduction flows also use CAM++.
-Opportunistic profile growth requires an existing strong CAM++ match and agreement
-with the sole currently visible named face; it does not require mouth detection.
-
-A visible face or prior conversation partner alone is insufficient. If Rex cannot
-establish who an un-enrolled voice belongs to, it remains unknown until identity
-is established. A new model cannot recover that name from old incompatible vectors.
-
-## Validation and morning test
+## Historical validation and morning test (superseded enrollment)
 
 Offline regression checks:
 

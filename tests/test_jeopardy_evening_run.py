@@ -92,16 +92,15 @@ class EveningRunTest(unittest.TestCase):
 
     def test_game_speech_cannot_rename_or_enroll(self):
         from audio import speaker_id
+        from intelligence.voice_learning_runtime import Runtime
         audio = np.zeros(16000, dtype=np.float32)
         with mock.patch.object(speaker_id, "active_backend", return_value="campplus"), \
              mock.patch.object(speaker_id, "enroll_voice") as enroll, \
-             mock.patch.object(I.people_memory, "rename_person") as rename, \
-             mock.patch.object(I, "_pending_voice_sample_capture", {"asked_at": 1, "person_id": 3}), \
-             mock.patch.object(I, "_pending_intro_voice_capture", {"introduced_id": 3}):
-            self.assertFalse(I._maybe_bootstrap_campplus(audio, "My name is Joy and I'm playing Jeopardy"))
-            I._maybe_passive_voice_enroll("My name is Joy", audio, 3, 3, 1.)
-            self.assertIsNone(I._handle_voice_sample_capture("Next stage", audio, 3, 3, 1.))
-            self.assertIsNone(I._handle_intro_voice_capture("My name is T", audio, 3, 3, 1.))
+             mock.patch.object(I.people_memory, "rename_person") as rename:
+            runtime = Runtime(I)
+            self.assertIsNone(runtime.process(audio, "My name is Joy"))
+            self.assertIsNone(runtime.learner.pending)
+            self.assertFalse(I._begin_conversational_voice_learning(3,audio,source="new_person",confirmed=True))
             self.assertIsNone(I._handle_name_update_request("My name is Joy", 3, "T'Joy Jackson"))
         enroll.assert_not_called()
         rename.assert_not_called()

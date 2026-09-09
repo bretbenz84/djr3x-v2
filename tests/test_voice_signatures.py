@@ -129,12 +129,12 @@ class AnonymousSlotPersistenceTest(_TempPeopleDb):
         self.assertTrue(slot.recognized_across_sessions)
         self.assertIsNotNone(slot.signature_id)
 
-    def test_promotion_links_signature_to_named_person(self):
+    def test_name_answer_does_not_promote_unverified_signature(self):
         emb = _unit(3, 4, 5)
         self._speak(emb)
         label = self._speak(emb)  # persisted now
         self.I._retire_anonymous_speaker_slot(label, person_id=99, person_name="Dana")
-        self.assertEqual(vs.match(emb)["person_id"], 99)
+        self.assertIsNone(vs.match(emb)["person_id"])
 
     def test_cross_session_voice_resolves_to_known_person(self):
         # READ side of cross-session voice memory: a signature already linked to a

@@ -425,7 +425,7 @@ def _visible_come_requester(snapshot: dict, person_id: Optional[int],
     # learning permission is granted here, and a competing face/voice still wins.
     if len(visible) == 1 and evidence and not evidence.get("text_input"):
         pid = visible[0].get("person_db_id")
-        from intelligence.voice_bootstrap import visible_identity
+        from intelligence.voice_learning import visible_identity
         interval = evidence.get("visual_observations") or []
         sole_interval_face = (pid is not None and len(interval) >= 3
             and all(visible_identity(row.get("faces") or []) == pid

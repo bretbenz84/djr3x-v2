@@ -282,23 +282,12 @@ class TranscriptAndLeanUncertaintyTest(unittest.TestCase):
 
 
 class LearningGateTest(unittest.TestCase):
-    def test_passive_enroll_stands_down_when_ambiguous(self):
-        import numpy as np
+    def test_uncertain_resolution_cannot_grant_learning(self):
         from intelligence import interaction as I
-        saved = I._current_turn_speaker_evidence
-        self.addCleanup(setattr, I, "_current_turn_speaker_evidence", saved)
-        I._current_turn_speaker_evidence = {"resolution": {"status": "ambiguous"}}
-        with (
-            mock.patch.object(I.config, "PASSIVE_VOICE_ENROLL_ENABLED", True),
-            mock.patch.object(I, "_pending_voice_sample_capture", None),
-            mock.patch.object(I, "_pending_impersonation_capture", None),
-            mock.patch.object(I, "_single_visible_person_identity") as solo,
-        ):
-            I._maybe_passive_voice_enroll("a long enough sentence for the gate", np.zeros(16000, dtype=np.float32), 1, 1, 0.9)
-        solo.assert_not_called()
-        self.assertTrue(I._turn_speaker_uncertain())
-        I._current_turn_speaker_evidence = {"resolution": {"status": "known"}}
-        self.assertFalse(I._turn_speaker_uncertain())
+        with mock.patch.object(I, "_current_turn_speaker_evidence", {"resolution": {"status": "ambiguous"}}):
+            self.assertTrue(I._turn_speaker_uncertain())
+        with mock.patch.object(I, "_current_turn_speaker_evidence", {"resolution": {"status": "known"}}):
+            self.assertFalse(I._turn_speaker_uncertain())
 
 
 if __name__ == "__main__":

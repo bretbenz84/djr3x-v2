@@ -228,116 +228,8 @@ class FuzzyFirstNameMatchTest(_TempPeopleDb):
         self.assertNotEqual(pid, None)
 
 
-class IntroVoiceCaptureWindowTest(unittest.TestCase):
-    """Fix #3a: a fresh intro voice-capture window must survive the direct-turn
-    identity-prompt deferral so the enrollment handler downstream can run."""
-
-    def _fresh_ctx(self):
-        return {
-            "introducer_id": 1,
-            "introducer_name": "Bret Benziger",
-            "introduced_id": 5,
-            "introduced_name": "Exudica Royale",
-            "relationship": "friend",
-            "asked_at": time.monotonic(),
-        }
-
-    def test_direct_turn_preserves_fresh_window(self):
-        from intelligence import interaction as I
-
-        with mock.patch.object(I, "_pending_intro_voice_capture", self._fresh_ctx()), \
-             mock.patch.object(I.consciousness, "clear_pending_identity_prompts", return_value=False):
-            I._clear_pending_identity_prompts("direct_turn")
-            self.assertIsNotNone(I._pending_intro_voice_capture)
-
-    def test_other_reason_still_clears_window(self):
-        from intelligence import interaction as I
-
-        with mock.patch.object(I, "_pending_intro_voice_capture", self._fresh_ctx()), \
-             mock.patch.object(I.consciousness, "clear_pending_identity_prompts", return_value=False):
-            I._clear_pending_identity_prompts("boundary")
-            self.assertIsNone(I._pending_intro_voice_capture)
-
-    def test_stale_window_is_cleared_even_on_direct_turn(self):
-        from intelligence import interaction as I
-
-        stale = self._fresh_ctx()
-        stale["asked_at"] = time.monotonic() - 10_000.0
-        with mock.patch.object(I, "_pending_intro_voice_capture", stale), \
-             mock.patch.object(I.consciousness, "clear_pending_identity_prompts", return_value=False):
-            I._clear_pending_identity_prompts("direct_turn")
-            self.assertIsNone(I._pending_intro_voice_capture)
 
 
-class IntroVoiceCaptureEnrollTest(unittest.TestCase):
-    """Fix #3b: a mediocre (sub-confident) introducer score during the window,
-    on a newcomer-sounding hello, enrolls the NEWCOMER — not the introducer."""
-
-    def _ctx(self):
-        return {
-            "introducer_id": 1,
-            "introducer_name": "Bret Benziger",
-            "introduced_id": 5,
-            "introduced_name": "Exudica Royale",
-            "relationship": "friend",
-            "asked_at": time.monotonic(),
-        }
-
-    def test_mediocre_introducer_score_enrolls_newcomer(self):
-        from intelligence import interaction as I
-
-        audio = np.zeros(16000, dtype=np.float32)
-        with mock.patch.object(I, "_pending_intro_voice_capture", self._ctx()), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll, \
-             mock.patch.object(I, "_bind_intro_visible_face_if_present"), \
-             mock.patch.object(I.llm, "get_response", return_value="Exudica! Welcome."), \
-             mock.patch.object(I.consciousness, "mark_engagement"), \
-             mock.patch.object(I.consciousness, "note_person_spoke"):
-            resp = I._handle_intro_voice_capture(
-                "hi what's your name",
-                audio,
-                person_id=1,        # mis-resolved to the introducer (Bret)
-                raw_best_id=1,
-                speaker_score=0.64,  # below the 0.75 confident bar
-            )
-        self.assertTrue(resp)
-        self.assertTrue(enroll.called)
-        self.assertEqual(enroll.call_args.args[0], 5)  # enrolled the NEWCOMER
-
-    def test_confident_introducer_score_does_not_enroll(self):
-        from intelligence import interaction as I
-
-        audio = np.zeros(16000, dtype=np.float32)
-        with mock.patch.object(I, "_pending_intro_voice_capture", self._ctx()), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
-            resp = I._handle_intro_voice_capture(
-                "hi what's your name",
-                audio,
-                person_id=1,
-                raw_best_id=1,
-                speaker_score=0.92,  # clearly the introducer re-speaking
-            )
-        self.assertIsNone(resp)
-        self.assertFalse(enroll.called)
-
-    def test_confident_identity_introducer_does_not_enroll_in_band(self):
-        # BUG-2: the [SPEAKER_ID_CONFIDENT_THRESHOLD=0.70, 0.75) band — identity
-        # said "confidently the introducer" yet the 0.75 intro bar called it
-        # "weak" and enrolled Bret's correction onto phantom "Leaf".
-        from intelligence import interaction as I
-
-        audio = np.zeros(16000, dtype=np.float32)
-        with mock.patch.object(I, "_pending_intro_voice_capture", self._ctx()), \
-             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
-            resp = I._handle_intro_voice_capture(
-                "I was answering your question",
-                audio,
-                person_id=1,
-                raw_best_id=1,
-                speaker_score=0.707,  # >= 0.70 confident, < 0.75 old intro bar
-            )
-        self.assertIsNone(resp)
-        self.assertFalse(enroll.called)
 
 
 class IntroAnswerGateTest(unittest.TestCase):
@@ -424,29 +316,6 @@ class IntroAnswerGateTest(unittest.TestCase):
             )
 
 
-class IntroCaptureWindowGateTest(unittest.TestCase):
-    """Fix #4: the gate that suppresses sticky/visible-face attribution while Rex
-    is waiting for a just-introduced newcomer to speak."""
-
-    def test_open_only_for_a_fresh_voice_capture(self):
-        from intelligence import interaction as I
-
-        fresh = {"introduced_id": 5, "asked_at": time.monotonic()}
-        with mock.patch.object(I, "_pending_intro_voice_capture", fresh):
-            self.assertTrue(I._intro_capture_window_open())
-
-    def test_closed_when_no_window(self):
-        from intelligence import interaction as I
-
-        with mock.patch.object(I, "_pending_intro_voice_capture", None):
-            self.assertFalse(I._intro_capture_window_open())
-
-    def test_closed_when_window_is_stale(self):
-        from intelligence import interaction as I
-
-        stale = {"introduced_id": 5, "asked_at": time.monotonic() - 10_000.0}
-        with mock.patch.object(I, "_pending_intro_voice_capture", stale):
-            self.assertFalse(I._intro_capture_window_open())
 
 
 if __name__ == "__main__":
