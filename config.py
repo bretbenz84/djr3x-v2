@@ -1862,16 +1862,15 @@ BREEZE_TTS_STREAMING_INTERVAL = 0.25
 BREEZE_TTS_TEMPERATURE = 0.7
 BREEZE_TTS_REPETITION_PENALTY = 1.2  # stop early-phrase codec loops on longer text
 BREEZE_TTS_MAX_TOKENS = 750
-BREEZE_TTS_MAX_UNDERRUNS = 3    # abort a broken stream instead of stuttering indefinitely
 BREEZE_TTS_MAX_CHUNK_WAIT_SECS = 4.0  # stalled producer after playback begins
 BREEZE_TTS_DURATION_SLACK = 2.0  # cap runaway generation at twice expected length
 BREEZE_TTS_FAST_DEPTH = True    # ported from Local/breeze-tts-2 test bench
 BREEZE_TTS_REF_CACHE = True     # bounded, per-model cache of reference prefixes
-BREEZE_TTS_PREROLL_SEC = 1.5    # buffer generated audio before playback (live stutter fix)
+BREEZE_TTS_PREROLL_SEC = 1.5    # Rex speech; impressions prepare the complete take
 BREEZE_TTS_FRONT_PAD_MS = 0.0
 BREEZE_TTS_OUTPUT_LATENCY = 0.35  # seconds of host buffering against inference/GIL stalls
 BREEZE_TTS_OUTPUT_BLOCKSIZE = 4096
-BREEZE_TTS_QUEUE_CHUNKS = 16     # bounded producer ahead of playback
+BREEZE_TTS_QUEUE_CHUNKS = 16     # bounded producer ahead of Rex speech playback
 
 # Which mlx-community Qwen3-TTS variant to run. "1.7B-Base-8bit" measured RTF
 # ~0.41 on Apple Silicon (2.5x faster than realtime) — the quality/speed pick.

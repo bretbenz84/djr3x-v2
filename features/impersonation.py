@@ -457,13 +457,15 @@ def resolve_target(
         return Resolution("capture", person_id=speaker_person_id, name=name, is_self=True,
                           line=capture_prompt(name))
 
-    # A named target. Known people take precedence over famous clips.
+    # Stored names/aliases, then unique nicknames, before famous clips.
     from memory import people as people_db
     person = None
     try:
         person = people_db.find_person_by_name(target)
+        if person is None:
+            person = people_db.find_person_by_nickname(target)
     except Exception as exc:
-        logger.debug("[impersonation] find_person_by_name(%r) failed: %s", target, exc)
+        logger.debug("[impersonation] person lookup for %r failed: %s", target, exc)
     if person is not None:
         pid = person.get("id")
         name = person.get("name") or target
@@ -512,11 +514,33 @@ def resolve_target(
 
 # ── Script generation ─────────────────────────────────────────────────────────
 
+_MATERIAL_CATEGORIES = {
+    "job", "occupation", "career", "hobby", "interest", "project", "skill",
+    "habit", "preference", "pet", "music", "food", "sport", "sports", "travel",
+}
+_MATERIAL_IDENTITY_KEYS = {"job", "job_title", "occupation", "current_project"}
+_PERSONAL_CONTEXT_CATEGORIES = {
+    "worldview", "belief", "religion", "politics", "health", "appearance",
+    "family", "relationship", "boundary",
+}
+
+
+def _reliable_material(record: dict) -> bool:
+    """Firsthand, well-supported material only; a parody cannot hedge gossip."""
+    try:
+        return (record.get("source") in {"explicit", "corrected"}
+                and float(record.get("confidence") or 0) >= .85
+                and (record.get("fact_kind") or "fact") == "fact")
+    except (TypeError, ValueError):
+        return False
+
+
 def _gather_material(person_id: int) -> tuple[list[str], list[str]]:
     """Return (material_lines, do_not_lines) for a known person: what to riff on,
     and what is strictly off-limits (boundaries + heavy emotional events)."""
     material: list[str] = []
     do_not: list[str] = []
+    from intelligence.onboarding import tidy_value
     try:
         from memory import boundaries as boundaries_db
         mute_terms = boundaries_db.muted_topic_terms(person_id)
@@ -524,9 +548,18 @@ def _gather_material(person_id: int) -> tuple[list[str], list[str]]:
         mute_terms = set()
     try:
         from memory import facts as facts_db
-        for fact in facts_db.get_prompt_worthy_facts(person_id, limit=12, mute_terms=mute_terms):
-            # Belt-and-suspenders: never feed unkind gossip into a parody.
-            if str(fact.get("fact_kind") or "") == "gossip" and float(fact.get("kindness", 0.0)) <= -0.25:
+        # Filter a wider pool before truncating: identity/appearance metadata
+        # otherwise outranks the person's actual interests and work.
+        for fact in facts_db.get_prompt_worthy_facts(person_id, limit=60, mute_terms=mute_terms):
+            category = str(fact.get("category") or "").lower()
+            key = str(fact.get("key") or "").lower()
+            if not _reliable_material(fact):
+                continue
+            if category not in _MATERIAL_CATEGORIES and not (
+                category == "identity" and key in _MATERIAL_IDENTITY_KEYS
+            ):
+                continue
+            if not tidy_value(str(fact.get("value") or ""), "fact"):
                 continue
             line = facts_db.format_fact_for_prompt(fact)
             if line:
@@ -536,9 +569,12 @@ def _gather_material(person_id: int) -> tuple[list[str], list[str]]:
     try:
         from memory import interests as interests_db
         for it in interests_db.get_interests_for_prompt(person_id, limit=6):
-            line = interests_db.format_interest_for_prompt(it)
-            if line:
-                material.append(line)
+            topic = tidy_value(str(it.get("name") or ""), "interest")
+            if (_reliable_material(it) and topic
+                    and it.get("category") not in _PERSONAL_CONTEXT_CATEGORIES):
+                # Freeform notes can contain quoted questions and remarks about
+                # Rex. Use the interest label, not that conversation.
+                material.append("interest: " + topic)
     except Exception as exc:
         logger.debug("[impersonation] interests read failed: %s", exc)
     try:
@@ -549,7 +585,8 @@ def _gather_material(person_id: int) -> tuple[list[str], list[str]]:
                 continue
             if str(pref.get("preference_type") or "") == "boundary":
                 do_not.append(line)
-            else:
+            elif (_reliable_material(pref) and pref.get("domain") not in _PERSONAL_CONTEXT_CATEGORIES
+                  and tidy_value(str(pref.get("value") or pref.get("key") or ""), "fact")):
                 material.append(line)
     except Exception as exc:
         logger.debug("[impersonation] preferences read failed: %s", exc)
@@ -703,6 +740,21 @@ def _script_prompt(
                 "take that follows the angle but could have come out of any old politician's "
                 "mouth has failed."
             )
+    if not famous and not stranger and not context:
+        parts.append(
+            "This is a real person in the room. Choose ONE coherent, well-supported "
+            "interest, occupation, or habit from the material; use at most two related "
+            "details. Exaggerate how they might talk or approach that activity, not "
+            "their identity. Do not stitch a dossier into a biography, introduce yourself "
+            "by full name, or list hometown, age, relatives, religion or politics. "
+            "Do not invent a restaurant, event, audience or setting. A passing place "
+            "remark does not establish the scene. Preserve who said what ABOUT WHOM: "
+            "a comment aimed at Rex describes Rex, never the person being impersonated. "
+            "One question or teasing remark is not a catchphrase, obsession, job or "
+            "personality trait. Never turn their criticism of Rex into a self-insult. "
+            "If reliable material is sparse, make the droid borrowing their voice the "
+            "joke; do not invent personal traits or draw them from prior parodies."
+        )
     if material:
         parts.append("Things you know about " + name + " (riff on these):\n- " + "\n- ".join(material[:14]))
     if do_not:
@@ -712,6 +764,8 @@ def _script_prompt(
         )
     if avoid:
         parts.append(
+            "The following are prior GENERATED PARODIES, not evidence about this person. "
+            "They may contain inventions or attribution mistakes; never adopt those as facts. "
             "You have already done this impression before. Write a DIFFERENT bit — new angle, "
             "new detail, new punchline. Reusing a joke, a premise, or a closing beat from these "
             "is a failure, even reworded:\n- " + "\n- ".join(avoid[:6])
@@ -814,18 +868,22 @@ def perform(
     if stranger and not (subject_name or "").strip():
         subject_name = "my mystery guest"
 
-    def _say(line: str, emotion: str, *, voice_ref=None, log_text: bool) -> None:
+    def _say(line: str, emotion: str, *, voice_ref=None, log_text: bool) -> bool:
         try:
             done = speech_queue.enqueue(
                 line, emotion, priority=1, tag="impersonation",
                 voice_ref=voice_ref, log_text=log_text,
             )
-            done.wait(timeout=45.0)
+            # A bounded Breeze take can contain up to 60 seconds of audio.
+            # Allow it to drain, including device latency, before releasing it.
+            timeout = max(45.0, float(config.BREEZE_TTS_MAX_TOKENS) / 12.5 + 10.0)
+            return bool(done.wait(timeout=timeout) and getattr(done, "played", False))
         except Exception as exc:
             logger.debug("[impersonation] enqueue failed: %s", exc)
+            return False
 
     # 1. Script first. Qwen may render its buffered take behind an online intro;
-    # Breeze waits until that intro finishes, then streams the first chunk.
+    # Breeze waits until that intro finishes, then prepares the complete take.
     # Nothing is cached: each request generates fresh script and speech.
     voice_key = getattr(ref, "label", "") or None
     script = build_parody_script(
@@ -871,7 +929,7 @@ def perform(
         except Exception as exc:
             logger.debug("[impersonation] take launch failed: %s", exc)
 
-    # 3. Cover the wait for the first playable audio: one chunk for Breeze,
+    # 3. Cover the wait for the first playable audio: the full take for Breeze,
     #    a buffered unit for Qwen. Stop the loop before opening voice playback.
     if take is not None and not take.first_ready.is_set():
         loop_handle = None
@@ -901,7 +959,7 @@ def perform(
         except Exception as exc:
             logger.debug("[impersonation] take release failed: %s", exc)
 
-    if take is not None and take.failed:
+    if take is None or take.failed or not take.first_ready.is_set():
         _release_take()
         cover = "...huh. My impression module just blew a fuse. We'll try that again later."
         _say(cover, "sheepish", log_text=False)
@@ -922,9 +980,15 @@ def perform(
         logger.debug("[impersonation] parody log failed: %s", exc)
 
     try:
-        _say(speech_text, "excited", voice_ref=ref, log_text=False)
+        completed = _say(speech_text, "excited", voice_ref=ref, log_text=False)
     finally:
         _release_take()
+
+    if not completed:
+        logger.warning("[impersonation] playback incomplete (voice=%s)", voice_key)
+        cover = "My impression cut out before I finished. Sorry about that."
+        _say(cover, "sheepish", log_text=False)
+        return cover
 
     # 5. Optional Rex-voice button — Rex steps back out and takes his bow.
     outro = outro_line()

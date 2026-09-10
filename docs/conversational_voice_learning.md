@@ -9,6 +9,13 @@ There is no voice-ID line to repeat.
 - **New person:** Rex's normal name/introduction flow creates or resolves the
   person. Their spoken name answer anchors a temporary acoustic chain. A short
   answer is useful as a reference, but is not counted as a full training sample.
+- **Someone else answers:** "That's Jeff Benziger" names the referent, never
+  the speaker. An identity-prompt reply resolves an existing person by name,
+  alias or unique stored nickname (including nickname plus surname), acknowledges
+  it and clears the prompt. It does not enroll a face or use the bystander's audio
+  as that person's voice. Unknown references cannot create a person through this
+  lookup. Name corrections cancel provisional voice collection and interrupt
+  onboarding; complete sentences cannot be saved as names.
 - **Known face without CAM++ prints:** Rex asks, for example, “You on my right —
   Jeff, is that you speaking? I need to recalibrate my audio receptors.” A trusted
   yes/name reply opens collection, followed by an ordinary conversational question.
@@ -94,10 +101,10 @@ model as the requested model. This rebuilds speaker embeddings, not model weight
 ## Dev-Mac test with Bret and Jeff
 
 1. Restart Rex normally with microphone and camera enabled, outside a game.
-2. Keep both people in view. The inspected dev DB had two Bret CAM++ prints and
-   no Jeff person row; Jeff should answer the normal name question with his full
-   name. If a Jeff face entry is already present on another machine, Rex instead
-   asks him to confirm that he is speaking.
+2. Keep both people in view. The September 9 evening dev DB has two Bret CAM++
+   prints and three for Jeffrey Benziger (nickname Jeff). Preserve these and
+   test recognition directly. For a person without prints, a new person answers
+   the name question; an existing face instead gets a speaking confirmation.
 3. Let Jeff give several ordinary sentence-length answers. Alternate with Bret;
    Bret's turns should not enter Jeff's sample set. “Yes” alone is not enrollment.
 4. Look for `[voice_learning] SAVED ... name='Jeff Benziger'` in the runtime log.

@@ -67,10 +67,12 @@ two optimizations ported from `/Users/bbenziger/Local/breeze-tts-2/scripts/`:
   bounds memory across impersonations; changed recordings invalidate the key.
 
 Breeze generates one continuous utterance, including for impersonations. A
-background `Take` produces raw 24 kHz mono float32 chunks into a bounded queue.
-`first_ready` means one nonempty chunk is available, not that a sentence or the
-whole clip has finished. The playback thread drains that queue while synthesis
-continues; blocking device writes do not serialize inference with playback.
+background `Take` prepares raw 24 kHz mono float32 audio. For Rex's ordinary
+voice, it streams chunks through a bounded queue; `first_ready` means one chunk
+is available. For every person/famous/anonymous impersonation, it collects the
+complete utterance before publishing one playable unit. `first_ready` then
+means synthesis and generator cleanup have finished. The model's token cap
+bounds the one-shot audio in memory; generated impressions are never cached.
 Cancellation stops the producer and closes its generator on the producer thread,
 releasing synthesis ownership. MLX compute and teardown still share the existing
 process-wide MLX lock with ASR.
@@ -82,20 +84,27 @@ buffered impression path. The `LOCAL_TTS_TAKE_*` buffering switches and
 `LOCAL_TTS_CLONE_FULL_BUFFER` apply to Qwen, not Breeze.
 
 `audio/tts.py` preserves the output gate, AEC, delivery checks, cancellation,
-mouth pacing and speech-motion cleanup. Breeze playback now buffers 1.5 seconds of generated audio before starting and
-requests a 0.35-second host buffer with 4096-sample blocks. Both online and fully offline mode use the same 1.5-second preroll for the
-next live test, including when Ollama competes for compute. The original zero-preroll/low-latency settings
-stuttered badly during the owner's Wi-Fi-off test. Actual device underruns are
-logged. ElevenLabs and Qwen retain the existing deep-buffer policy.
+mouth pacing and speech-motion cleanup. Ordinary Breeze speech uses 1.5 seconds
+of preroll. All Breeze playback requests a 0.35-second host buffer and 4096-sample
+blocks. Impersonations keep the thinking loop running while the full take is
+prepared, trading a longer initial pause for continuous playback.
+
+The 21:55:46 field log showed an impression being deliberately aborted after
+three PortAudio underruns. That abort rule and its configuration were removed:
+an underrun reports earlier buffer starvation, and subsequent writes must still
+be drained. Full preparation keeps clone inference out of the playback window.
+Actual device errors and cancellation still stop playback. Failed or timed-out
+preparation never publishes a partial Breeze impression, and an explicit
+performance checks the delivery receipt before its success outro/episode.
 
 | Breeze setting | Default | Meaning |
 | --- | --- | --- |
 | `BREEZE_TTS_STREAMING_INTERVAL` | `0.25` s | Requested generation chunk interval |
-| `BREEZE_TTS_PREROLL_SEC` | `1.5` s | Generated audio buffered before playback |
+| `BREEZE_TTS_PREROLL_SEC` | `1.5` s | Ordinary Rex speech preroll; clones prepare fully |
 | `BREEZE_TTS_FRONT_PAD_MS` | `0.0` | No extra leading silence |
 | `BREEZE_TTS_OUTPUT_LATENCY` | `0.35` s | PortAudio host-buffer request |
 | `BREEZE_TTS_OUTPUT_BLOCKSIZE` | `4096` | Device block size in samples |
-| `BREEZE_TTS_QUEUE_CHUNKS` | `16` | Maximum queued chunks ahead of playback |
+| `BREEZE_TTS_QUEUE_CHUNKS` | `16` | Maximum queued chunks ahead of ordinary Rex speech |
 | `BREEZE_TTS_TEMPERATURE` | `0.7` | Bench's steadier sampling setting |
 | `BREEZE_TTS_MAX_TOKENS` | `750` | Absolute generation cap |
 | `BREEZE_TTS_DURATION_SLACK` | `2.0` | Additional word-count-based duration cap |
@@ -106,7 +115,7 @@ off by default; cache identities distinguish engine/model/reference so a switch
 cannot replay an older voice. Impersonation output is never cached. Reference
 prefix caching caches conditioning only, not speech output.
 
-Near-real-time synthesis can still underrun on a busy or thermally constrained
+Ordinary streamed speech can still underrun on a busy or thermally constrained
 Mac. Increasing `BREEZE_TTS_PREROLL_SEC` or the host buffer trades start latency
 for continuity. Streaming continues after preroll; short lines play once fully
 generated if they end before reaching the buffer threshold. The revised buffers
@@ -122,12 +131,14 @@ Isolated regression checks (no GPU, network, audio or serial):
 venv/bin/python tools/run_lean_checks.py breeze_tts local_tts impersonation_take impersonation organic_impersonation offline_mode tts_network_resilience clone_deep_buffer streaming_tts two_chunk_tts tts_led_cleanup
 ```
 
-The Breeze tests use a synthesis barrier that only the first device write can
-release after six 0.25-second chunks, proving that Rex and person/famous
-impressions wait for the 1.5-second preroll and then play before synthesis finishes. They also cover full-queue cancellation, replacement of parked takes,
-failed generation, backend selection, offline/circuit-breaker dispatch, cache
-separation, and incomplete asset downloads. Legacy Qwen fixtures select Qwen
-explicitly.
+The Breeze tests prove Rex speech starts after six 0.25-second chunks while
+generation continues, and person/famous impressions wait for the complete audio.
+They verify every sample survives repeated reported underruns, including a
+distinctive ending, plus cancellation during preparation, partial-generation
+failure, preparation timeout and unsuccessful delivery. Existing checks cover
+full-queue cancellation, parked-take replacement, backend selection, offline/API
+fallback, cache separation and incomplete assets. Legacy Qwen fixtures select
+Qwen explicitly.
 
 Offline synthesis benchmark, writing WAV/JSON files without audio playback:
 
@@ -157,7 +168,7 @@ still need validation on the intended machine.
 The [Breeze model card](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-8bit)
 links the research/non-commercial weight license. The copied snapshot retains its
 LICENSE and NOTICE files. See `local_tts_impersonation_plan.md` for the historical
-Qwen design; its whole-clip notes do not describe Breeze.
+Qwen design; current Breeze preparation and playback are described above.
 
 The timing table above predates the live buffering correction. First-chunk
 generation time is not the new time to audible speech: preroll and the device

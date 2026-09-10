@@ -33,6 +33,22 @@ automatic conversation writer. Provisional speaker context disallows personal
 memory learning; it does not claim voice recognition. Tests: `voice_learning`
 plus retained identity/recognition/game/motion modules via `run_lean_checks.py`.
 
+Identity-prompt replies such as "That's Jeff Benziger" name someone else, even
+when the speaker is unknown. They resolve the existing person through canonical
+name, alias or unique stored nickname plus surname; they do not rename the
+speaker, save a face, seed voice learning or start onboarding. Storage rejects
+whole sentence prefixes as names. "That's not his name" cancels provisional
+voice collection and releases onboarding. Regressions: `person_reference_identity`
+and actual speech-handler cases in `voice_learning`.
+
+Impersonation material now favors supported work, hobbies and preferences over
+identity/appearance metadata. It rejects misfiled questions and remarks, keeps
+prior generated parodies separate from factual evidence, and asks for one
+coherent premise with the original speaker/subject attribution preserved.
+Onboarding no longer files comments aimed at Rex or non-answer fragments as
+personal facts, interests or answered profile questions. These guards address
+the 22:16 impression built from an earlier "You're creepy" stored as a job.
+
 ## ElevenLabs voice model (2026-09-09)
 
 The owner auditioned matching StarTours samples and selected
@@ -553,11 +569,15 @@ KV optimization and bounded per-model reference-prefix cache were ported from
 paired. Breeze uses the bench's 24 kHz `RX24-pure-24k` reference. Runtime loads only
 project-local assets, including `audio_tokenizer/`, with network loading disabled.
 
-Breeze `Take` queues **chunks**, not entire clips, for Rex and cloned voices alike.
-The producer runs independently of device writes; `first_ready` means the first
-nonempty chunk. After bad stuttering in the real program, playback now uses 1.5 seconds of
-generated-audio preroll in both online and fully offline mode, a 0.35-second host buffer, 4096-sample blocks and a
-16-chunk producer queue, retaining AEC, output gates, mouth pacing and cancellation cleanup.
+Breeze `Take` streams Rex's ordinary speech through a 16-chunk queue with 1.5
+seconds of preroll. Impersonations prepare the complete continuous utterance in
+the same producer before playback; `first_ready` then means the full take is
+available, and the thinking loop covers preparation. This fixes the 21:55:46
+run's mid-word abort after three underruns. The abort-on-underrun rule was removed;
+remaining audio is drained. All Breeze playback uses a 0.35-second host buffer
+and 4096-sample blocks, retaining AEC, output gates, mouth pacing and cancellation.
+Failed/timed-out preparation discards partial impressions; explicit performances
+check successful delivery before taking a bow or recording a completed episode.
 Breeze takes start after Rex's intro/reply, avoiding an engine deadlock if that
 line itself needs local fallback. Queue backpressure is bounded and cancellation
 closes the generator on its producer thread. Optional output caching includes the

@@ -287,6 +287,10 @@ class PipelinedPlaybackTest(unittest.TestCase):
 
 
 class PerformFlowTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch('utils.conv_log.log_rex'))
+        self.enterContext(mock.patch('utils.conv_log.claim_rex_line'))
+
     def test_thinking_loop_covers_the_first_sentence_only(self):
         ref = local_tts.VoiceRef("/tmp/x.wav", "hello", "person:1")
         take = mock.Mock()
@@ -363,6 +367,48 @@ class PerformFlowTest(unittest.TestCase):
         rec.assert_not_called()
         for call in enq.call_args_list:
             self.assertIsNone(call.kwargs.get("voice_ref"))
+
+    def test_preparation_timeout_releases_take_without_playing_partial_script(self):
+        ref = local_tts.VoiceRef('/tmp/x.wav', 'hello', 'person:1')
+        take = mock.Mock(first_ready=threading.Event(), failed=False)
+        with mock.patch.object(impersonation, 'build_parody_script', return_value='My whole impression.'), \
+             mock.patch.object(local_tts, 'start_take', return_value=take), \
+             mock.patch.object(local_tts, 'pop_take'), \
+             mock.patch.object(config, 'IMPERSONATION_FIRST_UNIT_TIMEOUT_SECS', .01), \
+             mock.patch('audio.speech_queue.enqueue') as enqueue, \
+             mock.patch('audio.sound_effects.start_loop'), \
+             mock.patch('audio.sound_effects.stop_loop') as stop_loop, \
+             mock.patch('memory.episodes.record_episode') as record:
+            result = impersonation.perform(ref, 'Bret', 1)
+        self.assertIn('fuse', result)
+        self.assertTrue(all(c.kwargs.get('voice_ref') is None for c in enqueue.call_args_list))
+        take.close.assert_called_once()
+        stop_loop.assert_called_once()
+        record.assert_not_called()
+
+    def test_incomplete_delivery_skips_success_outro_and_episode(self):
+        from audio.speech_queue import DoneEvent
+        ref = local_tts.VoiceRef('/tmp/x.wav', 'hello', 'person:1')
+        ready = threading.Event()
+        ready.set()
+        take = mock.Mock(first_ready=ready, failed=False)
+        def enqueue(*args, **kwargs):
+            done = DoneEvent()
+            done.started = True
+            done.played = kwargs.get('voice_ref') is None
+            done.set()
+            return done
+        with mock.patch.object(impersonation, 'build_parody_script', return_value='My whole impression.'), \
+             mock.patch.object(local_tts, 'start_take', return_value=take), \
+             mock.patch.object(local_tts, 'pop_take'), \
+             mock.patch('audio.speech_queue.enqueue', side_effect=enqueue), \
+             mock.patch.object(impersonation, 'outro_line') as outro, \
+             mock.patch('memory.episodes.record_episode') as record:
+            result = impersonation.perform(ref, 'Bret', 1)
+        self.assertIn('cut out', result)
+        take.close.assert_called_once()
+        outro.assert_not_called()
+        record.assert_not_called()
 
 
 class ScriptFreshnessTest(unittest.TestCase):

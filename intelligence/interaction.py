@@ -83,6 +83,7 @@ from memory import person_summary
 from memory import social as social_memory
 from memory import episodes as episodes_memory
 from memory.name_validation import (
+    extract_referred_person_name,
     looks_like_initials,
     normalize_person_name,
     names_are_similar,
@@ -8442,6 +8443,8 @@ def _extract_self_relationship_to_engaged(
 
 def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Optional[str]:
     """Extract a self-introduced name from speech text."""
+    if extract_referred_person_name(text):
+        return None
     normalized = text.strip()
     if not normalized:
         return None
@@ -8460,6 +8463,25 @@ def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Option
         return _normalize_name(_prompted_bare_name_text(normalized))
 
     return None
+
+
+def _resolve_prompted_person_reference(text: str) -> Optional[str]:
+    """Resolve a bystander's name answer without assigning their audio/face.
+
+    Used inside the existing identity reply window. This lookup cannot mint a
+    person from an ambiguous remark such as "that's correct". Existing people
+    are acknowledged without a newcomer interview or new biometrics.
+    """
+    name = extract_referred_person_name(text)
+    if not name or not _turn_transcript_trusted():
+        return None
+    person = people_memory.find_person_by_name(name)
+    if person is None:
+        return None
+    person_id = person['id']
+    display = person.get("nickname") or person.get("name") or name
+    _log.info("[identity] person reference target=%s speaker unchanged; no biometric enrollment", person_id)
+    return f"Got it — {display}. Thanks for clearing that up."
 
 
 def _prompted_name_reply_needs_confirmation(raw_text: str, name: str) -> bool:
@@ -9711,7 +9733,7 @@ def _looks_like_direct_offscreen_identity_answer(
     commonly replies with just "JT" or "I'm Joy." Keep this narrow so an
     unrelated off-camera sentence does not get silently enrolled as a person.
     """
-    if not intro_name:
+    if not intro_name or extract_referred_person_name(text):
         return False
     cleaned = (text or "").strip()
     if not cleaned or "?" in cleaned:
@@ -10706,7 +10728,8 @@ def _identity_prompt_reply_names_third_party(text: str) -> bool:
         return False
     if _IDENTITY_REPLY_FIRST_PERSON_RE.search(cleaned):
         return False
-    return bool(_IDENTITY_REPLY_THIRD_PARTY_RE.search(cleaned))
+    return bool(extract_referred_person_name(cleaned)
+                or _IDENTITY_REPLY_THIRD_PARTY_RE.search(cleaned))
 
 
 def _identity_prompt_demotes_voice_match(
@@ -29173,6 +29196,14 @@ def _handle_speech_segment(
             (person_id is None and (has_unknown or identity_prompt_active))
             or (identity_prompt_active and has_unknown)
         )
+        prompted_person_reference = False
+        if identity_prompt_active or should_attempt_enroll:
+            reference_ack = _resolve_prompted_person_reference(text)
+            if reference_ack:
+                prompted_identity_ack_text = reference_ack
+                prompted_person_reference = True
+                should_attempt_enroll = False
+                _clear_pending_identity_prompts("person_reference_resolved")
         if should_attempt_enroll:
             allow_bare = identity_prompt_active
             intro_name = _extract_introduced_name(text, allow_bare_name=allow_bare)
@@ -29416,7 +29447,8 @@ def _handle_speech_segment(
 
         if prompted_identity_ack_text:
             try:
-                consciousness.note_person_greeted_this_session(person_id)
+                if not prompted_person_reference:
+                    consciousness.note_person_greeted_this_session(person_id)
             except Exception:
                 pass
             completed = _speak_blocking(
@@ -29426,7 +29458,8 @@ def _handle_speech_segment(
                 post_beat_ms_override=200,
             )
             response_text = prompted_identity_ack_text
-            final_executed_path = "identity.prompted_enrollment_ack"
+            final_executed_path = ("identity.person_reference_ack" if prompted_person_reference
+                                   else "identity.prompted_enrollment_ack")
             suppress_memory_learning = True
             _dismiss_pending_consent_prompts(person_id, text)
             try:

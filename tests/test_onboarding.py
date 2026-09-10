@@ -123,6 +123,15 @@ class TidyValueTests(unittest.TestCase):
         long_answer = "I do a whole bunch of different unrelated random things every single day honestly"
         self.assertLessEqual(len(onboarding.tidy_value(long_answer, "fact").split()), 10)
 
+    def test_jeff_remarks_are_not_personal_values(self):
+        from intelligence import onboarding
+        for text in ("You're creepy.", "You’re creepy.", "We're at Boogers.",
+                     "We’re at the hotel.", "You know.",
+                     "Do you know anything about Jimmy Carter?"):
+            with self.subTest(text=text):
+                self.assertEqual(onboarding.tidy_value(text, 'fact'), '')
+                self.assertEqual(onboarding.tidy_value(text, 'interest'), '')
+
     def test_clause_trim_and_bad_lead_guard(self):
         from intelligence import onboarding
 
@@ -335,6 +344,19 @@ class OnboardingDBTests(unittest.TestCase):
         self.assertIsNotNone(q["text"])
 
     # ── answer -> memory ─────────────────────────────────────────────────────
+    def test_off_topic_remarks_do_not_become_facts_interests_or_qa_answers(self):
+        from intelligence import onboarding
+        from memory import facts, interests, relationships
+        for key, text in (('job', "You're creepy."), ('how_found_rex', "We're at Boogers."),
+                          ('obsession', 'Do you know anything about Jimmy Carter?')):
+            with self.subTest(key=key):
+                question = next(q for q in config.ONBOARDING_QUESTION_POOL if q['key'] == key)
+                onboarding.note_question_asked(self.person_id, question)
+                onboarding.record_answer(self.person_id, question, text)
+                self.assertNotIn(key, relationships.get_answered_question_keys(self.person_id))
+        self.assertEqual(facts.get_facts(self.person_id), [])
+        self.assertEqual(interests.get_interests_for_prompt(self.person_id), [])
+
     def test_record_answer_writes_fact_and_bumps_familiarity(self):
         from intelligence import onboarding
         from memory import facts as facts_memory
@@ -460,6 +482,26 @@ class OnboardingFlowTests(unittest.TestCase):
              mock.patch.object(self.onboarding, 'record_answer') as record:
             self.interaction._handle_onboarding_turn("I'm a paramedic.", self.person_id)
         record.assert_not_called()
+
+    def test_comment_about_rex_releases_onboarding_without_filing_a_job(self):
+        self._arm_awaiting('job')
+        with mock.patch.object(self.onboarding, 'record_answer') as record, \
+             mock.patch.object(self.onboarding, 'next_question') as next_question:
+            result = self.interaction._handle_onboarding_turn("You're creepy.", self.person_id)
+        self.assertIsNone(result)
+        self.assertIsNone(self.interaction._pending_onboarding)
+        record.assert_not_called()
+        next_question.assert_not_called()
+
+    def test_name_correction_releases_onboarding_without_another_question(self):
+        self._arm_awaiting('job')
+        with mock.patch.object(self.onboarding, 'record_answer') as record, \
+             mock.patch.object(self.onboarding, 'next_question') as next_question:
+            result = self.interaction._handle_onboarding_turn("That's not his name.", self.person_id)
+        self.assertIsNone(result)
+        self.assertIsNone(self.interaction._pending_onboarding)
+        record.assert_not_called()
+        next_question.assert_not_called()
 
     def test_retort_leads_the_reply(self):
         # Bank-fallback path (answer-aware reaction disabled): the authored retort

@@ -1,4 +1,4 @@
-"""Breeze routing, first-chunk playback, bounded cancellation and asset setup.
+"""Breeze routing, complete impressions, streaming Rex speech and cancellation.
 
 Run with tools/run_lean_checks.py: no Metal, audio device or network required.
 """
@@ -20,6 +20,8 @@ REF = local_tts.VoiceRef('/nonexistent/voice.wav', 'exact reference text', 'rex'
 class BreezeTest(unittest.TestCase):
     def setUp(self):
         self.enterContext(mock.patch.object(config, 'LOCAL_TTS_BACKEND', 'breeze'))
+        self.enterContext(mock.patch('utils.conv_log.log_rex'))
+        self.enterContext(mock.patch('utils.conv_log.claim_rex_line'))
         self.addCleanup(local_tts.discard_takes)
 
     def test_engine_selection_and_separate_cache(self):
@@ -151,9 +153,77 @@ class BreezeTest(unittest.TestCase):
                 list(take.stream())
             self.assertTrue(take.is_closed)
 
-    def test_rex_and_impersonation_buffer_preroll_then_stream_remaining_audio(self):
+    def test_clone_readiness_waits_for_every_chunk_and_generator_cleanup(self):
+        for label in ('famous:jimmy-carter', 'person:7'):
+            with self.subTest(label=label):
+                release = threading.Event()
+                first_chunk = threading.Event()
+                closed = threading.Event()
+                chunks = [np.full(6000, i / 100, np.float32) for i in range(20)]
+                def generate(*args):
+                    try:
+                        yield chunks[0]
+                        first_chunk.set()
+                        release.wait(2)
+                        yield from chunks[1:]
+                    finally:
+                        closed.set()
+                with mock.patch.object(local_tts, 'generate_stream', side_effect=generate), \
+                     mock.patch.object(config, 'BREEZE_TTS_QUEUE_CHUNKS', 1):
+                    take = local_tts.Take('The complete impression.', REF._replace(label=label))
+                    try:
+                        self.assertTrue(first_chunk.wait(1))
+                        self.assertFalse(take.first_ready.is_set())
+                        release.set()
+                        self.assertTrue(take.first_ready.wait(1))
+                        self.assertTrue(closed.is_set())
+                        audio = list(take.stream())
+                        self.assertEqual(len(audio), 1)
+                        np.testing.assert_array_equal(audio[0], np.concatenate(chunks))
+                    finally:
+                        release.set()
+                        take.close()
+                        take._thread.join(2)
+
+    def test_partial_clone_failure_discards_unfinished_audio(self):
+        def generate(*args):
+            yield np.ones(6000, np.float32)
+            raise RuntimeError('generation failed before the punchline')
+        with mock.patch.object(local_tts, 'generate_stream', side_effect=generate):
+            take = local_tts.Take('An unfinished impression.', REF._replace(label='person:7'))
+            self.assertTrue(take.first_ready.wait(1))
+            self.assertTrue(take.failed)
+            self.assertEqual(list(take.stream()), [])
+            take._thread.join(1)
+
+    def test_cancel_buffering_clone_discards_audio_and_releases_engine(self):
+        release = threading.Event()
+        first_chunk = threading.Event()
+        def generate(*args):
+            with local_tts._generate_lock:
+                yield np.ones(6000, np.float32)
+                first_chunk.set()
+                release.wait(2)
+                yield np.ones(6000, np.float32)
+        with mock.patch.object(local_tts, 'generate_stream', side_effect=generate):
+            take = local_tts.Take('Canceled impression.', REF._replace(label='person:7'))
+            try:
+                self.assertTrue(first_chunk.wait(1))
+                take.close()
+                release.set()
+                take._thread.join(2)
+                self.assertFalse(take._thread.is_alive())
+                self.assertEqual(list(take.stream()), [])
+                self.assertTrue(local_tts._generate_lock.acquire(timeout=1))
+                local_tts._generate_lock.release()
+            finally:
+                release.set()
+                take.close()
+                take._thread.join(2)
+
+    def test_rex_buffers_preroll_then_streams_remaining_audio(self):
         from audio import echo_cancel
-        for label in ('rex', 'famous:jimmy-carter', 'person:7'):
+        for label in ('rex',):
             with self.subTest(label=label), contextlib.ExitStack() as stack:
                 first_written = threading.Event()
                 closed = threading.Event()
@@ -202,9 +272,9 @@ class BreezeTest(unittest.TestCase):
                 self.assertEqual(output_settings[0]['latency'], 0.35)
                 self.assertEqual(output_settings[0]['blocksize'], 4096)
 
-    def test_repeated_underflows_abort_and_release_delivery(self):
+    def test_repeated_underflows_preserve_every_sample_including_the_ending(self):
         from audio import echo_cancel
-        for label in ('rex',):
+        for label in ('rex', 'famous:jimmy-carter', 'person:7'):
             with self.subTest(label=label), contextlib.ExitStack() as stack:
                 first_written = threading.Event()
                 closed = threading.Event()
@@ -218,9 +288,9 @@ class BreezeTest(unittest.TestCase):
                             self.assertFalse(first_written.is_set())
                             generated.append(index)
                             yield np.ones(6000, np.float32) * .1
-                        if not first_written.wait(2):
+                        if label == 'rex' and not first_written.wait(2):
                             raise AssertionError('Player waited for whole clip')
-                        yield np.ones(6000, np.float32) * .1
+                        yield np.ones(6000, np.float32) * .2  # distinctive ending
                     finally:
                         closed.set()
                 class Stream:
@@ -230,8 +300,10 @@ class BreezeTest(unittest.TestCase):
                     def start(self): pass
                     def write(stream, audio):
                         self.assertEqual(len(generated), 6)
+                        if label != 'rex':
+                            self.assertTrue(closed.is_set(), 'Clone played before generation finished')
                         first_written.set()
-                        writes.append(len(audio))
+                        writes.append(audio.copy())
                         return True
                     def stop(self): pass
                     def abort(self): aborted.set()
@@ -252,9 +324,12 @@ class BreezeTest(unittest.TestCase):
                     self.assertTrue(tts._speak_local('Hello there.', REF._replace(label=label), 'neutral', log_text=False))
                     full.assert_not_called()
                     unit.assert_not_called()
-                self.assertTrue(aborted.is_set())
-                self.assertEqual(len(writes), 3)
-                finish.assert_called_once_with(canceled=True)
+                self.assertFalse(aborted.is_set())
+                spoken = np.concatenate(writes)
+                # End padding may follow, but no generated sample was dropped.
+                self.assertEqual(np.count_nonzero(spoken == np.float32(.1)), 36000)
+                self.assertEqual(np.count_nonzero(spoken == np.float32(.2)), 6000)
+                finish.assert_called_once_with(canceled=False)
                 self.assertTrue(first_written.is_set())
                 self.assertTrue(closed.wait(1))
                 self.assertEqual(output_settings[0]['latency'], 0.35)

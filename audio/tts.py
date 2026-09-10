@@ -1426,7 +1426,7 @@ def _speak_local(
                 )
                 return True
 
-    # Breeze queues raw audio chunks for Rex and every cloned voice. Qwen
+    # Breeze streams Rex speech and prepares complete cloned takes. Qwen
     # retains its buffered take path for long impressions that cannot keep up
     # with playback. Parked takes are claimed once; every impression is fresh.
     is_clone = getattr(voice_ref, "label", "") != "rex"
@@ -1577,8 +1577,9 @@ def _speak_local(
                             underruns += 1
                             logger.warning("[tts] local output underflow %d (backend=%s)",
                                            underruns, local_tts.backend())
-                            if streaming_local and underruns >= int(config.BREEZE_TTS_MAX_UNDERRUNS):
-                                raise RuntimeError("Breeze playback aborted after repeated underflows")
+                            # PortAudio accepted this write; an underflow reports
+                            # earlier starvation, not lost remaining audio. Keep
+                            # draining the take instead of cutting off its tail.
                         if not ttfa_logged:
                             # Logged after the FIRST written piece. It used to sit
                             # after the whole first buffered unit, so a one-unit
@@ -1607,8 +1608,6 @@ def _speak_local(
                                 underruns += 1
                                 logger.warning("[tts] local output underflow %d (backend=%s)",
                                                underruns, local_tts.backend())
-                                if streaming_local and underruns >= int(config.BREEZE_TTS_MAX_UNDERRUNS):
-                                    raise RuntimeError("Breeze playback aborted after repeated underflows")
 
                 if canceled:
                     with sd_guard.device_control():

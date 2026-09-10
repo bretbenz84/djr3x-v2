@@ -9,7 +9,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = (
     "conversational_persona relationship_tone sharp_roast_tier conversation_revamp response_length_variation comedy_modes "
-    "dev_mac_identity_room greeting_reply_identity impersonation_recordings field_2026_09_07_handoffs place_recognition place_questions "
+    "dev_mac_identity_room greeting_reply_identity person_reference_identity impersonation_recordings field_2026_09_07_handoffs place_recognition place_questions "
     "campplus voice_backend voice_signatures speaker_id_margin identity_instrumentation voice_learning voiceless_face_wins dual_intro intro_misread_guards "
     "conversation_arc lean_context_state speech_generations delivery_contract "
     "optional_local_work turn_coordinator runtime_report gap_speech "

@@ -282,7 +282,8 @@ def find_person_by_name(name: str) -> Optional[dict]:
     """
     Return the best existing person row for this spoken/stored name.
 
-    Full names require an exact normalized match. A one-token name reuses an
+    Full names require an exact normalized match or a stored nickname plus the
+    canonical surname. A one-token name reuses an
     existing person only when exactly one stored person has that first token.
     This prevents duplicate rows like "Jeff Benziger" while still avoiding wild
     first-name collisions.
@@ -341,7 +342,7 @@ def find_person_by_name(name: str) -> Optional[dict]:
         return max(exact, key=_score)
     if len(first_name) == 1:
         return first_name[0]
-    return None
+    return find_person_by_nickname(name)
 
 
 def find_person_by_nickname(name: str) -> Optional[dict]:
@@ -350,7 +351,18 @@ def find_person_by_nickname(name: str) -> Optional[dict]:
     if not norm:
         return None
     rows = db.fetchall("SELECT * FROM people WHERE nickname IS NOT NULL AND trim(nickname) != ''")
-    matches = [dict(row) for row in rows if _normalize_name(row["nickname"]) == norm]
+    matches = []
+    for row in rows:
+        nickname = _normalize_name(dict(row).get("nickname") or "")
+        if not nickname:
+            continue
+        full_tokens = _normalize_name(row["name"] or "").split()
+        labels = {nickname}
+        if len(full_tokens) > 1:
+            # Jeff Benziger is the stored nickname plus the canonical surname.
+            labels.add(nickname + " " + " ".join(full_tokens[1:]))
+        if norm in labels:
+            matches.append(dict(row))
     return matches[0] if len(matches) == 1 else None
 
 
@@ -405,6 +417,9 @@ def find_potential_person_match(name: str) -> Optional[dict]:
     alias = find_person_by_name(clean)
     if alias and _normalize_name(alias.get("name") or "") == norm:
         return {"match_type": "exact", "person": alias, "candidate_name": clean}
+    nickname = find_person_by_nickname(clean)
+    if nickname is not None:
+        return {"match_type": "alias", "person": nickname, "candidate_name": clean}
 
     if _person_aliases_available():
         alias_row = db.fetchone(

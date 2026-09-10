@@ -1,5 +1,6 @@
 """Conversational enrollment, contamination rejection, original audio and lifecycle."""
 from contextlib import ExitStack
+from collections import deque
 from dataclasses import replace
 import io
 import json
@@ -204,6 +205,7 @@ class RuntimeTests(unittest.TestCase):
         self.stack.enter_context(patch.object(I,'_last_voice_bearing',None))
         self.stack.enter_context(patch.object(I,'_last_scan_windows',[]))
         self.stack.enter_context(patch.object(I,'_last_scan_ranked',[]))
+        self.stack.enter_context(patch.object(I,'_recent_voice_turns',deque()))
         self.stack.enter_context(patch.object(I,'_utterance_observations',{}))
         self.faces=[face(1),face(2,500)]
         original_get = I.world_state.get
@@ -306,6 +308,35 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(self.r.learner.pending.confirmed)
         self.assertEqual(self.count(2),0)
 
+    def test_bystander_cannot_confirm_or_seed_someone_elses_voice(self):
+        self.turn('Hey Rex, how are you?')
+        self.r.learner.prepare_question(); self.r.learner.question_spoken(True)
+        audio = self.prepare()
+        self.assertIsNone(self.r.process(audio, "That's Jeff Benziger."))
+        self.assertIsNone(self.r.learner.pending)
+        self.assertIsNone(self.r.turn_person)
+        self.assertIsNone(self.r.last_sample)
+        self.assertFalse(self.r.seed(2, 'Jeff Benziger', audio))
+        self.assertEqual(self.count(2), 0)
+
+    def test_third_party_reference_is_not_added_to_confirmed_chain(self):
+        self.confirm()
+        self.turn()
+        count = len(self.r.learner.pending.samples)
+        self.turn("That's Jeff Benziger.")
+        self.assertEqual(len(self.r.learner.pending.samples), count)
+        self.assertIsNone(self.r.turn_person)
+        self.assertIsNone(self.r.last_sample)
+        self.assertEqual(self.count(2), 0)
+
+    def test_name_correction_cancels_provisional_enrollment(self):
+        self.confirm()
+        self.turn()
+        self.turn("That's not his name.")
+        self.assertIsNone(self.r.learner.pending)
+        self.assertIsNone(self.r.last_sample)
+        self.assertEqual(self.count(2), 0)
+
     def test_typed_text_and_preplayback_audio_never_seed(self):
         self.assertIsNone(self.r.process(None,'My name is Jeff Benziger.'))
         self.I.echo_cancel.last_playback_ended_at.return_value=self.now+20
@@ -388,7 +419,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(resolution['person_id'], 1)
         self.assertEqual(resolution['basis'], 'reply to recently addressed visible person')
         self.assertFalse(resolution['learning_allowed'])
-        self.assertEqual(I._current_turn_addressee.status, 'to_rex')
+        self.assertEqual(I._current_turn_addressee.status, 'to_rex',
+                         (I._current_turn_addressee, I._current_turn_speaker_evidence['resolution']))
         self.assertIsNone(I._pending_offscreen_identify)
         self.assertFalse(I._last_confident_voice_at)
         self.assertIsNone(self.r.learner.pending)
@@ -396,6 +428,61 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.count(2), 0)
         I._reply_token_stream.assert_called()
         I.conv_log.log_heard.assert_any_call('Bret Benziger', text)
+
+    def test_bystander_name_answer_in_actual_speech_pipeline_preserves_identity(self):
+        self._check_bystander_name_answer(.438, "That's Jeff Benziger.")
+
+    def test_known_bystander_with_curly_apostrophe_preserves_identity(self):
+        self._check_bystander_name_answer(.88, "That’s Jeff Benziger.")
+
+    def _check_bystander_name_answer(self, score, text):
+        from intelligence import dialogue_act, conversation_state
+        from memory import conversations, people
+        self._mock_speech_pipeline()
+        I = self.I
+        dialogue_act.clear(); conversations.clear_transcript(); conversation_state.clear()
+        self.addCleanup(dialogue_act.clear)
+        self.addCleanup(conversations.clear_transcript)
+        self.addCleanup(conversation_state.clear)
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("UPDATE people SET name='Jeffrey Benziger', nickname='Jeff' WHERE id=2")
+        for name, value in {
+            '_last_speaker_turn': None, '_pending_offscreen_identify': None,
+            '_last_confident_voice_at': {}, '_identity_prompt_until': self.now + 30.,
+            '_pending_onboarding': None,
+            '_last_scan_secs': {'voiced': 3., 'buffer': 4.},
+            '_last_scan_ranked': [(1, 'Bret Benziger', score, 1), (2, 'Jeffrey Benziger', .243, 1)],
+        }.items():
+            self.stack.enter_context(patch.object(I, name, value))
+        self.faces = [face(1), face(None, 500)]
+        audio = self.prepare(mouth=None)
+        I._utterance_observations['faces'] = I._utterance_observations.pop('visual')
+        with patch.object(I, '_enroll_new_person') as enroll, \
+             patch.object(people, 'add_biometric') as biometric, \
+             patch.object(I.consciousness, 'clear_pending_identity_prompts') as clear:
+            I._handle_speech_segment(audio, transcribed_text=text,
+                                     raw_best_id_override=1, raw_best_name_override='Bret Benziger',
+                                     speaker_score_override=score)
+        I._speak_blocking.assert_called_once()
+        self.assertEqual(I._speak_blocking.call_args.args[0],
+                         'Got it — Jeff. Thanks for clearing that up.')
+        enroll.assert_not_called()
+        biometric.assert_not_called()
+        clear.assert_called_with(reason='person_reference_resolved')
+        self.assertEqual(I._identity_prompt_until, 0.)
+        self.assertIsNone(I._pending_onboarding)
+        self.assertIsNone(self.r.learner.pending)
+        self.assertIsNone(self.r.last_sample)
+        resolved = I._current_turn_speaker_evidence['resolution'].get('person_id')
+        self.assertEqual(resolved, 1 if score >= .70 else None,
+                         I._current_turn_speaker_evidence['resolution'])
+        heard = I.conv_log.log_heard.call_args.args
+        self.assertEqual(heard[1], text)
+        self.assertNotIn('Jeff', heard[0])
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(conn.execute('SELECT count(*) FROM people').fetchone()[0], 2)
+        self.assertEqual(self.count(1), 1)
+        self.assertEqual(self.count(2), 0)
 
     def test_reembedding_uses_original_audio_and_preserves_previous_model(self):
         from tools.voice_recordings import reembed, apply_embeddings

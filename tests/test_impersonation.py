@@ -189,7 +189,73 @@ class ResolveTargetTest(unittest.TestCase):
         self.assertEqual(r.kind, "refuse")
 
 
+class MaterialSelectionTest(unittest.TestCase):
+    def setUp(self):
+        self.facts = self.enterContext(mock.patch('memory.facts.get_prompt_worthy_facts', return_value=[]))
+        self.interests = self.enterContext(mock.patch('memory.interests.get_interests_for_prompt', return_value=[]))
+        self.preferences = self.enterContext(mock.patch('memory.preferences.get_preferences_for_prompt', return_value=[]))
+        self.enterContext(mock.patch('memory.boundaries.muted_topic_terms', return_value=set()))
+        self.enterContext(mock.patch('memory.boundaries.summarize_for_prompt', return_value=''))
+        self.enterContext(mock.patch('memory.emotional_events.get_active_events', return_value=[]))
+
+    def test_jeff_material_keeps_real_work_and_discards_misfiled_remarks(self):
+        self.facts.return_value = [dict(category=category, key=key, value=value,
+                                       source='explicit', confidence=.95)
+            for category, key, value in (
+                ('identity', 'job', "You're creepy"),
+                ('identity', 'how_found_rex', "We're at Boogers"),
+                ('worldview', 'religion', 'Christian'),
+                ('worldview', 'politics', 'conservative republican'),
+                ('appearance', 'age_range', '50-60'),
+                ('job', 'job_title', 'Youtuber'),
+                ('job', 'industry', 'journalism'),
+                ('preference', 'favorite_band', 'Electric Light Orchestra'))]
+        self.interests.return_value = [dict(name=name, category='hobby', source='explicit', confidence=1.)
+            for name in ('Do you know anything about Jimmy Carter', 'history research')]
+        material, _ = impersonation._gather_material(5)
+        text = '\n'.join(material)
+        for junk in ('creepy', 'Boogers', 'Christian', 'republican', '50-60', 'Jimmy Carter'):
+            self.assertNotIn(junk, text)
+        for useful in ('Youtuber', 'journalism', 'Electric Light Orchestra', 'history research'):
+            self.assertIn(useful, text)
+
+    def test_uncertain_or_secondhand_material_is_excluded_and_boundaries_survive(self):
+        self.facts.return_value = [dict(category='job', key='job', value=value, **meta)
+            for value, meta in (
+                ('pilot', dict(source='inferred', confidence=.95)),
+                ('singer', dict(source='secondhand', confidence=.95)),
+                ('dancer', dict(source='explicit', confidence=.5)),
+                ('comedian', dict(source='explicit', confidence=.95, fact_kind='gossip', kindness=1.)),
+                ('editor', dict(source='corrected', confidence=1.)))]
+        self.preferences.return_value = [dict(domain='general', preference_type='boundary',
+                                              key='family', value='Do not joke about family')]
+        material, boundaries = impersonation._gather_material(5)
+        self.assertEqual(len(material), 1)
+        self.assertIn('editor', material[0])
+        self.assertIn('Do not joke about family', '\n'.join(boundaries))
+
+    def test_interest_notes_cannot_turn_a_rex_remark_into_a_personal_trait(self):
+        self.interests.return_value = [dict(name='history research', category='hobby',
+            source='explicit', confidence=1., notes="Called Rex creepy; we're at Boogers")]
+        material, _ = impersonation._gather_material(5)
+        self.assertEqual(material, ['interest: history research'])
+
+    def test_concrete_interests_with_custom_categories_are_kept(self):
+        self.interests.return_value = [dict(name='local history research', category='history',
+                                           source='explicit', confidence=1.)]
+        material, _ = impersonation._gather_material(5)
+        self.assertEqual(material, ['interest: local history research'])
+
+
 class ScriptPromptTest(unittest.TestCase):
+    def test_private_impression_keeps_one_premise_and_preserves_attribution(self):
+        prompt = impersonation._script_prompt('Jeff', ['industry: journalism'], [],
+            is_self=False, famous=False, avoid=['I am a creepy journalist.'])
+        self.assertIn('Choose ONE coherent', prompt)
+        self.assertIn('a comment aimed at Rex describes Rex', prompt)
+        self.assertIn('Do not invent a restaurant', prompt)
+        self.assertIn('GENERATED PARODIES, not evidence', prompt)
+
     def test_prompt_includes_material_and_hard_boundaries(self):
         prompt = impersonation._script_prompt(
             "Bret",
@@ -310,11 +376,17 @@ class RecentScriptsTest(unittest.TestCase):
 
 
 class PerformThreadingTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch('utils.conv_log.log_rex'))
+        self.enterContext(mock.patch('utils.conv_log.claim_rex_line'))
+
     def test_perform_threads_voice_ref_and_frames_in_rex_voice(self):
         ref = local_tts.VoiceRef("/x.wav", "ref", "person:3")
         calls = []
 
         class _Done:
+            played = True
+
             def wait(self, timeout=None):
                 return True
 
@@ -349,6 +421,8 @@ class PerformThreadingTest(unittest.TestCase):
         written = []
 
         class _Done:
+            played = True
+
             def wait(self, timeout=None):
                 return True
 

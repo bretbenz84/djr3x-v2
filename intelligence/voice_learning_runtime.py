@@ -142,6 +142,16 @@ class Runtime:
         i = self.i
         if i._game_suppresses_conversation() or not i._turn_transcript_trusted():
             return None
+        from memory.name_validation import extract_referred_person_name, is_name_correction
+        if is_name_correction(text):
+            self.learner.cancel('identity_corrected')
+            return None
+        if extract_referred_person_name(text):
+            # A bystander naming Jeff is not Jeff confirming his own voice.
+            # Leave last_sample empty so downstream handlers cannot seed it.
+            if self.learner.pending and not self.learner.pending.confirmed:
+                self.learner.cancel('third_party_reference')
+            return None
         s = self._sample(audio, text)
         self.last_sample = s
         if s is None:

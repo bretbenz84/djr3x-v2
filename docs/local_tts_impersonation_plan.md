@@ -9,8 +9,8 @@
 
 > **2026-09-09 update:** Breeze TTS 2 **8-bit** is now the default local engine;
 > this document preserves the historical Qwen implementation plan. Qwen remains
-> selectable with `LOCAL_TTS_BACKEND="qwen"`. Breeze uses chunk streaming with 1.5 seconds of preroll
-> for Rex and impersonations rather than the whole-clip buffering described here.
+> selectable with `LOCAL_TTS_BACKEND="qwen"`. Breeze streams ordinary Rex speech
+> with 1.5 seconds of preroll and prepares complete impersonations before playback.
 > Current setup and behavior: [local TTS backends](local_tts_backends.md).
 
 

@@ -8,6 +8,36 @@ from typing import Optional
 
 _MAX_NAME_WORDS = 3
 _NAME_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+# Validate stored names as names, not clauses. Apostrophes in O'Neill are
+# legitimate; grammatical contractions such as "That's Jeff" are not.
+_SENTENCE_NAME_PREFIX_RE = re.compile(
+    r"^(?:(?:this|that|it|he|she|they|you|we|i)(?:['’](?:s|re|m|ve|ll|d)|"
+    r"\s+(?:is|are|am|was|were))|(?:his|her|their|my)\s+name(?:['’]s|\s+is))\b",
+    re.IGNORECASE,
+)
+_REFERRED_PERSON_RE = re.compile(
+    r"^\s*(?:(?:yes|yeah|no|oh|well)[,\s]+)?(?:"
+    r"that(?:['’]s|\s+is)|(?:he|she)(?:['’]s|\s+is)|"
+    r"(?:his|her|their)\s+name(?:['’]s|\s+is))\s+(.+)$",
+    re.IGNORECASE,
+)
+_NAME_CORRECTION_RE = re.compile(
+    r"\b(?:(?:that|it)(?:['’]s|\s+is)\s+not|(?:that|it)\s+isn['’]?t)\s+"
+    r"(?:(?:his|her|their|my|the)\s+)?name\b|\bwrong\s+name\b",
+    re.IGNORECASE,
+)
+
+
+def extract_referred_person_name(text: str) -> Optional[str]:
+    """Explicit naming of someone else; never treat it as self-identification."""
+    match = _REFERRED_PERSON_RE.match(text or "")
+    return normalize_person_name(match.group(1)) if match else None
+
+
+def is_name_correction(text: str) -> bool:
+    return bool(_NAME_CORRECTION_RE.search(text or ""))
+
+
 _PREFERRED_NAME_SPLIT_RE = re.compile(
     r"\b(?:but\s+)?(?:you can\s+)?call me\b",
     re.IGNORECASE,
@@ -346,7 +376,7 @@ def contains_profane_token(value: str) -> bool:
 def normalize_person_name(value: str, *, allow_single: bool = True) -> Optional[str]:
     """Return a storage-ready person name, or None for non-name fragments."""
     text = _clean_candidate(value)
-    if not text:
+    if not text or _SENTENCE_NAME_PREFIX_RE.match(text):
         return None
 
     key = normalized_name_key(text)

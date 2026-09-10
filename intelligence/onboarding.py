@@ -473,6 +473,12 @@ def is_hard_decline(text: str) -> bool:
     return bool(_DECLINE_PAT.search(text or ""))
 
 
+_REX_COMMENT_START_PAT = re.compile(
+    r"^(?:hey[,\s]+)?(?:rex[,\s]+)?you(?:['’]re|\s+(?:are|seem|sound|look|act))\b",
+    re.IGNORECASE,
+)
+
+
 def is_pivot(text: str) -> bool:
     """A request/command to Rex, or a question genuinely turned back on him
     ('what about you?') — the burst should yield and release the turn to normal
@@ -481,10 +487,13 @@ def is_pivot(text: str) -> bool:
     cleaned = (text or "").strip()
     if not cleaned:
         return False
+    from memory.name_validation import is_name_correction
+    if is_name_correction(cleaned):
+        return True
     probe = _FILLER_TIC_PAT.sub(" ", cleaned).strip()
     if not probe:
         return False
-    if _REQUEST_START_PAT.search(probe):
+    if _REQUEST_START_PAT.search(probe) or _REX_COMMENT_START_PAT.search(probe):
         return True
     if _PIVOT_CMD_PAT.search(probe):
         return True
@@ -537,6 +546,8 @@ _BAD_VALUE_LEAD = {
     "it", "its", "i", "we", "they", "he", "she", "just", "really", "very",
     "kind", "sort", "not", "no", "nothing", "maybe", "probably", "going",
     "doing", "getting", "having", "idk", "dunno", "stuff", "things", "whatever",
+    "you", "your", "you're", "we're", "we've", "we'll", "they're", "he's", "she's",
+    "here", "there",
 }
 
 
@@ -548,9 +559,10 @@ def tidy_value(answer: str, store: str) -> str:
     structured record is the person_qa row; this enriches person_facts/interests
     for prompt injection. Returns '' for non-answers so nothing junk is stored.
     """
-    text = (answer or "").strip().rstrip(" .!?,")
-    if not text or _DUNNO_PAT.match(text):
+    text = (answer or "").replace("’", "'").strip()
+    if not text or is_pivot(text) or is_hard_decline(text) or is_soft_disengage(text):
         return ""
+    text = text.rstrip(" .!?,")
     # Keep only the first clause — an em-dash/semicolon usually introduces an
     # aside ("rock climbing — I'm obsessed" -> "rock climbing"). Commas are kept
     # so "Austin, Texas" survives.
@@ -602,16 +614,16 @@ def record_answer(person_id: int, question: dict, answer_text: str) -> None:
     """Attach the answer to the pending question (familiarity bump) and enrich
     person_facts / person_interests with a tidied value for prompt injection."""
     answer = (answer_text or "").strip()
-    if not answer:
+    if not answer or is_pivot(answer) or is_hard_decline(answer):
+        return
+    value = tidy_value(answer, str(question.get("store") or ""))
+    if not value:
         return
     try:
         rel_memory.answer_latest_pending_question(int(person_id), answer)
     except Exception as exc:
         _log.debug("[onboarding] answer_latest_pending_question failed: %s", exc)
 
-    value = tidy_value(answer, str(question.get("store") or ""))
-    if not value:
-        return
     store = str(question.get("store") or "")
     try:
         if store == "fact":

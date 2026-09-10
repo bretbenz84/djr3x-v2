@@ -108,6 +108,7 @@ def backend() -> str:
 
 
 def streams_clones() -> bool:
+    """Whether the engine generates raw chunks (Take buffers these for clones)."""
     return backend() == "breeze"
 
 
@@ -552,12 +553,12 @@ def trim_unit_silence(audio: "Optional[np.ndarray]") -> "Optional[np.ndarray]":
 
 
 class Take:
-    """A background take: Breeze audio chunks or buffered Qwen sentence units.
+    """A background take: streamed Rex speech or buffered impersonations.
 
     ``first_ready`` fires once the first unit is playable (or the take has given
-    up entirely — check ``failed``). ``stream()`` yields the finished units in
-    order, padding with short silences while the next one renders so the
-    caller's output stream never underruns at a seam.
+    up entirely — check ``failed``). Breeze clones prepare the entire continuous
+    utterance before publishing it. Ordinary Breeze speech streams chunks; Qwen
+    retains its configured sentence/whole-clip units.
     """
 
     def __init__(self, text: str, voice_ref: VoiceRef, *, lookahead: int = 1):
@@ -565,6 +566,7 @@ class Take:
         self.voice_ref = voice_ref
         self.first_ready = threading.Event()
         self._streaming = streams_clones()
+        self._buffer_complete = self._streaming and voice_ref.label != "rex"
         self._units = _split_take(self.text)
         capacity = config.BREEZE_TTS_QUEUE_CHUNKS if self._streaming else lookahead
         self._queue: "queue.Queue" = queue.Queue(maxsize=max(1, int(capacity)))
@@ -597,6 +599,7 @@ class Take:
         rendered = False
         produced_samples = 0
         first_chunk_at = None
+        buffered = []
         gen = generate_stream(self.text, self.voice_ref)
         try:
             for chunk in gen:
@@ -605,6 +608,13 @@ class Take:
                     first_chunk_at = time.monotonic()
                 if self._stop.is_set():
                     break
+                if self._buffer_complete:
+                    # Clone speed varies with the reference and machine load.
+                    # Never expose a partial impression: a slow producer would
+                    # otherwise starve playback in the middle of a word. The
+                    # model's token cap bounds this in-memory, one-shot take.
+                    buffered.append(chunk)
+                    continue
                 deadline = time.monotonic() + float(config.LOCAL_TTS_TAKE_ABANDON_SECS)
                 while not self._stop.is_set():
                     try:
@@ -625,12 +635,19 @@ class Take:
                 gen.close()
             except Exception as exc:
                 logger.debug("[local_tts] streaming generator cleanup failed: %s", exc)
+            if buffered and self._error is None and not self._stop.is_set():
+                try:
+                    self._queue.put_nowait(np.concatenate(buffered))
+                    rendered = True
+                except Exception as exc:
+                    self._error = exc
+                    logger.warning("[local_tts] could not buffer completed take: %s", exc)
             self._failed = not rendered
             logger.info(
-                "[local_tts] stream generated %.2fs audio in %.2fs wall (first=%.2fs, voice=%s, stopped=%s)",
+                "[local_tts] stream generated %.2fs audio in %.2fs wall (first=%.2fs, voice=%s, stopped=%s, buffered=%s, failed=%s)",
                 produced_samples / float(sample_rate()), time.monotonic() - self._started_at,
                 (first_chunk_at - self._started_at) if first_chunk_at else -1.0,
-                self.voice_ref.label, self._stop.is_set(),
+                self.voice_ref.label, self._stop.is_set(), self._buffer_complete, self._failed,
             )
             self._done.set()
             self.first_ready.set()

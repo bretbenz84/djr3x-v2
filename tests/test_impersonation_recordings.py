@@ -81,6 +81,40 @@ class RecordingTests(unittest.TestCase):
             self.assertEqual(result.person_id, 5)
         self.assertEqual(db.fetchone('SELECT name FROM people WHERE id=5')['name'], 'Jeffrey Davis')
 
+    def test_nickname_request_uses_the_known_persons_enrollment_audio(self):
+        from intelligence import interaction as I, action_router
+        self.archive()
+        db.execute("UPDATE people SET name='Jeffery Benziger', nickname='Jeff' WHERE id=5")
+        with patch.object(I, '_pending_impersonation_capture', None), \
+             patch.object(I, '_speak_blocking') as speak, \
+             patch.object(P, 'perform', return_value='A Jeff impression.') as perform:
+            text = 'Impersonate Jeff.'
+            result = I._handle_router_impersonation(action_router.classify_explicit_impersonation(text),
+                text, 1, 'Bret Benziger', 'Jeff')
+            self.assertIsNone(I._pending_impersonation_capture)
+        self.assertEqual(result, 'A Jeff impression.')
+        self.assertEqual(perform.call_args.args[0].label, 'person:5')
+        self.assertEqual(perform.call_args.args[1:3], ('Jeffery Benziger', 5))
+        speak.assert_not_called()
+
+    def test_nickname_lookup_normalizes_case_and_spacing(self):
+        self.archive()
+        db.execute("UPDATE people SET name='Jeffery Benziger', nickname='Jeff' WHERE id=5")
+        result = P.resolve_target('  jEfF  ', None, None)
+        self.assertEqual((result.kind, result.person_id), ('perform', 5))
+
+    def test_nickname_without_recordings_captures_for_the_existing_person(self):
+        db.execute("UPDATE people SET name='Jeffery Benziger', nickname='Jeff' WHERE id=5")
+        result = P.resolve_target('Jeff', None, None)
+        self.assertEqual((result.kind, result.person_id, result.name),
+                         ('capture', 5, 'Jeffery Benziger'))
+
+    def test_shared_nickname_does_not_choose_someones_voice(self):
+        self.archive()
+        db.execute("UPDATE people SET nickname='Jeff' WHERE id=5")
+        db.execute("INSERT INTO people(id,name,nickname) VALUES(6,'Geoffrey Smith','Jeff')")
+        self.assertEqual(P.resolve_target('Jeff', None, None).kind, 'refuse')
+
     def test_close_names_are_not_guessed(self):
         self.archive()
         db.execute("INSERT INTO people(id,name) VALUES(6,'Jeffrey Smith')")
