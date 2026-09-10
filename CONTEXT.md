@@ -33,6 +33,17 @@ automatic conversation writer. Provisional speaker context disallows personal
 memory learning; it does not claim voice recognition. Tests: `voice_learning`
 plus retained identity/recognition/game/motion modules via `run_lean_checks.py`.
 
+## ElevenLabs voice model (2026-09-09)
+
+The owner auditioned matching StarTours samples and selected
+`TTS_MODEL_ID = "eleven_v3_conversational"` for lower cost and latency despite
+some timbre/expression differences. The voice ID is unchanged. Both v3 engines
+retain the tag whitelist, leading/inline tags, Natural stability and fixed seed;
+previous_text is omitted for both (only regular v3 rejection was verified).
+Model-aware cache keys keep the engines separate. Set `TTS_MODEL_ID = "eleven_v3"`
+in `user_config.py` to revert. Existing first-sentence splitting, PCM streaming,
+and local fallback remain in place. No running controller was restarted.
+
 ## Project Summary
 
 DJ-R3X v2 is a local, voice-first droid brain inspired by Rex from Star Tours and Oga's Cantina. It runs on macOS, combines live audio, camera perception, face and voice identity, persistent memory, LLM conversation, TTS, games, music, and physical droid hardware control.
@@ -81,7 +92,7 @@ Startup flags owned by `main.py`:
 | `-jeopardy`, `--jeopardy` | Start directly in Jeopardy mode. |
 | `-noaudio`, `--noaudio`, `--no-audio` | Disable microphone capture, wake word, audio output, and ElevenLabs calls. |
 | `-noservos`, `--noservos`, `--no-servos` | Disable the Pololu Maestro entirely for the run, even with `MAESTRO_PORT` configured. Seeded as `DJR3X_NO_SERVOS` before the config imports (mirrors `--noaudio`'s env-seed mechanism) so `config_loader.SERVOS_ENABLED` computes False; every servo call is already a no-op when servos are disabled (`hardware/servos.py`). |
-| `-local-tts`, `--local-tts` | Use the on-device Qwen3-TTS voice clone instead of ElevenLabs for the run. Seeded as `DJR3X_LOCAL_TTS` before config imports (mirrors `--noaudio`) so `config.LOCAL_TTS_MODE` computes True; `main.py` preloads the model (hard-fail if missing) and skips the ElevenLabs warmup. See "Conversation Voice / TTS backends" below. |
+| `-local-tts`, `--local-tts` | Use the selected local voice (Breeze TTS 2 8-bit by default) instead of ElevenLabs for the run. Seeded as `DJR3X_LOCAL_TTS` before config imports (mirrors `--noaudio`) so `config.LOCAL_TTS_MODE` computes True; `main.py` preloads the model (logs an error and permits ElevenLabs fallback if unavailable) and skips the ElevenLabs warmup. See "Conversation Voice / TTS backends" below. |
 
 In no-audio mode, `main.py` sets runtime-only config values:
 
@@ -136,7 +147,7 @@ audio/
                          line to ElevenLabs (default) or the local engine
                          (_speak_local) for --local-tts mode / an impersonation
                          voice_ref / when the ElevenLabs fallback breaker is open.
-  local_tts.py           On-device Qwen3-TTS voice clone (mlx-audio): model
+  local_tts.py           Configurable Breeze/Qwen voice clone (mlx-audio): model
                          lifecycle + raw streaming synthesis only. Loads offline
                          from assets/models/qwen_tts/. VoiceRef(wav, ref_text, label).
   echo_cancel.py         Playback suppression/AEC state.
@@ -516,10 +527,10 @@ a pointer note, not a copy of the text).
 `audio/tts.py` handles ElevenLabs cache lookup/fetch/playback. In no-audio mode, `speak()` and `ensure_cached()` return before network or playback work. By default `speak()` derives expressive ElevenLabs `voice_settings` from the line's emotion (`emotion_orchestrator.voice_settings_for_emotion`, backed by `config.TTS_VOICE_SETTINGS_*`); an explicit empathy/grief override passed by the caller takes precedence.
 
 **TTS backends.** ElevenLabs is Rex's TRUE voice and the default. `audio/local_tts.py`
-is a second, on-device backend (mlx-audio Qwen3-TTS voice clone) that `tts.speak()`
+selects an on-device backend (mlx-audio Breeze TTS 2 8-bit by default, or Qwen3-TTS) that `tts.speak()`
 dispatches to per line when: (a) `--local-tts` mode is on (`config.LOCAL_TTS_MODE`),
 (b) an explicit `voice_ref` was passed (impersonation — an arbitrary cloned voice),
-or (c) the **ElevenLabs fallback circuit breaker** is open. That breaker
+or (c) offline mode is active or the **ElevenLabs fallback circuit breaker** is open. That breaker
 (`_note_api_failure`/`_note_api_success`/`_api_circuit_open`) opens on any ElevenLabs
 failure — network down, quota exhausted, API error — so Rex finishes the reply in his
 local voice instead of dropping the line, and holds the fallback for
@@ -533,6 +544,26 @@ only when `LOCAL_TTS_CACHE_ENABLED` is on — **off by default** so `--local-tts
 testing always hears freshly synthesized audio (the ElevenLabs cache is separate and
 unaffected); impersonation takes are never cached. `speech_queue.enqueue(..., voice_ref=...)` threads
 the cloned voice to the worker's `tts.speak()` call.
+
+**Breeze migration (2026-09-09).** `LOCAL_TTS_BACKEND="breeze"` selects the
+8-bit model for every local voice; `"qwen"` preserves the previous engine and its
+whole-clip impersonation buffering. `mlx-audio[tts]==0.5.1` is required. The depth
+KV optimization and bounded per-model reference-prefix cache were ported from
+`/Users/bbenziger/Local/breeze-tts-2`; reference paths and exact transcripts stay
+paired. Breeze uses the bench's 24 kHz `RX24-pure-24k` reference. Runtime loads only
+project-local assets, including `audio_tokenizer/`, with network loading disabled.
+
+Breeze `Take` queues **chunks**, not entire clips, for Rex and cloned voices alike.
+The producer runs independently of device writes; `first_ready` means the first
+nonempty chunk. After bad stuttering in the real program, playback now uses 1.5 seconds of
+generated-audio preroll in both online and fully offline mode, a 0.35-second host buffer, 4096-sample blocks and a
+16-chunk producer queue, retaining AEC, output gates, mouth pacing and cancellation cleanup.
+Breeze takes start after Rex's intro/reply, avoiding an engine deadlock if that
+line itself needs local fallback. Queue backpressure is bounded and cancellation
+closes the generator on its producer thread. Optional output caching includes the
+backend, model and reference identity; impersonations remain uncached. These
+Breeze rules supersede the historical whole-clip notes below. See
+[local TTS backends](docs/local_tts_backends.md) for setup, measurements and tuning.
 
 ### Web Search (current-info replies)
 

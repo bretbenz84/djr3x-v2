@@ -83,10 +83,20 @@ def decode(record):
 
 
 def clear(person_id):
+    invalidate_pending(person_id)
     db.execute('DELETE FROM voice_recordings WHERE person_id=?', (int(person_id),))
 
 
 def invalidate_pending(person_id=None):
+    # Derived impersonation audio is a cache of these originals, not an export.
+    # Forgetting/merging source voice data must not leave a reusable stale clone.
+    from pathlib import Path
+    import config
+    cache = Path(config.TTS_CACHE_DIR) / 'voice_refs'
+    pattern = 'person-*' if person_id is None else f'person-{int(person_id)}-*'
+    for path in cache.glob(pattern):
+        if path.suffix in {'.wav', '.txt'}:
+            path.unlink(missing_ok=True)
     # Don't import the conversation engine in a data-only/CLI process.
     import sys
     interaction = sys.modules.get('intelligence.interaction')

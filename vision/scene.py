@@ -1459,8 +1459,11 @@ def _scan_loop(interval_secs: float) -> None:
         ):
             frame = camera.get_frame()
             if frame is not None:
-                detect_animals_local(frame)
-                last_local_animal_time = now
+                from utils import local_work
+                with local_work.optional() as admitted:
+                    if admitted:
+                        detect_animals_local(frame)
+                        last_local_animal_time = now
             else:
                 _log.debug("_scan_loop: no frame available — skipping local animal detector")
 
@@ -1471,8 +1474,11 @@ def _scan_loop(interval_secs: float) -> None:
         ):
             frame = camera.get_frame()
             if frame is not None:
-                detect_objects_local(frame)
-                last_local_object_time = now
+                from utils import local_work
+                with local_work.optional() as admitted:
+                    if admitted:
+                        detect_objects_local(frame)
+                        last_local_object_time = now
             else:
                 _log.debug("_scan_loop: no frame available — skipping local object detector")
 

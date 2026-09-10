@@ -620,8 +620,13 @@ def delete_biometric(biometric_id: int) -> bool:
     if biometric_id is None:
         return False
     with db.connection() as conn:
+        owners = conn.execute("SELECT DISTINCT person_id FROM voice_recordings WHERE biometric_id=?",
+                              (int(biometric_id),)).fetchall()
         conn.execute("DELETE FROM voice_recordings WHERE biometric_id = ?", (int(biometric_id),))
         conn.execute("DELETE FROM biometrics WHERE id = ?", (int(biometric_id),))
+    from memory.voice_recordings import invalidate_pending
+    for row in owners:
+        invalidate_pending(row[0])
     return True
 
 

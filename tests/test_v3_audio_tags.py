@@ -32,6 +32,21 @@ class ResolveTagTest(unittest.TestCase):
 
 
 class ApplyTagsTest(unittest.TestCase):
+    def test_both_v3_engines_keep_character_controls(self):
+        for model in ("eleven_v3", "eleven_v3_conversational"):
+            with self.subTest(model=model), mock.patch.object(config, "TTS_MODEL_ID", model):
+                text, _ = tts._apply_audio_tags("A bold plan.", "neutral", "smug_superiority", {})
+                self.assertEqual(text, "[sarcastic] A bold plan.")
+                inline, _ = tts._apply_audio_tags("[whispers] A secret.", "neutral", None, {})
+                self.assertEqual(inline, "[whispers] A secret.")
+                self.assertEqual(tts._pin_v3_stability({"stability": 0.2})["stability"], config.TTS_V3_STABILITY)
+                self.assertEqual(tts._v3_seed(model), config.TTS_V3_SEED)
+                self.assertEqual(tts._stitch_previous_text("Earlier sentence.", model), "")
+        self.assertNotEqual(
+            tts._cache_path("Same text", "voice", "eleven_v3"),
+            tts._cache_path("Same text", "voice", "eleven_v3_conversational"),
+        )
+
     def test_prepends_tag_and_leaves_stability_alone(self):
         # Stability is owned by _pin_v3_stability now, not the tag layer.
         text, vs = tts._apply_audio_tags("A bold plan.", "neutral", "smug_superiority", {"stability": 0.7})

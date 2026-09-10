@@ -38,8 +38,32 @@ There is no voice-ID line to repeat.
 - **Existing prints:** retained. Strong existing voice/face agreement can seed
   growth through the same multi-utterance process, up to ten active-model prints.
   Marginal contextual naming cannot refresh a voice or write personal memories.
+- **Reply after a greeting/check-in:** if Rex just addressed a known person,
+  their enrolled voice is still the best plausible match (the configured known
+  speaker floor and margin), and they remain the only visible face throughout
+  the capture, Rex continues the exchange without asking their name again.
+  This uses the latest unanswered address within 30 seconds, independent face
+  snapshots, and no mouth output. An intervening human turn, multiple faces,
+  mixed voices or conflicting direction prevents that handoff. It grants only
+  conversational context; it neither verifies the voice nor seeds enrollment or
+  personal-memory learning. Someone with no CAM++ prints still uses the explicit
+  speaking confirmation and sample chain above.
 
 ## Recordings and future models
+
+Impersonation now reuses these verified recordings automatically when no saved
+clone reference exists. Whole clips and their actual transcripts are combined
+at the configured sample rate; at least six voiced seconds are required. The
+derived reference lives in the speech cache and is removed when its source voice
+data is cleared or merged. This does not modify the recognition prints.
+
+If there is insufficient recorded speech, the explicit impersonation request
+asks for ordinary speech in the person's own words. Accepted parts are saved
+incrementally under `assets/voices/people/` with completion metadata. Known-person
+partials survive cancellation, timeout and restart, so another request resumes
+from them. No fixed phrase, recitation matching, or capture-specific echo bypass
+remains. Conflicting speakers and mixed/untrusted audio cannot become reference
+material. Explicit clone captures do not enroll CAM++ identities.
 
 Accepted float32 WAV audio is stored in the `voice_recordings` table in the local,
 gitignored `assets/memory/people.db`. It preserves the capture rate and samples

@@ -398,3 +398,13 @@ class ScriptFreshnessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def setUpModule():
+    global _backend_patch
+    _backend_patch = mock.patch.object(config, "LOCAL_TTS_BACKEND", "qwen")
+    _backend_patch.start()
+
+
+def tearDownModule():
+    _backend_patch.stop()

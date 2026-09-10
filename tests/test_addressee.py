@@ -41,8 +41,8 @@ class HintTest(unittest.TestCase):
         self.assertEqual(h.status, "to_rex")
 
     def test_field_case_is_likely_side(self):
-        # Rex just asked Bret (pid 1) a question; an unknown voice asks a question.
-        h = _hint("Are you gonna watch both movies?", speaker_pid=None, speaker_known=False,
+        # Rex just asked Bret (pid 1) a question; JT asks Bret a question.
+        h = _hint("Are you gonna watch both movies?", speaker_pid=2, speaker_known=True,
                   humans_in_window=2, engaged_pid=1, last_frame_target_pid=1,
                   last_frame_target_name="Bret", last_frame_is_question=True)
         self.assertEqual(h.status, "likely_side")
@@ -51,6 +51,29 @@ class HintTest(unittest.TestCase):
         self.assertIn("PROBABLY not said to you", line)
         self.assertIn("aimed at Bret", line)
         self.assertIn("conversation_stay_quiet", line)
+
+    def test_unknown_voice_does_not_prove_somebody_else_interrupted(self):
+        h = _hint("How are you doing?", speaker_pid=None, speaker_known=False,
+                  speaker_uncertain=True, humans_in_window=1,
+                  last_frame_target_pid=1, last_frame_target_name="Bret",
+                  last_frame_is_question=True)
+        self.assertEqual(h.status, "uncertain")
+        self.assertNotIn("someone other than Bret", h.prompt_line())
+        self.assertIsNone(h.target_name)
+
+    def test_greeting_is_not_described_as_a_question(self):
+        h = _hint("How are you doing?", speaker_pid=2, humans_in_window=2,
+                  last_frame_target_pid=1, last_frame_target_name="Bret",
+                  last_frame_is_question=False)
+        self.assertEqual(h.status, "uncertain")
+        self.assertNotIn("asked Bret something", "; ".join(h.reasons))
+
+    def test_contextual_greeting_reply_is_to_rex_without_certifying_identity(self):
+        h = _hint("Yeah, I'm in Americus, Georgia right now. How are you doing?",
+                  speaker_pid=1, speaker_uncertain=True, reply_to_recent_address=True,
+                  last_frame_target_pid=1, last_frame_target_name="Bret")
+        self.assertEqual(h.status, "to_rex")
+        self.assertFalse(h.offer_stay_quiet)
 
     def test_two_humans_statement_is_uncertain(self):
         h = _hint("I think the second one is better.", speaker_pid=2, humans_in_window=2)
@@ -182,9 +205,10 @@ class InteractionHintTest(unittest.TestCase):
         with (
             mock.patch.object(I, "_turn_speaker_uncertain", return_value=False),
             mock.patch.object(I.command_parser, "parse", return_value=None),
+            mock.patch("memory.people.get_person", return_value={"name": "JT"}),
         ):
             hint = I._assess_turn_addressee(
-                "Are you gonna watch both movies?", person_id=None, text_input=False,
+                "Are you gonna watch both movies?", person_id=2, text_input=False,
                 recent_engagement={"person_id": 1, "name": "Bret Benziger"})
         self.assertEqual(hint.status, "likely_side")
         self.assertEqual(hint.target_name, "Bret")

@@ -82,7 +82,18 @@ def _run(world_state, emit_event) -> None:
     """Worker thread: build the encoder + recognizer (slow), then feed frames until stop."""
     global _recognizer, _embedder
     from perception.place_embedder import load_place_embedder
-    embedder = load_place_embedder()
+    from utils import local_work
+    # A deferred service start can still meet a subsequent local utterance.
+    # Wait for admission without taking audio ownership or spinning on the GIL.
+    while not _stop.is_set():
+        with local_work.optional() as admitted:
+            if admitted:
+                embedder = load_place_embedder()
+                break
+        if _stop.wait(0.1):
+            return
+    else:
+        return
     if embedder is None:
         return  # load_place_embedder already logged why; feature stays off
     from perception.place_recognition import PlaceRecognizer
@@ -151,8 +162,13 @@ def _run(world_state, emit_event) -> None:
             if frame is None:
                 problem = "camera frame unavailable"
             else:
-                result = recognizer.observe(frame)
-                problem = result.skip_reason if result is not None and result.skipped else None
+                with local_work.optional() as admitted:
+                    if admitted:
+                        result = recognizer.observe(frame)
+                        problem = result.skip_reason if result is not None and result.skipped else None
+                    else:
+                        # Preserve the current belief; this is not negative evidence.
+                        problem = "foreground audio or other local inference active"
             if problem and problem != last_problem:
                 _log.info("place observation skipped: %s", problem)
             last_problem = problem

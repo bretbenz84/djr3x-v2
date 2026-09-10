@@ -1,5 +1,19 @@
 # Local TTS (Qwen3-TTS) + Impersonation Mode — Implementation Plan
 
+> Voice-capture update (2026-09-09): the historical fixed-phrase capture design
+> below is superseded by [conversational recording reuse](conversational_voice_learning.md).
+> Impersonation reuses accepted enrollment audio, and its fallback captures
+> ordinary speech with persistent partial progress. The old phrase sets,
+> recitation matching and echo bypass were removed.
+
+
+> **2026-09-09 update:** Breeze TTS 2 **8-bit** is now the default local engine;
+> this document preserves the historical Qwen implementation plan. Qwen remains
+> selectable with `LOCAL_TTS_BACKEND="qwen"`. Breeze uses chunk streaming with 1.5 seconds of preroll
+> for Rex and impersonations rather than the whole-clip buffering described here.
+> Current setup and behavior: [local TTS backends](local_tts_backends.md).
+
+
 > **Status: IMPLEMENTED (2026-07-19).** All four phases shipped to `main`.
 > `--local-tts` mode + automatic ElevenLabs→local fallback (commit `29bd63b`),
 > impersonation (`ae71267`), docs (this pass). See "Step 0 verification results"

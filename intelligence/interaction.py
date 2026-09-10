@@ -785,9 +785,8 @@ def _conversational_voice_runtime():
 
 
 # Impersonation live-capture flow: "do an impersonation of me" opens this slot,
-# Rex asks the person to repeat a fixed line, and the next speech segment from that
-# person is saved as their voice-clone reference before the parody performs.
-#   keys: person_id, name, ref_text (the line to repeat), is_self, asked_at
+# It first reuses accepted enrollment audio. Otherwise ordinary speech from the
+# target accumulates into a saved reference, with partial progress retained.
 _pending_impersonation_capture: Optional[dict] = None
 # Armed when an impersonation request named nobody; the next turn is read as the
 # target ("Obama", "me") instead of as a fresh utterance.
@@ -13493,8 +13492,10 @@ def _handle_onboarding_turn(text: str, speaker_id: Optional[int]) -> Optional[st
         _close_onboarding("pivot")
         return None
 
-    # Record the answer (familiarity bump + tidy fact/interest).
-    onboarding.record_answer(person_id, state["pending_question"], answered)
+    # Provisional voice context can keep the exchange flowing without filing
+    # personal answers under an identity the resolver has not verified.
+    if not _turn_speaker_uncertain():
+        onboarding.record_answer(person_id, state["pending_question"], answered)
     state["answered_count"] += 1
     state["last_answer"] = answered
     soft = onboarding.is_soft_disengage(answered)
@@ -13530,9 +13531,10 @@ def _handle_onboarding_turn(text: str, speaker_id: Optional[int]) -> Optional[st
 
     reveal = ""
     every = int(getattr(config, "ONBOARDING_REVEAL_EVERY", 3))
-    if every > 0 and state["since_reveal"] >= every:
+    if every > 0 and state["since_reveal"] >= every and not state.get("revealed"):
         reveal = onboarding.reveal_line()
         state["since_reveal"] = 0
+        state["revealed"] = bool(reveal)
 
     onboarding.note_question_asked(person_id, next_q)
     state["pending_question"] = next_q
@@ -13644,6 +13646,26 @@ def _resolve_turn_attribution(
     Legacy context proposals cannot overrule this verdict.
     """
     from intelligence import attribution as _attr
+    # A spoken greeting/check-in already has an explicit addressee. Keep that
+    # proposal tied to the latest frame and capture time; a queued utterance
+    # cannot answer a greeting Rex delivered later.
+    addressed_pid, address_age = None, None
+    frames = dialogue_act.frames_snapshot() if not text_input else []
+    started_at = _utterance_observations.get("started_at") if not text_input else None
+    if frames and started_at is not None:
+        frame = frames[-1]
+        prior_at = (previous_speaker or {}).get("at")
+        intervening_human = any(
+            str(row.get("speaker") or "").lower() not in conv_memory._REX_SPEAKERS
+            and float(row.get("captured_at_monotonic") or row.get("recorded_at_monotonic") or 0.)
+            >= frame.created_at
+            for row in (conv_memory.get_session_transcript() or [])[-8:]
+        )
+        if (frame.active() and frame.created_at <= started_at
+                and not intervening_human
+                and (prior_at is None or prior_at < frame.created_at)):
+            addressed_pid = frame.target_person_id
+            address_age = started_at - frame.created_at
     latch_pid = None
     try:
         from vision import active_speaker as _asp
@@ -13668,6 +13690,9 @@ def _resolve_turn_attribution(
         started_at=_utterance_observations.get("started_at") if not text_input else None,
         ended_at=_utterance_observations.get("ended_at") if not text_input else None,
         visual_observations=visual_rows,
+        face_observations=list(_utterance_observations.get("faces") or []) if not text_input else [],
+        addressed_person_id=addressed_pid,
+        address_age_secs=address_age,
         mixed_speakers=(not text_input and (
             any(r.get("change_suspected") for r in _last_scan_windows)
             or len({r.get("person_id") for r in _last_scan_windows if r.get("person_id") is not None}) > 1)),
@@ -13769,6 +13794,10 @@ def _assess_turn_addressee(text: str, *, person_id: Optional[int], text_input: b
         last_frame_target_name=target_name,
         last_frame_is_question=bool(newest and "?" in (newest.text or "")),
         command_parsed=command_parsed,
+        reply_to_recent_address=(
+            ((_current_turn_speaker_evidence or {}).get("resolution") or {}).get("basis")
+            == "reply to recently addressed visible person"
+        ),
     )
 
 
@@ -21558,30 +21587,23 @@ def _handle_router_impersonation(
         return resolution.line
 
     if resolution.kind == "capture":
-        parts = list(resolution.parts or ())
+        progress = impersonation.capture_progress(resolution.person_id) or {}
         _pending_impersonation_capture = {
-            "person_id": resolution.person_id,
-            "name": resolution.name,
-            "expected_text": resolution.line,
-            # Short parts captured back-to-back, concatenated at the end
-            # (owner call 2026-08-26: a long line can't be held in memory).
-            "parts_remaining": parts[1:] if parts else [],
-            "takes": [],
-            "take_texts": [],
-            "is_self": resolution.is_self,
+            "person_id": resolution.person_id, "name": resolution.name,
+            "takes": progress.get("takes", []), "take_texts": progress.get("take_texts", []),
+            "voiced_secs": progress.get("voiced_secs", 0.), "is_self": resolution.is_self,
             "asked_at": time.monotonic(),
         }
-        _log.info(
-            "[impersonation] opened capture slot person_id=%s name=%r parts=%d",
-            resolution.person_id, resolution.name, max(1, len(parts)),
-        )
-        # Speak the FRAMED ask ("repeat after me: <phrase>") — the bare phrase gave
-        # the guest no clue what to do (field 2026-07-23). expected_text stays the
-        # phrase alone so the recitation match compares against the right words.
-        prompt = impersonation.capture_prompt(
-            resolution.name, resolution.line, total_parts=max(1, len(parts)),
-        )
-        _speak_blocking(prompt, emotion="curious", pre_beat_ms=100, log_text=False)
+        prompt = (f"I kept the sample from before, {resolution.name.split()[0]}. "
+                  "Tell me a little more in your own words." if progress else resolution.line)
+        completed = _speak_blocking(prompt, emotion="curious", pre_beat_ms=100, log_text=False)
+        if completed is False:
+            _pending_impersonation_capture = None
+        else:
+            # The human's response window begins after the prompt finishes.
+            _pending_impersonation_capture["asked_at"] = time.monotonic()
+        _log.info("[impersonation] opened conversational capture person_id=%s retained_voiced=%.2f",
+                  resolution.person_id, progress.get("voiced_secs", 0.))
         return prompt
 
     # perform
@@ -21684,6 +21706,8 @@ def _handle_impersonation_capture(
         return None
     if not _impersonation_capture_fresh(ctx):
         _pending_impersonation_capture = None
+        if ctx.get('voiced_secs') and re.search(r"\b(?:already|said that|did this)\b", text, re.I):
+            return ("I kept that part. We can pick it up whenever you want.", False)
         return None
 
     try:
@@ -21694,149 +21718,53 @@ def _handle_impersonation_capture(
 
     if impersonation.sounds_like_cancel(text):
         _pending_impersonation_capture = None
-        return ("No worries — no impression today.", False)
+        return (("No worries — I've kept the usable audio for next time."
+                 if ctx.get('voiced_secs') and ctx.get('person_id') is not None
+                 else "No worries — no impression today."), False)
 
-    # The REQUEST repeated is not the recitation. "Impersonate me" said again
-    # while the slot was open used to be captured as the clip itself — Bret's
-    # stored clone ref was literally the words "impersonate me" (field
-    # 2026-08-26: owner played the file back). Never a valid take.
-    if _IMPERSONATION_REQUEST_ECHO_RE.search(text or ""):
-        ctx["asked_at"] = time.monotonic()
-        first = _first_name_or(ctx.get("name"), "hey")
-        line = str(ctx.get("expected_text") or "the line I gave you")
-        return (
-            f"{first}, I need the line itself, not the request. "
-            f"Repeat after me: {line}",
-            False,
-        )
+    # A request, complaint or bystander's comment is never voice material.
+    if (_IMPERSONATION_REQUEST_ECHO_RE.search(text or "")
+            or re.search(r"^(?:i\s+)?(?:said that already|already (?:said|did|gave)|did this|done this)\b", text, re.I)):
+        return ("I've kept any usable sample. We can stop, or you can tell me a little more in your own words.", False)
 
-    # RECITATION MATCH: the turn's transcript closely matches the exact phrase Rex
-    # asked the target to repeat. Whoever is speaking IS performing the capture —
-    # identity attribution must not veto it (field 2026-07-23: the guest's reply was
-    # misattributed to a junk voiceprint twin, the strict person gate skipped it,
-    # and the slot silently expired). The phrase is a fixed nursery line Rex just
-    # requested; a bystander coincidentally reciting it is not a real risk.
-    expected_norm = _normalize_echo_text(ctx.get("expected_text"))
-    text_norm = _normalize_echo_text(text)
-    recites = bool(
-        expected_norm and text_norm
-        and difflib.SequenceMatcher(None, text_norm, expected_norm).ratio()
-        >= float(getattr(config, "IMPERSONATION_CAPTURE_MATCH_RATIO", 0.6))
-    )
-
-    # Otherwise the clip must come from the target, not a bystander: if the live
-    # turn confidently resolves to someone ELSE, leave the slot for the real
-    # target. An ANONYMOUS slot (person_id=None — a guest Rex doesn't know) is the
-    # mirror image: only an UNKNOWN voice may fill it; a known person speaking
-    # in the gap must not have their voice captured as the guest's.
-    expected_id = ctx.get("person_id")
-    if not recites:
-        if expected_id is not None and person_id is not None and person_id != expected_id:
-            return None
-        if expected_id is None and person_id is not None:
-            return None
-
-    # VOICED length, not buffer length: capture segments ride in padded buffers,
-    # so a ~1.5s utterance can measure 5s (that is exactly how "impersonate me"
-    # passed the old 4s check). Multi-part sets use the shorter per-part floor —
-    # each part is one easy sentence.
-    multi_part = ctx.get("parts_remaining") is not None
-    if multi_part:
-        min_secs = float(getattr(config, "IMPERSONATION_CAPTURE_PART_MIN_VOICED_SECS", 2.0))
-    else:
-        min_secs = float(
-            getattr(
-                config,
-                "IMPERSONATION_CAPTURE_MIN_VOICED_SECS",
-                getattr(config, "IMPERSONATION_CAPTURE_MIN_SECS", 4.0),
-            )
-        )
-    if audio_array is None or _voiced_duration_secs(audio_array) < min_secs:
-        ctx["asked_at"] = time.monotonic()
-        first = _first_name_or(ctx.get("name"), "hey")
-        line = str(ctx.get("expected_text") or "")
-        again = f" Once more: {line}" if line else " Give me the whole line this time."
-        return (
-            f"Didn't quite catch that, {first}.{again}",
-            False,
-        )
-
-    # The recitation IS the material (owner spec 2026-08-26): the right person
-    # saying something unrelated gets one nudge back to the line before an
-    # off-script take is accepted (ASR can mangle the rhyme — never loop).
-    if not recites and expected_norm and not ctx.get("recite_retry_done"):
-        ctx["recite_retry_done"] = True
-        ctx["asked_at"] = time.monotonic()
-        first = _first_name_or(ctx.get("name"), "hey")
-        return (
-            f"{first}, give me the line itself — repeat after me: "
-            f"{ctx.get('expected_text')}",
-            False,
-        )
-
-    # The recitation-match rule above deliberately ignores identity ("whoever is
-    # speaking IS performing the capture") — but the take becomes the target's
-    # DURABLE voice ref, and a helpful housemate reciting the line poisons the
-    # clone (field 2026-08-25: PJ's ref was captured from a take whose voice
-    # scored Bret 0.784, and "PJ's" impression came out sounding like Bret).
-    # When the clip strongly voice-matches a DIFFERENT enrolled person who is
-    # actually around the camera, re-ask once for a solo take; the second take
-    # is accepted regardless, because two genuinely close voices can cross-match
-    # this high forever. The visibility requirement keeps the 2026-07-23 shape
-    # working: a junk voiceprint TWIN also cross-matches high, but a phantom is
-    # never on camera — that capture still goes through first time.
-    foreign_bar = float(getattr(config, "IMPERSONATION_CAPTURE_FOREIGN_VOICE_BAR", 0.75))
+    expected_id = _safe_int(ctx.get("person_id"))
     rb = _safe_int(raw_best_id)
-    if (
-        expected_id is not None
-        and rb is not None
-        and rb != expected_id
-        and float(speaker_score or 0.0) >= foreign_bar
-        and _known_person_visible_recently(rb)
-        and not ctx.get("foreign_retry_done")
-    ):
-        ctx["foreign_retry_done"] = True
+    foreign_bar = float(getattr(config, "IMPERSONATION_CAPTURE_FOREIGN_VOICE_BAR", .75))
+    if (expected_id is None and person_id is not None
+            or expected_id is not None and person_id is not None and person_id != expected_id
+            or rb is not None and rb != expected_id and float(speaker_score or 0.) >= foreign_bar):
+        return None
+    if expected_id is not None and person_id != expected_id:
+        return (f"{_first_name_or(ctx.get('name'), 'friend')}, let me hear just you for a moment.", False)
+    if (not _turn_transcript_trusted() or any(r.get('change_suspected') for r in _last_scan_windows)
+            or len({r.get('person_id') for r in _last_scan_windows if r.get('person_id') is not None}) > 1):
+        return ("That wasn't a clear solo take. Tell me a little more, just you.", False)
+    voiced = _voiced_duration_secs(audio_array) if audio_array is not None else 0.
+    if (voiced < float(config.IMPERSONATION_CAPTURE_PART_MIN_VOICED_SECS)
+            or len(re.findall(r"[A-Za-z0-9']+", text)) < 4
+            or _is_non_speech_vocalization(text)):
         ctx["asked_at"] = time.monotonic()
-        first = _first_name_or(ctx.get("name"), "hey")
-        _log.info(
-            "[impersonation] capture voice-matches person %s at %.2f (target %s) — "
-            "asking for a solo retake",
-            rb, float(speaker_score or 0.0), expected_id,
-        )
-        return (
-            f"{first}, my ears say someone else's voice got on that take — "
-            "give me the line one more time, just you.",
-            False,
-        )
-
-    # Bank this take. More parts to go → ask for the next short line; the last
-    # part triggers the concatenated save (owner call 2026-08-26: short lines
-    # people can actually hold, joined into one ~12-15s reference).
-    takes = ctx.setdefault("takes", [])
-    take_texts = ctx.setdefault("take_texts", [])
-    takes.append(audio_array)
-    take_texts.append(text)
-    remaining = ctx.get("parts_remaining") or []
-    if remaining:
-        ctx["expected_text"] = remaining.pop(0)
-        ctx["asked_at"] = time.monotonic()
-        ctx.pop("recite_retry_done", None)    # fresh nudge budget per part
-        return (f"Got it. Next one: {ctx['expected_text']}", False)
-
-    ref = impersonation.save_person_capture_parts(expected_id, takes, take_texts)
+        return ("I need a little more of your voice. A sentence or two in your own words is plenty.", False)
+    takes = list(ctx.get("takes") or [])
+    if any(np.array_equal(t, audio_array) for t in takes):
+        return ("I've kept that sample already. Tell me a little more in your own words.", False)
+    texts = list(ctx.get("take_texts") or [])
+    takes.append(audio_array.copy()); texts.append(text)
+    total = float(ctx.get("voiced_secs") or 0.) + voiced
+    complete = total >= float(config.IMPERSONATION_CAPTURE_MIN_VOICED_SECS)
+    ref = impersonation.save_person_capture_parts(expected_id, takes, texts,
+                                                  voiced_secs=total, complete=complete)
     if ref is None:
-        ctx["asked_at"] = time.monotonic()
-        return ("My voice scanner hiccupped — run that line by me one more time?", False)
-
+        _pending_impersonation_capture = None
+        return ("My voice recorder couldn't save that. Let's pause the impression for now.", False)
+    ctx.update(takes=takes, take_texts=texts, voiced_secs=total, asked_at=time.monotonic())
+    _log.info("[impersonation] retained capture person_id=%s voiced=%.2f complete=%s",
+              expected_id, total, complete)
+    if not complete:
+        return ("Got that part. Tell me a little more — I'm keeping what you've already said.", False)
     name = ctx.get("name") or ("my mystery guest" if expected_id is None else "you")
-    is_self = bool(ctx.get("is_self"))
     _pending_impersonation_capture = None
-    _log.info(
-        "[impersonation] captured reference for person_id=%s (%d part[s]) — performing",
-        expected_id, len(takes),
-    )
-    parody = impersonation.perform(ref, name, expected_id, is_self=is_self)
-    return (parody, True)
+    return (impersonation.perform(ref, name, expected_id, is_self=bool(ctx.get("is_self"))), True)
 
 
 # ── Scene snapshot ("take a picture / remember this scene") ──────────────────
@@ -22080,7 +22008,7 @@ def _settle_response_wait_after_action() -> None:
 
     Normally an executed command clears the response wait (nothing is owed). But
     when the impersonation capture slot is open, Rex has just ASKED the user to
-    repeat a line — he is waiting, not done. Arm the wait for the capture window
+    supply ordinary speech — he is waiting, not done. Arm the wait for the capture window
     so the whole proactive family (smile reactions, presence beats, env snark,
     musings) holds off instead of barging in — live-logged 2026-07-19 21:20: a
     canned smile-reaction line played ONE second after 'Repeat after me…' because
@@ -26816,9 +26744,6 @@ def _handle_speech_segment(
         # anonymous speaker or reach the LLM.
         if (
             not text_input
-            # A fresh impersonation capture slot EXPECTS the human to recite Rex's
-            # own words back — never eat their recitation as echo.
-            and not _impersonation_capture_fresh(_pending_impersonation_capture)
             # A CONFIDENT voiceprint match to a known human overrides the text
             # match: Rex's AEC residual is his own TTS voice, which comes back as
             # unknown_voice_N (field 2026-07-23), never as a strong human match.
@@ -26901,7 +26826,7 @@ def _handle_speech_segment(
         # exchange; the repeat gets engaged best-effort even if it's also low.
         if _should_reprompt_low_trust(
             text, trusted=transcript_trusted, text_input=text_input
-        ) and not _impersonation_capture_fresh(_pending_impersonation_capture):
+        ):
             line = _low_trust_reprompt_line()
             _log.info(
                 "[interaction] low-trust transcript %r — asking to repeat "
@@ -27843,20 +27768,6 @@ def _handle_speech_segment(
                           "name, no learning this turn", _res.basis, "; ".join(_res.conflicts))
         except Exception as exc:
             _log.debug("[attribution] resolver skipped: %s", exc)
-        # Whom was this said TO? (intelligence/addressee.py). A cheap hint now; the
-        # Lean call decides with the stay-quiet tool when the hint leaves it open.
-        global _current_turn_addressee
-        _current_turn_addressee = None
-        try:
-            _current_turn_addressee = _assess_turn_addressee(
-                text, person_id=person_id, text_input=bool(text_input),
-                recent_engagement=recent_engagement,
-            )
-            if _current_turn_addressee is not None and _current_turn_addressee.offer_stay_quiet:
-                _log.info("[addressee] %s — %s", _current_turn_addressee.status,
-                          "; ".join(_current_turn_addressee.reasons))
-        except Exception as exc:
-            _log.debug("[addressee] hint skipped: %s", exc)
         short_clip = (
             bool(getattr(config, "SHORT_CLIP_CONTINUITY_ENABLED", True))
             and transcribed_text is None
@@ -27951,6 +27862,21 @@ def _handle_speech_segment(
                 identity_resolution_for_turn = "utterance_uncertain"
                 # Keep any stable anonymous session slot, never a guessed name.
                 speaker_label_for_turn = anonymous_speaker_label or "Unidentified speaker"
+        # Assess the addressee AFTER applying the authoritative speaker verdict.
+        # The discarded legacy guess must not make a known reply look like an
+        # interruption by somebody else.
+        global _current_turn_addressee
+        _current_turn_addressee = None
+        try:
+            _current_turn_addressee = _assess_turn_addressee(
+                text, person_id=person_id, text_input=bool(text_input),
+                recent_engagement=recent_engagement,
+            )
+            if _current_turn_addressee is not None and _current_turn_addressee.offer_stay_quiet:
+                _log.info("[addressee] %s — %s", _current_turn_addressee.status,
+                          "; ".join(_current_turn_addressee.reasons))
+        except Exception as exc:
+            _log.debug("[addressee] hint skipped: %s", exc)
         if anonymous_speaker_label:
             slot = next(
                 (s for s in _anonymous_speaker_slots if s.label == anonymous_speaker_label),

@@ -1,8 +1,8 @@
 """
-On-device TTS via mlx-audio Qwen3-TTS voice cloning.
+On-device TTS via mlx-audio Breeze TTS 2 or Qwen3-TTS voice cloning.
 
 This module owns ONLY the model lifecycle and raw synthesis — loading the
-Qwen3-TTS weights and turning (text, voice reference) into float32 audio chunks
+selected weights and turning (text, voice reference) into float32 audio chunks
 at 24 kHz. It deliberately does NOT own playback parity (output gate, AEC
 suppression, mouth LEDs, servo speech motion, barge-in). That lives in
 ``audio/tts.py`` so BOTH the ElevenLabs and local backends share one, identical
@@ -100,8 +100,47 @@ def _project_root() -> Path:
     return Path(config.__file__).resolve().parent
 
 
+def backend() -> str:
+    name = str(getattr(config, "LOCAL_TTS_BACKEND", "breeze")).strip().lower()
+    if name not in {"breeze", "qwen"}:
+        raise ValueError(f"Unknown LOCAL_TTS_BACKEND {name!r}; use 'breeze' or 'qwen'")
+    return name
+
+
+def streams_clones() -> bool:
+    return backend() == "breeze"
+
+
+def model_id() -> str:
+    if backend() == "breeze":
+        return str(config.BREEZE_TTS_MODEL_ID)
+    return str(config.LOCAL_TTS_MODEL_ID)
+
+
+def cache_identity() -> str:
+    # Separate models AND reference replacements; same line must not replay an
+    # older engine or a previous reference recording after a config change.
+    ref = rex_voice_ref()
+    identity = "missing"
+    if ref is not None:
+        p = Path(ref.wav_path)
+        try:
+            st = p.stat()
+            identity = f"{p}:{st.st_mtime_ns}:{st.st_size}:{ref.ref_text}"
+        except OSError:
+            identity = f"{p}:missing:{ref.ref_text}"
+    return f"{backend()}:{model_id()}:{identity}"
+
+
+def streaming_interval() -> float:
+    name = "BREEZE_TTS_STREAMING_INTERVAL" if streams_clones() else "LOCAL_TTS_STREAMING_INTERVAL"
+    return float(getattr(config, name, 0.25 if streams_clones() else 0.32))
+
+
 def _model_dir() -> Path:
-    """Absolute dir the Qwen3-TTS weights live in (per active variant)."""
+    """Absolute directory of the selected local model snapshot."""
+    if backend() == "breeze":
+        return _project_root() / config.BREEZE_TTS_MODEL_DIR / config.BREEZE_TTS_MODEL_VARIANT
     return (
         _project_root()
         / getattr(config, "QWEN_TTS_MODEL_DIR", "assets/models/qwen_tts")
@@ -127,6 +166,10 @@ def unavailable_reason(require_rex_ref: bool = False) -> Optional[str]:
     impersonation, which brings its own VoiceRef; hence opt-in.
     """
     try:
+        selected = backend()
+    except ValueError as exc:
+        return str(exc)
+    try:
         spec = importlib.util.find_spec("mlx_audio")
     except Exception as exc:
         # Don't swallow this to a bare "unavailable" — a raising find_spec is
@@ -137,13 +180,24 @@ def unavailable_reason(require_rex_ref: bool = False) -> Optional[str]:
     d = _model_dir()
     if not (d / "model.safetensors").exists():
         return f"model weights not found at {d} (run: python setup_assets.py)"
-    if not (d / "speech_tokenizer" / "model.safetensors").exists():
+    codec = "audio_tokenizer" if selected == "breeze" else "speech_tokenizer"
+    if not (d / codec / "model.safetensors").exists():
         return (
-            f"vocoder weights not found at {d / 'speech_tokenizer'} "
+            f"vocoder weights not found at {d / codec} "
             "(re-run: python setup_assets.py)"
         )
+    if selected == "breeze":
+        for item in ("config.json", "tokenizer.json", "tokenizer_config.json", "audio_tokenizer/config.json"):
+            if not (d / item).is_file():
+                return f"Breeze asset missing: {d / item} (re-run: python setup_assets.py)"
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            if version("mlx-audio") != "0.5.1":
+                return "Breeze requires mlx-audio==0.5.1 (run: pip install -r requirements.txt)"
+        except PackageNotFoundError:
+            return "mlx-audio is not installed (run: pip install -r requirements.txt)"
     if require_rex_ref and rex_voice_ref() is None:
-        voice = getattr(config, "LOCAL_TTS_VOICE", "RX24-pure")
+        voice = rex_voice_name()
         base = _project_root() / getattr(config, "VOICES_DIR", "assets/voices") / "rex"
         return (
             f"Rex voice reference missing: expected {base / voice}.wav + .txt "
@@ -175,6 +229,12 @@ def _load_model():
     try:
         from mlx_audio.tts.utils import load_model
         with MLX_LOCK:
+            if backend() == "breeze":
+                from audio import breeze_fast_depth, breeze_ref_cache
+                if config.BREEZE_TTS_FAST_DEPTH:
+                    breeze_fast_depth.enable_fast_depth()
+                if config.BREEZE_TTS_REF_CACHE:
+                    breeze_ref_cache.enable_ref_cache()
             model = load_model(model_path)
             try:
                 import mlx.core as mx
@@ -219,7 +279,7 @@ def preload(blocking: bool = True) -> bool:
         try:
             logger.info(
                 "[local_tts] loading %s from %s ...",
-                getattr(config, "LOCAL_TTS_MODEL_ID", "?"), _model_dir(),
+                model_id(), _model_dir(),
             )
             _model = _load_model()
             logger.info("[local_tts] model loaded in %.1fs", time.monotonic() - t0)
@@ -281,10 +341,14 @@ def voice_ref_from_files(
     return VoiceRef(str(wav.resolve()), ref_text, label)
 
 
+def rex_voice_name() -> str:
+    return str(config.BREEZE_TTS_VOICE if streams_clones() else config.LOCAL_TTS_VOICE)
+
+
 def rex_voice_ref() -> Optional[VoiceRef]:
-    """Rex's own reference voice (VOICES_DIR/rex/<LOCAL_TTS_VOICE>.{wav,txt})."""
+    """The selected engine's matched WAV/transcript under VOICES_DIR/rex."""
     base = _project_root() / getattr(config, "VOICES_DIR", "assets/voices") / "rex"
-    voice = getattr(config, "LOCAL_TTS_VOICE", "RX24-pure")
+    voice = rex_voice_name()
     return voice_ref_from_files(base / f"{voice}.wav", base / f"{voice}.txt", "rex")
 
 
@@ -317,12 +381,21 @@ def _segment_chunks(
     from utils.mlx_lock import MLX_LOCK
 
     with MLX_LOCK:   # generator construction may already run MLX setup
+        options = {}
+        if backend() == "breeze":
+            # Same bounded duration heuristic as the test bench (12.5 frames/s).
+            duration = max(2.0, len(seg.split()) / 2.6) * float(config.BREEZE_TTS_DURATION_SLACK)
+            options = dict(voice="S0", cfg_scale=1.0,
+                           temperature=float(config.BREEZE_TTS_TEMPERATURE),
+                           repetition_penalty=float(config.BREEZE_TTS_REPETITION_PENALTY),
+                           max_tokens=max(1, min(int(config.BREEZE_TTS_MAX_TOKENS), int(duration * 12.5))))
         gen = model.generate(
             text=seg,
             ref_audio=voice_ref.wav_path,
             ref_text=voice_ref.ref_text,
             stream=True,
             streaming_interval=interval,
+            **options,
         )
     try:
         while True:
@@ -367,9 +440,10 @@ def generate_stream(text: str, voice_ref: VoiceRef) -> Iterator[np.ndarray]:
     if not text or not text.strip():
         return
     model = _ensure_model()
-    interval = float(getattr(config, "LOCAL_TTS_STREAMING_INTERVAL", 0.32))
+    interval = streaming_interval()
     with _generate_lock, _engine_busy():
-        for seg in _split_line(text):
+        segments = [" ".join(text.split())] if streams_clones() else _split_line(text)
+        for seg in segments:
             yield from _segment_chunks(model, seg, voice_ref, interval)
 
 
@@ -432,7 +506,7 @@ def _synthesize_unit(text: str, voice_ref: VoiceRef) -> Optional[np.ndarray]:
     for this unit only — never for the whole take — so a take in flight can't
     lock another speaker out for its full duration."""
     model = _ensure_model()
-    interval = float(getattr(config, "LOCAL_TTS_STREAMING_INTERVAL", 0.32))
+    interval = streaming_interval()
     with _generate_lock, _engine_busy():
         chunks = list(_segment_chunks(model, text, voice_ref, interval))
     if not chunks:
@@ -478,7 +552,7 @@ def trim_unit_silence(audio: "Optional[np.ndarray]") -> "Optional[np.ndarray]":
 
 
 class Take:
-    """A sentence-pipelined clone take, rendering on a background thread.
+    """A background take: Breeze audio chunks or buffered Qwen sentence units.
 
     ``first_ready`` fires once the first unit is playable (or the take has given
     up entirely — check ``failed``). ``stream()`` yields the finished units in
@@ -490,11 +564,14 @@ class Take:
         self.text = " ".join((text or "").split())
         self.voice_ref = voice_ref
         self.first_ready = threading.Event()
+        self._streaming = streams_clones()
         self._units = _split_take(self.text)
-        self._queue: "queue.Queue" = queue.Queue(maxsize=max(1, int(lookahead)))
+        capacity = config.BREEZE_TTS_QUEUE_CHUNKS if self._streaming else lookahead
+        self._queue: "queue.Queue" = queue.Queue(maxsize=max(1, int(capacity)))
         self._stop = threading.Event()
         self._done = threading.Event()
         self._failed = False
+        self._error = None
         self._started_at = time.monotonic()
         self._thread = threading.Thread(
             target=self._produce, daemon=True, name="local-tts-take"
@@ -514,7 +591,54 @@ class Take:
         pulled out from under it before trying to play it."""
         return self._stop.is_set()
 
+    def _produce_stream(self) -> None:
+        # Generate and write audio on different threads. Serial generate/write
+        # would add device time to inference time and starve a near-realtime LM.
+        rendered = False
+        produced_samples = 0
+        first_chunk_at = None
+        gen = generate_stream(self.text, self.voice_ref)
+        try:
+            for chunk in gen:
+                produced_samples += chunk.size
+                if first_chunk_at is None:
+                    first_chunk_at = time.monotonic()
+                if self._stop.is_set():
+                    break
+                deadline = time.monotonic() + float(config.LOCAL_TTS_TAKE_ABANDON_SECS)
+                while not self._stop.is_set():
+                    try:
+                        self._queue.put(chunk, timeout=0.05)
+                        rendered = True
+                        self.first_ready.set()
+                        break
+                    except queue.Full:
+                        if time.monotonic() >= deadline:
+                            self._stop.set()
+                if self._stop.is_set():
+                    break
+        except Exception as exc:
+            self._error = exc
+            logger.warning("[local_tts] streaming take failed: %s", exc)
+        finally:
+            try:
+                gen.close()
+            except Exception as exc:
+                logger.debug("[local_tts] streaming generator cleanup failed: %s", exc)
+            self._failed = not rendered
+            logger.info(
+                "[local_tts] stream generated %.2fs audio in %.2fs wall (first=%.2fs, voice=%s, stopped=%s)",
+                produced_samples / float(sample_rate()), time.monotonic() - self._started_at,
+                (first_chunk_at - self._started_at) if first_chunk_at else -1.0,
+                self.voice_ref.label, self._stop.is_set(),
+            )
+            self._done.set()
+            self.first_ready.set()
+
     def _produce(self) -> None:
+        if self._streaming:
+            self._produce_stream()
+            return
         rendered = 0
         try:
             for unit in self._units:
@@ -573,18 +697,30 @@ class Take:
         fill_ms = max(20.0, fill_ms)
         fill = np.zeros(int(sample_rate() * fill_ms / 1000.0), dtype=np.float32)
         played_any = False
+        last_chunk_at = time.monotonic()
         try:
-            while True:
+            while not self._stop.is_set():
+                if self._done.is_set() and self._queue.empty():
+                    if self._error is not None and played_any:
+                        raise RuntimeError("Local TTS generation failed mid-stream") from self._error
+                    break
                 try:
-                    item = self._queue.get(timeout=fill_ms / 1000.0)
+                    item = self._queue.get(timeout=0.02 if self._streaming else fill_ms / 1000.0)
                 except queue.Empty:
                     if self._done.is_set() and self._queue.empty():
+                        if self._error is not None and played_any:
+                            raise RuntimeError("Local TTS generation failed mid-stream") from self._error
                         break
-                    if played_any:
+                    if self._streaming and played_any and (
+                        time.monotonic() - last_chunk_at > float(config.BREEZE_TTS_MAX_CHUNK_WAIT_SECS)
+                    ):
+                        raise TimeoutError("Breeze producer stalled waiting for the next audio chunk")
+                    if played_any and not self._streaming:
                         yield fill
                     continue
                 played_any = True
                 yield item
+                last_chunk_at = time.monotonic()
         finally:
             self.close()
 
@@ -617,13 +753,13 @@ def start_take(text: str, voice_ref: VoiceRef, *, lookahead: int = 1) -> Take:
     live synthesis, so in --local-tts mode start this only when nothing else
     needs the engine (features/impersonation.py orders around that).
     """
-    take = Take(text, voice_ref, lookahead=lookahead)
     with _take_lock:
         stale = list(_pending_takes.values())
         _pending_takes.clear()
+        for old in stale:
+            old.close()
+        take = Take(text, voice_ref, lookahead=lookahead)
         _pending_takes[_take_key(text, voice_ref)] = take
-    for old in stale:
-        old.close()
     return take
 
 

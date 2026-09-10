@@ -67,6 +67,11 @@ from config import (
     QWEN_ASR_MODEL_REPO,
     QWEN_ASR_MODEL_DIR,
     QWEN_TTS_MODEL_DIR,
+    LOCAL_TTS_BACKEND,
+    BREEZE_TTS_MODEL_DIR,
+    BREEZE_TTS_MODEL_VARIANT,
+    BREEZE_TTS_MODEL_ID,
+    BREEZE_TTS_MODEL_REVISION,
     LOCAL_TTS_MODEL_ID,
     LOCAL_TTS_MODEL_VARIANT,
     PLACE_MODEL_DIR,
@@ -87,6 +92,7 @@ REQUIRED_DIRS = [
     "assets/models/ecapa",
     "assets/models/resemblyzer",
     "assets/models/qwen_tts",
+    "assets/models/breeze_tts",
     "assets/models/qwen_asr",
     "assets/voices/rex",
     "assets/voices/people",
@@ -992,6 +998,43 @@ def download_qwen_tts_model(
         return [], [], [f"{label}: {exc}"]
 
 
+def download_breeze_tts_model(root: Path) -> tuple[list[str], list[str], list[str]]:
+    """Fetch the complete 8-bit snapshot, including the unquantized codec.
+
+    Only the selected local engine is fetched. Qwen remains available through
+    LOCAL_TTS_BACKEND="qwen" and existing snapshots are never removed.
+    """
+    local_dir = root / BREEZE_TTS_MODEL_DIR / BREEZE_TTS_MODEL_VARIANT
+    label = f"breeze_tts/{BREEZE_TTS_MODEL_ID}"
+    required = ("model.safetensors", "config.json", "tokenizer.json",
+                "tokenizer_config.json", "audio_tokenizer/model.safetensors",
+                "audio_tokenizer/config.json")
+    if all((local_dir / name).is_file() and (local_dir / name).stat().st_size > 0
+           for name in required):
+        return [], [label], []
+    try:
+        from huggingface_hub import snapshot_download
+        print(f"    Downloading {BREEZE_TTS_MODEL_ID} (~4.6 GB)")
+        snapshot_download(repo_id=BREEZE_TTS_MODEL_ID,
+                          revision=BREEZE_TTS_MODEL_REVISION,
+                          local_dir=str(local_dir))
+        if not all((local_dir / name).is_file() and (local_dir / name).stat().st_size > 0
+                   for name in required):
+            raise RuntimeError("Incomplete Breeze snapshot (model, tokenizer and codec required)")
+        return [label], [], []
+    except Exception as exc:
+        return [], [], [f"{label}: {exc}"]
+
+
+def download_local_tts_model(root: Path) -> tuple[list[str], list[str], list[str]]:
+    selected = str(LOCAL_TTS_BACKEND).strip().lower()
+    if selected == "breeze":
+        return download_breeze_tts_model(root)
+    if selected == "qwen":
+        return download_qwen_tts_model(root)
+    return [], [], [f"Unknown LOCAL_TTS_BACKEND {selected!r}; use breeze or qwen"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 7 — Ollama local sidecar model
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1523,8 +1566,8 @@ def main() -> None:
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[14/16] Qwen3-TTS voice-clone model (on-device TTS engine) ...")
-    c, s, f = download_qwen_tts_model(root)
+    print(f"[14/16] Local voice-clone model ({LOCAL_TTS_BACKEND}) ...")
+    c, s, f = download_local_tts_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 

@@ -19,6 +19,10 @@ class UtteranceEvidence:
     started_at: Optional[float] = None
     ended_at: Optional[float] = None
     visual_observations: list = field(default_factory=list)
+    # Independent face-presence snapshots, not active-mouth observations.
+    face_observations: list = field(default_factory=list)
+    addressed_person_id: Optional[int] = None
+    address_age_secs: Optional[float] = None
     mixed_speakers: bool = False
     text: str = ""
     text_input: bool = False
@@ -153,6 +157,10 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
     """
     if ev.text_input or ev.mixed_speakers:
         return resolve(ev)
+    if ev.raw_best_score < ev.hard_threshold and _guarded_addressed_reply(ev):
+        return Resolution("known", ev.raw_best_id, ev.raw_best_name,
+                          "reply to recently addressed visible person",
+                          learning_allowed=False)
     visual_ids = {row.get("person_db_id") for row in ev.visual_observations
                   if row.get("person_db_id") is not None}
     if len(visual_ids) > 1:
@@ -207,6 +215,39 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
                           "sustained mouth motion during this utterance; weak voice evidence")
     return Resolution("ambiguous" if candidate is not None else "unknown", None, None,
                       "insufficient utterance-bound identity evidence")
+
+
+def _guarded_addressed_reply(ev: UtteranceEvidence) -> bool:
+    """Keep a greeting's reply coherent without certifying a voice or learning.
+
+    A longer reply must not lose context just because it exceeds the short-clip
+    allowance. Require an enrolled voice favoring the addressed person and a
+    continuous sole face during THIS capture. The next speaker in a group does
+    not inherit the greeting's name. Mouth telemetry supplies no evidence here.
+    """
+    pid = ev.raw_best_id
+    if (not ev.allow_short_continuity or pid is None or ev.addressed_person_id != pid
+            or ev.address_age_secs is None or not 0 <= ev.address_age_secs <= 30.
+            or ev.raw_best_score < ev.known_floor or ev.margin < ev.required_margin
+            or ev.bearing_contradiction or ev.bearing_selected_pid not in (None, pid)
+            or set(ev.visible_known_ids) != {pid} or ev.voiced_secs <= 0 or ev.words <= 0
+            or ev.started_at is None or ev.ended_at is None or ev.ended_at <= ev.started_at
+            or len(ev.face_observations) < 3):
+        return False
+    stamps = []
+    for row in ev.face_observations:
+        stamp = row.get("monotonic_at")
+        if stamp is None or not ev.started_at <= stamp <= ev.ended_at:
+            return False
+        stamps.append(stamp)
+        faces = [f for f in row.get("faces", []) if not f.get("face_missing")
+                 and f.get("face_visible") is not False
+                 and (f.get("face_visible") or f.get("face_box"))]
+        if len(faces) != 1 or faces[0].get("person_db_id") != pid:
+            return False
+    stamps.sort()
+    return (stamps[0] - ev.started_at <= 1. and ev.ended_at - stamps[-1] <= 1.
+            and all(0 < b - a <= 1. for a, b in zip(stamps, stamps[1:])))
 
 
 def _guarded_face_voice(ev):

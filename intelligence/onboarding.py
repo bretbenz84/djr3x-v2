@@ -418,9 +418,9 @@ _DECLINE_PAT = re.compile(
 # punctuate an enthusiastic answer ("…, can you believe it?", "…, you know?").
 # Stripped before pivot-testing so they don't end the get-to-know-you burst.
 _FILLER_TIC_PAT = re.compile(
-    r"\b(?:you\s+know(?:\s+what\s+i\s+mean)?|you\s+see|can\s+you\s+believe|"
-    r"would\s+you\s+believe|can\s+you\s+imagine|if\s+you\s+(?:will|know)|"
-    r"mind\s+you)\b",
+    r"(?:^|[,;—]\s*)(?:you\s+know(?:\s+what\s+i\s+mean)?|you\s+see|can\s+you\s+believe(?:\s+it)?|"
+    r"would\s+you\s+believe(?:\s+it)?|can\s+you\s+imagine|if\s+you\s+(?:will|know)|"
+    r"mind\s+you)\s*(?:[.!?]+(?=\s|$)|$)",
     re.IGNORECASE,
 )
 # A request/question aimed AT Rex almost always STARTS the turn with a command
@@ -434,7 +434,9 @@ _REQUEST_START_PAT = re.compile(
     r"(?:play|put|skip|pause|set|remind|show|give|turn|start|stop)\b|"
     r"(?:do|are|have|did|does|were|was)\s+you(?:r)?\b|"
     r"what'?s\s+the\b|what\s+time\b|how\s+about\b|what\s+about\b|"
-    r"(?:how'?s|where'?s|who'?s)\s+you(?:r)?\b)",
+    r"(?:how'?s|where'?s|who'?s)\s+you(?:r)?\b|"
+    r"(?:who|what|where|when|why|how)\b|tell\s+me\b|"
+    r"i\s+(?:just\s+)?(?:asked|ask)\s+you\b)",
     re.IGNORECASE,
 )
 # Unambiguous commands to Rex, valid anywhere in the turn.

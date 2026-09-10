@@ -88,6 +88,13 @@ class ExitDetectionTests(unittest.TestCase):
         self.assertFalse(onboarding.is_pivot("I work in finance"))
         self.assertFalse(onboarding.is_pivot("I grew up in Texas"))
 
+    def test_jeffrey_questions_are_not_stripped_as_filler(self):
+        from intelligence import onboarding
+        for text in ('Do you know anything about Jimmy Carter?',
+                     'I ask you about Jimmy Carter. You gonna tell me about him?',
+                     'What town do you think I am in?', 'Tell me about Jimmy Carter.'):
+            self.assertTrue(onboarding.is_pivot(text), text)
+
     def test_soft_disengage(self):
         from intelligence import onboarding
 
@@ -433,6 +440,26 @@ class OnboardingFlowTests(unittest.TestCase):
         self.assertEqual(state["answered_count"], 1)
         self.assertEqual(state["asked_count"], 2)
         self.assertEqual(state["step"], "awaiting_answer")
+
+    def test_carter_question_releases_turn_without_retort_reveal_or_next_question(self):
+        self._arm_awaiting('obsession')
+        with mock.patch.object(self.onboarding, 'record_answer') as record, \
+             mock.patch.object(self.onboarding, 'react_to_answer') as react, \
+             mock.patch.object(self.onboarding, 'reveal_line') as reveal, \
+             mock.patch.object(self.onboarding, 'next_question') as next_question:
+            result = self.interaction._handle_onboarding_turn(
+                'Do you know anything about Jimmy Carter?', self.person_id)
+        self.assertIsNone(result)
+        self.assertIsNone(self.interaction._pending_onboarding)
+        for method in (record, react, reveal, next_question):
+            method.assert_not_called()
+
+    def test_provisional_voice_does_not_file_personal_answers(self):
+        self._arm_awaiting('job')
+        with mock.patch.object(self.interaction, '_turn_speaker_uncertain', return_value=True), \
+             mock.patch.object(self.onboarding, 'record_answer') as record:
+            self.interaction._handle_onboarding_turn("I'm a paramedic.", self.person_id)
+        record.assert_not_called()
 
     def test_retort_leads_the_reply(self):
         # Bank-fallback path (answer-aware reaction disabled): the authored retort

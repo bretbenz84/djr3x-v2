@@ -301,8 +301,8 @@ class LocalCacheTest(unittest.TestCase):
              mock.patch.object(local_tts, "synthesize", return_value=(audio, 24000)), \
              mock.patch.object(tts, "_fetch_from_api") as fetch:
             ok = tts.ensure_cached("boot line")
+            self.assertTrue(tts._local_cache_wav("boot line").exists())
         self.assertTrue(ok)
-        self.assertTrue(tts._local_cache_wav("boot line").exists())
         fetch.assert_not_called()
 
     def test_ensure_cached_local_noop_when_disabled(self):
@@ -439,3 +439,13 @@ class TrimUnitSilenceTest(unittest.TestCase):
             units = [u for u in take.stream()]
         total = sum(u.size for u in units if u is not None)
         self.assertLess(total, padded.size - int(sr * 2.0))
+
+
+def setUpModule():
+    global _backend_patch
+    _backend_patch = mock.patch.object(config, "LOCAL_TTS_BACKEND", "qwen")
+    _backend_patch.start()
+
+
+def tearDownModule():
+    _backend_patch.stop()

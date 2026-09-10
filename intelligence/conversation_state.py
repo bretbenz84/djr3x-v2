@@ -227,6 +227,14 @@ def speaker_lines() -> list[str]:
         return []
     status = str(res.get("status") or "")
     name = str(res.get("name") or "").split()[0] if res.get("name") else ""
+    if res.get("basis") == "reply to recently addressed visible person":
+        return [
+            f"GREETING REPLY: you just addressed {name or 'this person'}, their face stayed "
+            "visible alone, and the voice favors them. Continue the exchange and answer "
+            "what they said; do not ask who's speaking or repeat their name verification. "
+            "This is tentative conversational context, not a verified voice: do not claim "
+            "voice recognition, use private personal memories, or save personal facts."
+        ]
     if status == "ambiguous":
         why = "; ".join(str(c) for c in (res.get("conflicts") or [])[:2])
         return [

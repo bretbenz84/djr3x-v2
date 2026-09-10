@@ -68,19 +68,22 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # ElevenLabs voice — the cloned-voice id Rex speaks with (from your ElevenLabs
 # account after cloning). TTS_MODEL_ID is the ElevenLabs engine.
 # ELEVENLABS_VOICE_ID = "no5jvDWvnx2leN3dFOS7"
-# TTS_MODEL_ID = "eleven_multilingual_v2"
+# TTS_MODEL_ID = "eleven_v3_conversational"  # "eleven_v3" restores the previous voice engine
 
-# On-device TTS (Qwen3-TTS voice clone). ElevenLabs stays Rex's TRUE voice; the
-# local engine runs entirely offline. It powers three things: the `--local-tts`
-# runtime flag (no ElevenLabs at all this run), automatic fallback when ElevenLabs
-# is unreachable / out of credits, and the impersonation feature. Model weights
-# (~2.9 GB) are downloaded by setup_assets.py.
-#   Keep Rex talking in his local voice if ElevenLabs fails (master switch):
+# On-device TTS: Breeze TTS 2 8-bit by default; Qwen3-TTS is still an option.
+# ElevenLabs stays the online default. The selected engine handles --local-tts,
+# offline/API fallback and impersonations. Restart after changing the backend.
+# Run setup_assets.py to install the selected model (Breeze ~4.6 GB, Qwen ~2.9 GB).
+# LOCAL_TTS_BACKEND = "breeze"    # "breeze" or "qwen"
 # LOCAL_TTS_FALLBACK_ENABLED = True
-#   Which mlx-community Qwen3-TTS variant to run ("1.7B-Base-8bit" = best speed/
-#   quality on Apple Silicon; "0.6B-Base-bf16" = lighter):
-# LOCAL_TTS_MODEL_VARIANT = "1.7B-Base-8bit"
-#   Rex's local reference clip name (assets/voices/rex/<name>.wav + .txt):
+# LOCAL_TTS_MODEL_VARIANT = "1.7B-Base-8bit"  # Qwen only
+# BREEZE_TTS_VOICE = "RX24-pure-24k"         # matched test-bench reference pair
+# BREEZE_TTS_PREROLL_SEC = 1.5    # generated audio buffered before playback
+# BREEZE_TTS_OUTPUT_LATENCY = 0.35 # host-buffer seconds
+# BREEZE_TTS_OUTPUT_BLOCKSIZE = 4096
+# BREEZE_TTS_QUEUE_CHUNKS = 16
+# BREEZE_TTS_STREAMING_INTERVAL = 0.25
+#   Rex's Qwen reference clip name (assets/voices/rex/<name>.wav + .txt):
 # LOCAL_TTS_VOICE = "RX24-pure"
 #   Preload the local model at boot even in ElevenLabs mode, so the first fallback
 #   line is instant instead of paying a one-time model load:
@@ -295,15 +298,10 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 
 # ── Impersonation ────────────────────────────────────────────────────────────
 # On/off lives in the feature switches above (IMPERSONATION_ENABLED). Requires the
-# local TTS model. For "impersonate me", Rex asks you to repeat one of these fixed
-# lines so he has a clean voice sample with a known transcript. Keep each ~2 short
-# sentences (long enough to clone from). Edit freely.
-# IMPERSONATION_CAPTURE_LINES = [
-#     "Say this exactly like you mean it: the cantina's open, the music's loud, "
-#     "and I fly better than I sing. Strap in.",
-#     "Repeat after me: I have a very good feeling about this, which historically "
-#     "means it is about to go sideways.",
-# ]
+# local TTS model. Accepted voice-enrollment recordings are reused automatically.
+# If none are usable, Rex asks for ordinary speech and keeps accepted partials.
+# IMPERSONATION_CAPTURE_MIN_VOICED_SECS = 6.0
+# IMPERSONATION_CAPTURE_PART_MIN_VOICED_SECS = 2.0
 
 # What Rex says (in HIS voice) just before an impression — also covers the one-time
 # model-load pause. One picked at random.

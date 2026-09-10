@@ -94,6 +94,7 @@ def assess(
     last_frame_target_name: Optional[str],
     last_frame_is_question: bool,
     command_parsed: bool = False,
+    reply_to_recent_address: bool = False,
 ) -> AddresseeHint:
     """Cheap, deterministic read of whom `text` was aimed at. See module doc."""
     cleaned = " ".join((text or "").split())
@@ -103,6 +104,8 @@ def assess(
         return AddresseeHint("to_rex", ["they said your name"])
     if command_parsed:
         return AddresseeHint("to_rex", ["it parses as a command to you"])
+    if reply_to_recent_address:
+        return AddresseeHint("to_rex", ["reply from the visible person you just addressed"])
 
     multi_party = humans_in_window >= 2
     stranger_with_known = (not speaker_known) and engaged_pid is not None
@@ -119,14 +122,16 @@ def assess(
 
     other_speaker = (
         last_frame_target_pid is not None
-        and (speaker_pid is None or int(speaker_pid) != int(last_frame_target_pid))
+        and speaker_pid is not None
+        and int(speaker_pid) != int(last_frame_target_pid)
     )
     is_question = bool(_QUESTION_RE.search(cleaned))
     second_person = bool(_SECOND_PERSON_RE.search(cleaned))
-    if other_speaker and (is_question or second_person):
+    if other_speaker and last_frame_is_question and (is_question or second_person):
         who = last_frame_target_name or "the person you were talking to"
         reasons.append(f"someone other than {who} asked a question right after you asked {who} something")
         return AddresseeHint("likely_side", reasons, last_frame_target_name)
     if other_speaker:
         reasons.append(f"a different person spoke than the one you were just talking to")
-    return AddresseeHint("uncertain", reasons, last_frame_target_name if other_speaker else None)
+    return AddresseeHint("uncertain", reasons,
+                         last_frame_target_name if other_speaker and last_frame_is_question else None)

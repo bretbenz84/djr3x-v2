@@ -166,3 +166,19 @@ uses the existing non-name guard, storage rejects activity phrases, and enrollme
 rejects mixed captures. Preserve real prompted bare-name introductions. Regression:
 `tests/test_camping_identity_regression.py`. Offline voice predicate tests alone did
 not cover this handoff; do not cite their count as proof of end-to-end identity safety.
+
+### Local TTS backends (2026-09-09)
+
+Read `docs/local_tts_backends.md` before local voice changes. Breeze TTS 2 **8-bit**
+is the default for local mode, offline/API fallback, and impersonations;
+`LOCAL_TTS_BACKEND="qwen"` retains the old engine. Do not substitute Breeze 4-bit,
+mixed precision, or 16-bit. `mlx-audio[tts]==0.5.1` is pinned because the ported
+cached depth decoder and reference-prefix cache use its internal API.
+
+Run `venv/bin/python tools/run_lean_checks.py breeze_tts local_tts impersonation_take
+impersonation organic_impersonation offline_mode tts_network_resilience
+clone_deep_buffer streaming_tts` (one shell line). The runner isolates modules and
+blocks Metal, network, audio and serial. Legacy Qwen take fixtures explicitly
+select Qwen; Breeze tests assert buffered streaming playback and cancellation under queue
+backpressure. `tools/bench_local_tts.py` provides an offline synth-to-file benchmark
+with no playback; actual robot timing and underruns require a live run.

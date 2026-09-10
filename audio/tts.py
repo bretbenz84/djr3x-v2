@@ -267,11 +267,16 @@ def _resolve_voice_settings(
         return _pin_v3_stability(None)   # still pin v3 stability even if emotion resolution fails
 
 
+def _is_v3_model(model_id: str) -> bool:
+    """Both supported v3 engines share our tags, stability and seed policy."""
+    return str(model_id).strip() in {"eleven_v3", "eleven_v3_conversational"}
+
+
 def _pin_v3_stability(voice_settings: Optional[dict]) -> Optional[dict]:
     """On eleven_v3, force `stability` to the single configured preset (config.TTS_V3_STABILITY)
     so Rex's voice is consistent line to line. No-op on other models, or when TTS_V3_STABILITY is
     None. This is the ONE choke point every synthesis path passes through."""
-    if str(getattr(config, "TTS_MODEL_ID", "")).strip() != "eleven_v3":
+    if not _is_v3_model(getattr(config, "TTS_MODEL_ID", "")):
         return voice_settings
     fixed = getattr(config, "TTS_V3_STABILITY", None)
     if fixed is None:
@@ -288,7 +293,7 @@ from utils.audio_tags import AUDIO_TAG_RE as _AUDIO_TAG_RE, strip_audio_tags  # 
 
 def _v3_tags_active() -> bool:
     return (
-        str(getattr(config, "TTS_MODEL_ID", "")).strip() == "eleven_v3"
+        _is_v3_model(getattr(config, "TTS_MODEL_ID", ""))
         and bool(getattr(config, "TTS_V3_AUDIO_TAGS_ENABLED", False))
     )
 
@@ -1401,7 +1406,7 @@ def _speak_local(
     if cacheable:
         cache_file = _cache_path(
             clean_text, f"local:{voice_ref.label}",
-            str(getattr(config, "LOCAL_TTS_MODEL_ID", "qwen-tts")),
+            local_tts.cache_identity(),
         )
         wav_path = cache_file.with_suffix(".wav")
         if wav_path.exists():
@@ -1421,22 +1426,18 @@ def _speak_local(
                 )
                 return True
 
-    # A CLONED voice plays from a sentence pipeline: sentence 1 starts playing
-    # the moment it's rendered while sentence 2 generates behind it, so the room
-    # waits one sentence of synthesis instead of the whole take — and each unit
-    # is fully buffered before it plays, so nothing stutters mid-sentence (field
-    # 2026-08-01: chunk-level streaming starved on a 12s parody line). The
-    # impersonation flow starts the take behind Rex's intro line and parks it;
-    # any other cloned line starts one here. Rex's own voice keeps the
-    # chunk-level stream — his lines are short and latency matters.
+    # Breeze queues raw audio chunks for Rex and every cloned voice. Qwen
+    # retains its buffered take path for long impressions that cannot keep up
+    # with playback. Parked takes are claimed once; every impression is fresh.
     is_clone = getattr(voice_ref, "label", "") != "rex"
     take = local_tts.pop_take(clean_text, voice_ref) if is_clone else None
-    if take is None and is_clone and bool(getattr(config, "LOCAL_TTS_TAKE_PIPELINE", True)):
+    streaming_local = local_tts.streams_clones()
+    if take is None and (streaming_local or (is_clone and bool(getattr(config, "LOCAL_TTS_TAKE_PIPELINE", True)))):
         take = local_tts.Take(clean_text, voice_ref)
 
     # Kill switch: pipeline off → render the clone whole and play it like a
     # cache hit (the pre-pipeline behavior).
-    if take is None and is_clone and bool(getattr(config, "LOCAL_TTS_CLONE_FULL_BUFFER", True)):
+    if not streaming_local and take is None and is_clone and bool(getattr(config, "LOCAL_TTS_CLONE_FULL_BUFFER", True)):
         try:
             full_audio, full_sr = local_tts.synthesize(clean_text, voice_ref)
         except Exception as exc:
@@ -1458,11 +1459,13 @@ def _speak_local(
             )
             return True
 
+    front_ms = config.BREEZE_TTS_FRONT_PAD_MS if streaming_local else config.LOCAL_TTS_FRONT_PAD_MS
+    preroll = config.BREEZE_TTS_PREROLL_SEC if streaming_local else config.LOCAL_TTS_PREROLL_SEC
     front_pad = np.zeros(
-        int(sr * float(getattr(config, "LOCAL_TTS_FRONT_PAD_MS", 150)) / 1000.0),
+        int(sr * float(front_ms) / 1000.0),
         dtype=np.float32,
     )
-    preroll_samples = int(sr * float(getattr(config, "LOCAL_TTS_PREROLL_SEC", 0.25)))
+    preroll_samples = int(sr * float(preroll))
     requested_at = time.monotonic()
 
     # The generator holds local_tts._generate_lock for its whole lifetime, so it
@@ -1520,8 +1523,9 @@ def _speak_local(
                 emotion, ttl_secs=max(8.0, buffered_secs + 6.0), defer_mouth=True,
             )
 
-            all_samples: list[np.ndarray] = list(buffered)
+            all_samples: list[np.ndarray] = list(buffered) if cacheable else []
             ttfa_logged = False
+            underruns = 0
             play_started_at = time.monotonic()
             stream = None
             pacer = None
@@ -1535,7 +1539,9 @@ def _speak_local(
                         return True
                     stream = sd.OutputStream(
                         samplerate=sr, channels=1, dtype="float32",
-                        **playback_stream_kwargs(),
+                        **(dict(blocksize=int(config.BREEZE_TTS_OUTPUT_BLOCKSIZE),
+                                latency=config.BREEZE_TTS_OUTPUT_LATENCY)
+                           if streaming_local else playback_stream_kwargs()),
                     )
                     stream.start()
                 # Only a started stream reports its real output latency. The clone
@@ -1553,8 +1559,9 @@ def _speak_local(
                 if not canceled:
                     # Through the pacer as well: the front pad is 150 ms of real
                     # device time and the mouth must not open across it.
-                    pacer.push(front_pad)
-                    stream.write(front_pad)
+                    if front_pad.size:
+                        pacer.push(front_pad)
+                        stream.write(front_pad)
                 for samples in buffered:
                     if canceled:
                         break
@@ -1566,7 +1573,12 @@ def _speak_local(
                             canceled = True
                             break
                         pacer.push(piece)
-                        stream.write(piece)
+                        if stream.write(piece):
+                            underruns += 1
+                            logger.warning("[tts] local output underflow %d (backend=%s)",
+                                           underruns, local_tts.backend())
+                            if streaming_local and underruns >= int(config.BREEZE_TTS_MAX_UNDERRUNS):
+                                raise RuntimeError("Breeze playback aborted after repeated underflows")
                         if not ttfa_logged:
                             # Logged after the FIRST written piece. It used to sit
                             # after the whole first buffered unit, so a one-unit
@@ -1584,13 +1596,19 @@ def _speak_local(
                     for samples in gen:
                         if canceled:
                             break
-                        all_samples.append(samples)
+                        if cacheable:
+                            all_samples.append(samples)
                         for piece in _led_chunks(samples, sr):
                             if echo_cancel.was_canceled() or not delivery.allowed():
                                 canceled = True
                                 break
                             pacer.push(piece)
-                            stream.write(piece)
+                            if stream.write(piece):
+                                underruns += 1
+                                logger.warning("[tts] local output underflow %d (backend=%s)",
+                                               underruns, local_tts.backend())
+                                if streaming_local and underruns >= int(config.BREEZE_TTS_MAX_UNDERRUNS):
+                                    raise RuntimeError("Breeze playback aborted after repeated underflows")
 
                 if canceled:
                     with sd_guard.device_control():
@@ -1610,14 +1628,22 @@ def _speak_local(
             except Exception as exc:
                 canceled = True
                 logger.error("[tts] local playback error: %s", exc)
+                if stream is not None:
+                    with sd_guard.device_control():
+                        stream.abort()
+                delivery.finish(canceled=True)
             finally:
                 _end_speech(stream, post_playback_tail_secs, flush_on_playback_stop,
                             pacer=pacer, canceled=canceled)
 
+            if underruns:
+                logger.warning("[tts] local playback underruns=%d (backend=%s)",
+                               underruns, local_tts.backend())
             logger.info(
-                "[tts] local playback %s in %.2fs (backend=local, voice=%s)",
+                "[tts] local playback %s in %.2fs (backend=%s, voice=%s)",
                 "canceled" if canceled else "done",
                 time.monotonic() - play_started_at,
+                local_tts.backend(),
                 getattr(voice_ref, "label", "?"),
             )
 
@@ -1847,7 +1873,7 @@ def _v3_seed(model_id: str) -> Optional[int]:
     """Fixed RNG seed for eleven_v3 so an identical request is reproducible (and the cache is
     deterministic). NOTE: seed does NOT keep DIFFERENT sentences sounding alike — that is what
     _stitch_previous_text is for. None on other models, or when TTS_V3_SEED is unset."""
-    if str(model_id).strip() != "eleven_v3":
+    if not _is_v3_model(model_id):
         return None
     seed = getattr(config, "TTS_V3_SEED", None)
     return int(seed) if seed is not None else None
@@ -1861,10 +1887,12 @@ def _stitch_previous_text(previous_text: Optional[str], model_id: str) -> str:
     if not previous_text:
         return ""
     # eleven_v3 REJECTS previous_text (HTTP 400 "unsupported_model") — verified against the live API.
+    # Conservatively omit it for both v3 engines; Conversational has not been
+    # validated with previous_text.
     # So NEVER send it on v3; doing so drops the sentence. v3 consistency instead comes from
     # whole-reply synthesis (LLM_STREAMING_TTS_ENABLED off → a reply is ONE generation). Stitching
     # stays available for models that DO support it (v2 / turbo), should we ever stream on those.
-    if str(model_id).strip() == "eleven_v3":
+    if _is_v3_model(model_id):
         return ""
     if not bool(getattr(config, "TTS_V3_STITCH_ENABLED", True)):
         return ""
@@ -1896,9 +1924,10 @@ def _cache_path(
 def _local_cache_wav(clean_text: str) -> Path:
     """Cache WAV path for Rex's OWN voice on the local backend (impersonation
     voices are never cached). Keyed on backend + model, distinct from ElevenLabs."""
+    from audio import local_tts
     return _cache_path(
         clean_text, "local:rex",
-        str(getattr(config, "LOCAL_TTS_MODEL_ID", "qwen-tts")),
+        local_tts.cache_identity(),
     ).with_suffix(".wav")
 
 

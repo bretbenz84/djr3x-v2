@@ -2,10 +2,10 @@
 Impersonation — Rex clones a voice and performs a short, affectionate parody.
 
 "Rex, do an impersonation of me / of Jimmy Carter." Rex clones a voice (via the
-on-device Qwen3-TTS engine, audio/local_tts.py) and delivers a brief LLM-written
+selected on-device engine, audio/local_tts.py) and delivers a brief LLM-written
 parody in that voice, framed by his own stall/outro lines. Two reference sources:
 
-  * Known people — captured live (Rex asks them to repeat a fixed line), saved
+  * Known people — accepted voice-enrollment recordings or ordinary live speech, saved
     under VOICES_DIR/people/<person_id>.{wav,txt,json}. The parody script is mined
     from that person's memory, with sensitive/boundary topics hard-excluded.
   * Famous people — user-supplied VOICES_DIR/famous/<slug>.{wav,txt} clips; the
@@ -20,6 +20,8 @@ pending slot; it calls resolve_target() / perform() / save_person_capture() here
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import logging
 import re
 import time
@@ -36,8 +38,9 @@ logger = logging.getLogger(__name__)
 
 _SELF_WORDS = {"me", "myself", "i", "my", "speaker", "my voice", "myvoice", "yourself of me"}
 _CANCEL_RE = re.compile(
-    r"\b(no|nope|not now|later|never ?mind|forget it|stop|cancel|wait|hold on|"
-    r"don'?t|actually no)\b",
+    r"^\s*(?:no(?:\s+thanks)?|nope|not now|later|never ?mind|forget it|stop|cancel|wait|hold on|"
+    r"don'?t\s+(?:do|want|keep)|actually[,\s]+no|(?:i'?m|we'?re)\s+done|"
+    r"he'?s\s+not\s+(?:gonna|going to)\s+be\s+able)\b",
     re.IGNORECASE,
 )
 _STOPWORDS = {"the", "a", "an", "of", "mr", "mrs", "ms", "dr", "president", "sir", "madam"}
@@ -87,11 +90,97 @@ def slugify(name: str) -> str:
 # ── Reference clips ───────────────────────────────────────────────────────────
 
 def person_ref(person_id: int) -> Optional[local_tts.VoiceRef]:
-    """Existing saved reference for a known person, or None."""
+    """Use an existing clone reference, then accepted enrollment recordings."""
     base = _voices_dir() / "people"
-    return local_tts.voice_ref_from_files(
+    ref = local_tts.voice_ref_from_files(
         base / f"{person_id}.wav", base / f"{person_id}.txt", f"person:{person_id}"
     )
+    if ref is not None:
+        try:
+            meta = json.loads((base / f'{person_id}.json').read_text())
+        except (OSError, ValueError):
+            meta = {}
+        if meta.get('complete') is not False:
+            return ref
+    return enrollment_ref(person_id)
+
+
+def enrollment_ref(person_id: int) -> Optional[local_tts.VoiceRef]:
+    """Build a derived reference from verified originals; never enroll from it.
+
+    Full clips keep their actual transcripts. Content-addressed files live in
+    the speech cache and are invalidated when the source voice data is cleared.
+    No recognizer or synthesis model is loaded to prepare this reference.
+    """
+    from memory import voice_recordings
+    from scipy.signal import resample_poly
+    try:
+        takes, texts, digests = [], [], []
+        voiced = duration = 0.
+        sr = int(config.AUDIO_SAMPLE_RATE)
+        rows = voice_recordings.list_recordings(int(person_id))
+        for row in rows:
+            meta = json.loads(row['metadata'])
+            text = str(meta.get('transcript') or '').strip()
+            if (meta.get('source') != 'conversational_enrollment'
+                    or meta.get('anchor_and_cluster_verified') is not True or not text):
+                continue
+            rate, audio = voice_recordings.decode(row)
+            if audio.ndim != 1 or not len(audio) or not np.isfinite(audio).all() or rate <= 0:
+                continue
+            if np.issubdtype(audio.dtype, np.integer):
+                audio = audio.astype(np.float32) / max(abs(np.iinfo(audio.dtype).min), np.iinfo(audio.dtype).max)
+            audio = np.asarray(audio, dtype=np.float32)
+            if rate != sr:
+                divisor = math.gcd(int(rate), sr)
+                audio = resample_poly(audio, sr // divisor, int(rate) // divisor)
+            secs = float(meta.get('voiced_secs') or 0.)
+            if (not math.isfinite(secs) or secs < 2. or secs > len(audio) / sr + .1
+                    or duration + len(audio)/sr > 20.):
+                continue
+            takes.append(_trim_silence(audio, sr)); texts.append(text); digests.append(row['digest'])
+            voiced += secs; duration += len(audio)/sr
+            if voiced >= float(config.IMPERSONATION_CAPTURE_MIN_VOICED_SECS):
+                break
+        if voiced < float(config.IMPERSONATION_CAPTURE_MIN_VOICED_SECS):
+            return None
+        key = hashlib.sha256((str(sr) + ':'.join(digests)).encode()).hexdigest()[:16]
+        base = Path(config.TTS_CACHE_DIR) / 'voice_refs'
+        base.mkdir(parents=True, exist_ok=True)
+        stem = base / f'person-{int(person_id)}-{key}'
+        wav, txt = stem.with_suffix('.wav'), stem.with_suffix('.txt')
+        if not wav.exists() or not txt.exists():
+            import soundfile as sf
+            gap = np.zeros(int(.3 * sr), dtype=np.float32)
+            joined = np.concatenate([piece for n, take in enumerate(takes)
+                                     for piece in ([gap, take] if n else [take])])
+            sf.write(str(wav), _pad_tail(joined, sr), sr, subtype='PCM_16')
+            txt.write_text(' '.join(texts), encoding='utf-8')
+        logger.info('[impersonation] using enrollment recordings person_id=%s clips=%d voiced=%.2f',
+                    person_id, len(takes), voiced)
+        return local_tts.voice_ref_from_files(wav, txt, f'person:{person_id}')
+    except Exception as exc:
+        logger.warning('[impersonation] enrollment reference unavailable for %s: %s', person_id, exc)
+        return None
+
+
+def capture_progress(person_id):
+    """A saved incomplete sample can survive cancellation, expiry and restart."""
+    if person_id is None:
+        return None
+    base = _voices_dir() / 'people'
+    try:
+        meta = json.loads((base / f'{int(person_id)}.json').read_text())
+        if meta.get('complete') is not False:
+            return None
+        import soundfile as sf
+        audio, rate = sf.read(base / f'{int(person_id)}.wav', dtype='float32')
+        text = (base / f'{int(person_id)}.txt').read_text().strip()
+        if rate != int(config.AUDIO_SAMPLE_RATE) or audio.ndim != 1 or not text:
+            return None
+        return {'takes': [audio], 'take_texts': [text], 'voiced_secs': float(meta['voiced_secs'])}
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
 
 
 def find_famous_ref(name: str) -> Optional[local_tts.VoiceRef]:
@@ -177,7 +266,8 @@ def _pad_tail(arr: np.ndarray, sr: int) -> np.ndarray:
 
 
 def save_person_capture(
-    person_id: Optional[int], audio_array: np.ndarray, transcript: str
+    person_id: Optional[int], audio_array: np.ndarray, transcript: str, *,
+    voiced_secs: Optional[float] = None, complete: bool = True,
 ) -> Optional[local_tts.VoiceRef]:
     """Persist a live capture as the person's reference clip: a 16 kHz mono PCM_16
     WAV + the transcript + a JSON sidecar. Returns a VoiceRef, or None on failure.
@@ -213,6 +303,8 @@ def save_person_capture(
                 "person_id": person_id,
                 "duration_secs": round(len(arr) / float(sr), 2),
                 "transcript": ref_text,
+                "voiced_secs": voiced_secs,
+                "complete": complete,
             }),
             encoding="utf-8",
         )
@@ -226,13 +318,9 @@ def save_person_capture_parts(
     person_id: Optional[int],
     takes: "list[np.ndarray]",
     transcripts: "list[str]",
+    *, voiced_secs: Optional[float] = None, complete: bool = True,
 ) -> Optional[local_tts.VoiceRef]:
-    """Concatenate several short repeat-after-me takes into ONE reference.
-
-    Owner call 2026-08-26: one long line is impossible to repeat from memory,
-    so the capture asks for short parts back-to-back. Each take is trimmed of
-    its padded room tone, the parts are joined with a small natural gap, and
-    the joined audio + joined transcript become the person's single ref set."""
+    """Join accepted speech clips and their actual transcripts into one reference."""
     takes = [t for t in (takes or []) if isinstance(t, np.ndarray) and t.size]
     if not takes:
         return None
@@ -247,7 +335,7 @@ def save_person_capture_parts(
     transcript = " ".join(
         " ".join(str(t or "").split()) for t in (transcripts or []) if str(t or "").strip()
     )
-    return save_person_capture(person_id, joined, transcript)
+    return save_person_capture(person_id, joined, transcript, voiced_secs=voiced_secs, complete=complete)
 
 
 # ── Lines ─────────────────────────────────────────────────────────────────────
@@ -282,44 +370,11 @@ def _pick_cycling(lines, fallback: str, state_name: str, config_key: str) -> str
     return _pick(lines, fallback)
 
 
-_DEFAULT_CAPTURE_SET = [
-    "Mary had a little lamb, its fleece was white as snow.",
-    "And everywhere that Mary went, the lamb was sure to go.",
-    "It followed her to school one day, and made the children laugh and play.",
-]
-
-
-def capture_line_set() -> list[str]:
-    """One set of SHORT repeat-after-me parts (owner call 2026-08-26: a long
-    line is impossible to hold in memory — PJ couldn't repeat the two-sentence
-    Mary line). The takes are concatenated into one reference afterwards."""
-    sets = getattr(config, "IMPERSONATION_CAPTURE_LINE_SETS", None) or []
-    chosen = _pick(sets, _DEFAULT_CAPTURE_SET)
-    parts = [str(p).strip() for p in (chosen or []) if str(p).strip()]
-    return parts or list(_DEFAULT_CAPTURE_SET)
-
-
-def capture_line() -> str:
-    """Legacy single-string view of a capture set (the joined parts)."""
-    return " ".join(capture_line_set())
-
-
-def capture_prompt(name: object, line: str, total_parts: int = 1) -> str:
-    """The SPOKEN capture ask: instruction + phrase. Field 2026-07-23: Rex spoke
-    the bare phrase ("An apple a day...") with zero framing, so the guest had no
-    idea she was supposed to repeat it and the capture slot silently expired.
-    The expected reference transcript stays `line` alone — only the ask is framed.
-    """
+def capture_prompt(name: object) -> str:
     first = str(name or "").strip().split(" ")[0] if name else ""
     who = f"{first}, " if first else ""
-    if total_parts > 1:
-        return (
-            f"Okay {who}I need a voice sample — {total_parts} quick lines, "
-            f"one at a time. Repeat after me: {line}"
-        )
-    return (
-        f"Okay {who}I need a voice sample — repeat after me, nice and clear: {line}"
-    )
+    return (f"{who}tell me a little about something you enjoyed today, in your own words. "
+            "A few seconds of just your voice will give me something to work with.")
 
 
 def who_line() -> str:
@@ -362,7 +417,6 @@ class Resolution:
     name: str = ""
     is_self: bool = False
     line: str = ""                              # capture prompt or refusal line
-    parts: tuple = ()                           # capture: the full short-line set
 
 
 def _is_self(target: str) -> bool:
@@ -395,19 +449,13 @@ def resolve_target(
     if _is_self(target):
         name = speaker_name or "you"
         if speaker_person_id is None:
-            parts = tuple(capture_line_set())
-            return Resolution(
-                "capture", person_id=None, name="", is_self=True,
-                line=parts[0], parts=parts,
-            )
+            return Resolution("capture", person_id=None, name="", is_self=True,
+                              line=capture_prompt(None))
         ref = person_ref(speaker_person_id)
         if ref is not None:
             return Resolution("perform", ref=ref, person_id=speaker_person_id, name=name, is_self=True)
-        parts = tuple(capture_line_set())
-        return Resolution(
-            "capture", person_id=speaker_person_id, name=name, is_self=True,
-            line=parts[0], parts=parts,
-        )
+        return Resolution("capture", person_id=speaker_person_id, name=name, is_self=True,
+                          line=capture_prompt(name))
 
     # A named target. Known people take precedence over famous clips.
     from memory import people as people_db
@@ -423,15 +471,35 @@ def resolve_target(
         if ref is not None:
             return Resolution("perform", ref=ref, person_id=pid, name=name)
         # Known but never captured — offer to capture (they may be in the room).
-        parts = tuple(capture_line_set())
-        return Resolution(
-            "capture", person_id=pid, name=name, line=parts[0], parts=parts,
-        )
+        return Resolution("capture", person_id=pid, name=name, line=capture_prompt(name))
 
     # Famous-clip fallback.
     famous = find_famous_ref(target)
     if famous is not None:
         return Resolution("perform", ref=famous, person_id=None, name=target.strip())
+
+    # ASR can render Jeffrey as Jaffrey. Resolve a unique close spelling for
+    # this request only; do not rename the person or learn an identity alias.
+    import difflib
+    query = slugify(target)
+    if len(query) >= 5:
+        matches = []
+        for name in people_db.list_person_names():
+            candidate = slugify(name)
+            if '-' not in query:
+                candidate = candidate.split('-')[0]
+            score = difflib.SequenceMatcher(None, query, candidate).ratio()
+            if score >= .85:
+                matches.append((score, name))
+        matches.sort(reverse=True)
+        if matches and (len(matches) == 1 or matches[0][0] - matches[1][0] >= .1):
+            name = matches[0][1]
+            person = people_db.find_person_by_name(name)
+            if person is not None:
+                pid = person['id']
+                ref = person_ref(pid)
+                return Resolution('perform' if ref else 'capture', ref=ref,
+                                  person_id=pid, name=name, line='' if ref else capture_prompt(name))
 
     return Resolution(
         "refuse",
@@ -756,12 +824,9 @@ def perform(
         except Exception as exc:
             logger.debug("[impersonation] enqueue failed: %s", exc)
 
-    # 1. Script FIRST, so the take can start rendering in the background while
-    #    Rex's intro line plays. Under LOCAL_TTS_TAKE_WHOLE_CLIP the take is ONE
-    #    unit: the room waits on the whole bit rather than its first sentence,
-    #    which is the price of the voice not drifting partway through (each unit
-    #    is a separate conditioning pass and they do not match). Nothing here is
-    #    cached — every request re-generates the script AND re-synthesizes.
+    # 1. Script first. Qwen may render its buffered take behind an online intro;
+    # Breeze waits until that intro finishes, then streams the first chunk.
+    # Nothing is cached: each request generates fresh script and speech.
     voice_key = getattr(ref, "label", "") or None
     script = build_parody_script(
         subject_name, person_id, is_self=is_self, stranger=stranger, voice_key=voice_key,
@@ -782,7 +847,10 @@ def perform(
         # In --local-tts mode the INTRO also needs the engine, and synthesis is
         # serialized — starting the take first would block the intro. Order
         # around it.
-        start_before_intro = not bool(getattr(config, "LOCAL_TTS_MODE", False))
+        # A bounded Breeze stream can park while holding its engine. Wait
+        # for the intro even online: it may itself fall back to local speech.
+        from audio import tts as tts_module
+        start_before_intro = not (local_tts.streams_clones() or tts_module._use_local_backend())
         if start_before_intro:
             try:
                 take = local_tts.start_take(speech_text, ref)
@@ -803,9 +871,8 @@ def perform(
         except Exception as exc:
             logger.debug("[impersonation] take launch failed: %s", exc)
 
-    # 3. Take still rendering when the intro ends → loop the processing chirp
-    #    (never dead air). With a whole-clip take that wait covers the entire
-    #    bit, so the chirp is doing real work now rather than covering a seam.
+    # 3. Cover the wait for the first playable audio: one chunk for Breeze,
+    #    a buffered unit for Qwen. Stop the loop before opening voice playback.
     if take is not None and not take.first_ready.is_set():
         loop_handle = None
         try:

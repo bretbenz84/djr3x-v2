@@ -1384,9 +1384,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.info("Skipping audio output prewarm (--noaudio)")
     elif local_tts_mode:
         logger.info(
-            "TTS: local on-device Qwen3-TTS (%s, voice=%s) — ElevenLabs disabled for this run",
-            getattr(config, "LOCAL_TTS_MODEL_VARIANT", "?"),
-            getattr(config, "LOCAL_TTS_VOICE", "?"),
+            "TTS: selected local backend=%s — preload follows (ElevenLabs if unavailable)",
+            getattr(config, "LOCAL_TTS_BACKEND", "breeze"),
         )
         logger.info("Pre-warming audio output device...")
         tts.prewarm()
@@ -1568,10 +1567,10 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             target=_warm_semantic_embed, daemon=True, name="semantic-embed-warmup"
         ).start()
 
-    # ── Local Qwen3-TTS preload ──────────────────────────────────────────────
+    # ── Selected local TTS preload ──────────────────────────────────────────────
     # Preload the on-device voice when it's in use this run: --local-tts mode, or
     # LOCAL_TTS_WARM_ON_BOOT (so the first fallback line is instant). Otherwise the
-    # ~2.9 GB model loads lazily on first use. This is NON-FATAL: ElevenLabs is
+    # selected model loads lazily on first use. This is NON-FATAL: ElevenLabs is
     # Rex's default and works, so a local-TTS problem logs a clear reason and Rex
     # degrades to ElevenLabs for the run (the per-line dispatch re-checks
     # availability, so a transient issue self-heals). Never blocks in --noaudio.
@@ -1599,9 +1598,9 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
                     else " Fallback voice disabled.",
                 )
             else:
-                logger.info("Pre-loading local Qwen3-TTS voice model...")
+                logger.info("Pre-loading selected local TTS voice model...")
                 if local_tts.preload():
-                    logger.info("Local Qwen3-TTS voice model ready.")
+                    logger.info("Local TTS voice model ready.")
                 else:
                     logger.error(
                         "Local TTS model failed to load (see the [local_tts] error above).%s",
@@ -1644,7 +1643,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             # Decorative startup audio may overlap model warmup; only speech must drain.
             while time.monotonic() < _drain_deadline:
                 try:
-                    if not (output_gate.active_source() not in (None, "sound-effects")
+                    if not ((startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive())
+                            or output_gate.active_source() not in (None, "sound-effects")
                             or speech_queue.is_speaking() or tts.is_speaking()):
                         _drained = True
                         break
@@ -1655,6 +1655,12 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
                 logger.info("Boot speech drained — safe to run the heavy vision preload.")
             else:
                 logger.info("Boot speech still going after drain window — loading anyway.")
+        # Local boot speech includes live synthesis before it claims the output
+        # gate. An idle gate is not proof the line has drained (09-09 field run).
+        if not no_audio and tts._use_local_backend() and startup_boot_tts_thread is not None:
+            while startup_boot_tts_thread.is_alive():
+                _abort_startup_if_shutdown("boot speech before vision preload")
+                startup_boot_tts_thread.join(timeout=0.1)
         logger.info("Pre-loading local animal detector...")
         if not animal_detector.preload():
             logger.warning(
@@ -1715,12 +1721,6 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     logger.info("Starting vision.scene (periodic scan)...")
     vision_scene.start_periodic_scan(config.ENVIRONMENT_SCAN_INTERVAL_SECS)
-
-    # Visual place recognition (perception/place_recognition.py). Loads MobileCLIP off the
-    # main thread and publishes world_state.current_place; a no-op unless
-    # PLACE_RECOGNITION_ENABLED and the encoder loads. Never blocks startup.
-    logger.info("Starting perception.place_service (visual place recognition)...")
-    place_service.start(emit_event=_place_event_sink)
 
     # Claim the listening chime now, BEFORE any startup speech can be enqueued.
     # main plays the single "ready" chime at the very end of startup (once all models
@@ -1855,6 +1855,13 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             speech_queue.mark_startup_chime_played()
         except Exception as exc:
             logger.warning("Could not play ready signal: %s", exc)
+
+    # MobileCLIP cold load must not overlap the locally synthesized ready line.
+    # Visual place recognition (perception/place_recognition.py). Loads MobileCLIP off the
+    # main thread and publishes world_state.current_place; a no-op unless
+    # PLACE_RECOGNITION_ENABLED and the encoder loads. Never blocks startup.
+    logger.info("Starting perception.place_service (visual place recognition)...")
+    place_service.start(emit_event=_place_event_sink)
 
     if startup_jeopardy:
         _abort_startup_if_shutdown("Jeopardy launch")
@@ -2294,7 +2301,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--localtts",
         dest="local_tts",
         action="store_true",
-        help="use the on-device Qwen3-TTS voice clone instead of ElevenLabs for this run",
+        help="use the configured local voice (Breeze by default) instead of ElevenLabs",
     )
     return parser.parse_args(argv)
 

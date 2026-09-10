@@ -371,9 +371,11 @@ def _prepare(prep: _Prep) -> None:
         # --local-tts: the reply itself needs the engine and generation is
         # serialized, so the take waits for the reply to finish. Otherwise start
         # rendering now — the ElevenLabs reply is the cover.
-        if bool(getattr(config, "LOCAL_TTS_MODE", False)):
-            prep.reply_done.wait(timeout=max(1.0, prep.deadline() - time.monotonic()))
-            if prep.cancelled:
+        from audio import tts as tts_module
+        if local_tts.streams_clones() or tts_module._use_local_backend():
+            finished = prep.reply_done.wait(timeout=max(1.0, prep.deadline() - time.monotonic()))
+            if not finished or prep.cancelled:
+                prep.failed = True
                 return
         prep.take = local_tts.start_take(speech_text, prep.ref)
     except Exception as exc:

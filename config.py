@@ -752,6 +752,7 @@ RESEMBLYZER_MODEL_DIR = "assets/models/resemblyzer"
 # variant lives in <QWEN_TTS_MODEL_DIR>/<LOCAL_TTS_MODEL_VARIANT>/ so switching
 # variants never collides. ~2.9 GB, downloaded by setup_assets.py, gitignored.
 QWEN_TTS_MODEL_DIR    = "assets/models/qwen_tts"
+BREEZE_TTS_MODEL_DIR  = "assets/models/breeze_tts"
 # Voice reference clips for the local TTS clone + impersonation feature (Rex's
 # own reference, live-captured person refs, user-supplied famous-person clips).
 # Gitignored (third-party audio + personal biometric-ish data).
@@ -1528,7 +1529,7 @@ RECALL_CONVO_MAX_TURNS = 40          # max logged turns injected (evenly sampled
 # of each paying a 30s timeout; Rex announces in character that his connection to
 # the galactic internet is down (and when it returns). Detection is failure-driven
 # (every guarded OpenAI client reports failures → one rate-limited probe) plus a
-# recovery re-probe while offline. ASR (Qwen3-ASR) and TTS (Qwen3-TTS) are already
+# recovery re-probe while offline. ASR (Qwen3-ASR) and TTS (Breeze/Qwen) are already
 # local; this closes the reply-brain gap with qwen3.5:2b.
 OFFLINE_MODE_ENABLED = True
 OFFLINE_LLM_MODEL = "qwen3.5:2b"     # the offline reply brain (already pulled)
@@ -1738,16 +1739,13 @@ ELEVENLABS_VOICE_ID = "no5jvDWvnx2leN3dFOS7"
 # Applied before the cache hash, so corrected pronunciations bypass old takes.
 ELEVENLABS_PRONUNCIATIONS = {"T'Joy": "Tee-Joy"}
 
-# ElevenLabs model to use for TTS.
-#   eleven_v3              — most expressive / most in-character (owner's pick), same per-character
-#                            cost as v2; ~+0.5s latency per uncached line and slightly more variable.
-#                            ElevenLabs officially flags v3 as "not ideal for real-time" — acceptable
-#                            here for the richer voice, but if it drags on the robot, override per
-#                            machine in user_config.py: TTS_MODEL_ID = "eleven_turbo_v2_5".
-#   eleven_multilingual_v2 — fullest v2 expressive range (strong `style`); the previous default.
-#   eleven_turbo_v2_5     — lowest latency AND ~half the credit cost, but weaker `style` shaping.
-# Verified v3 works on our streaming code path with the current voice_settings (2026-07-02).
-TTS_MODEL_ID = "eleven_v3"
+# ElevenLabs model to use for TTS. Both v3 engines retain the same StarTours clone,
+# audio tags, fixed Natural stability, and seed. Model changes can affect timbre.
+#   eleven_v3_conversational — default: cheaper realtime v3; owner auditioned 2026-09-09.
+#   eleven_v3                — richer delivery; set in user_config.py to revert.
+#   eleven_multilingual_v2   — v2 expressive voice (audio tags stripped).
+#   eleven_turbo_v2_5        — fast v2.5 voice (audio tags stripped).
+TTS_MODEL_ID = "eleven_v3_conversational"
 
 # ── Eleven v3 audio tags — expressive delivery ───────────────────────────────
 # Two kinds of tag shape a line's delivery:
@@ -1770,18 +1768,13 @@ TTS_V3_AUDIO_TAGS_ENABLED = True
 # 0.5 = Natural: steady between lines but still responsive to audio tags (only HIGH/Robust mutes
 # tags, per the best-practices doc). Set to None to fall back to the per-emotion v2-style values.
 TTS_V3_STABILITY = 0.5
-# v3 re-rolls fresh randomness on EVERY request, and we stream a reply sentence-by-sentence — each
-# sentence is a separate API call — so even with identical settings Rex's voice drifts take-to-take
-# ("a different voice each sentence"). A FIXED seed pins that randomness so consecutive generations
-# share one vocal character. It also makes our audio cache fully deterministic. The exact value is
-# arbitrary (0..4294967295) — just keep it fixed. Set to None to let the API randomize each call.
+# Fixed seed for both v3 engines, matching the owner's comparison samples.
+# This requests best-effort reproducibility for identical requests; it does not
+# guarantee matching timbre across different sentences or models.
 TTS_V3_SEED = 1440639067
-# Request stitching — the ACTUAL fix for "voice changes each sentence." We stream a reply as
-# separate per-sentence API calls, which ElevenLabs calls "splitting up a large task into multiple
-# requests." Passing each sentence the text that came before it (previous_text) lets v3 condition on
-# it and continue ONE performance instead of re-rolling a fresh voice per call. (A fixed seed does
-# NOT do this — it only makes an IDENTICAL request reproducible, not different sentences consistent.)
-# previous_text is capped to the last N chars — the immediately-preceding context is what matters.
+# Request stitching is used only for non-v3 engines. Regular v3 rejects
+# previous_text; it is conservatively omitted for Conversational too. These
+# settings remain available when selecting v2/turbo.
 TTS_V3_STITCH_ENABLED = _env_bool("TTS_V3_STITCH_ENABLED", True)
 TTS_V3_STITCH_MAX_CHARS = _env_int("TTS_V3_STITCH_MAX_CHARS", 400, min_value=0, max_value=5000)
 # Owner-approved palette (the official v3 tags that sounded like Rex). Only these may ship; a mapped
@@ -1839,23 +1832,46 @@ TTS_V3_TAG_TO_EMOTION = {
 TTS_V3_INLINE_TAG_CAP = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TTS — LOCAL (on-device Qwen3-TTS voice clone)
+# TTS — LOCAL (Breeze TTS 2 8-bit default; Qwen3-TTS optional)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# An on-device TTS engine (mlx-audio Qwen3-TTS) that clones Rex's voice from a
+# Configurable on-device TTS (mlx-audio Breeze/Qwen) clones Rex's voice from a
 # short reference clip. ElevenLabs stays Rex's TRUE voice and the default; the
 # local engine serves three roles:
 #   1. --local-tts runtime mode — run entirely on-device, no ElevenLabs calls.
 #   2. Automatic fallback — if ElevenLabs is unreachable / errors / out of
 #      credits, Rex keeps talking in his local voice instead of going silent.
 #   3. Impersonation — clone ANOTHER voice for a comedic bit (see below).
-# Weights (~2.9 GB) are fetched by setup_assets.py into QWEN_TTS_MODEL_DIR and
-# are gitignored. Runtime loads them fully offline (no network) from that dir.
+# Selected weights (Breeze 8-bit ~4.6 GB; Qwen ~2.9 GB) are fetched by
+# setup_assets.py into the corresponding model directory and are gitignored.
+# Runtime loads them fully offline (no network) from that directory.
 
 # --local-tts runtime mode. Seeded by main.py from the --local-tts CLI flag
 # (DJR3X_LOCAL_TTS env) BEFORE config import, mirroring --noaudio. When True and
 # the model is available, EVERY spoken line is synthesized on-device.
 LOCAL_TTS_MODE = _env_bool("DJR3X_LOCAL_TTS", False)
+
+# Select the local engine for --local-tts, offline/failure fallback, and ALL
+# cloned voices. Restart Rex after changing this; only one engine is loaded.
+LOCAL_TTS_BACKEND = os.environ.get("LOCAL_TTS_BACKEND", "breeze").strip().lower()
+BREEZE_TTS_MODEL_ID = "mlx-community/Breeze-TTS-2-mlx-8bit"
+BREEZE_TTS_MODEL_REVISION = "c6e4a2ff6ab9afba68b7853de802273ffe23fb49"
+BREEZE_TTS_MODEL_VARIANT = "8bit"
+BREEZE_TTS_VOICE = "RX24-pure-24k"  # matched 24 kHz mono reference from test bench
+BREEZE_TTS_STREAMING_INTERVAL = 0.25
+BREEZE_TTS_TEMPERATURE = 0.7
+BREEZE_TTS_REPETITION_PENALTY = 1.2  # stop early-phrase codec loops on longer text
+BREEZE_TTS_MAX_TOKENS = 750
+BREEZE_TTS_MAX_UNDERRUNS = 3    # abort a broken stream instead of stuttering indefinitely
+BREEZE_TTS_MAX_CHUNK_WAIT_SECS = 4.0  # stalled producer after playback begins
+BREEZE_TTS_DURATION_SLACK = 2.0  # cap runaway generation at twice expected length
+BREEZE_TTS_FAST_DEPTH = True    # ported from Local/breeze-tts-2 test bench
+BREEZE_TTS_REF_CACHE = True     # bounded, per-model cache of reference prefixes
+BREEZE_TTS_PREROLL_SEC = 1.5    # buffer generated audio before playback (live stutter fix)
+BREEZE_TTS_FRONT_PAD_MS = 0.0
+BREEZE_TTS_OUTPUT_LATENCY = 0.35  # seconds of host buffering against inference/GIL stalls
+BREEZE_TTS_OUTPUT_BLOCKSIZE = 4096
+BREEZE_TTS_QUEUE_CHUNKS = 16     # bounded producer ahead of playback
 
 # Which mlx-community Qwen3-TTS variant to run. "1.7B-Base-8bit" measured RTF
 # ~0.41 on Apple Silicon (2.5x faster than realtime) — the quality/speed pick.
@@ -1906,7 +1922,7 @@ LOCAL_TTS_FALLBACK_HOLD_SECS = 120.0
 TTS_API_TIMEOUT_SECS = _env_float("TTS_API_TIMEOUT_SECS", 8.0, min_value=1.0, max_value=120.0)
 # Preload the local model at boot even in normal (ElevenLabs) mode, so the FIRST
 # fallback line is instant instead of paying the one-time model load. Off by
-# default (only load the ~2.9 GB model when local TTS is actually in use).
+# default (only load the selected model when local TTS is actually in use).
 LOCAL_TTS_WARM_ON_BOOT = _env_bool("LOCAL_TTS_WARM_ON_BOOT", False)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1914,9 +1930,9 @@ LOCAL_TTS_WARM_ON_BOOT = _env_bool("LOCAL_TTS_WARM_ON_BOOT", False)
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # "Rex, do an impersonation of me / of <famous person>." Rex clones a voice from
-# a short reference clip + transcript (via the local Qwen3-TTS engine) and
+# a short reference clip + transcript (via the selected local engine) and
 # delivers a short, LLM-written parody in that voice. Two reference sources:
-#   - Known people: captured live (Rex asks them to repeat a line), saved under
+#   - Known people: accepted enrollment recordings or ordinary live speech, saved under
 #     VOICES_DIR/people/<person_id>.{wav,txt,json}; the parody script is mined
 #     from that person's memory entries for affectionate mockery.
 #   - Famous people: user-supplied VOICES_DIR/famous/<slug>.{wav,txt} clips.
@@ -1924,29 +1940,12 @@ LOCAL_TTS_WARM_ON_BOOT = _env_bool("LOCAL_TTS_WARM_ON_BOOT", False)
 # fly). Kill switch — when off, the action resolves to an in-character refusal.
 IMPERSONATION_ENABLED = _env_bool("IMPERSONATION_ENABLED", True)
 
-# Live-capture tuning for the "impersonate me" flow.
-IMPERSONATION_CAPTURE_MIN_SECS = 4.0          # legacy raw-buffer floor (unused when VOICED is set)
-# Minimum VOICED seconds in a capture take — measured on speech frames, not
-# buffer length: padded segments made a ~1.5s "impersonate me" measure 5.18s
-# and become Bret's clone ref (field 2026-08-26, owner played the file back).
-# MIN_VOICED applies to a single-take (legacy) capture; PART_MIN_VOICED to each
-# short part of a multi-part set (parts are one sentence, ~3-5s spoken).
-IMPERSONATION_CAPTURE_MIN_VOICED_SECS = 6.0
+# Impersonations reuse accepted enrollment recordings first. If none are usable,
+# collect ordinary speech, retaining each accepted part across retries/restarts.
+IMPERSONATION_CAPTURE_MIN_VOICED_SECS = 6.0  # total speech needed for a reference
 IMPERSONATION_CAPTURE_PART_MIN_VOICED_SECS = 2.0
-# A capture take that voice-matches a DIFFERENT enrolled person at/above this bar
-# — and that person has actually been around the camera — gets ONE solo-retake
-# ask before being saved as the target's durable voice ref (field 2026-08-25:
-# PJ's ref take scored Bret 0.784 and the clone sounded like Bret). The second
-# take always saves: genuinely close voices cross-match this high forever. The
-# visibility requirement keeps junk-twin cross-matches (2026-07-23) from
-# blocking a capture — a phantom print is never on camera.
-IMPERSONATION_CAPTURE_FOREIGN_VOICE_BAR = 0.75
-IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0     # pending capture slot expiry
-# A turn whose transcript matches the requested phrase at least this closely IS the
-# recitation, whoever the voice system says is talking — misattribution must not
-# strand the capture slot (field 2026-07-23: the guest's recitation was pinned on a
-# junk voiceprint twin and skipped; the slot silently expired).
-IMPERSONATION_CAPTURE_MATCH_RATIO = 0.6
+IMPERSONATION_CAPTURE_FOREIGN_VOICE_BAR = 0.75  # conflicting speaker always vetoes
+IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0
 IMPERSONATION_CAPTURE_END_PAD_SECS = 0.5      # min trailing silence on the saved clip
 # Anti-stutter (field 2026-08-01: a long parody line synthesized slower than
 # real time and streamed playback starved repeatedly). The take used to be
@@ -1964,6 +1963,7 @@ IMPERSONATION_CAPTURE_END_PAD_SECS = 0.5      # min trailing silence on the save
 # words, so that wait is bounded at roughly the spoken length of the bit.
 IMPERSONATION_SCRIPT_MAX_WORDS = 45           # sentence-boundary cap on the parody script
 IMPERSONATION_FIRST_UNIT_TIMEOUT_SECS = 45.0  # max thinking-loop wait for the take
+# The buffering switches below apply to Qwen; Breeze always streams chunks.
 LOCAL_TTS_TAKE_PIPELINE = True                # cloned (non-rex) voices go through Take;
                                               # Rex's own short lines keep the
                                               # lower-latency chunk stream
@@ -1985,31 +1985,6 @@ LOCAL_TTS_TRIM_UNIT_SILENCE_ENABLED = True
 LOCAL_TTS_TRIM_SILENCE_THRESHOLD = 0.004      # RMS-window floor that counts as sound
 LOCAL_TTS_TRIM_WINDOW_MS = 20.0
 LOCAL_TTS_TRIM_PADDING_MS = 120.0             # breath kept on each trimmed edge
-# Lines Rex asks the person to repeat (fixed, so the reference transcript is known
-# exactly). Each is ~2 short sentences — enough audio to condition the clone.
-# Longer refs clone better (field 2026-08-26 — Rex's clean 19.5s studio ref
-# clones faithfully; ~8s far-field people captures cloned as "generic people"),
-# but a long line is impossible to repeat from memory (PJ couldn't hold the
-# two-sentence Mary line). So: SETS of short parts, captured back-to-back —
-# each part one easy sentence, the takes concatenated (with their transcripts)
-# into ONE reference of ~12-15s total speech.
-IMPERSONATION_CAPTURE_LINE_SETS = [
-    [
-        "Mary had a little lamb, its fleece was white as snow.",
-        "And everywhere that Mary went, the lamb was sure to go.",
-        "It followed her to school one day, and made the children laugh and play.",
-    ],
-    [
-        "Twinkle, twinkle, little star, how I wonder what you are.",
-        "Up above the world so high, like a diamond in the sky.",
-        "When the blazing sun is gone, you show your little light all night.",
-    ],
-    [
-        "An apple a day keeps the doctor away.",
-        "A penny saved is a penny earned, and the early bird catches the worm.",
-        "Slow and steady wins the race, and practice makes perfect every time.",
-    ],
-]
 # Rex-voice setup/stall lines spoken (in HIS voice) before the impersonation. Also
 # covers the one-time model-load latency, the way the web-search stall line does.
 # Asked when the request names nobody — "Impersonate." on its own, usually a

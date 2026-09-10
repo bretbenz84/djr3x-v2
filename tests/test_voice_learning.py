@@ -312,7 +312,7 @@ class RuntimeTests(unittest.TestCase):
         self.turn('My name is Jeff Benziger.')
         self.assertIsNone(self.r.learner.pending)
 
-    def test_actual_speech_pipeline_confirmation_collection_and_storage(self):
+    def _mock_speech_pipeline(self):
         from audio import speaker_id
         I=self.I
         for name, result in {
@@ -338,6 +338,10 @@ class RuntimeTests(unittest.TestCase):
         self.stack.enter_context(patch.object(I.speech_queue,'enqueue_audio_file',return_value=done))
         from memory import conversations
         self.stack.enter_context(patch.object(conversations,'_log_turn'))
+
+    def test_actual_speech_pipeline_confirmation_collection_and_storage(self):
+        self._mock_speech_pipeline()
+        I = self.I
         # Name question and yes go through real ASR-result + speaker scoring and
         # real speech handler; no typed-GUI shortcut or direct learner calls.
         I._handle_speech_segment(self.prepare(),eager_transcript='Hey Rex, how are you?')
@@ -356,6 +360,42 @@ class RuntimeTests(unittest.TestCase):
                 self.assertFalse(res.get('learning_allowed'))
         self.assertTrue(self.r.saved)
         self.assertEqual(self.count(2),1)
+
+    def test_named_greeting_then_americus_reply_does_not_challenge_or_enroll(self):
+        from intelligence import dialogue_act, conversation_state
+        from memory import conversations
+        self._mock_speech_pipeline()
+        I = self.I
+        dialogue_act.clear(); conversations.clear_transcript(); conversation_state.clear()
+        self.addCleanup(dialogue_act.clear)
+        self.addCleanup(conversations.clear_transcript)
+        self.addCleanup(conversation_state.clear)
+        self.stack.enter_context(patch.object(I, '_last_speaker_turn', None))
+        self.stack.enter_context(patch.object(I, '_pending_offscreen_identify', None))
+        self.stack.enter_context(patch.object(I, '_last_confident_voice_at', {}))
+        self.faces = [face(1)]
+        self.embedding = vector(5, angle=np.arccos(.452))
+        self.voiced = 4.5
+        frame = dialogue_act.note_rex_turn('Hey Bret, back again. Good.', source='presence_reaction',
+                                          target_person_id=1)
+        frame.created_at = self.now
+        audio = self.prepare(mouth=None)
+        # Real capture publishes face presence independently of mouth tracking.
+        I._utterance_observations['faces'] = I._utterance_observations.pop('visual')
+        text = "Yeah, I'm in Americus, Georgia right now. How are you doing?"
+        I._handle_speech_segment(audio, eager_transcript=text)
+        resolution = I._current_turn_speaker_evidence['resolution']
+        self.assertEqual(resolution['person_id'], 1)
+        self.assertEqual(resolution['basis'], 'reply to recently addressed visible person')
+        self.assertFalse(resolution['learning_allowed'])
+        self.assertEqual(I._current_turn_addressee.status, 'to_rex')
+        self.assertIsNone(I._pending_offscreen_identify)
+        self.assertFalse(I._last_confident_voice_at)
+        self.assertIsNone(self.r.learner.pending)
+        self.assertEqual(self.count(1), 1)
+        self.assertEqual(self.count(2), 0)
+        I._reply_token_stream.assert_called()
+        I.conv_log.log_heard.assert_any_call('Bret Benziger', text)
 
     def test_reembedding_uses_original_audio_and_preserves_previous_model(self):
         from tools.voice_recordings import reembed, apply_embeddings
