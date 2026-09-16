@@ -15,6 +15,36 @@ def telemetry(now, front=4000, **changes):
 
 
 class ApproachTests(unittest.TestCase):
+    def test_2047_matrix_return_is_not_callers_personal_distance(self):
+        row = telemetry(.1, tof_mm={'fl':2612, 'fr':793,
+                                   'fl_radial':4000, 'fr_radial':-1})
+        result = Approach(0, 1.3, .4).step(.1, row, 4.916, 0.)
+        self.assertGreater(result.lin, 0.)
+        self.assertLessEqual(result.lin, .10)
+
+    def test_matrix_obstacle_and_independent_standoff_both_remain_active(self):
+        for fl, fr, radial in ((2612, 450, 4000), (1250, 793, 1250), (2612,793,-1)):
+            with self.subTest(fl=fl, fr=fr, radial=radial):
+                row=telemetry(.1, tof_mm={'fl':fl,'fr':fr,'fl_radial':radial,'fr_radial':-1})
+                result=Approach(0,1.3,.4).step(.1,row,4.916,0.)
+                self.assertEqual(result.lin,0.)
+
+    def test_matrix_disagreement_still_stops_at_person_with_bad_camera(self):
+        plan=Approach(0,1.3,.4)
+        distance, speed=2.,0.
+        for tick in range(1,200):
+            now=tick*.1
+            row=telemetry(now, tof_mm={'fl':int(distance*1000),'fr':790,
+                'fl_radial':int(distance*1000),'fr_radial':-1},
+                odom={'x':2-distance,'y':0.,'lin':speed})
+            result=plan.step(now,row,4.916,0.)
+            speed+=max(-.035,min(.035,result.lin-speed))
+            distance-=speed*.1
+            if result.result: break
+        self.assertEqual(result.result,'blocked')
+        self.assertGreaterEqual(distance,1.3)
+        self.assertLess(distance,1.6)
+
     def test_passing_three_feet_is_not_arrival_with_caller_still_far(self):
         plan = Approach(0, 1.3, .4)
         for tick in range(1, 35):
@@ -174,6 +204,18 @@ class MacTransportTests(unittest.TestCase):
         self.mc._heartbeat_tick()
         self.assertEqual(len(self.sent), count)
         self.assertEqual(self.mc.last_come_result()[1], 'aborted')
+
+    def test_whir_requires_measured_motion_and_stops_when_stationary(self):
+        self.mc.come(stop_at=1.3,target=self.face)
+        self.mc._fx_drive_loop_start.assert_not_called()
+        self.mc._heartbeat_tick()
+        self.mc._fx_drive_loop_start.assert_not_called()
+        with patch.object(self.mc.motion,'telemetry',return_value=telemetry(100.,
+                odom={'x':0.,'y':0.,'lin':.08})):
+            self.mc._heartbeat_tick()
+        self.mc._fx_drive_loop_start.assert_called_once()
+        self.mc._heartbeat_tick()
+        self.mc._fx_drive_loop_stop.assert_called_once()
 
     def test_mac_arrival_is_not_a_firmware_done_event(self):
         seq=self.mc.come(stop_at=1.3, target=self.face)

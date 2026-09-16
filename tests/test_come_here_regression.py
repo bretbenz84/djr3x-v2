@@ -106,6 +106,28 @@ class ComeHereRegressionTest(_ComeFixture):
         self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY)
         self.assertIsNone(MA._requested_come["voice_world"])
 
+    def test_idle_base_does_not_mean_blocked_approach_can_retry(self):
+        self.assertTrue(self._request(person_id=1))
+        self._tick()
+        started=MA._requested_come['approach_at']
+        with mock.patch.object(MA.motion_controller,'last_come_result',return_value=(8,'blocked')), \
+             mock.patch.object(MA.motion,'telemetry',return_value={
+                 'rx_monotonic':started+3.,'tof_mm':{'fl':1500,'fr':750,
+                     'fl_radial':1500,'fr_radial':-1}}), \
+             mock.patch.object(MA.time,'monotonic',return_value=started+3.):
+            self._tick()
+        self.come.assert_called_once()
+        self.assertGreater(MA._requested_come['wait_since'],0.)
+        # Sustained, fresh clearance restores the retry; an idle state alone did not.
+        with mock.patch.object(MA.motion_controller,'last_come_result',return_value=(8,'blocked')):
+            for elapsed in (4.,4.7):
+                with mock.patch.object(MA.motion,'telemetry',return_value={
+                        'rx_monotonic':started+elapsed,'tof_mm':{'fl':3000,'fr':3000,
+                            'fl_radial':3000,'fr_radial':-1}}), \
+                     mock.patch.object(MA.time,'monotonic',return_value=started+elapsed):
+                    self._tick()
+        self.assertEqual(self.come.call_count,2)
+
     def test_field_evidence_reaches_motion_without_promoting_identity(self):
         ranked = evidence()["scoreboard"]
         with mock.patch.object(IX, "_last_scan_ranked", ranked), \

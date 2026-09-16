@@ -1075,7 +1075,12 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
 
             # Dog leaves: the base is free again.
             self._state_val = "idle"
-            self._tick()
+            now=time.monotonic()
+            for at in (now,now+.7):
+                with mock.patch.object(MA.time,'monotonic',return_value=at), \
+                     mock.patch.object(MA.motion,'telemetry',return_value={
+                         'rx_monotonic':at,'tof_mm':{'fl':3000,'fr':3000}}):
+                    self._tick()
             self.assertEqual(self.come.call_count, 2, "he must resume once the path clears")
 
     def test_arrival_ends_the_errand(self):
@@ -1142,13 +1147,13 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
             MA.step(_snapshot(distance_zone="public"), _profile())
             self.assertEqual(self.come.call_count, 1)
             self._result = "completed"
-            with mock.patch.object(
-                MA.motion, "telemetry",
-                return_value={"tof_mm": {"fl": 3400, "fr": 3600,
-                                         "fl_radial": 3400, "fr_radial": 3600}},
-                create=True,
-            ):
-                MA.step(_snapshot(distance_zone="public"), _profile())
+            now=time.monotonic()
+            for at in (now,now+.7):
+                with mock.patch.object(MA.time,'monotonic',return_value=at), \
+                     mock.patch.object(MA.motion,'telemetry',return_value={
+                         'rx_monotonic':at,'tof_mm':{'fl':3400,'fr':3600,
+                             'fl_radial':3400,'fr_radial':3600}}):
+                    MA.step(_snapshot(distance_zone="public"), _profile())
         self.assertTrue(MA.requested_come_active())
         self.assertEqual(self.come.call_count, 2, "open floor ahead — try again")
 
@@ -1176,9 +1181,11 @@ class ComeResumesAfterBlockTest(unittest.TestCase):
         with mock.patch.object(config, "MOTION_COME_RETRY_GAP_SECS", 0.0, create=True), \
              mock.patch.object(config, "MOTION_COME_MAX_APPROACHES", 3, create=True):
             self.assertTrue(MA.request_come_here())
-            for _ in range(12):
-                self._tick()
-                self._result = "blocked"          # never actually clears
+            now=time.monotonic()
+            for elapsed in range(12):
+                with mock.patch.object(MA.time,'monotonic',return_value=now+elapsed):
+                    self._tick()
+                    self._result = "blocked"          # never actually clears
         self.assertLessEqual(self.come.call_count, 3)
         self.assertFalse(MA.requested_come_active(), "must not retry forever")
 

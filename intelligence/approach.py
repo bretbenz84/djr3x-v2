@@ -41,6 +41,22 @@ def face_range_m(person, frame_width, half_fov_deg=25., face_width_m=.16):
         return None
 
 
+def front_budget(tof, stop_at):
+    """Separate independent stand-off range from broad matrix obstacle range.
+
+    Matrix half-frame minima do not locate the caller. Keep them as an obstacle
+    envelope, never discard them, and require independent range to relax the
+    personal stand-off constraint. Missing independent data stays conservative.
+    """
+    fronts = [float(tof[k])*.001 for k in ('fl', 'fr') if tof.get(k, -1) > 0]
+    if not fronts:
+        return None
+    front = min(fronts)
+    radial = [float(tof[k])*.001 for k in ('fl_radial', 'fr_radial') if tof.get(k, -1) > 0]
+    personal = min(radial) if radial else front
+    return min(personal - stop_at - .10, front - .55)
+
+
 class Approach:
     def __init__(self, now, stop_at, speed, accel=.35):
         self.started = now
@@ -100,10 +116,10 @@ class Approach:
         # also a stand-off limit, not merely a 20 cm collision tripwire. Allow
         # braking distance plus one telemetry/command-latency margin.
         speed_now = max(0., float(odom.get('lin', 0)))
-        front_remaining = front - self.stop_at - .10
+        front_remaining = front_budget(tof, self.stop_at)
         brake = speed_now * speed_now / (2 * self.accel) + speed_now * .3
         if (front_remaining <= max(.03, brake) or
-                (self.front_near_since is not None and front < self.stop_at + .5)):
+                (self.front_near_since is not None and front_remaining < .4)):
             if self.front_near_since is None:
                 self.front_near_since = now
             if now - self.front_near_since >= .6 and speed_now <= .08:
@@ -129,6 +145,10 @@ class Approach:
         self.near_since = None
         lin = min(self.speed, max(.04, math.sqrt(2*self.accel*max(0, remaining))),
                   max(0., front_remaining) / .6)
+        if front < self.stop_at + .10:
+            # Close matrix-only return with independent clearance: creep while
+            # retaining both the obstacle envelope and radial stand-off stop.
+            lin = min(lin, .10)
         # The ESP32 adds avoidance. Do not counter-steer against it; restore the
         # observed caller bearing only after a clear corridor has persisted.
         clear = front >= 1. and all(tof.get(k, -1) >= 400 for k in ('lf','lb','rf','rb'))

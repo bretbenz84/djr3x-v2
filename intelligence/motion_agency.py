@@ -297,6 +297,7 @@ _requested_come = {
     "voice_used": False,        # the opening voice turn has been issued (or words overrode it)
     "refusal_line": None,
     "wait_since": 0.0,
+    "retry_clear_since": None,
     "acquired": False,       # one-way transition: search -> camera target
     "speaker_evidence": None,
     "last_turn_kind": None,
@@ -620,6 +621,7 @@ def request_come_here(person_id: "int | None" = None, *,
         voice_world=None,
         voice_used=False,
         wait_since=0.0,
+        retry_clear_since=None,
         acquired=False,
         speaker_evidence=dict(speaker_evidence) if speaker_evidence is not None else None,
         last_turn_kind=None, target_world=None, recenter_reacquire=False, lost_since=0.0,
@@ -1727,7 +1729,6 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
                             "I can see you, but my front sensors keep reporting something "
                             "in the way. I'm stopping here.")
         return True
-    _requested_come["wait_since"] = 0.0
     # ── APPROACH ────────────────────────────────────────────────────────────
     # The errand stays ALIVE across the drive. It used to end the instant `come`
     # was sent, so anything that stopped him short ended the whole thing: field
@@ -1737,9 +1738,21 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     # tell ARRIVED from STOPPED SHORT — the front ToF cannot, because a dog
     # standing half a metre away looks exactly like having reached someone.
     if int(_requested_come["approaches"]) > 0:
-        # Stopped short (blocked/aborted). Reaching here already means the base is
-        # idle again (the not-base_idle hold above), i.e. the path cleared. Wait a
-        # short beat so a dog dawdling in front can't become a 1 Hz retry storm.
+        from intelligence.approach import front_budget
+        tele = motion.telemetry() or {}
+        budget = front_budget(tele.get('tof_mm') or {}, _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0))
+        if (budget is None or budget < .4 or tele.get('rx_monotonic') is None
+                or now - tele['rx_monotonic'] > .6):
+            _requested_come['retry_clear_since'] = None
+            _wait_for_come_path(now, "approach clearance has not recovered",
+                "I can see you, but I can't confirm enough clearance to get closer. I'm holding here.")
+            return True
+        if _requested_come.get('retry_clear_since') is None:
+            _requested_come['retry_clear_since'] = now
+        if now - _requested_come['retry_clear_since'] < .6:
+            return True
+        # Clearance has now recovered independently of the base's idle state.
+        # Also enforce the minimum gap between attempts.
         if (now - float(_requested_come["approach_at"])) < _num(
             "MOTION_COME_RETRY_GAP_SECS", 2.0
         ):
@@ -1752,6 +1765,8 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
         _log.info("[motion_agency] requested come: path cleared (last=%s) — resuming",
                   last_result)
 
+    _requested_come["wait_since"] = 0.0
+    _requested_come['retry_clear_since'] = None
     stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
     travel_yaw = _base_yaw_deg()
     seq = motion_controller.come(approach_heading, stop_at=stop_at, target=person)

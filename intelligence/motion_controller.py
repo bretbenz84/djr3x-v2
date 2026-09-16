@@ -147,6 +147,13 @@ def _heartbeat_approach() -> bool:
         from world_state import world_state
         now = time.monotonic()
         telemetry = motion.telemetry() or {}
+        moving = abs(float((telemetry.get('odom') or {}).get('lin', 0))) > .02
+        if moving and not active.get('sound_started'):
+            _fx_drive_loop_start('motion_move', active['seq'])
+            active['sound_started'] = True
+        elif not moving and active.get('sound_started'):
+            _fx_drive_loop_stop(active['seq'])
+            active['sound_started'] = False
         if active.get('turn_seq') is not None:
             result = motion.done_result(active['turn_seq'])
             if result is None and now-active['plan'].started < 8:
@@ -1257,7 +1264,6 @@ def come(heading: float = 0.0, stop_at: "float | None" = None,
             plan=Approach(time.monotonic(), distance, pace, _get_float('MOTION_ACCEL_LINEAR_MS2', .35)))
         _last_come_seq, _last_come_result, _last_come_detail = seq, None, {}
         _note_issued(seq, 'come here')
-        _fx_drive_loop_start('motion_move', seq)
         return seq
 
 
