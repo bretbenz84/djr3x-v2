@@ -29,7 +29,12 @@ def face_range_m(person, frame_width, half_fov_deg=25., face_width_m=.16):
     """Approximate camera range, not an identification or a collision guarantee."""
     try:
         width = float(person['face_box'][2])
-        fraction = width / float(frame_width)
+        # Vision owns the coordinate scale. Its normalized width survives a
+        # resized detector frame; the host's default camera width may not.
+        fraction = person.get('face_box_fraction')
+        fraction = float(fraction) if fraction is not None else width / float(frame_width)
+        if not 0 < fraction <= 1:
+            return None
         value = float(face_width_m) / (2 * math.tan(math.radians(half_fov_deg)) * fraction)
         return value if width > 0 and .2 <= value <= 10. else None
     except (KeyError, TypeError, ValueError, ZeroDivisionError):
@@ -53,6 +58,7 @@ class Approach:
         self.last_xy = None
         self.travel = 0.
         self.clear_since = None
+        self.front_near_since = None
         self.reason = 'starting'
 
     def step(self, now, telemetry, target_range, bearing_deg, target_stamp=None):
@@ -90,6 +96,20 @@ class Approach:
             return Decision(result='blocked' if now-self.block_since >= 6 else None,
                             reason='front obstacle; holding caller')
         self.block_since = None
+        # Face-size range can overestimate a person by metres. Front range is
+        # also a stand-off limit, not merely a 20 cm collision tripwire. Allow
+        # braking distance plus one telemetry/command-latency margin.
+        speed_now = max(0., float(odom.get('lin', 0)))
+        front_remaining = front - self.stop_at - .10
+        brake = speed_now * speed_now / (2 * self.accel) + speed_now * .3
+        if (front_remaining <= max(.03, brake) or
+                (self.front_near_since is not None and front < self.stop_at + .5)):
+            if self.front_near_since is None:
+                self.front_near_since = now
+            if now - self.front_near_since >= .6 and speed_now <= .08:
+                return Decision(result='blocked', reason='front stand-off reached; caller range uncertain')
+            return Decision(reason='braking at front stand-off')
+        self.front_near_since = None
         if now-self.last_seen >= 8:
             return Decision(result='aborted', reason='caller lost')
         if now-self.last_seen > 1.2 or self.last_range is None:
@@ -107,7 +127,8 @@ class Approach:
                 return Decision(result='completed', reason='caller at camera stand-off')
             return Decision(reason='settling at caller')
         self.near_since = None
-        lin = min(self.speed, max(.04, math.sqrt(2*self.accel*max(0, remaining))))
+        lin = min(self.speed, max(.04, math.sqrt(2*self.accel*max(0, remaining))),
+                  max(0., front_remaining) / .6)
         # The ESP32 adds avoidance. Do not counter-steer against it; restore the
         # observed caller bearing only after a clear corridor has persisted.
         clear = front >= 1. and all(tof.get(k, -1) >= 400 for k in ('lf','lb','rf','rb'))

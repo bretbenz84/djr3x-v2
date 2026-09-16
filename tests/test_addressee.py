@@ -57,7 +57,7 @@ class HintTest(unittest.TestCase):
                   speaker_uncertain=True, humans_in_window=1,
                   last_frame_target_pid=1, last_frame_target_name="Bret",
                   last_frame_is_question=True)
-        self.assertEqual(h.status, "uncertain")
+        self.assertEqual(h.status, "to_rex")
         self.assertNotIn("someone other than Bret", h.prompt_line())
         self.assertIsNone(h.target_name)
 
@@ -81,9 +81,9 @@ class HintTest(unittest.TestCase):
         self.assertIn("2 people have spoken recently", h.reasons[0])
         self.assertIn("may not have been said to you", h.prompt_line())
 
-    def test_uncertain_speaker_alone_opens_the_question(self):
+    def test_uncertain_speaker_alone_does_not_create_side_conversation(self):
         h = _hint("what do you think?", speaker_uncertain=True, humans_in_window=1)
-        self.assertEqual(h.status, "uncertain")
+        self.assertEqual(h.status, "to_rex")
 
     def test_disabled_flag_makes_everything_to_rex(self):
         with mock.patch.object(config, "ADDRESSEE_JUDGMENT_ENABLED", False, create=True):

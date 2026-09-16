@@ -10264,7 +10264,11 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
         # First time ever seen this session.
         if key not in _last_seen:
-            if isinstance(key, int) and person_name and key not in _greeted_this_session:
+            # A deferred startup greeting can survive minutes of conversation.
+            # Once this person has spoken, track them quietly instead of later
+            # treating this session as a return from the previous stored visit.
+            if (isinstance(key, int) and person_name and key not in _greeted_this_session
+                    and not _group_turn_speaker_times.get(key)):
                 if _hold_startup_individual_greeting(snapshot, now):
                     first_sight_pending_keys.add(key)
                     _first_sight_seen_at.setdefault(key, now)

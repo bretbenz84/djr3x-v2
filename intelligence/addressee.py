@@ -12,10 +12,10 @@ Two layers, on purpose:
 1. **Deterministic hint** (`assess`): cheap signals decide whether the question
    is even open. A name mention or a parsed command is to Rex. A one-on-one room
    is to Rex — the stay-quiet option is never offered there, so this can never
-   make Rex ignore a lone human. Two humans in the recent window, an unknown
-   voice while a known person is engaged, an ambiguous speaker verdict, or a
-   question from someone other than the person Rex just asked something — those
-   make it `uncertain` or `likely_side`.
+   make Rex ignore a lone human. With two humans established in the recent
+   window, an ambiguous speaker or a question from someone other than the
+   person Rex just addressed can make it `uncertain` or `likely_side`.
+   Anonymous labels alone do not establish additional people.
 2. **Model judgment**, only when the hint is not `to_rex`: the ordinary Lean
    reply call gets one extra line describing the doubt and one extra tool,
    `conversation.stay_quiet`. The model then either stays quiet (keeps
@@ -37,6 +37,12 @@ _QUESTION_RE = re.compile(r"\?\s*$|^\s*(?:are|is|do|does|did|will|would|can|coul
                           r"have|has|were|was|what|where|when|who|why|how|which)\b", re.IGNORECASE)
 _SECOND_PERSON_RE = re.compile(r"\byou(?:'re|'ve|'ll|'d| are| were| gonna| going)?\b|\byour\b",
                                re.IGNORECASE)
+
+
+def anonymous_label(label: str) -> bool:
+    value = str(label or '').strip().lower()
+    return (value in {'', 'user', 'unknown', 'unidentified speaker', 'guest', '<unknown>'}
+            or value.startswith(('unknown_voice_', 'guest ')))
 
 
 @dataclass
@@ -109,7 +115,7 @@ def assess(
 
     multi_party = humans_in_window >= 2
     stranger_with_known = (not speaker_known) and engaged_pid is not None
-    if not (multi_party or stranger_with_known or speaker_uncertain):
+    if not multi_party:
         return AddresseeHint("to_rex", ["one-on-one conversation"])
 
     reasons: list[str] = []

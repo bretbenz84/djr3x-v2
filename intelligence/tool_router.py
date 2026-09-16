@@ -524,7 +524,16 @@ def tool_schema_for(action: str) -> "dict | None":
 # Live tools that are attached to a reply call only when the caller asks for
 # them (situational, not every turn). conversation.stay_quiet must never be on
 # offer in a one-on-one conversation — see intelligence/addressee.py.
-_OPTIONAL_LIVE = frozenset({"conversation.stay_quiet"})
+_OPTIONAL_LIVE = frozenset({"conversation.stay_quiet", "identity.who_is_speaking"})
+
+
+def invites_identity_check(text: str) -> bool:
+    """A generic 'What?' or a spoken name is not a voice-ID query."""
+    import re
+    return bool(re.search(
+        r"\b(?:who\s+(?:am\s+i|is\s+(?:this|speaking|talking))|"
+        r"(?:my|whose)\s+name|who\s+i\s+am|recognize\s+me|know\s+me)\b",
+        text or '', re.IGNORECASE))
 
 
 def live_reply_tools(optional: "set[str] | None" = None) -> "list[dict] | None":

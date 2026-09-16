@@ -115,6 +115,13 @@ class StartShadowTest(unittest.TestCase):
 class LiveCutoverTest(unittest.TestCase):
     """Phase 1+2: the live subset rides the lean reply call as native tools."""
 
+    def test_identity_query_tool_is_opt_in(self):
+        default = {t['function']['name'] for t in tool_router.live_reply_tools()}
+        requested = {t['function']['name'] for t in tool_router.live_reply_tools(
+            optional={'identity.who_is_speaking'})}
+        self.assertNotIn('identity_who_is_speaking', default)
+        self.assertIn('identity_who_is_speaking', requested)
+
     def test_live_tools_are_the_expected_subset_only(self):
         tools = tool_router.live_reply_tools()
         names = {t["function"]["name"] for t in tools}
@@ -122,7 +129,7 @@ class LiveCutoverTest(unittest.TestCase):
             "time_query", "date_query", "weather_query", "status_capabilities",
             "status_uptime", "status_battery", "vision_describe_scene",
             "music_options", "system_sleep", "system_shutdown", "web_search",
-            "event_cancel", "memory_query", "identity_who_is_speaking",
+            "event_cancel", "memory_query",
             "music_play", "music_stop", "music_skip", "vision_snapshot",
             "identity_name_correction", "memory_forget_person",
             # Phase 2 (2026-08-13): humor + performance. Their regex fast lanes

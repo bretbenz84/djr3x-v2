@@ -93,6 +93,34 @@ class ApproachTests(unittest.TestCase):
         self.assertGreater(plan.step(.7, telemetry(.7), 3., 20).ang, 0)
         self.assertEqual(plan.step(.8, telemetry(.8, front=850), 3., 20).ang, 0)
 
+    def test_front_standoff_stops_despite_camera_overestimating_by_metres(self):
+        plan = Approach(0, 1.2, .31)
+        distance, speed = 3., 0.
+        for tick in range(1, 200):
+            now = tick * .1
+            row = telemetry(now, front=int(distance * 1000),
+                odom={'x': 3.-distance, 'y': 0., 'lin': speed})
+            decision = plan.step(now, row, 5., 0.)
+            speed += max(-.035, min(.035, decision.lin-speed))
+            distance -= speed * .1
+            if decision.result:
+                break
+        self.assertEqual(decision.result, 'blocked')
+        self.assertIn('stand-off', decision.reason)
+        self.assertGreaterEqual(distance, 1.2)
+        self.assertLess(distance, 1.6)
+        self.assertLess(speed, .08)
+
+    def test_logged_292mm_front_never_commands_forward_despite_3m_face(self):
+        decision = Approach(0, 1.2, .31).step(.1, telemetry(.1, front=292), 3.078, 0.)
+        self.assertEqual(decision.lin, 0.)
+        self.assertEqual(decision.ang, 0.)
+
+    def test_detector_normalized_width_overrides_mismatched_camera_resolution(self):
+        face = {'face_box': (200, 100, 100, 100), 'face_box_fraction': 100/640}
+        self.assertAlmostEqual(face_range_m(face, 1920), face_range_m(face, 640))
+        self.assertLess(face_range_m(face, 1920), 1.2)
+
     def test_target_recognition_change_does_not_change_destination(self):
         face = {'id': 'track', 'face_visible': True, 'face_box': (800, 200, 160, 160)}
         for pid in (None, 1):

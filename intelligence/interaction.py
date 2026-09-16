@@ -7082,7 +7082,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     if (
         _last_user_content_at > 0.0
         and (time.monotonic() - _last_user_content_at) <= _flow_window
-        and quiet < _flow_quiet
+        and (quiet < _flow_quiet or
+             time.monotonic() - _last_user_content_at < _flow_quiet)
     ):
         return _impulse_blocked("conversation_flowing")
     if idle_for >= max(0.0, effective_idle_timeout - 1.0):   # leave room for the outro
@@ -13771,7 +13772,8 @@ def _assess_turn_addressee(text: str, *, person_id: Optional[int], text_input: b
         rows = conv_memory.get_session_transcript() or []
         for r in rows[-12:]:
             sp = str(r.get("speaker") or "").strip()
-            if sp and sp.lower() not in conv_memory._REX_SPEAKERS and sp.lower() != "user":
+            if (not _addr.anonymous_label(sp) and not r.get('uncertain')
+                    and sp.lower() not in conv_memory._REX_SPEAKERS):
                 humans.add(sp)
     except Exception:
         pass
@@ -13784,8 +13786,13 @@ def _assess_turn_addressee(text: str, *, person_id: Optional[int], text_input: b
                 humans.add(nm)
         except Exception:
             pass
-    else:
-        humans.add("<unknown>")
+    # Actual simultaneous faces can establish a group even when their voices
+    # are unnamed. Never infer that group from a succession of unknown labels.
+    visible_count = max((sum(1 for face in row.get('faces', [])
+                            if not face.get('face_missing')
+                            and face.get('face_visible') is not False
+                            and (face.get('face_visible') or face.get('face_box')))
+                         for row in (_utterance_observations or {}).get('faces', [])), default=0)
     newest = None
     try:
         frames = list(getattr(dialogue_act, "_frames", []) or [])
@@ -13811,7 +13818,7 @@ def _assess_turn_addressee(text: str, *, person_id: Optional[int], text_input: b
         speaker_pid=_safe_int(person_id),
         speaker_known=person_id is not None,
         speaker_uncertain=_turn_speaker_uncertain(),
-        humans_in_window=len(humans),
+        humans_in_window=max(len(humans), visible_count),
         engaged_pid=_safe_int((recent_engagement or {}).get("person_id")) if recent_engagement else None,
         last_frame_target_pid=_safe_int(target_pid),
         last_frame_target_name=target_name,
@@ -30292,6 +30299,8 @@ def _handle_speech_segment(
         # prompt or while an offscreen-identify reply is pending.
         if (
             _looks_like_background_crosstalk(text)
+            and _current_turn_addressee is not None
+            and _current_turn_addressee.offer_stay_quiet
             and not identity_prompt_active
             and _pending_offscreen_identify is None
             and not _is_engaged_partner_turn(person_id, speaker_score)
@@ -30325,6 +30334,11 @@ def _handle_speech_segment(
             off_camera_unknown
             and _pending_offscreen_identify is None
             and command_parser.parse(text) is None
+            # Recognition uncertainty is not a new arrival. Keep answering the
+            # ongoing conversation without a name; do not demand identification
+            # from the same engaged person on each weak or off-axis recording.
+            and not recent_engagement
+            and not visible_known_by_id
         ):
             if _looks_like_background_crosstalk(text):
                 _log.info(

@@ -246,6 +246,12 @@ def classify(text: str) -> Optional[IncompleteSignal]:
     if len(words) < 3:
         return None
 
+    # Embedded identity clauses are complete even though they end in 'I am':
+    # 'You don't know who I am.' is a complaint, not the fragment 'I am ...'.
+    if re.search(r"\b(?:who|what|where|how)\s+(?:i|you|he|she|we|they|it)\s+"
+                 r"(?:am|are|is|was|were)\s*$", lower):
+        return None
+
     if lower.endswith(_INCOMPLETE_END_PHRASES):
         phrase_tail = lower.rsplit(" ", 2)[-1]
         return IncompleteSignal(

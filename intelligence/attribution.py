@@ -161,6 +161,16 @@ def resolve_authoritative(ev: UtteranceEvidence) -> Resolution:
         return Resolution("known", ev.raw_best_id, ev.raw_best_name,
                           "reply to recently addressed visible person",
                           learning_allowed=False)
+    context = _sole_face_conversation(ev)
+    if context is not None:
+        return context
+    # An absent enrollee barely above the ordinary match floor must not
+    # override the only known face. This was the .55 T'Joy false switch.
+    if (len(set(ev.visible_known_ids)) == 1 and ev.raw_best_id is not None
+            and ev.raw_best_id not in ev.visible_known_ids
+            and ev.raw_best_score < .70):
+        return Resolution('ambiguous', None, None, 'marginal voice conflicts with visible person',
+                          ['off-camera identity not established'], learning_allowed=False)
     visual_ids = {row.get("person_db_id") for row in ev.visual_observations
                   if row.get("person_db_id") is not None}
     if len(visual_ids) > 1:
@@ -293,6 +303,54 @@ def _guarded_short_continuity(ev):
         if len(faces) != 1 or faces[0].get("person_db_id") != pid:
             return False
     return True
+
+
+def _sole_face_conversation(ev):
+    """Keep an exchange coherent without certifying a voice or learning from it.
+
+    Requires independent, continuous sole-face evidence and a plausible enrolled
+    voice for that face. A decisive other voice, mixed capture, or directional
+    contradiction still abstains. Anonymous labels never establish continuity.
+    """
+    if (not ev.allow_short_continuity or len(set(ev.visible_known_ids)) != 1
+            or ev.bearing_contradiction or ev.words <= 0 or ev.voiced_secs <= 0
+            or ev.started_at is None or ev.ended_at is None
+            or ev.ended_at <= ev.started_at or len(ev.face_observations) < 3):
+        return None
+    pid = ev.visible_known_ids[0]
+    if any(row.get('person_db_id') not in (None, pid) for row in ev.visual_observations):
+        return None
+    if ev.bearing_selected_pid not in (None, pid):
+        return None
+    scores = {row[0]: (row[1], row[2]) for row in ev.scoreboard}
+    name, score = scores.get(pid, (None, 0.))
+    if not name or score < .20:
+        return None
+    if ev.raw_best_id != pid and ev.raw_best_score >= .70:
+        return None
+    # Leave fully supported recognition (and its learning policy) to the owner.
+    if ev.raw_best_id == pid and ev.raw_best_score >= ev.hard_threshold and ev.margin >= ev.required_margin:
+        return None
+    continuing = pid in (ev.engaged_pid, ev.previous_speaker_pid)
+    if not continuing and not (score >= ev.hard_threshold or
+                               (ev.words <= 6 and score >= ev.known_floor)):
+        return None
+    stamps = []
+    for row in ev.face_observations:
+        stamp = row.get('monotonic_at')
+        faces = [f for f in row.get('faces', []) if not f.get('face_missing')
+                 and f.get('face_visible') is not False
+                 and (f.get('face_visible') or f.get('face_box'))]
+        if (stamp is None or not ev.started_at <= stamp <= ev.ended_at
+                or len(faces) != 1 or faces[0].get('person_db_id') != pid):
+            return None
+        stamps.append(stamp)
+    stamps.sort()
+    if (stamps[0] - ev.started_at > 1. or ev.ended_at - stamps[-1] > 1.
+            or any(not 0 < b-a <= 1. for a, b in zip(stamps, stamps[1:]))):
+        return None
+    return Resolution('known', pid, name, 'continuous sole-face conversation',
+                      learning_allowed=False)
 
 
 def short_voice_switch_needs_confirmation(evidence: dict) -> bool:

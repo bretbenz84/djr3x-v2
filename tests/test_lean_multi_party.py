@@ -72,13 +72,14 @@ class MultiPartyMessagesTest(unittest.TestCase):
         self.assertIn("MULTI-PERSON ROOM", msgs[0]["content"])    # room still described
         self.assertEqual(msgs[-1]["content"], "You see Bret — greet him warmly.")
 
-    def test_guest_labels_prettified(self):
+    def test_unknown_labels_do_not_create_a_second_person(self):
         transcript = [
             {"speaker": "Bret Benziger", "text": "someone else is here"},
             {"speaker": "unknown_voice_2", "text": "hello robot"},
         ]
         msgs = _msgs(transcript)
-        self.assertEqual(msgs[2]["content"], "Guest 2: hello robot")
+        self.assertEqual(msgs[2]["content"], "hello robot")
+        self.assertNotIn("MULTI-PERSON ROOM", msgs[0]["content"])
 
     def test_kill_switch_restores_flat_history(self):
         with mock.patch.object(config, "LEAN_MULTI_PARTY_ENABLED", False, create=True), \

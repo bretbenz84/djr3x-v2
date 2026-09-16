@@ -227,6 +227,11 @@ def speaker_lines() -> list[str]:
         return []
     status = str(res.get("status") or "")
     name = str(res.get("name") or "").split()[0] if res.get("name") else ""
+    if res.get('basis') == 'continuous sole-face conversation':
+        return [f"CONVERSATION CONTINUITY: {name} remained the only visible person and their "
+                "voice is plausible. Continue their story; do not ask for their name again. "
+                "This is conversational context, not verified voice identity. Do not claim "
+                "voice recognition, disclose private stored facts, or learn personal facts."]
     if res.get("basis") == "reply to recently addressed visible person":
         return [
             f"GREETING REPLY: you just addressed {name or 'this person'}, their face stayed "

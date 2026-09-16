@@ -718,13 +718,15 @@ def _messages(
     directive path (proactive lines), whose final message is an instruction, not speech."""
     turns: list[tuple[str, str, str, bool]] = []   # (role, raw_speaker, text, uncertain)
     raw_speakers: list[str] = []
+    from intelligence.addressee import anonymous_label
     for turn in _transcript_window(transcript):
         text = str(turn.get("text") or "").strip()
         if not text:
             continue
         raw = str(turn.get("speaker") or "").strip()
         role = "assistant" if raw.lower() in _REX_SPEAKERS else "user"
-        if role == "user" and raw and raw not in raw_speakers:
+        if (role == "user" and not anonymous_label(raw)
+                and not turn.get('uncertain') and raw not in raw_speakers):
             raw_speakers.append(raw)
         if role == "user" and turn.get("captured_at_monotonic") is not None:
             text = "[Captured while the prior reply was pending; processed afterward.] " + text
@@ -736,7 +738,7 @@ def _messages(
         d = _display_speaker(raw)
         if d not in displays:
             displays.append(d)
-    if label_current_speaker and current_display not in displays:
+    if label_current_speaker and person_id is not None and current_display not in displays:
         displays.append(current_display)
     multi = (
         bool(getattr(config, "LEAN_MULTI_PARTY_ENABLED", True))
@@ -744,6 +746,14 @@ def _messages(
     )
 
     extra_lines: Optional[list[str]] = None
+    identity_note = (
+        "Speaker labels such as Guest, Unknown and unknown_voice are internal uncertainty "
+        "markers, not names or evidence that another person arrived. Never address a human "
+        "by those labels. Voice uncertainty alone does not require an introduction: answer "
+        "their actual words without a name, and do not ask who is speaking unless identity "
+        "is needed for their request. A known friend's recognition complaint calls for a "
+        "brief repair and continuing the conversation, not another identity interrogation."
+    )
     # Reply path only (label_current_speaker=True): a directive's final message is
     # an instruction, not a user answer — no flatness to probe.
     if label_current_speaker:
@@ -752,6 +762,7 @@ def _messages(
             probe = _rich_share_followup_line(user_text, [t[:3] for t in turns])
         if probe:
             extra_lines = [probe]
+        extra_lines = (extra_lines or []) + [identity_note]
     if multi:
         others = " and ".join(d for d in displays if d != current_display)
         multi_lines = [
@@ -894,8 +905,11 @@ def stream_reply(
     tool_extra = None
     try:
         from intelligence import tool_router
+        optional = {"conversation.stay_quiet"} if _addr_offer else set()
+        if tool_router.invites_identity_check(user_text):
+            optional.add("identity.who_is_speaking")
         live_tools = tool_router.live_reply_tools(
-            optional={"conversation.stay_quiet"} if _addr_offer else None)
+            optional=optional)
         if live_tools:
             tool_extra = {"tools": live_tools, "tool_choice": "auto"}
     except Exception as exc:
