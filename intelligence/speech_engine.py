@@ -695,6 +695,7 @@ def generate_and_speak_presence(
     question_key: Optional[str] = None,
     question_depth: int = 1,
     direct_text: Optional[str] = None,
+    on_spoke: Optional[Callable[[], None]] = None,
 ) -> bool:
     """
     Presence-reaction variant of generate_and_speak.
@@ -797,7 +798,8 @@ def generate_and_speak_presence(
             tag = f"presence:{tag_key}"
             _log.info("consciousness: firing presence reaction — %s: %r", label, text[:120])
             _c._last_presence_reaction_at[tag_key] = time.monotonic()
-            done = speech_queue.enqueue(text, emotion, priority=1, tag=tag)
+            done = speech_queue.enqueue(text, emotion, priority=1, tag=tag,
+                                        on_audio_end=on_spoke)
             # Same transcript rule as speak_async: a greeting/reaction the reply
             # model can't see makes the next human turn contextless.
             try:

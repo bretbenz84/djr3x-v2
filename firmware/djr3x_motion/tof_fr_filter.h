@@ -10,6 +10,36 @@ static inline int16_t tof_fr_input_mm(int mm, bool valid, bool out_of_range) {
   return out_of_range ? TOF_L1X_OUT_OF_RANGE_MM : -1;
 }
 
+// Quality hysteresis, independent of distance. A phase-failing channel must
+// not be resurrected by occasional valid-looking near returns. -1 is unavailable,
+// never a synthetic clear range. Recovery requires fresh, uninterrupted evidence.
+struct TofFrHealth {
+  uint16_t failures = 0;
+  uint8_t count = 0, good_run = 0;
+  uint32_t last_ms = 0;
+  bool quarantined = false;
+};
+
+static inline bool tof_fr_health_step(TofFrHealth& h, bool valid, uint32_t now_ms) {
+  if (h.count && now_ms == h.last_ms) return !h.quarantined;
+  if (h.count && (uint32_t)(now_ms - h.last_ms) > TOF_FR_SAMPLE_GAP_MS) {
+    h.quarantined = true;
+    h.good_run = 0;
+  }
+  h.last_ms = now_ms;
+  h.failures = (uint16_t)((h.failures << 1) | (valid ? 0 : 1));
+  if (h.count < 16) ++h.count;
+  h.good_run = valid ? (h.good_run < 16 ? h.good_run + 1 : 16) : 0;
+  unsigned errors = 0;
+  for (uint16_t bits = h.failures; bits; bits >>= 1) errors += bits & 1;
+  if (errors >= 8) h.quarantined = true;
+  if (h.quarantined && h.good_run >= 16) {
+    h.quarantined = false;
+    h.failures = 0;
+  }
+  return !h.quarantined;
+}
+
 struct TofFrFilter {
   int16_t state = -1;
   int16_t candidate = -1;

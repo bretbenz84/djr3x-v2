@@ -360,6 +360,7 @@ def _run_migrations() -> None:
                 # the river float mentioned at 1 AM was still inside the 20h
                 # cooldown at 9 PM, so Rex never brought it up).
                 ("anticipated_at", "DATETIME"),
+                ("followup_asked_at", "DATETIME"),
                 # Tentative plan ("might", "thinking about") — the anticipation
                 # and follow-up prompts ask whether it's (still) happening
                 # instead of asserting it as scheduled fact (field 2026-08-01:

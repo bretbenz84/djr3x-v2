@@ -10777,6 +10777,12 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             person_name, label,
                         )
 
+                def _followup_spoken(target=followup_to_remove, name=followup_event_name):
+                    if target is not None:
+                        from intelligence import interaction as _interaction
+                        _pending_followups_lock_remove(*target)
+                        _interaction.set_awaiting_followup_event(target[0], target[1], name)
+
                 queued = _generate_and_speak_presence(
                     prompt,
                     label=label,
@@ -10804,6 +10810,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         else 1
                     ),
                     direct_text=direct_text,
+                    on_spoke=_followup_spoken if followup_to_remove else None,
                 )
                 if queued:
                     if emotional_to_ack is not None:
@@ -10819,23 +10826,6 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             emo_events.mark_acknowledged(int(celebration_to_ack["id"]))
                         except Exception:
                             pass
-                    if followup_to_remove is not None:
-                        _pending_followups_lock_remove(
-                            followup_to_remove[0],
-                            followup_to_remove[1],
-                        )
-                        # Arm the resolver so the user's NEXT reply ("I never went")
-                        # closes this event in memory — otherwise the passed-date plan
-                        # stays 'planned' and Rex re-asks about it every run.
-                        try:
-                            from intelligence import interaction as _interaction
-                            _interaction.set_awaiting_followup_event(
-                                followup_to_remove[0],
-                                followup_to_remove[1],
-                                followup_event_name,
-                            )
-                        except Exception as exc:
-                            _log.debug("arm startup follow-up resolution failed: %s", exc)
                     if anticipated_to_mark is not None:
                         _anticipated_events.add(anticipated_to_mark)
                         try:

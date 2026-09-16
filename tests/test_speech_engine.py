@@ -140,6 +140,36 @@ class PresenceLockWaitTest(unittest.TestCase):
             mock.patch("audio.speech_queue.enqueue", return_value=done))
         return enq
 
+    def test_followup_marks_asked_only_after_playback(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            enq = self._patched(stack)
+            stack.enter_context(mock.patch("memory.conversations.add_to_transcript"))
+            stack.enter_context(mock.patch("threading.Thread.start",
+                lambda thread: thread.run()))
+            delivered = mock.Mock()
+            speech_engine.generate_and_speak_presence(
+                "prompt", "followup", 1, direct_text="How was the trip?",
+                on_spoke=delivered)
+            delivered.assert_not_called()
+            enq.call_args.kwargs["on_audio_end"]()
+            delivered.assert_called_once_with()
+
+    def test_superseded_followup_does_not_mark_asked(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            enq = self._patched(stack)
+            stack.enter_context(mock.patch.object(consciousness,
+                "_proactive_purpose_current", return_value=False))
+            stack.enter_context(mock.patch("threading.Thread.start",
+                lambda thread: thread.run()))
+            delivered = mock.Mock()
+            speech_engine.generate_and_speak_presence(
+                "prompt", "followup", 1, direct_text="How was the trip?",
+                on_spoke=delivered)
+            enq.assert_not_called()
+            delivered.assert_not_called()
+
     def test_greeting_waits_out_a_busy_lock_instead_of_dying(self):
         import time
         from contextlib import ExitStack

@@ -3719,3 +3719,17 @@ ambiguous category selection, misparsed corrected wagers, duplicate alias seats,
 and Final non-answer/GUI inconsistencies. These are OPEN proposals; only the
 music behavior was authorized for implementation in this review. Do not describe
 the game as ready for another group session based on the music tests alone.
+
+### Follow-up delivery persistence (2026-09-15)
+
+Dated event follow-ups no longer expire by age. `followup_asked_at` in
+`person_events` records a delivered follow-up independently of `followed_up`
+(answer/resolution). Pending follow-ups and session-opener event continuity
+exclude already-asked events even after restart; merely selecting a candidate
+never consumes it. The startup presence path arms the follow-up on completed
+playback via `on_audio_end`, not at task submission. Explicit rescheduling clears
+the asked marker for the newly scheduled occurrence. Anticipation remains separate.
+The legacy `FOLLOWUP_DATED_MAX_AGE_DAYS` setting was removed. Previously expired
+records are not automatically resurrected: old `followed_up` flags do not establish
+whether a question was actually spoken. Regression modules: followup_asked,
+startup_followup_resolution, lean_event_followup, speech_engine, open_threads.

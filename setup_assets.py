@@ -289,6 +289,7 @@ CREATE TABLE IF NOT EXISTS person_events (
     canceled_at     DATETIME,
     updated_at      DATETIME,
     anticipated_at  DATETIME,
+    followup_asked_at DATETIME,
     hedged          INTEGER DEFAULT 0
 );
 
@@ -1251,6 +1252,7 @@ def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
         ("canceled_at", "DATETIME"),
         ("updated_at", "DATETIME"),
         ("anticipated_at", "DATETIME"),
+        ("followup_asked_at", "DATETIME"),
         ("hedged", "INTEGER DEFAULT 0"),
     ):
         if _ensure_column(conn, "person_events", column, definition):

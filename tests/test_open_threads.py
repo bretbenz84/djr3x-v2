@@ -144,11 +144,10 @@ class ConsolidationTest(unittest.TestCase):
         self.assertEqual(rows["ladder"], "pending")
 
 
-class DatedFollowupExpiryTest(unittest.TestCase):
-    """memory/events.get_pending_followups: dated events past FOLLOWUP_DATED_MAX_AGE_DAYS
-    are lazily expired (field 2026-07-18: the week-old dentist opener)."""
+class DatedFollowupNoExpiryTest(unittest.TestCase):
+    """Old unasked plans remain due; reading does not consume them."""
 
-    def test_stale_dated_event_expired(self):
+    def test_old_dated_event_remains_due(self):
         import sqlite3
         from unittest import mock
         conn = sqlite3.connect(":memory:")
@@ -156,7 +155,7 @@ class DatedFollowupExpiryTest(unittest.TestCase):
         conn.execute(
             "CREATE TABLE person_events (id INTEGER PRIMARY KEY, person_id INT, "
             "event_name TEXT, event_date TEXT, mentioned_at TEXT, "
-            "followed_up BOOL DEFAULT FALSE, status TEXT DEFAULT 'planned')"
+            "followed_up BOOL DEFAULT FALSE, followup_asked_at TEXT, status TEXT DEFAULT 'planned')"
         )
         old_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
         recent_date = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
@@ -179,12 +178,12 @@ class DatedFollowupExpiryTest(unittest.TestCase):
             pending = events_mod.get_pending_followups(1)
         names = [e["event_name"] for e in pending]
         self.assertIn("job interview", names)
-        self.assertNotIn("dentist appointment", names)
-        # ...and the stale one was permanently marked, not just filtered.
+        self.assertIn("dentist appointment", names)
+        # Reading the queue must not mark an event asked or answered.
         row = conn.execute(
             "SELECT followed_up FROM person_events WHERE event_name='dentist appointment'"
         ).fetchone()
-        self.assertTrue(row["followed_up"])
+        self.assertFalse(row["followed_up"])
 
 
 class ResolvedPlanGuardTest(unittest.TestCase):

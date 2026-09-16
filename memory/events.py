@@ -300,28 +300,11 @@ def get_pending_followups(person_id: int) -> list[dict]:
     """
     today = _today_local()
     undated_cutoff = _undated_followup_cutoff()
-    # EXPIRY (field 2026-07-18: Rex opened with a dentist appointment >1 week
-    # past — "that was over a week ago though"): a dated event more than
-    # FOLLOWUP_DATED_MAX_AGE_DAYS past its date is stale; asking reads as
-    # surveillance, not attentiveness. Lazily mark them followed_up so every
-    # consumer (lean cue, startup greeting, reactive path) forgets them at once.
-    try:
-        import config as _config
-        from datetime import date as _date, timedelta as _timedelta
-        max_age = float(getattr(_config, "FOLLOWUP_DATED_MAX_AGE_DAYS", 5.0))
-        stale_cutoff = (_date.today() - _timedelta(days=max_age)).isoformat()
-        db.execute(
-            """UPDATE person_events SET followed_up = TRUE
-               WHERE person_id = ? AND followed_up = FALSE
-                 AND event_date IS NOT NULL AND event_date < ?""",
-            (person_id, stale_cutoff),
-        )
-    except Exception:
-        pass
     rows = db.fetchall(
         """SELECT * FROM person_events
            WHERE person_id = ?
              AND followed_up = FALSE
+             AND followup_asked_at IS NULL
              AND COALESCE(status, 'planned') = 'planned'
              AND (
                (event_date IS NOT NULL AND event_date < ?)
@@ -356,6 +339,7 @@ def get_recent_open_threads(person_id: int, lookback_days: Optional[int] = None)
         """SELECT * FROM person_events
            WHERE person_id = ?
              AND followed_up = FALSE
+             AND followup_asked_at IS NULL
              AND COALESCE(status, 'planned') IN ('planned', 'promised')
              AND event_date IS NULL
              AND mentioned_at >= ?
@@ -400,6 +384,19 @@ def mark_anticipated(event_id: int) -> None:
         "UPDATE person_events SET anticipated_at = ?, mentioned_at = ?, updated_at = ? "
         "WHERE id = ?",
         (_now(), _now(), _now(), event_id),
+    )
+
+
+def mark_followup_asked(event_id: int) -> None:
+    """Persist a delivered question, independently of whether the human answers.
+
+    Dates control when a plan becomes due; age never consumes it. A canceled or
+    dropped speech candidate must not call this. Outcomes remain independently
+    resolvable after the question is marked asked.
+    """
+    db.execute(
+        """UPDATE person_events SET followup_asked_at = COALESCE(followup_asked_at, ?)
+           WHERE id = ?""", (_now(), int(event_id)),
     )
 
 
@@ -535,6 +532,7 @@ def reschedule_event(event_id: int, new_date: Optional[str] = None) -> None:
            SET event_date = ?,
                status = 'planned',
                followed_up = FALSE,
+               followup_asked_at = NULL,
                canceled_at = NULL,
                outcome = NULL,
                mentioned_at = ?,

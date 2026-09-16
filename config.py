@@ -6532,9 +6532,8 @@ BIT_LEDGER_MIN_OVERLAP = _env_int("BIT_LEDGER_MIN_OVERLAP", 2, min_value=1, max_
 # angle even when the joke re-words everything else around it.
 BIT_LEDGER_DISTINCTIVE_LEN = _env_int("BIT_LEDGER_DISTINCTIVE_LEN", 7, min_value=4, max_value=20)
 BIT_LEDGER_PROMPT_ITEMS = _env_int("BIT_LEDGER_PROMPT_ITEMS", 6, min_value=1, max_value=20)
-# A dated event more than this many days past its date is stale — asking about
-# it reads as surveillance, not attentiveness (expired lazily at the source).
-FOLLOWUP_DATED_MAX_AGE_DAYS = _env_float("FOLLOWUP_DATED_MAX_AGE_DAYS", 5.0, min_value=0.5, max_value=90.0)
+# Event follow-ups have no age expiry. Delivered questions are persisted in
+# person_events.followup_asked_at; unasked events remain eligible.
 # A wave DURING a conversation gets a silent wave-back, not a spoken re-greeting.
 WAVE_BACK_SILENT_IN_CONVERSATION_SECS = _env_float("WAVE_BACK_SILENT_IN_CONVERSATION_SECS", 90.0, min_value=0.0, max_value=3600.0)
 # Room-change remarks: a real new object PERSISTS — require this much wall-clock

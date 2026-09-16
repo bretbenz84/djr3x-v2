@@ -485,3 +485,21 @@ The 2026-09-07 pre-fix capture contained 543 raw readings (150–168 mm). Ten
 really reported a sustained near range in that capture, so this filter must keep
 that range; it cannot certify what physical object produced it. Raw fixture and
 compiled-firmware regressions: `tests/test_tof_fr_filter.py`.
+
+## Front-right quality quarantine (firmware 0.2.2)
+
+The September 15 stationary capture shows a different fault from short range
+spikes: most front-right observations are `WrapTargetFail`, interleaved with
+valid-looking ~60 mm results. Distance persistence cannot reject this fault.
+`TofFrHealth` quarantines this channel after eight invalid observations in the
+last 16 fresh samples. It reports `fr_radial=-1` (unavailable), resets the distance
+filter, and requires 16 consecutive valid observations (~1.2 seconds) to recover.
+Duplicate timestamps cannot establish recovery; a >200 ms sampling gap breaks
+recovery. An isolated error leaves the existing distance filter in control.
+
+The matrix continues to supply the combined front-right distance when healthy.
+This is degraded sensor coverage, **not proof that the radial direction is clear**:
+the radial channel's hardware/optics remain faulty and should be repaired. Other
+radial channels and the matrix filter are unchanged. State transitions are logged;
+`tof_debug` exposes raw/status/input and the quarantined `filtered_mm=-1` result.
+The recorded regression is `tests/fixtures/tof_fr_quality_2026_09_15.csv`.

@@ -91,6 +91,7 @@ static int s_fr_raw_mm = -1, s_fr_status = -1, s_fr_input_mm = -1;
 // confirmation, so a single-frame phantom near return can't flap the reflex.
 static TofFilt s_filt[TOF_COUNT];
 static TofFrFilter s_fr_filter;
+static TofFrHealth s_fr_health;
 
 static inline uint8_t mux_ch(int i) { return (uint8_t)i; }   // sensor index -> mux channel
 
@@ -209,6 +210,20 @@ static void poll_one(int i) {
   }
   const int mm = read_mm(i);
   if (i == 5) s_fr_input_mm = mm;
+  if (i == 5) {
+    const bool was_quarantined = s_fr_health.quarantined;
+    const bool healthy = tof_fr_health_step(s_fr_health, mm >= 0, millis());
+    if (was_quarantined != s_fr_health.quarantined)
+      emit_log(healthy ? "info" : "warn", healthy
+          ? "tof[5] fr: quality recovered after 16 valid samples"
+          : "tof[5] fr: unreliable range status; quarantined, reporting -1");
+    if (!healthy) {
+      s_dist[i] = -1;
+      s_fr_filter = TofFrFilter();
+      s_err_streak[i] = 0;
+      return;
+    }
+  }
   if (mm >= 0) {
     s_err_streak[i] = 0;
     // tof_filter.h: nearer readings attack fast (a big one-frame drop needs a

@@ -19359,6 +19359,8 @@ def _note_memory_followup_fired(event_id) -> None:
     try:
         if event_id is not None:
             _fired_followup_event_ids.add(int(event_id))
+            from memory import events as _events
+            _events.mark_followup_asked(int(event_id))
     except Exception:
         pass
 
