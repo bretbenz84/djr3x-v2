@@ -23160,6 +23160,14 @@ def _explicit_motion_takeover(
     spoken in-character denial instead of silently falling through to conversation — with
     no wheels there's no physical acknowledgment, so Rex says so out loud. Bare
     "stop"/"halt" still no-ops here (nothing to halt)."""
+    if re.fullmatch(r"\s*yes[\s,]+you\s+can[.!]?\s*", text or '', re.IGNORECASE):
+        line = motion_controller.confirm_refused_motion()
+        if line is not None:
+            _clear_motion_continuation()
+            _router_audit_note_fast_local_action(router_audit, 'motion.confirm_refusal',
+                reason='explicit verbal confirmation of the last refused turn')
+            _speak_blocking(line, emotion='neutral', log_text=False)
+            return line
     if not motion_controller.available():
         denial = _motion_no_base_denial_line(text)
         if denial is None:

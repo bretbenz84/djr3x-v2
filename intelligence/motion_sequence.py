@@ -210,7 +210,10 @@ def _run(
     finally:
         if result != "completed":
             try:
-                motion_controller.stop()
+                if result == 'suppressed' and not event.is_set():
+                    motion_controller.stop(preserve_refused_turn=True)
+                else:
+                    motion_controller.stop()
             except Exception:
                 pass
         _log.info("[motion_sequence] ended: %s", result)

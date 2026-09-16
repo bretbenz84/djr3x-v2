@@ -926,6 +926,25 @@ _last_refusal: "dict | None" = None   # the most recent refused command — see 
 # verb -> human detail of the command being refused right now ("left 90°"),
 # stamped by the command before it can be refused so the record names the ask.
 _refusal_detail: dict = {}
+_pending_verbal_turn: dict | None = None
+
+
+def confirm_refused_motion() -> str | None:
+    """Consume one recent user-requested turn refusal, preserving its angle.
+
+    Confirmation authorizes using independent front range instead of projecting
+    broad matrix minima onto radial bearings. It does not disable swing checks.
+    """
+    global _pending_verbal_turn
+    pending, _pending_verbal_turn = _pending_verbal_turn, None
+    if pending is None or time.monotonic() - pending['at'] > 45.:
+        return None
+    note_user_commanded_motion()
+    seq = turn(pending['deg'], rate=min(pending['rate'], 15.),
+               verify=False, allow_escape=False, _operator_confirmed=True)
+    if seq is not None:
+        return f"Okay — turning {'left' if pending['deg'] > 0 else 'right'} slowly."
+    return "I retried your turn, but another motion check still prevents it. I'm holding here."
 
 
 def _refusal_line(reason: str) -> "str | None":
@@ -955,6 +974,8 @@ def last_refusal(max_age: float = 3.0) -> "dict | None":
 def _note_issued(seq: "int | None", verb: str, detail: str = "", **kw) -> None:
     """Record an accepted command for the conversation state (see _suppressed).
     kw: requested_deg / attempted_deg / alternative — the ActionResult fields."""
+    global _pending_verbal_turn
+    _pending_verbal_turn = None
     try:
         from intelligence import conversation_state
         conversation_state.note_action_issued(seq, verb, detail, **kw)
@@ -988,7 +1009,8 @@ def _suppressed(verb: str, reason: str) -> None:
     """Log a refused autonomous command, and when a human asked for it out loud,
     let Rex say WHY. A silent no-op reads as "he ignores my commands" (field
     2026-07-23 — the same lesson that produced announce_if_blocked)."""
-    global _tof_announced_at, _last_refusal
+    global _tof_announced_at, _last_refusal, _pending_verbal_turn
+    _pending_verbal_turn = None
     _log.debug("motion %s suppressed: %s", verb, reason)
     line = _refusal_line(reason)
     _last_refusal = {"verb": verb, "reason": reason, "line": line, "spoke": False,
@@ -1070,6 +1092,7 @@ def turn(
     allow_reverse: bool = False,
     verify: bool = True,
     allow_escape: bool = True,
+    _operator_confirmed: bool = False,
 ) -> "int | None":
     """Spin in place by `deg` (+ = left/CCW). Closed loop on the ESP32.
 
@@ -1087,6 +1110,8 @@ def turn(
     feedback chooses their next heading; no delayed compass correction or queued
     escape may continue aiming at a search heading after the person is found.
     The firmware yaw controller and swing/obstacle checks still apply."""
+    global _pending_verbal_turn
+    _pending_verbal_turn = None
     requested_deg = float(deg)
     _refusal_detail["turn"] = f"{'left' if deg > 0 else 'right'} {abs(deg):.0f}°"
     reason = _autonomous_allowed()
@@ -1100,6 +1125,17 @@ def turn(
     from intelligence import motion_swing
     tele = motion.telemetry()
     tof_now = tele.get("tof_mm") if isinstance(tele, dict) else None
+    if _operator_confirmed:
+        if (not isinstance(tele, dict) or tele.get('rx_monotonic') is None
+                or time.monotonic() - tele['rx_monotonic'] > .6):
+            _suppressed('turn', 'tof_stale')
+            return None
+        tof_now = dict(tof_now or {})
+        for side in ('fl', 'fr'):
+            independent = tof_now.get(side + '_radial', -1)
+            if independent > 0:
+                tof_now[side] = independent
+        _log.info('[motion] verbal confirmation: retrying %+.1f degrees with independent front range; tof=%s', deg, tof_now)
     send_deg, reason = motion_swing.check_turn(deg, tof_now)
     alternative = ""
     spin_floor = _get_float("MOTION_SPIN_ALL_OR_NOTHING_DEG", 270.0)
@@ -1139,6 +1175,8 @@ def turn(
             if seq is not None:
                 return seq
         _suppressed("turn", reason)
+        if reason == 'swing_blocked' and _user_commanded_fx() and not _operator_confirmed:
+            _pending_verbal_turn = dict(deg=deg, rate=rate, at=time.monotonic())
         return None
     shortened = abs(send_deg) < abs(deg) - 1.0
     if shortened:
@@ -1172,6 +1210,8 @@ def turn(
 
 def move(dist: float, speed: "float | None" = None) -> "int | None":
     """Drive straight `dist` metres (+ = forward, - = back). ToF-gated."""
+    global _pending_verbal_turn
+    _pending_verbal_turn = None
     _refusal_detail["move"] = f"{'forward' if dist > 0 else 'back'} {abs(dist):.2f} m"
     reason = _autonomous_allowed()
     if reason:
@@ -1339,8 +1379,11 @@ def drive_manual(lin: float, ang: float) -> "int | None":
     })
 
 
-def stop() -> "int | None":
+def stop(*, preserve_refused_turn: bool = False) -> "int | None":
     """Controlled stop. Always honored while connected (bypasses the gate)."""
+    global _pending_verbal_turn
+    if not preserve_refused_turn:
+        _pending_verbal_turn = None
     from intelligence.conversation_state import invalidate_running_actions
     invalidate_running_actions("stop")
     _invalidate_turn_verification()
@@ -1354,6 +1397,8 @@ def stop() -> "int | None":
 
 def estop() -> "int | None":
     """Hard disable until clear(). Always honored while connected."""
+    global _pending_verbal_turn
+    _pending_verbal_turn = None
     from intelligence.conversation_state import invalidate_running_actions
     invalidate_running_actions("estop")
     _cancel_swing_escape()
