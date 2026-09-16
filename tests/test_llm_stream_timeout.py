@@ -60,6 +60,13 @@ class StreamResponseTimeoutTest(unittest.TestCase):
         self.assertTrue(kwargs["stream"])
         self.assertEqual(kwargs["timeout"], config.LLM_STREAM_TIMEOUT_SECS)
 
+    def test_empty_terminal_usage_chunk_does_not_append_turbulence(self):
+        terminal=mock.Mock(choices=[])
+        with mock.patch.object(llm._client.chat.completions,'create',
+                return_value=iter([_chunk('That is Max.'),terminal])):
+            out=''.join(llm.stream_response('That is Max.',classic=True))
+        self.assertEqual(out,'That is Max.')
+
     def test_stall_before_first_token_yields_fallback_and_completes(self):
         # The exact field case: connect succeeds, then the stream raises (timeout).
         import openai

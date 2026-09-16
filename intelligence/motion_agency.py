@@ -121,9 +121,12 @@ _state = {
     "edge_last_at": 0.0,     # edge-in cooldown stamp
     "object_step": None,     # armed step toward an asked-about object
     "object_step_at": 0.0,   # object-step cooldown stamp
-    "first_step_at": 0.0,    # first LIVE autonomy tick (startup-approach window)
+    "first_step_at": 0.0,    # first LIVE autonomy tick; welcome awaits first face
     "startup_approach_done": False,  # once per session
     "startup_hits": 0,       # startup-approach confirm counter
+    "startup_target": None,
+    "startup_hold_reason": None,
+    "startup_face_seen_at": None,
     "neck_strain_since": 0.0,  # comfort-realign timer: neck past the comfort
                                # fraction since this stamp (0 = relaxed)
     "user_motion_at": 0.0,   # last explicit voice motion command (stand-down window)
@@ -421,6 +424,22 @@ def _visible_come_requester(snapshot: dict, person_id: Optional[int],
             return visible[0]
         if not provisional:
             return None
+    # An invited destination is not an identity claim. The sole continuously
+    # visible conversational partner remains a location through a weak voice
+    # tie or a reflected microphone bearing. Never infer another person's name.
+    if len(visible) == 1 and evidence and not evidence.get('text_input'):
+        from intelligence import attribution
+        from dataclasses import replace
+        fields = attribution.UtteranceEvidence.__dataclass_fields__
+        ev = attribution.UtteranceEvidence(**{k:v for k,v in evidence.items() if k in fields})
+        pid = visible[0].get('person_db_id')
+        if (pid is not None and ev.engaged_pid == pid and not ev.mixed_speakers
+                and ev.bearing_selected_pid in (None,pid) and ev.visual_latch_pid in (None,pid)):
+            contextual = attribution._sole_face_conversation(replace(ev, bearing_contradiction=False))
+            if contextual is not None and contextual.person_id == pid:
+                _log.info('[motion_agency] come location: continuous sole engaged face %s; '
+                          'voice/direction uncertainty does not require an introduction', pid)
+                return visible[0]
     # LOCATION can use an enrolled voice candidate and the sole matching face
     # even when identity abstains (e.g. uncertain/rearward DOA). No name or
     # learning permission is granted here, and a competing face/voice still wins.
@@ -576,8 +595,7 @@ def request_come_here(person_id: "int | None" = None, *,
             and not behind and not side_deg):
         cancel_requested_come("caller ambiguous with faces on camera")
         _requested_come["refusal_line"] = (
-            "I can see someone, but I'm not sure who called me. "
-            "Say 'Rex, come here' again."
+            "I haven't located your position clearly. Wave so I can see where to come."
         )
         return False
     if target is not None and target.get("person_db_id") is not None:
@@ -1571,7 +1589,7 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
             return True
         if _requested_come.get("speaker_evidence") is not None and _any_visible_face(snapshot):
             _wait_for_come_path(now, "caller location unresolved on camera",
-                                "I can see someone, but I'm not sure who called me. Say 'come here' again.")
+                                "I haven't located your position clearly. Wave so I can see where to come.")
             return True
         _requested_come["align_turns"] = 0   # sighting lost — alignment starts over
         # DWELL: the camera settled only turn_done_at ago, and the detect→identify
@@ -1769,7 +1787,8 @@ def _step_requested_come(snapshot: dict, now: float, base_idle: bool = True) -> 
     _requested_come['retry_clear_since'] = None
     stop_at = _num("MOTION_COME_REQUEST_STOP_AT_M", 1.0)
     travel_yaw = _base_yaw_deg()
-    seq = motion_controller.come(approach_heading, stop_at=stop_at, target=person)
+    seq = motion_controller.come(approach_heading, stop_at=stop_at, target=person,
+                                 speed=_num('MOTION_COME_REQUEST_SPEED_MS', .16))
     if seq is not None:
         # Keep the camera-established travel bearing across an obstacle curve.
         # Only real IMU heading can measure that curve after the face leaves view.
@@ -2775,21 +2794,25 @@ def _maybe_startup_approach(person: dict, facing_them: bool,
     would move towards me but he sat there motionless... I want it to happen
     right after he starts up if the ToF allow for it").
 
-    Once per session, within a bounded window after the first live autonomy
-    tick: the first person he's facing with genuinely open floor ahead gets
+    Once per session, within a bounded window after the first tracked face:
+    the first person he's facing with genuinely open floor ahead gets
     approached to a respectful stop distance. Unlike the regular approach it
     does NOT wait for the "public" zone vote, the 120 s cooldown, or the
     proactive-speech gates — a startup greeting is usually in flight, and the
-    greeting and the roll-up are one welcome gesture. The front ToF is the
-    authority: no reading, or under the floor, means no drive (fails closed —
-    "if the ToF allow" is the owner's own condition)."""
+    greeting and the roll-up are one welcome gesture. Independent front range
+    must show room, while fused range retains the approach obstacle envelope.
+    Fresh sensing and a tracked face are required; speech and voice ID are not.
+    The welcome roll is slow and has its own short travel budget."""
     if not _flag("MOTION_STARTUP_APPROACH_ENABLED", True):
         return False
     if _state.get("startup_approach_done"):
         return False
-    first = float(_state.get("first_step_at") or 0.0)
-    if first <= 0.0:
+    if not _state.get('first_step_at'):
         return False
+    # Waiting in an empty room must not spend the first-face welcome window.
+    if _state.get('startup_face_seen_at') is None:
+        _state['startup_face_seen_at'] = now
+    first = float(_state['startup_face_seen_at'])
     if (now - first) > _num("MOTION_STARTUP_APPROACH_WINDOW_SECS", 180.0):
         _state["startup_approach_done"] = True    # window closed — stop checking
         return False
@@ -2799,20 +2822,37 @@ def _maybe_startup_approach(person: dict, facing_them: bool,
     if not facing_them:
         _state["startup_hits"] = 0
         return False
-    if front is None or front < _num("MOTION_STARTUP_APPROACH_MIN_FRONT_M", 1.8):
+    from intelligence.approach import front_budget
+    tele = motion.telemetry() or {}
+    tof = tele.get('tof_mm') or {}
+    stop_at = _num("MOTION_STARTUP_APPROACH_STOP_AT_M", 1.3)
+    budget = front_budget(tof, stop_at)
+    radial = _min_valid_m(tof.get('fl_radial'), tof.get('fr_radial'))
+    independent = radial if radial is not None else front
+    if (budget is None or budget < .15 or independent is None
+            or independent < _num("MOTION_STARTUP_APPROACH_MIN_FRONT_M", 1.8)
+            or tele.get('rx_monotonic') is None or now - tele['rx_monotonic'] > .6):
         _state["startup_hits"] = 0
-        return False                              # the ToF does NOT allow it
+        reason = 'insufficient fresh approach clearance'
+        if _state.get('startup_hold_reason') != reason:
+            _log.info('[motion_agency] startup approach waiting: %s; tof=%s', reason, tof)
+            _state['startup_hold_reason'] = reason
+        return False
     if _traction_lost(now):
         return False
+    from intelligence import battery_awareness
+    if battery_awareness.battery_critical():
+        return False
+    key = person.get('person_db_id') or person.get('id')
+    if _state.get('startup_target') != key:
+        _state['startup_target'] = key
+        _state['startup_hits'] = 0
     _state["startup_hits"] = int(_state.get("startup_hits") or 0) + 1
     if _state["startup_hits"] < int(_num("MOTION_STARTUP_APPROACH_CONFIRM_TICKS", 2)):
         return False
-    stop_at = _num("MOTION_STARTUP_APPROACH_STOP_AT_M", 1.2)
-    speed = None
-    if _flag("MOTION_APPROACH_SPEED_JITTER", True):
-        speed = _num("MOTION_MAX_LINEAR_MS", 0.40) * random.uniform(
-            _num("MOTION_APPROACH_SPEED_JITTER_LOW", 0.55), 1.0)
-    seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed, target=person)
+    speed = _num('MOTION_STARTUP_APPROACH_SPEED_MS', .10)
+    seq = motion_controller.come(0.0, stop_at=stop_at, speed=speed, target=person,
+        max_travel=_num('MOTION_STARTUP_APPROACH_MAX_TRAVEL_M', .60))
     if seq is not None:
         _state["startup_approach_done"] = True
         _state["last_approach_at"] = now
@@ -3504,6 +3544,8 @@ def _step_inner(snapshot: dict, profile) -> None:
 
     person = _tracked_person(snapshot)
     if person is None:
+        _state['startup_hits'] = 0
+        _state['startup_target'] = None
         _reset("neck_hits", "far_hits")
         _state["neck_strain_since"] = 0.0   # no tracked face = no tracking strain
         # Nobody on camera — but the radar ring may know where they are.

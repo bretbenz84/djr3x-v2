@@ -58,11 +58,12 @@ def front_budget(tof, stop_at):
 
 
 class Approach:
-    def __init__(self, now, stop_at, speed, accel=.35):
+    def __init__(self, now, stop_at, speed, accel=.35, max_travel=4.):
         self.started = now
         self.last_seen = now
         self.stop_at = stop_at
         self.speed = speed
+        self.max_travel = max(.05, min(4., float(max_travel)))
         self.accel = max(.05, accel)
         self.near_since = None
         self.near_sample = 0
@@ -83,7 +84,7 @@ class Approach:
         if self.last_xy is not None:
             self.travel += math.hypot(xy[0]-self.last_xy[0], xy[1]-self.last_xy[1])
         self.last_xy = xy
-        if now-self.started >= 20 or self.travel >= 4:
+        if now-self.started >= 20 or self.travel >= self.max_travel:
             return Decision(result='aborted', reason='approach time/travel limit')
         received = telemetry.get('rx_monotonic')
         if received is None or now-received > .6:
@@ -118,6 +119,8 @@ class Approach:
         speed_now = max(0., float(odom.get('lin', 0)))
         front_remaining = front_budget(tof, self.stop_at)
         brake = speed_now * speed_now / (2 * self.accel) + speed_now * .3
+        if self.max_travel - self.travel <= brake + .05:
+            return Decision(result='aborted', reason='approach travel budget reached')
         if (front_remaining <= max(.03, brake) or
                 (self.front_near_since is not None and front_remaining < .4)):
             if self.front_near_since is None:
@@ -144,7 +147,8 @@ class Approach:
             return Decision(reason='settling at caller')
         self.near_since = None
         lin = min(self.speed, max(.04, math.sqrt(2*self.accel*max(0, remaining))),
-                  max(0., front_remaining) / .6)
+                  max(0., front_remaining) / .6,
+                  max(0., self.max_travel - self.travel - .03) / .6)
         if front < self.stop_at + .10:
             # Close matrix-only return with independent clearance: creep while
             # retaining both the obstacle envelope and radial stand-off stop.

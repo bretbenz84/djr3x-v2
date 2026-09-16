@@ -15,6 +15,20 @@ def telemetry(now, front=4000, **changes):
 
 
 class ApproachTests(unittest.TestCase):
+    def test_welcome_step_brakes_before_sixty_centimetre_budget(self):
+        plan=Approach(0,1.3,.10,max_travel=.60)
+        distance,speed=0.,0.
+        for tick in range(1,150):
+            now=tick*.1
+            result=plan.step(now,telemetry(now,odom={'x':distance,'y':0.,'lin':speed}),5.,0.)
+            speed+=max(-.035,min(.035,result.lin-speed))
+            distance+=speed*.1
+            if result.result: break
+        # Account for residual deceleration after the terminal zero command.
+        distance+=speed*speed/(2*.35)
+        self.assertEqual(result.result,'aborted')
+        self.assertGreater(distance,.4)
+        self.assertLessEqual(distance,.60)
     def test_2047_matrix_return_is_not_callers_personal_distance(self):
         row = telemetry(.1, tof_mm={'fl':2612, 'fr':793,
                                    'fl_radial':4000, 'fr_radial':-1})

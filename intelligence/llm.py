@@ -1666,6 +1666,8 @@ def stream_response(
             timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
         )
         for chunk in stream:
+            if not getattr(chunk, 'choices', None):
+                continue  # usage-only / terminal chunks have no text choices
             delta = chunk.choices[0].delta
             if delta.content:
                 _tt.stamp("model_first_token")

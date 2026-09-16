@@ -9436,7 +9436,11 @@ MOTION_COME_STOP_AT_M = 0.60
 # clutter at the owner's feet — arrive with room to spare; low junk near a person
 # sits under/inside the front sensors' floor-rejection band, so distance is the
 # only real margin).
-MOTION_COME_REQUEST_STOP_AT_M = 1.30
+MOTION_COME_REQUEST_STOP_AT_M = 1.00
+MOTION_COME_REQUEST_SPEED_MS = 0.16
+MOTION_COME_CLOSER_STOP_AT_M = 0.75  # explicit closer request only; obstacle envelope still applies
+MOTION_COME_CLOSER_MAX_TRAVEL_M = 0.20
+MOTION_COME_CLOSER_SPEED_MS = 0.08
 MOTION_COME_FACE_WIDTH_M = .16       # approximate adult face width for camera range
 MOTION_COME_CAMERA_FRESH_SECS = 1.5  # stale camera boxes cannot drive an approach
 # 45 -> 90: each stop now also runs a NECK sweep during its dwell (see
@@ -9771,8 +9775,10 @@ MOTION_FACE_COMFORT_SECS = 12.0
 # the authority and it FAILS CLOSED — no reading, no drive.
 MOTION_STARTUP_APPROACH_ENABLED = True
 MOTION_STARTUP_APPROACH_WINDOW_SECS = 180.0
-MOTION_STARTUP_APPROACH_MIN_FRONT_M = 1.8   # open floor the ToF must show
-MOTION_STARTUP_APPROACH_STOP_AT_M = 1.2     # respectful welcome distance
+MOTION_STARTUP_APPROACH_MIN_FRONT_M = 1.8   # independent range, fused fallback if unavailable
+MOTION_STARTUP_APPROACH_STOP_AT_M = 1.3     # respectful welcome distance
+MOTION_STARTUP_APPROACH_SPEED_MS = 0.10
+MOTION_STARTUP_APPROACH_MAX_TRAVEL_M = 0.60 # a welcome step, not a room crossing
 MOTION_STARTUP_APPROACH_CONFIRM_TICKS = 2   # never on a single frame
 # After an explicit voice motion command (turn/move/arc/sequence), the social
 # realign/approach behaviors stand down this long: the human deliberately pointed

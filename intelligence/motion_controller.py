@@ -126,7 +126,10 @@ def _finish_host_approach(result: str, reason: str, *, send_stop: bool = True) -
         if active is None:
             return
         _host_approach = None
-        _last_come_detail = {'owner': 'mac', 'reason': reason, 'arrival': result == 'completed'}
+        _last_come_detail = {'owner': 'mac', 'reason': reason, 'arrival': result == 'completed',
+            'at':time.monotonic(), 'person_id':active['person_id'], 'track_id':active['track_id'],
+            'can_continue':reason in ('front stand-off reached; caller range uncertain',
+                                     'caller at camera stand-off', 'approach travel budget reached')}
         if send_stop and motion.connected():
             motion.send({'cmd': 'drive', 'lin': 0., 'ang': 0.})
         _log.info('[approach] Mac end seq=%s result=%s reason=%s travel=%.2fm target_range=%s',
@@ -193,6 +196,45 @@ def _heartbeat_approach() -> bool:
 def last_come_result() -> "tuple[int | None, str | None]":
     """(seq, result) of the latest `come`; result is None while it is still running."""
     return _last_come_seq, _last_come_result
+
+
+def continue_come() -> str | None:
+    """A spoken 'closer' continues the same camera target in a short slow step."""
+    from intelligence import approach, motion_agency
+    # Match the agency -> controller lock order used by ordinary come requests.
+    with motion_agency._come_lock, _approach_lock:
+        if _host_approach is not None:
+            return "I'm still coming toward you."
+        detail = dict(_last_come_detail)
+        if not detail.get('can_continue') or time.monotonic()-detail.get('at',0.) > 45.:
+            return None
+        from world_state import world_state
+        if motion_agency.no_drive_room() is not None or _autonomous_allowed() is not None:
+            return "I can't start another step while movement is disabled."
+        snapshot = world_state.snapshot()
+        target = approach.target_in_frame(snapshot, detail['person_id'], detail['track_id'])
+        if target is None or time.time()-float(target.get('face_last_seen_at') or 0.) > 1.5:
+            return "I've lost sight of where you are. Let me see you before I move closer."
+        bearing = motion_agency._come_bearing_deg(target, head_locked=False)
+        if bearing is None or abs(bearing) > 15.:
+            return "I need to face you before taking another step closer."
+        stop_at = _get_float('MOTION_COME_CLOSER_STOP_AT_M', .75)
+        tele = motion.telemetry() or {}
+        budget = approach.front_budget(tele.get('tof_mm') or {}, stop_at)
+        if (budget is None or budget <= .03 or tele.get('rx_monotonic') is None
+                or time.monotonic()-tele['rx_monotonic'] > .6):
+            return "I'm at my close-distance limit from the current sensor readings. I'm holding here."
+        motion_agency.cancel_requested_come('user requested a closer step')
+        _last_come_detail['can_continue'] = False
+        from intelligence import consciousness
+        consciousness.note_speaker_gaze_intent(target.get('person_db_id'),
+            unknown_voice=target.get('person_db_id') is None, reason='come_target',
+            force_search=False, track_id=target.get('id'))
+        note_user_commanded_motion()
+        seq = come(stop_at=stop_at, target=target,
+                   speed=_get_float('MOTION_COME_CLOSER_SPEED_MS', .08),
+                   max_travel=_get_float('MOTION_COME_CLOSER_MAX_TRAVEL_M', .20))
+        return "Okay, a little closer." if seq is not None else "I couldn't start that closer step."
 
 
 # A VOICE-COMMANDED move ships a spoken confirmation ("Spinning around.") whose
@@ -976,6 +1018,8 @@ def _note_issued(seq: "int | None", verb: str, detail: str = "", **kw) -> None:
     kw: requested_deg / attempted_deg / alternative — the ActionResult fields."""
     global _pending_verbal_turn
     _pending_verbal_turn = None
+    if verb != 'come here':
+        _last_come_detail['can_continue'] = False
     try:
         from intelligence import conversation_state
         conversation_state.note_action_issued(seq, verb, detail, **kw)
@@ -1011,6 +1055,7 @@ def _suppressed(verb: str, reason: str) -> None:
     2026-07-23 — the same lesson that produced announce_if_blocked)."""
     global _tof_announced_at, _last_refusal, _pending_verbal_turn
     _pending_verbal_turn = None
+    _last_come_detail['can_continue'] = False
     _log.debug("motion %s suppressed: %s", verb, reason)
     line = _refusal_line(reason)
     _last_refusal = {"verb": verb, "reason": reason, "line": line, "spoke": False,
@@ -1266,7 +1311,8 @@ def turn_to_compass(target_deg: float) -> "int | None":
 
 
 def come(heading: float = 0.0, stop_at: "float | None" = None,
-         speed: "float | None" = None, *, target: dict | None = None) -> "int | None":
+         speed: "float | None" = None, *, target: dict | None = None,
+         max_travel: float = 4.) -> "int | None":
     """Start a Mac-owned, camera-targeted approach using drive/turn primitives."""
     global _host_approach, _last_come_seq, _last_come_result, _last_come_detail
     reason = _autonomous_allowed()
@@ -1301,7 +1347,8 @@ def come(heading: float = 0.0, stop_at: "float | None" = None,
         distance = _get_float('MOTION_COME_STOP_AT_M', .6) if stop_at is None else float(stop_at)
         _host_approach = dict(seq=seq, turn_seq=seq if heading else None,
             person_id=target.get('person_db_id'), track_id=target.get('id'),
-            plan=Approach(time.monotonic(), distance, pace, _get_float('MOTION_ACCEL_LINEAR_MS2', .35)))
+            plan=Approach(time.monotonic(), distance, pace, _get_float('MOTION_ACCEL_LINEAR_MS2', .35),
+                          max_travel=max_travel))
         _last_come_seq, _last_come_result, _last_come_detail = seq, None, {}
         _note_issued(seq, 'come here')
         return seq
@@ -1384,6 +1431,7 @@ def stop(*, preserve_refused_turn: bool = False) -> "int | None":
     global _pending_verbal_turn
     if not preserve_refused_turn:
         _pending_verbal_turn = None
+    _last_come_detail['can_continue'] = False
     from intelligence.conversation_state import invalidate_running_actions
     invalidate_running_actions("stop")
     _invalidate_turn_verification()
@@ -1399,6 +1447,7 @@ def estop() -> "int | None":
     """Hard disable until clear(). Always honored while connected."""
     global _pending_verbal_turn
     _pending_verbal_turn = None
+    _last_come_detail['can_continue'] = False
     from intelligence.conversation_state import invalidate_running_actions
     invalidate_running_actions("estop")
     _cancel_swing_escape()

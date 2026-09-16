@@ -269,7 +269,8 @@ class ComeTargetAcquisitionTest(_ComeFixture):
         self.assertTrue(MA._requested_come["acquired"])
         self.assertEqual(MA._requested_come["requester_id"], 1)
         MA.motion_controller.stop.assert_called_once()
-        self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY)
+        self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M,
+                                         target=mock.ANY, speed=config.MOTION_COME_REQUEST_SPEED_MS)
         # Recognition flickers and the radar still offers a 155-degree leg.
         self.scene = {"people": []}
         with mock.patch.object(MA.motion_controller, "last_come_result", return_value=(8, "completed")):

@@ -527,7 +527,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.come.assert_called_once_with(
-            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY, speed=config.MOTION_COME_REQUEST_SPEED_MS
         )
         # The errand now stays ALIVE across the drive so a transient obstruction
         # (a dog crossing) can be waited out and retried; it ends on the firmware
@@ -560,7 +560,7 @@ class MotionAgencyTest(unittest.TestCase):
         self._face_box = _CENTERED_FACE
         self._tick()
         self.come.assert_called_once_with(
-            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY, speed=config.MOTION_COME_REQUEST_SPEED_MS
         )
 
     def test_requested_come_stops_after_full_search(self):
@@ -675,7 +675,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here(person_id=1))
         self._tick(1)
         self.come.assert_called_once_with(
-            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY, speed=config.MOTION_COME_REQUEST_SPEED_MS
         )
 
     def test_requester_sighting_restarts_the_giveup_clock(self):
@@ -734,7 +734,7 @@ class MotionAgencyTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here())
         self._tick()
         self.come.assert_called_once_with(
-            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY
+            0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY, speed=config.MOTION_COME_REQUEST_SPEED_MS
         )
 
     def test_align_turns_that_never_settle_hand_the_residual_to_come(self):
@@ -1941,7 +1941,7 @@ class RadarFirstComeTest(unittest.TestCase):
         self.assertTrue(MA.request_come_here(person_id=1))
         self._tick(_snapshot(db_id=1, face_box=_CENTERED_FACE))
         # ...is irrelevant: the requester is centred on camera, so he approaches.
-        self.come.assert_called_once_with(0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY)
+        self.come.assert_called_once_with(0.0, stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY, speed=config.MOTION_COME_REQUEST_SPEED_MS)
         self.turn.assert_not_called()
         self.assertEqual(self.ring.reads, 0)
 
@@ -2627,6 +2627,7 @@ class StartupApproachTest(unittest.TestCase):
     startup, approach the first person he's facing — if the ToF allow it."""
 
     def setUp(self):
+        MA._state['startup_face_seen_at'] = None
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
                          orient_hits=0, wander_pending=None, wander_next_at=0.0,
@@ -2646,7 +2647,8 @@ class StartupApproachTest(unittest.TestCase):
             mock.patch.object(MA.motion_controller, "come", return_value=8),
             mock.patch.object(MA.motion_controller, "move", return_value=9),
             mock.patch.object(MA.motion, "telemetry",
-                              side_effect=lambda: {"tof_mm": dict(self._tof)}),
+                              side_effect=lambda: {"tof_mm": dict(self._tof),
+                                                   'rx_monotonic':time.monotonic()}),
             mock.patch.object(MA.motion, "done_result", return_value="completed",
                               create=True),
             mock.patch("intelligence.battery_awareness.battery_critical",
@@ -2685,6 +2687,32 @@ class StartupApproachTest(unittest.TestCase):
         self.assertEqual(args[0], 0.0)
         self.assertEqual(kwargs["stop_at"], config.MOTION_STARTUP_APPROACH_STOP_AT_M)
         self.assertTrue(MA._state["startup_approach_done"])
+        self.assertEqual(kwargs['speed'],.10)
+        self.assertEqual(kwargs['max_travel'],.60)
+
+    def test_welcomes_face_before_speech_despite_matrix_disagreement(self):
+        self._tof={'fl':2612,'fr':793,'fl_radial':4000,'fr_radial':-1}
+        self._tick(2)
+        self.come.assert_called_once()
+
+    def test_close_matrix_obstacle_still_prevents_welcome(self):
+        self._tof={'fl':2612,'fr':400,'fl_radial':4000,'fr_radial':-1}
+        self._tick(3)
+        self.come.assert_not_called()
+
+    def test_face_disappearance_resets_confirmation(self):
+        self._tick()
+        MA.step({'people':[]},_profile())
+        self._tick()
+        self.come.assert_not_called()
+        self._tick()
+        self.come.assert_called_once()
+
+    def test_stale_telemetry_prevents_welcome(self):
+        with mock.patch.object(MA.motion,'telemetry',return_value={
+                'tof_mm':dict(self._tof),'rx_monotonic':0.}):
+            self._tick(3)
+        self.come.assert_not_called()
 
     def test_fires_despite_the_proactive_gates(self):
         # The startup greeting is usually in flight — the roll-up must not wait
@@ -2711,11 +2739,21 @@ class StartupApproachTest(unittest.TestCase):
         self.come.assert_not_called()
 
     def test_window_expiry_closes_the_offer(self):
-        MA._state["first_step_at"] = time.monotonic() - (
+        MA._state["startup_face_seen_at"] = time.monotonic() - (
             float(config.MOTION_STARTUP_APPROACH_WINDOW_SECS) + 5.0)
         self._tick(4)
         self.come.assert_not_called()
         self.assertTrue(MA._state["startup_approach_done"])
+
+    def test_first_face_can_arrive_after_long_silent_empty_room(self):
+        MA._state['first_step_at']=time.monotonic()-600.
+        self._tick(2)
+        self.come.assert_called_once()
+
+    def test_unrecognized_face_does_not_need_a_voice_identity(self):
+        for _ in range(2):
+            MA.step(_snapshot(db_id=None),_profile())
+        self.come.assert_called_once()
 
     def test_person_already_close_is_left_alone(self):
         self._tick(4, zone="personal")

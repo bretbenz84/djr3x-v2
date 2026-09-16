@@ -103,8 +103,21 @@ class ComeHereRegressionTest(_ComeFixture):
         self.turn.assert_not_called()
         self._tick()
         self.turn.assert_not_called()
-        self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M, target=mock.ANY)
+        self.come.assert_called_once_with(0., stop_at=config.MOTION_COME_REQUEST_STOP_AT_M,
+                                         target=mock.ANY, speed=config.MOTION_COME_REQUEST_SPEED_MS)
         self.assertIsNone(MA._requested_come["voice_world"])
+
+    def test_2129_weak_tjoy_tie_and_wrong_direction_still_acquires_visible_partner(self):
+        from tests.test_solo_conversation_2026_09_15 import evidence as interval_evidence
+        ev=interval_evidence(raw_best_id=3,raw_best_name="T'Joy",raw_best_score=.576,
+            margin=.064,scoreboard=[(3,"T'Joy",.576,2),(1,'Bret',.512,1)],
+            words=2,previous_speaker_pid=None,bearing_contradiction=True).as_dict()
+        self.assertTrue(self._request(person_id=None,speaker_evidence=ev))
+        self._tick()
+        self.come.assert_called_once()
+        self.assertEqual(self.come.call_args.kwargs['target']['person_db_id'],1)
+        self.assertIsNone(MA.requested_come_refusal())
+        self.assertEqual(ev['raw_best_id'],3,'motion must not rewrite identity evidence')
 
     def test_idle_base_does_not_mean_blocked_approach_can_retry(self):
         self.assertTrue(self._request(person_id=1))
