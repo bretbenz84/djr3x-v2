@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "units": "metres",
+  "limits": {
+    "pokerarm": [
+      -10,
+      10
+    ],
+    "heroarm": [
+      -10,
+      10
+    ],
+    "elbow": [
+      0,
+      35
+    ],
+    "hand": [
+      -90,
+      90
+    ],
+    "neck": [
+      -22.5,
+      22.5
+    ],
+    "headtilt": [
+      30,
+      -15
+    ],
+    "visor": [
+      27,
+      0
+    ],
+    "headlift": [
+      0,
+      0.06
+    ]
+  },
+  "lift_reference": 0.1944012442,
+  "elbow_pivot": [
+    0.2204,
+    0.0375,
+    0.57539
+  ],
+  "elbow_axis": [
+    0.179,
+    -0.984,
+    0
+  ],
+  "wrist_pivot": [
+    0.37428,
+    0.06954,
+    0.72619
+  ],
+  "wrist_axis": [
+    0.709,
+    0.129,
+    0.693
+  ],
+  "head_pivot": [
+    0,
+    0,
+    0.773
+  ],
+  "head_axis": [
+    0.786,
+    0.618,
+    0
+  ],
+  "visor_pivot": [
+    0,
+    0,
+    0.82489
+  ],
+  "visor_axis": [
+    0.786,
+    0.618,
+    0
+  ],
+  "piston_lower": [
+    0.17168,
+    0.02886,
+    0.6152
+  ],
+  "piston_upper": [
+    0.30757,
+    0.05605,
+    0.71995
+  ],
+  "spring_bottom": [
+    0,
+    0,
+    0.663
+  ],
+  "spring_top": [
+    0,
+    0,
+    0.7546
+  ],
+  "provisional": [
+    "Lift stroke 60 mm from project gaze configuration; needs physical measurement",
+    "Visor closure 27 degrees estimated from geometry; needs physical endpoint comparison",
+    "Head tilt pivot inferred at neck attachment"
+  ]
+}

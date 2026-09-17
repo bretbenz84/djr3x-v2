@@ -262,6 +262,11 @@ def connected() -> bool:
 def send_command(cmd: str) -> None:
     """Send a newline-terminated command string to the head Arduino."""
     global _ser, _speech_drop_notified, _consecutive_write_timeouts
+    try:
+        from gui.state_bridge import gui_bridge
+        gui_bridge.update_mouth_led_command(cmd)
+    except Exception:
+        pass
     if not HEAD_LEDS_ENABLED:
         _log.debug("send_command no-op: HEAD_LEDS_ENABLED=False (cmd=%r)", cmd)
         return

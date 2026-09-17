@@ -41,7 +41,9 @@ from gui import theme
 from gui.conversation_panel import ConversationPanel
 from gui.jeopardy_panel import JeopardyPanel
 from gui.log_panel import LogPanel
-from gui.rex_avatar import RexAvatar, normalize_servo, servo_to_angle, servo_to_offset
+from gui.rex_avatar import normalize_servo
+from gui.avatar_rig import SPEC
+from gui.rex_avatar_3d import RexAvatar
 from gui.state_bridge import GUIDashboardBridge, gui_bridge
 from gui.theme import HoloPanel as ChromePanel, ServoGauge, StarfieldBackdrop
 from gui.vision_panel import VisionPanel
@@ -2716,9 +2718,11 @@ def _servo_label(name: str) -> str:
 def _servo_state(name: str, value: int) -> str:
     if name == "visor":
         return "Open" if normalize_servo(name, value) >= 0.45 else "Closed"
+    lo, hi = SPEC["limits"][name]
+    position = lo + (hi-lo) * normalize_servo(name, value)
     if name == "headlift":
-        return f"{servo_to_offset(name, value):+.0f}mm"
-    return f"{servo_to_angle(name, value):+.0f}°"
+        return f"{position*1000:.0f}mm"
+    return f"{position:+.0f}°"
 
 
 def main(argv: Optional[list[str]] = None) -> int:

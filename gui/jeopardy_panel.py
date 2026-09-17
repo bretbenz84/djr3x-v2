@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
 
 from gui import theme
-from gui.rex_avatar import RexAvatar
+from gui.rex_avatar_3d import RexAvatar
 
 
 class JeopardyPanel(QWidget):

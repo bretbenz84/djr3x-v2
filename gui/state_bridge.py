@@ -149,6 +149,30 @@ class GUIDashboardBridge:
             self._head_led_state["updated_at"] = time.time()
             self._updated_at = time.time()
 
+    def update_mouth_led_command(self, command: str) -> None:
+        """Mirror mouth commands before serial availability checks; never transmit."""
+        family, _, value = command.partition(":")
+        family = family.strip().upper()
+        with self._lock:
+            state = self._head_led_state
+            mode = state.get("mouth_mode", "off")
+            if family == "SPEAK":
+                state.update(mouth_mode="speak", mouth_emotion=value.strip().lower(), mouth_level=0,
+                             mouth_utterance=state.get("mouth_utterance", 0)+1)
+            elif family == "SPEAK_LEVEL":
+                try: state["mouth_level"] = max(0, min(255, int(value)))
+                except ValueError: return
+            elif family in {"SPEAK_STOP", "ACTIVE", "IDLE", "OFF", "SLEEP", "FADEOFF", "CHARGE"}:
+                state["mouth_mode"] = {"SPEAK_STOP": "active"}.get(family, family.lower())
+                if family == "CHARGE":
+                    try: state["mouth_soc"] = max(0, min(100, int(value)))
+                    except ValueError: state["mouth_soc"] = 0
+            elif family == "EYE" and mode in {"off", "sleep", "charge"}:
+                state["mouth_mode"] = "active"
+            else:
+                return
+            state["mouth_updated_at"] = time.time()
+
     def update_chest_led_state(
         self,
         *,

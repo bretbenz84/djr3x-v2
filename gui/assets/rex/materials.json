@@ -1,0 +1,1864 @@
+[
+  {
+    "lamp": -1,
+    "group": "fixed",
+    "color": [
+      0.6499999761581421,
+      0.24500000476837158,
+      0.012000000104308128
+    ],
+    "metalness": 0.5,
+    "roughness": 0.36000001430511475,
+    "kind": "surface",
+    "id": "mesh_0",
+    "triangles": 24166
+  },
+  {
+    "lamp": -1,
+    "group": "fixed",
+    "color": [
+      0.4000000059604645,
+      0.46000000834465027,
+      0.46000000834465027
+    ],
+    "metalness": 0.800000011920929,
+    "roughness": 0.3400000035762787,
+    "kind": "surface",
+    "id": "mesh_1",
+    "triangles": 77598
+  },
+  {
+    "lamp": -1,
+    "group": "poker",
+    "color": [
+      0.04699999839067459,
+      0.06199999898672104,
+      0.06599999964237213
+    ],
+    "metalness": 0.75,
+    "roughness": 0.4000000059604645,
+    "kind": "surface",
+    "id": "mesh_2",
+    "triangles": 36083
+  },
+  {
+    "lamp": -1,
+    "group": "poker",
+    "color": [
+      0.6499999761581421,
+      0.24500000476837158,
+      0.012000000104308128
+    ],
+    "metalness": 0.5,
+    "roughness": 0.36000001430511475,
+    "kind": "surface",
+    "id": "mesh_3",
+    "triangles": 3257
+  },
+  {
+    "lamp": -1,
+    "group": "poker",
+    "color": [
+      0.4000000059604645,
+      0.46000000834465027,
+      0.46000000834465027
+    ],
+    "metalness": 0.800000011920929,
+    "roughness": 0.3400000035762787,
+    "kind": "surface",
+    "id": "mesh_4",
+    "triangles": 22934
+  },
+  {
+    "lamp": -1,
+    "group": "fixed",
+    "color": [
+      0.00800000037997961,
+      0.014999999664723873,
+      0.01899999938905239
+    ],
+    "metalness": 0.30000001192092896,
+    "roughness": 0.46000000834465027,
+    "kind": "surface",
+    "id": "mesh_5",
+    "triangles": 5400
+  },
+  {
+    "lamp": -1,
+    "group": "fixed",
+    "color": [
+      0.04699999839067459,
+      0.06199999898672104,
+      0.06599999964237213
+    ],
+    "metalness": 0.75,
+    "roughness": 0.4000000059604645,
+    "kind": "surface",
+    "id": "mesh_6",
+    "triangles": 24
+  },
+  {
+    "lamp": -1,
+    "group": "hero",
+    "color": [
+      0.4000000059604645,
+      0.46000000834465027,
+      0.46000000834465027
+    ],
+    "metalness": 0.800000011920929,
+    "roughness": 0.3400000035762787,
+    "kind": "surface",
+    "id": "mesh_7",
+    "triangles": 11302
+  },
+  {
+    "lamp": -1,
+    "group": "elbow",
+    "color": [
+      0.4000000059604645,
+      0.46000000834465027,
+      0.46000000834465027
+    ],
+    "metalness": 0.800000011920929,
+    "roughness": 0.3400000035762787,
+    "kind": "surface",
+    "id": "mesh_8",
+    "triangles": 10704
+  },
+  {
+    "lamp": -1,
+    "group": "piston_body",
+    "color": [
+      0.6499999761581421,
+      0.24500000476837158,
+      0.012000000104308128
+    ],
+    "metalness": 0.5,
+    "roughness": 0.36000001430511475,
+    "kind": "surface",
+    "id": "mesh_9",
+    "triangles": 2980
+  },
+  {
+    "lamp": -1,
+    "group": "piston_body",
+    "color": [
+      0.4000000059604645,
+      0.46000000834465027,
+      0.46000000834465027
+    ],
+    "metalness": 0.800000011920929,
+    "roughness": 0.3400000035762787,
+    "kind": "surface",
+    "id": "mesh_10",
+    "triangles": 988
+  },
+  {
+    "lamp": -1,
+    "group": "wrist",
+    "color": [
+      0.4000000059604645,
+      0.46000000834465027,
+      0.46000000834465027
+    ],
+    "metalness": 0.800000011920929,
+    "roughness": 0.3400000035762787,
+    "kind": "surface",
+    "id": "mesh_11",
+    "triangles": 5264
+  },
+  {
+    "lamp": -1,
+    "group": "elbow",
+    "color": [
+      0.6499999761581421,
+      0.24500000476837158,
+      0.012000000104308128
+    ],
+    "metalness": 0.5,
+    "roughness": 0.36000001430511475,
+    "kind": "surface",
+    "id": "mesh_12",
+    "triangles": 600
+  },
+  {
+    "lamp": -1,
+    "group": "hero",
+    "color": [
+      0.04699999839067459,
+      0.06199999898672104,
+      0.06599999964237213
+    ],
+    "metalness": 0.75,
+    "roughness": 0.4000000059604645,
+    "kind": "surface",
+    "id": "mesh_13",
+    "triangles": 22874
+  },
+  {
+    "lamp": -1,
+    "group": "hero",
+    "color": [
+      0.6499999761581421,
+      0.24500000476837158,
+      0.012000000104308128
+    ],
+    "metalness": 0.5,
+    "roughness": 0.36000001430511475,
+    "kind": "surface",
+    "id": "mesh_14",
+    "triangles": 2592
+  },
+  {
+    "lamp": -1,
+    "group": "head",
+    "color": [
+      0.4000000059604645,
+      0.46000000834465027,
+      0.46000000834465027
+    ],
+    "metalness": 0.800000011920929,
+    "roughness": 0.3400000035762787,
+    "kind": "surface",
+    "id": "mesh_15",
+    "triangles": 75654
+  },
+  {
+    "lamp": -1,
+    "group": "visor",
+    "color": [
+      0.9100000262260437,
+      0.4000000059604645,
+      0.03999999910593033
+    ],
+    "metalness": 0.5,
+    "roughness": 0.36000001430511475,
+    "kind": "visor",
+    "id": "mesh_16",
+    "triangles": 2738
+  },
+  {
+    "lamp": -1,
+    "group": "visor",
+    "color": [
+      0.4000000059604645,
+      0.46000000834465027,
+      0.46000000834465027
+    ],
+    "metalness": 0.800000011920929,
+    "roughness": 0.3400000035762787,
+    "kind": "surface",
+    "id": "mesh_17",
+    "triangles": 2400
+  },
+  {
+    "lamp": -1,
+    "group": "head",
+    "color": [
+      1.0,
+      0.6600000262260437,
+      0.1599999964237213
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "eye",
+    "id": "mesh_18",
+    "triangles": 2608
+  },
+  {
+    "lamp": -1,
+    "group": "head",
+    "color": [
+      0.04699999839067459,
+      0.06199999898672104,
+      0.06599999964237213
+    ],
+    "metalness": 0.75,
+    "roughness": 0.4000000059604645,
+    "kind": "surface",
+    "id": "mesh_19",
+    "triangles": 4646
+  },
+  {
+    "lamp": 0,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_20",
+    "triangles": 47
+  },
+  {
+    "lamp": 1,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_21",
+    "triangles": 173
+  },
+  {
+    "lamp": 2,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_22",
+    "triangles": 23
+  },
+  {
+    "lamp": 3,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_23",
+    "triangles": 72
+  },
+  {
+    "lamp": 4,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_24",
+    "triangles": 73
+  },
+  {
+    "lamp": 5,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_25",
+    "triangles": 22
+  },
+  {
+    "lamp": 6,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_26",
+    "triangles": 177
+  },
+  {
+    "lamp": 7,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_27",
+    "triangles": 54
+  },
+  {
+    "lamp": 8,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_28",
+    "triangles": 86
+  },
+  {
+    "lamp": 9,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_29",
+    "triangles": 195
+  },
+  {
+    "lamp": 10,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_30",
+    "triangles": 5
+  },
+  {
+    "lamp": 11,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_31",
+    "triangles": 36
+  },
+  {
+    "lamp": 12,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_32",
+    "triangles": 35
+  },
+  {
+    "lamp": 13,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_33",
+    "triangles": 7
+  },
+  {
+    "lamp": 14,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_34",
+    "triangles": 197
+  },
+  {
+    "lamp": 15,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_35",
+    "triangles": 86
+  },
+  {
+    "lamp": 16,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_36",
+    "triangles": 100
+  },
+  {
+    "lamp": 17,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_37",
+    "triangles": 262
+  },
+  {
+    "lamp": 18,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_38",
+    "triangles": 8
+  },
+  {
+    "lamp": 19,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_39",
+    "triangles": 46
+  },
+  {
+    "lamp": 20,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_40",
+    "triangles": 46
+  },
+  {
+    "lamp": 21,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_41",
+    "triangles": 11
+  },
+  {
+    "lamp": 22,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_42",
+    "triangles": 257
+  },
+  {
+    "lamp": 23,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_43",
+    "triangles": 103
+  },
+  {
+    "lamp": 24,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_44",
+    "triangles": 118
+  },
+  {
+    "lamp": 25,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_45",
+    "triangles": 202
+  },
+  {
+    "lamp": 26,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_46",
+    "triangles": 12
+  },
+  {
+    "lamp": 27,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_47",
+    "triangles": 26
+  },
+  {
+    "lamp": 28,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_48",
+    "triangles": 25
+  },
+  {
+    "lamp": 29,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_49",
+    "triangles": 13
+  },
+  {
+    "lamp": 30,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_50",
+    "triangles": 206
+  },
+  {
+    "lamp": 31,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_51",
+    "triangles": 118
+  },
+  {
+    "lamp": 32,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_52",
+    "triangles": 187
+  },
+  {
+    "lamp": 33,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_53",
+    "triangles": 150
+  },
+  {
+    "lamp": 34,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_54",
+    "triangles": 17
+  },
+  {
+    "lamp": 35,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_55",
+    "triangles": 29
+  },
+  {
+    "lamp": 36,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_56",
+    "triangles": 32
+  },
+  {
+    "lamp": 37,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_57",
+    "triangles": 16
+  },
+  {
+    "lamp": 38,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_58",
+    "triangles": 141
+  },
+  {
+    "lamp": 39,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_59",
+    "triangles": 204
+  },
+  {
+    "lamp": 40,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_60",
+    "triangles": 340
+  },
+  {
+    "lamp": 41,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_61",
+    "triangles": 37
+  },
+  {
+    "lamp": 42,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_62",
+    "triangles": 18
+  },
+  {
+    "lamp": 43,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_63",
+    "triangles": 26
+  },
+  {
+    "lamp": 44,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_64",
+    "triangles": 27
+  },
+  {
+    "lamp": 45,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_65",
+    "triangles": 16
+  },
+  {
+    "lamp": 46,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_66",
+    "triangles": 31
+  },
+  {
+    "lamp": 47,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_67",
+    "triangles": 345
+  },
+  {
+    "lamp": 48,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_68",
+    "triangles": 313
+  },
+  {
+    "lamp": 49,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_69",
+    "triangles": 2
+  },
+  {
+    "lamp": 50,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_70",
+    "triangles": 11
+  },
+  {
+    "lamp": 51,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_71",
+    "triangles": 23
+  },
+  {
+    "lamp": 52,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_72",
+    "triangles": 21
+  },
+  {
+    "lamp": 53,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_73",
+    "triangles": 13
+  },
+  {
+    "lamp": 54,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_74",
+    "triangles": 2
+  },
+  {
+    "lamp": 55,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_75",
+    "triangles": 314
+  },
+  {
+    "lamp": 56,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_76",
+    "triangles": 233
+  },
+  {
+    "lamp": 57,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_77",
+    "triangles": 7
+  },
+  {
+    "lamp": 58,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_78",
+    "triangles": 13
+  },
+  {
+    "lamp": 59,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_79",
+    "triangles": 45
+  },
+  {
+    "lamp": 60,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_80",
+    "triangles": 44
+  },
+  {
+    "lamp": 61,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_81",
+    "triangles": 11
+  },
+  {
+    "lamp": 62,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_82",
+    "triangles": 7
+  },
+  {
+    "lamp": 63,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_83",
+    "triangles": 226
+  },
+  {
+    "lamp": 64,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_84",
+    "triangles": 130
+  },
+  {
+    "lamp": 65,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_85",
+    "triangles": 12
+  },
+  {
+    "lamp": 66,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_86",
+    "triangles": 19
+  },
+  {
+    "lamp": 67,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_87",
+    "triangles": 59
+  },
+  {
+    "lamp": 68,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_88",
+    "triangles": 58
+  },
+  {
+    "lamp": 69,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_89",
+    "triangles": 20
+  },
+  {
+    "lamp": 70,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_90",
+    "triangles": 15
+  },
+  {
+    "lamp": 71,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_91",
+    "triangles": 137
+  },
+  {
+    "lamp": 72,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_92",
+    "triangles": 184
+  },
+  {
+    "lamp": 73,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_93",
+    "triangles": 83
+  },
+  {
+    "lamp": 74,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_94",
+    "triangles": 46
+  },
+  {
+    "lamp": 75,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_95",
+    "triangles": 81
+  },
+  {
+    "lamp": 76,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_96",
+    "triangles": 76
+  },
+  {
+    "lamp": 77,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_97",
+    "triangles": 51
+  },
+  {
+    "lamp": 78,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_98",
+    "triangles": 68
+  },
+  {
+    "lamp": 79,
+    "group": "head",
+    "color": [
+      0.019999999552965164,
+      0.5,
+      0.8500000238418579
+    ],
+    "metalness": 0.0,
+    "roughness": 0.25,
+    "kind": "mouth",
+    "id": "mesh_99",
+    "triangles": 199
+  },
+  {
+    "lamp": -1,
+    "group": "neck",
+    "color": [
+      0.5199999809265137,
+      0.5899999737739563,
+      0.6399999856948853
+    ],
+    "metalness": 0.9399999976158142,
+    "roughness": 0.1899999976158142,
+    "kind": "surface",
+    "id": "mesh_100",
+    "triangles": 376
+  },
+  {
+    "lamp": -1,
+    "group": "head",
+    "color": [
+      0.00800000037997961,
+      0.014999999664723873,
+      0.01899999938905239
+    ],
+    "metalness": 0.30000001192092896,
+    "roughness": 0.46000000834465027,
+    "kind": "surface",
+    "id": "mesh_101",
+    "triangles": 376
+  },
+  {
+    "lamp": 0,
+    "group": "fixed",
+    "color": [
+      0.8799999952316284,
+      0.9300000071525574,
+      1.0
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_102",
+    "triangles": 12
+  },
+  {
+    "lamp": 1,
+    "group": "fixed",
+    "color": [
+      0.00800000037997961,
+      0.44999998807907104,
+      0.800000011920929
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_103",
+    "triangles": 12
+  },
+  {
+    "lamp": 2,
+    "group": "fixed",
+    "color": [
+      0.00800000037997961,
+      0.44999998807907104,
+      0.800000011920929
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_104",
+    "triangles": 12
+  },
+  {
+    "lamp": 3,
+    "group": "fixed",
+    "color": [
+      0.8799999952316284,
+      0.9300000071525574,
+      1.0
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_105",
+    "triangles": 12
+  },
+  {
+    "lamp": 4,
+    "group": "fixed",
+    "color": [
+      0.00800000037997961,
+      0.44999998807907104,
+      0.800000011920929
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_106",
+    "triangles": 12
+  },
+  {
+    "lamp": 5,
+    "group": "fixed",
+    "color": [
+      0.00800000037997961,
+      0.44999998807907104,
+      0.800000011920929
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_107",
+    "triangles": 12
+  },
+  {
+    "lamp": 6,
+    "group": "fixed",
+    "color": [
+      0.8799999952316284,
+      0.9300000071525574,
+      1.0
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_108",
+    "triangles": 12
+  },
+  {
+    "lamp": 7,
+    "group": "fixed",
+    "color": [
+      0.00800000037997961,
+      0.44999998807907104,
+      0.800000011920929
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_109",
+    "triangles": 12
+  },
+  {
+    "lamp": 8,
+    "group": "fixed",
+    "color": [
+      0.00800000037997961,
+      0.44999998807907104,
+      0.800000011920929
+    ],
+    "metalness": 0.10000000149011612,
+    "roughness": 0.25,
+    "kind": "led",
+    "id": "mesh_110",
+    "triangles": 12
+  },
+  {
+    "lamp": -1,
+    "group": "head",
+    "color": [
+      0.12999999523162842,
+      0.1599999964237213,
+      0.18000000715255737
+    ],
+    "metalness": 0.8500000238418579,
+    "roughness": 0.28999999165534973,
+    "kind": "surface",
+    "id": "mesh_111",
+    "triangles": 19200
+  },
+  {
+    "lamp": -1,
+    "group": "head",
+    "color": [
+      0.6200000047683716,
+      0.6600000262260437,
+      0.6200000047683716
+    ],
+    "metalness": 0.8299999833106995,
+    "roughness": 0.27000001072883606,
+    "kind": "surface",
+    "id": "mesh_112",
+    "triangles": 6528
+  },
+  {
+    "lamp": -1,
+    "group": "elbow",
+    "color": [
+      0.6200000047683716,
+      0.6600000262260437,
+      0.6200000047683716
+    ],
+    "metalness": 0.8299999833106995,
+    "roughness": 0.27000001072883606,
+    "kind": "surface",
+    "id": "mesh_113",
+    "triangles": 7296
+  },
+  {
+    "lamp": -1,
+    "group": "elbow",
+    "color": [
+      0.12999999523162842,
+      0.1599999964237213,
+      0.18000000715255737
+    ],
+    "metalness": 0.8500000238418579,
+    "roughness": 0.28999999165534973,
+    "kind": "surface",
+    "id": "mesh_114",
+    "triangles": 31296
+  },
+  {
+    "lamp": -1,
+    "group": "wrist",
+    "color": [
+      0.12999999523162842,
+      0.1599999964237213,
+      0.18000000715255737
+    ],
+    "metalness": 0.8500000238418579,
+    "roughness": 0.28999999165534973,
+    "kind": "surface",
+    "id": "mesh_115",
+    "triangles": 6144
+  },
+  {
+    "lamp": -1,
+    "group": "hero",
+    "color": [
+      0.12999999523162842,
+      0.1599999964237213,
+      0.18000000715255737
+    ],
+    "metalness": 0.8500000238418579,
+    "roughness": 0.28999999165534973,
+    "kind": "surface",
+    "id": "mesh_116",
+    "triangles": 6528
+  },
+  {
+    "lamp": -1,
+    "group": "piston_body",
+    "color": [
+      0.6200000047683716,
+      0.6600000262260437,
+      0.6200000047683716
+    ],
+    "metalness": 0.8299999833106995,
+    "roughness": 0.27000001072883606,
+    "kind": "surface",
+    "id": "mesh_117",
+    "triangles": 768
+  },
+  {
+    "lamp": -1,
+    "group": "piston_body",
+    "color": [
+      0.12999999523162842,
+      0.1599999964237213,
+      0.18000000715255737
+    ],
+    "metalness": 0.8500000238418579,
+    "roughness": 0.28999999165534973,
+    "kind": "surface",
+    "id": "mesh_118",
+    "triangles": 768
+  },
+  {
+    "lamp": -1,
+    "group": "wrist",
+    "color": [
+      0.6200000047683716,
+      0.6600000262260437,
+      0.6200000047683716
+    ],
+    "metalness": 0.8299999833106995,
+    "roughness": 0.27000001072883606,
+    "kind": "surface",
+    "id": "mesh_119",
+    "triangles": 768
+  },
+  {
+    "lamp": -1,
+    "group": "poker",
+    "color": [
+      0.12999999523162842,
+      0.1599999964237213,
+      0.18000000715255737
+    ],
+    "metalness": 0.8500000238418579,
+    "roughness": 0.28999999165534973,
+    "kind": "surface",
+    "id": "mesh_120",
+    "triangles": 33596
+  },
+  {
+    "lamp": -1,
+    "group": "fixed",
+    "color": [
+      0.12999999523162842,
+      0.1599999964237213,
+      0.18000000715255737
+    ],
+    "metalness": 0.8500000238418579,
+    "roughness": 0.28999999165534973,
+    "kind": "surface",
+    "id": "mesh_121",
+    "triangles": 27648
+  },
+  {
+    "lamp": -1,
+    "group": "poker",
+    "color": [
+      0.6200000047683716,
+      0.6600000262260437,
+      0.6200000047683716
+    ],
+    "metalness": 0.8299999833106995,
+    "roughness": 0.27000001072883606,
+    "kind": "surface",
+    "id": "mesh_122",
+    "triangles": 11512
+  },
+  {
+    "lamp": -1,
+    "group": "fixed",
+    "color": [
+      0.6200000047683716,
+      0.6600000262260437,
+      0.6200000047683716
+    ],
+    "metalness": 0.8299999833106995,
+    "roughness": 0.27000001072883606,
+    "kind": "surface",
+    "id": "mesh_123",
+    "triangles": 384
+  },
+  {
+    "lamp": -1,
+    "group": "hero",
+    "color": [
+      0.6200000047683716,
+      0.6600000262260437,
+      0.6200000047683716
+    ],
+    "metalness": 0.8299999833106995,
+    "roughness": 0.27000001072883606,
+    "kind": "surface",
+    "id": "mesh_124",
+    "triangles": 2688
+  },
+  {
+    "lamp": -1,
+    "group": "piston_rod",
+    "color": [
+      0.6200000047683716,
+      0.6600000262260437,
+      0.6200000047683716
+    ],
+    "metalness": 0.8299999833106995,
+    "roughness": 0.27000001072883606,
+    "kind": "surface",
+    "id": "mesh_125",
+    "triangles": 576
+  },
+  {
+    "lamp": -1,
+    "group": "piston_rod",
+    "color": [
+      0.5199999809265137,
+      0.5899999737739563,
+      0.6399999856948853
+    ],
+    "metalness": 0.9399999976158142,
+    "roughness": 0.1899999976158142,
+    "kind": "surface",
+    "id": "mesh_126",
+    "triangles": 1576
+  },
+  {
+    "lamp": -1,
+    "group": "piston_rod",
+    "color": [
+      0.12999999523162842,
+      0.1599999964237213,
+      0.18000000715255737
+    ],
+    "metalness": 0.8500000238418579,
+    "roughness": 0.28999999165534973,
+    "kind": "surface",
+    "id": "mesh_127",
+    "triangles": 576
+  },
+  {
+    "lamp": -1,
+    "group": "piston_body",
+    "color": [
+      0.00800000037997961,
+      0.014999999664723873,
+      0.01899999938905239
+    ],
+    "metalness": 0.30000001192092896,
+    "roughness": 0.46000000834465027,
+    "kind": "surface",
+    "id": "mesh_128",
+    "triangles": 384
+  },
+  {
+    "lamp": -1,
+    "group": "hero",
+    "color": [
+      0.5199999809265137,
+      0.5899999737739563,
+      0.6399999856948853
+    ],
+    "metalness": 0.9399999976158142,
+    "roughness": 0.1899999976158142,
+    "kind": "surface",
+    "id": "mesh_129",
+    "triangles": 3152
+  },
+  {
+    "lamp": -1,
+    "group": "elbow",
+    "color": [
+      0.5199999809265137,
+      0.5899999737739563,
+      0.6399999856948853
+    ],
+    "metalness": 0.9399999976158142,
+    "roughness": 0.1899999976158142,
+    "kind": "surface",
+    "id": "mesh_130",
+    "triangles": 1576
+  },
+  {
+    "lamp": -1,
+    "group": "poker",
+    "color": [
+      0.5199999809265137,
+      0.5899999737739563,
+      0.6399999856948853
+    ],
+    "metalness": 0.9399999976158142,
+    "roughness": 0.1899999976158142,
+    "kind": "surface",
+    "id": "mesh_131",
+    "triangles": 7880
+  },
+  {
+    "lamp": -1,
+    "group": "poker",
+    "color": [
+      0.00800000037997961,
+      0.014999999664723873,
+      0.01899999938905239
+    ],
+    "metalness": 0.30000001192092896,
+    "roughness": 0.46000000834465027,
+    "kind": "surface",
+    "id": "mesh_132",
+    "triangles": 80
+  }
+]
