@@ -1,14 +1,6 @@
-"""Shared Star Wars / Galaxy's Edge droid-tech theme for every DJ-R3X window.
-
-One place for the palette, the shared stylesheet, the starfield backdrop, and the
-angular cut-corner "holo panel" chrome — so the dashboard, jeopardy screen, memory
-banks editor, motivator console, and confirmation dialogs all read as one console.
-
-Design language (matches the R3X figure itself):
-- deep space blue-black base with a faint starfield + scanline texture
-- R3X ORANGE (#d97a1f family) for titles, corner brackets, and accents
-- holo BLUE (#4e94ff family) for data, borders, and interactive glow
-- angular cut corners + corner tick brackets instead of soft rounded cards
+"""Shared droid console theme: worn olive metal, warm insignia orange,
+cream typography, and restrained cyan telemetry. Panel chrome is painted
+locally; backdrop texture is cached so live views stay inexpensive.
 """
 
 from __future__ import annotations
@@ -37,18 +29,18 @@ from PySide6.QtWidgets import (
 )
 
 # ── Palette ──────────────────────────────────────────────────────────────────
-SPACE_BLACK = "#040a11"     # window / page background
-PANEL_TOP = "#0b1722"       # panel gradient top
-PANEL_BOTTOM = "#060e16"    # panel gradient bottom
-BORDER = "#24486b"          # panel border
-BORDER_DIM = "#16293c"
-ORANGE = "#e08428"          # R3X orange — titles/accents
-ORANGE_DIM = "#8c5316"
+SPACE_BLACK = "#101311"     # window / page background
+PANEL_TOP = "#252a26"       # panel gradient top
+PANEL_BOTTOM = "#171c1b"    # panel gradient bottom
+BORDER = "#53584c"          # panel border
+BORDER_DIM = "#313a34"
+ORANGE = "#e9a35a"          # R3X orange — titles/accents
+ORANGE_DIM = "#916643"
 AMBER = "#ffb21e"           # jeopardy gold / highlight
-BLUE = "#4e94ff"            # holo blue — data
-BLUE_DIM = "#2b4a66"
-TEXT = "#d9e3ee"
-TEXT_DIM = "#8ba0b5"
+BLUE = "#8cc7c4"            # holo blue — data
+BLUE_DIM = "#475c59"
+TEXT = "#f0eadb"
+TEXT_DIM = "#b3b4a5"
 GOOD = "#45d85e"
 WARN = "#f0c45a"
 BAD = "#ff6b5e"
@@ -83,14 +75,20 @@ def paint_panel_chrome(painter: QPainter, rect: QRectF, *, header_h: float = 0.0
     painter.setBrush(grad)
     painter.drawPath(path)
 
-    # scanline texture
+    # Fine brushed metal; damage stays on the frame, away from readable content.
     painter.save()
     painter.setClipPath(path)
-    painter.setPen(QPen(QColor(255, 255, 255, 5), 1))
+    painter.setPen(QPen(QColor(255, 247, 217, 3), 1))
     y = rect.top() + 3
     while y < rect.bottom():
         painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
-        y += 4
+        y += 5
+    rng = random.Random(1977)
+    for _ in range(32):
+        x = rng.uniform(rect.left() + 8, rect.right() - 8)
+        y = rng.choice((rect.top() + rng.uniform(2, 5), rect.bottom() - rng.uniform(2, 7)))
+        painter.setPen(QPen(QColor(213, 197, 165, rng.randint(12, 45)), 1))
+        painter.drawLine(QPointF(x, y), QPointF(x + rng.uniform(2, 12), y - 1))
     # header band
     if header_h > 0:
         band = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.top() + header_h))
@@ -131,11 +129,11 @@ class HoloPanel(QFrame):
 
     Drop-in replacement for the old ChromePanel(index, title, content)."""
 
-    HEADER_H = 40
+    HEADER_H = 44
 
     def __init__(self, index: str, title: str, content: QWidget, parent=None) -> None:
         super().__init__(parent)
-        del index  # legacy arg — the badge is replaced by the glyph strip
+
         self.setObjectName("holoPanel")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
@@ -145,14 +143,14 @@ class HoloPanel(QFrame):
         layout.setSpacing(0)
 
         header = QHBoxLayout()
-        header.setContentsMargins(14, 2, 26, 2)
+        header.setContentsMargins(6, 2, 22, 2)
         header.setSpacing(10)
         label = QLabel(title.upper())
         label.setObjectName("panelTitle")
-        label.setFont(title_font())
+        label.setFont(title_font(12, 1.2))
         header.addWidget(label)
         header.addStretch(1)
-        glyphs = QLabel(_aurebesh_tag(title))
+        glyphs = QLabel(index or _aurebesh_tag(title))
         glyphs.setObjectName("panelGlyphs")
         header.addWidget(glyphs)
         head_box = QWidget()
@@ -428,4 +426,113 @@ QPushButton#motivatorStop {{
     font-weight: 900; font-size: 26px; letter-spacing: 4px;
 }}
 QPushButton#motivatorStop:hover {{ background: #9a2a2a; border: 1px solid #d05a5a; }}
+"""
+
+
+class RebelMark(QWidget):
+    """Painted insignia plate; no external image or font dependency."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(46, 46)
+        self.setToolTip("Alliance field operations")
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setWindow(0, 0, 100, 100)
+        p.setPen(QPen(QColor("#976454"), 2))
+        p.setBrush(QColor("#2b3029"))
+        p.drawEllipse(QRectF(3, 3, 94, 94))
+        bird = QPainterPath()
+        bird.moveTo(50, 13)
+        bird.cubicTo(60, 31, 62, 43, 58, 57)
+        bird.cubicTo(72, 53, 83, 40, 82, 24)
+        bird.cubicTo(106, 60, 78, 88, 50, 88)
+        bird.cubicTo(22, 88, -6, 60, 18, 24)
+        bird.cubicTo(17, 40, 28, 53, 42, 57)
+        bird.cubicTo(38, 43, 40, 31, 50, 13)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#c56a4f"))
+        p.drawPath(bird)
+        p.end()
+
+
+class RebelBackdrop(StarfieldBackdrop):
+    """Cached, weathered console housing with recessed seams and worn paint."""
+
+    def _render(self, size):
+        w, h = max(1, size[0]), max(1, size[1])
+        pix = QPixmap(w, h)
+        p = QPainter(pix)
+        grad = QLinearGradient(0, 0, w, h)
+        grad.setColorAt(0, QColor("#34382f"))
+        grad.setColorAt(.4, QColor("#1c231f"))
+        grad.setColorAt(1, QColor("#121917"))
+        p.fillRect(0, 0, w, h, grad)
+        rng = random.Random(1977)
+        for _ in range(int(w*h/170)):
+            x, y = rng.randrange(w), rng.randrange(h)
+            p.setPen(QColor(218, 207, 174, rng.randrange(3, 15)))
+            p.drawLine(x, y, x + rng.randrange(1, 5), y)
+        for y in (103, h-32):
+            p.setPen(QPen(QColor("#080e0c"), 2))
+            p.drawLine(12, y, w-12, y)
+            p.setPen(QColor("#475045"))
+            p.drawLine(12, y+2, w-12, y+2)
+        p.setPen(QPen(QColor("#b86d47"), 3))
+        p.drawLine(18, 3, 128, 3)
+        p.setPen(QPen(QColor("#b4aa8e"), 3))
+        p.drawLine(136, 3, 174, 3)
+        for x in (7, w-7):
+            for y in (8, h-9):
+                p.setPen(QPen(QColor("#687065"), 1))
+                p.setBrush(QColor("#151b17"))
+                p.drawEllipse(QPointF(x, y), 3, 3)
+                p.drawLine(x-1, y+1, x+1, y-1)
+        p.end()
+        return pix
+
+
+REBEL_STYLE = """
+QLabel#windowTitle { color: #eee6ce; font-size: 18px; letter-spacing: 2px; }
+QLabel#windowSubtitle { color: #acae96; font-size: 9px; letter-spacing: 1.5px; }
+QLabel#deviceStatus { color: #b7c3b7; font-size: 11px; }
+QLabel#connectionLabel { font-size: 12px; }
+QLabel#panelTitle { font-size: 12px; letter-spacing: 1.5px; }
+QLabel#panelGlyphs { color: #95947e; font-size: 10px; }
+QLabel#consoleFootnote { color: #a8ad99; font-size: 10px; letter-spacing: 1px; }
+QPushButton#memoryBanksButton, QPushButton#topControlButton {
+    background: #303b34; color: #ece5cf; border-color: #606a58;
+    min-height: 30px; padding: 0 10px;
+}
+QPushButton#memoryBanksButton:hover, QPushButton#topControlButton:hover {
+    background: #465448; border-color: #c8ba8d;
+}
+QPushButton#servoOverrideButton { background: #28352f; color: #dddcc8; border-color: #667361; }
+QPushButton#servoOverrideButton:checked { background: #63472a; border-color: #e9a35a; }
+QLabel#servoName { color: #dfdfcc; }
+QLabel#servoValue { color: #a3d6ce; }
+QLineEdit#messageEntry {
+    min-height: 42px; font-size: 15px; color: #f0eadb;
+    background: #111d19; border-color: #6d7c65; padding: 0 10px;
+}
+QLineEdit#messageEntry:focus { border-color: #e9a35a; }
+QPushButton#primaryButton {
+    min-height: 42px; padding: 0 14px; color: #181c17;
+    background: #c99d61; border-color: #e9bf85;
+}
+QPushButton#primaryButton:hover { background: #edbc7c; color: #111711; }
+QTabWidget#sensorTabs { background: #1b2520; }
+QTabWidget#sensorTabs::pane { border: 0; background: transparent; }
+QTabBar { background: #1b2520; }
+QTabBar::tab {
+    color: #a9b3a6; background: #1b2520; border-bottom: 2px solid #3b4a40;
+    padding: 9px 8px; font-size: 10px; font-weight: 700;
+}
+QTabBar::tab:selected { color: #f0dbc0; background: #334137; border-bottom-color: #e9a35a; }
+QTabBar::tab:hover { color: #ffffff; background: #3a493e; }
+QSplitter#dashboardColumns::handle { background: transparent; }
+QSplitter#dashboardColumns::handle:hover { background: #7d7853; }
+QScrollBar::handle:vertical { background: #637461; }
 """

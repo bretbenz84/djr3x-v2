@@ -30,7 +30,7 @@ class ConversationPanel(QWidget):
         self._submit_callback: Optional[Callable[[str], None]] = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
         self._log = QTextBrowser()
@@ -54,7 +54,7 @@ class ConversationPanel(QWidget):
 
         self._entry = QLineEdit()
         self._entry.setObjectName("messageEntry")
-        self._entry.setPlaceholderText("Type a message...")
+        self._entry.setPlaceholderText("Talk to R3X…")
         self._entry.returnPressed.connect(self._submit)
         entry_row.addWidget(self._entry, 1)
 
@@ -131,69 +131,21 @@ class ConversationPanel(QWidget):
 
 
 def _format_lines(lines: list[dict[str, Any]]) -> str:
-    if not lines:
-        return """
-        <html><body>
-        <div class="empty">Conversation log waiting for the first exchange.</div>
-        </body></html>
-        """
-
-    items = []
-    for line in lines[-80:]:
-        items.append(_format_line(line))
+    items = [_format_line(line) for line in lines[-80:]]
+    if not items:
+        items = ['<p style="color:#b8bfad; margin-top:24px;">'
+                 'The channel is open.<br>Say hello, or type a message below.</p>']
     return f"""
-    <html>
-    <head>
-    <style>
+    <html><head><style>
         body {{
-            margin: 0;
-            background: #07111a;
-            color: #d8e4f0;
+            margin: 0; background: transparent; color: #f0eadb;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            font-size: 14px;
-            line-height: 1.42;
+            font-size: 17px;
         }}
-        .entry {{
-            border-top: 1px solid rgba(76, 118, 164, 0.36);
-            padding: 13px 0 14px 0;
-        }}
-        .entry:first-child {{
-            border-top: none;
-            padding-top: 0;
-        }}
-        .meta {{
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 5px;
-        }}
-        .speaker {{
-            font-weight: 800;
-        }}
-        .speaker.user {{
-            color: #5396ff;
-        }}
-        .speaker.rex {{
-            color: #ff9b21;
-        }}
-        .speaker.system {{
-            color: #43d66f;
-        }}
-        .time {{
-            color: #8d9aab;
-            text-align: right;
-            white-space: nowrap;
-        }}
-        .text {{
-            color: #e2e9f1;
-        }}
-        .empty {{
-            color: #73859a;
-            padding: 24px 4px;
-        }}
-    </style>
-    </head>
-    <body>{"".join(items)}</body>
-    </html>
+        .meta {{ font-size: 11px; color: #b7bfae; margin: 0 0 9px 0; }}
+        .text {{ font-size: 17px; color: #f0eadb; line-height: 138%; margin: 0; }}
+        .gap {{ font-size: 6px; margin: 0; }}
+    </style></head><body>{"".join(items)}</body></html>
     """
 
 
@@ -215,14 +167,18 @@ def _format_line(line: dict[str, Any]) -> str:
         label = "R3X"
     else:
         label = speaker
+    accent = {"user": "#a1d7cf", "rex": "#efb06d", "system": "#b7c69c"}[kind]
+    background = "#303930" if kind == "rex" else "#202d28"
+    # QTextDocument supports tables and paragraph spacing reliably; browser-only
+    # flexbox, div padding, and CSS selectors do not render consistently here.
     return f"""
-    <div class="entry">
-        <table class="meta"><tr>
-            <td class="speaker {kind}">{_escape(label)}</td>
-            <td class="time">{stamp}</td>
-        </tr></table>
-        <div class="text">{text}</div>
-    </div>
+    <table width="100%" cellspacing="0" cellpadding="11" bgcolor="{background}">
+      <tr><td width="3" bgcolor="{accent}" style="padding:0;"></td><td>
+        <p class="meta"><span style="color:{accent}; font-weight:700;">{_escape(label)}</span>
+        &nbsp; / &nbsp; {stamp}</p>
+        <p class="text">{text}</p>
+      </td></tr>
+    </table><p class="gap">&nbsp;</p>
     """
 
 

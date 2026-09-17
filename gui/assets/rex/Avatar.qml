@@ -8,22 +8,9 @@ Item {
         anchors.fill: parent
         visible: rig && rig.background
         gradient: Gradient {
-            GradientStop { position: 0; color: "#323b3c" }
-            GradientStop { position: 0.55; color: "#697778" }
-            GradientStop { position: 1; color: "#b0b4ac" }
-        }
-    }
-    Repeater {
-        model: rig && rig.background ? 40 : 0
-        delegate: Rectangle {
-            required property int index
-            width: Math.min(root.width * 0.58, root.height * 0.58) * (1 - index * 0.011)
-            height: width * 0.12
-            x: root.width * 0.5 - width * 0.5
-            y: root.height * 0.94 - height * 0.5
-            radius: width
-            color: "#1d282b"
-            opacity: 0.010
+            GradientStop { position: 0; color: "#252e29" }
+            GradientStop { position: 0.55; color: "#56635c" }
+            GradientStop { position: 1; color: "#778074" }
         }
     }
     View3D {
@@ -50,6 +37,55 @@ Item {
         DirectionalLight { eulerRotation: Qt.vector3d(-35, -30, 0); brightness: 1.8; ambientColor: '#919ca3'; castsShadow: true; shadowFactor: 45 }
         DirectionalLight { eulerRotation: Qt.vector3d(-20, 140, 0); brightness: 1.0 }
         DirectionalLight { eulerRotation: Qt.vector3d(30, 70, 0); brightness: 0.6 }
+        // The bay uses the same camera and ground plane as the droid so the
+        // deck and contact shadow remain attached as the window is resized.
+        Node {
+            visible: rig && rig.background
+            PrincipledMaterial { id: structure; baseColor: "#35443c"; metalness: 0.55; roughness: 0.7 }
+            PrincipledMaterial { id: deck; baseColor: "#4b5549"; metalness: 0.45; roughness: 0.8 }
+            PrincipledMaterial { id: trim; baseColor: "#bb8750"; metalness: 0.6; roughness: 0.6 }
+            PrincipledMaterial { id: lamp; baseColor: "#ffe6b4"; emissiveFactor: Qt.vector3d(1.2, 0.65, 0.25) }
+            Model { source: "#Cube"; position: Qt.vector3d(0,-6,0); scale: Qt.vector3d(5,0.06,5); materials: deck }
+            Model { source: "#Cylinder"; position: Qt.vector3d(0,-3,0); scale: Qt.vector3d(0.96,0.025,0.96); materials: structure }
+            Model { source: "#Cylinder"; position: Qt.vector3d(0,-1.7,0); scale: Qt.vector3d(0.90,0.008,0.90); materials: trim }
+            Model { source: "#Cylinder"; position: Qt.vector3d(0,-0.8,0); scale: Qt.vector3d(0.86,0.016,0.86); materials: deck }
+            Node {
+                x: 5
+                eulerRotation.y: 25
+                Model {
+                    source: "#Cube"
+                    position: Qt.vector3d(0, 55, -66)
+                    scale: Qt.vector3d(2.6, 1.7, 0.04)
+                    materials: PrincipledMaterial {
+                        baseColorMap: Texture { source: "bay_wall.svg" }
+                        baseColor: "#7a8170"
+                        roughness: 0.9
+                        metalness: 0.2
+                    }
+                }
+                Repeater3D {
+                    model: [-44, 44]
+                    delegate: Node {
+                        required property real modelData
+                        x: modelData
+                        Model { source: "#Cube"; position: Qt.vector3d(0,58,-49); scale: Qt.vector3d(0.06,1.4,0.12); materials: structure }
+                        Model { source: "#Cube"; position: Qt.vector3d(0,57,-42); scale: Qt.vector3d(0.011,0.66,0.012); materials: lamp }
+                    }
+                }
+                Model { source: "#Cube"; position: Qt.vector3d(0,125,-49); scale: Qt.vector3d(1.25,0.06,0.12); materials: structure }
+            }
+            Repeater3D {
+                model: 12
+                delegate: Model {
+                    required property int index
+                    source: "#Cube"
+                    position: Qt.vector3d(-37 + index * 6.5, -2.8, 40)
+                    scale: Qt.vector3d(0.032,0.008,0.10)
+                    eulerRotation.y: -30
+                    materials: trim
+                }
+            }
+        }
         Node {
             eulerRotation.x: -90
             scale: Qt.vector3d(100, 100, 100)
@@ -72,6 +108,20 @@ Item {
                     }
                 }
             }
+        }
+    }
+    Item {
+        anchors.fill: parent
+        visible: rig && rig.background
+        Text {
+            anchors { top: parent.top; left: parent.left; margins: 18 }
+            text: "R3X  /  SERVICE BAY"
+            color: "#dbd6bf"; font.pixelSize: 10; font.letterSpacing: 2
+        }
+        Text {
+            anchors { bottom: parent.bottom; left: parent.left; margins: 18 }
+            text: "BLACK SPIRE OUTPOST     //     03"
+            color: "#c0c9b8"; font.pixelSize: 9; font.letterSpacing: 1.5
         }
     }
 }

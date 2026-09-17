@@ -27,6 +27,8 @@ try:
         QSizePolicy,
         QSlider,
         QStackedWidget,
+        QSplitter,
+        QTabWidget,
         QTextBrowser,
         QVBoxLayout,
         QWidget,
@@ -92,7 +94,7 @@ class DashboardWindow(QMainWindow):
         self._last_sleep_label = None
 
         self.setWindowTitle(getattr(config, "GUI_WINDOW_TITLE", "DJ-R3X Controller"))
-        self.resize(1280, 840)
+        self.resize(1440, 900)
         self.setMinimumSize(1100, 740)
 
         self.vision = VisionPanel()
@@ -116,26 +118,24 @@ class DashboardWindow(QMainWindow):
         self.state_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._last_badge_text = ""
 
-        root = StarfieldBackdrop()
+        root = theme.RebelBackdrop()
         root.setObjectName("root")
         self._shell = QVBoxLayout(root)
-        self._shell.setContentsMargins(14, 8, 14, 14)
+        self._shell.setContentsMargins(18, 14, 18, 12)
         self._shell.setSpacing(12)
 
         self._top_bar = QWidget()
-        # 3-column grid so the title can be centered against the FULL window width
-        # (it spans all columns), independent of how wide the left controls or the
-        # right connection label are.
+        # Separate identity, controls, and telemetry so they never overlap.
         top = QGridLayout(self._top_bar)
         top.setContentsMargins(0, 0, 0, 0)
 
-        # Left cluster: state badge + control buttons, hugging the left edge.
+        # Control cluster: current state and the existing robot actions.
         left_cluster = QWidget()
         cluster = QHBoxLayout(left_cluster)
         cluster.setContentsMargins(0, 0, 0, 0)
         cluster.setSpacing(0)
         cluster.addWidget(self.state_badge)
-        self.memory_banks_btn = QPushButton("🧠  Memory Banks")
+        self.memory_banks_btn = QPushButton("Memory Banks")
         self.memory_banks_btn.setObjectName("memoryBanksButton")
         self.memory_banks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.memory_banks_btn.clicked.connect(self._open_memory_banks)
@@ -170,25 +170,20 @@ class DashboardWindow(QMainWindow):
         title_col = QVBoxLayout(title_box)
         title_col.setContentsMargins(0, 0, 0, 0)
         title_col.setSpacing(0)
-        title = QLabel("DJ-R3X ▸ DROID CONTROL")
+        title = QLabel("DJ–R3X  /  DROID OPERATIONS")
         title.setObjectName("windowTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle = QLabel("⌐≡∆⊪  OGA'S CANTINA SYSTEMS CONSOLE  ⊪∆≡¬")
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        subtitle = QLabel("ALLIANCE FIELD CONSOLE     /     BLACK SPIRE OUTPOST")
         subtitle.setObjectName("windowSubtitle")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignLeft)
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
-        # Spans the whole bar on top of the side groups; let clicks fall through to
-        # the buttons beneath it.
-        title_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-        # Right cluster: live device-connection indicators, then the overall
-        # connection status — hugging the right edge (after the centered title,
-        # before "Booting…"). Colors update live in _tick.
+        # Hardware telemetry occupies a dedicated row below the primary controls.
         right_cluster = QWidget()
         rc = QHBoxLayout(right_cluster)
         rc.setContentsMargins(0, 0, 0, 0)
-        rc.setSpacing(14)
+        rc.setSpacing(18)
         self._device_status: dict[str, QLabel] = {}
         self._last_device_color: dict[str, str] = {}
         # Drive-pack power readout (INA226 on the motion base, over motion telemetry):
@@ -209,77 +204,84 @@ class DashboardWindow(QMainWindow):
             lbl.setText(f'<span style="color:#5b6b7d;">●</span>&nbsp;{label_text}')
             rc.addWidget(lbl)
             self._device_status[key] = lbl
+        rc.addStretch(1)
         rc.addWidget(self.connection)
 
-        top.addWidget(left_cluster, 0, 0,
-                      Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        top.addWidget(right_cluster, 0, 2,
-                      Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        top.addWidget(title_box, 0, 0, 1, 3, Qt.AlignmentFlag.AlignCenter)
-        top.setColumnStretch(0, 0)
-        top.setColumnStretch(1, 1)
-        top.setColumnStretch(2, 0)
+        identity = QWidget()
+        identity_row = QHBoxLayout(identity)
+        identity_row.setContentsMargins(0, 0, 0, 0)
+        identity_row.setSpacing(12)
+        identity_row.addWidget(theme.RebelMark())
+        identity_row.addWidget(title_box)
+        top.addWidget(identity, 0, 0)
+        top.addWidget(left_cluster, 0, 1, Qt.AlignmentFlag.AlignRight)
+        top.addWidget(right_cluster, 1, 0, 1, 2)
+        top.setRowMinimumHeight(0, 52)
+        top.setRowMinimumHeight(1, 30)
+        top.setColumnStretch(0, 1)
         self._shell.addWidget(self._top_bar)
         self._memory_banks_window = None
 
-        columns = QGridLayout()
-        columns.setContentsMargins(0, 0, 0, 0)
-        columns.setHorizontalSpacing(12)
-        columns.setVerticalSpacing(12)
-
-        left = QVBoxLayout()
-        left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(12)
-        left.addWidget(ChromePanel("", "VISUAL FEED", self.vision), 5)
-        left.addWidget(ChromePanel("", "SCANNER ▸ SCENE INTEL", self.scene), 7)
-        left_box = QWidget()
-        left_box.setLayout(left)
-
-        center = ChromePanel("", "COMMS LOG", self.conversation)
-        right = QVBoxLayout()
-        right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(12)
-        avatar_panel = ChromePanel("", "R3X UNIT ▸ LIVE", self.avatar)
-        servo_panel = ChromePanel("", "ACTUATORS", self.servos)
-        # Compact readout: the avatar owns the column; the actuator strip stays short.
-        servo_panel.setMinimumHeight(268)
-        servo_panel.setMaximumHeight(300)
-        right.addWidget(avatar_panel, 1)
-        right.addWidget(servo_panel, 0)
-        right_box = QWidget()
-        right_box.setLayout(right)
-        # The avatar paints proportionally and the servo panel is fixed-width, so
-        # the right column never needs to be the widest. Cap it and hand the
-        # surplus to the conversation log (center), which was cramped before.
-        right_box.setMaximumWidth(640)
-
-        columns.addWidget(left_box, 0, 0)
-        columns.addWidget(center, 0, 1)
-        columns.addWidget(right_box, 0, 2)
-        columns.setColumnStretch(0, 12)
-        columns.setColumnStretch(1, 15)
-        columns.setColumnStretch(2, 13)
-        columns_box = QWidget()
-        columns_box.setLayout(columns)
-
-        log_title = "SYSTEM LOG"
+        # Keep the daily controls visible; diagnostics share the sensor pane.
+        self.vision.setMinimumSize(260, 190)
+        self.scene.setMinimumHeight(190)
+        self._sensor_tabs = QTabWidget()
+        self._sensor_tabs.setObjectName("sensorTabs")
+        self._sensor_tabs.addTab(self.vision, "CAMERA")
+        self._sensor_tabs.addTab(self.scene, "SCENE")
+        self._sensor_tabs.addTab(self.syslog, "LOGS")
+        self._sensor_tabs.setDocumentMode(True)
+        self._sensor_tabs.tabBar().setExpanding(True)
+        self._sensor_tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        self._sensor_tabs.setUsesScrollButtons(False)
+        self._sensor_tabs.setTabToolTip(1, "Scene description, contacts, environment, and tracking")
+        self._sensor_tabs.setMinimumHeight(230)
         try:
             from utils.logging import active_log_path
-
-            log_title = f"SYSTEM LOG — {active_log_path().name}"
+            self._sensor_tabs.setTabToolTip(2, str(active_log_path()))
         except Exception:
             pass
-        syslog_panel = ChromePanel("≣", log_title, self.syslog)
-        # Min low enough that the strip yields to the 3-column grid on small
-        # windows instead of starving it (grid panels have their own minimums).
-        syslog_panel.setMinimumHeight(120)
-        syslog_panel.setMaximumHeight(280)
 
+        instruments = QWidget()
+        instruments.setMinimumWidth(310)
+        instrument_layout = QVBoxLayout(instruments)
+        instrument_layout.setContentsMargins(0, 0, 0, 0)
+        instrument_layout.setSpacing(12)
+        instrument_layout.addWidget(ChromePanel("01", "Sensors", self._sensor_tabs), 1)
+        servo_panel = ChromePanel("02", "Actuators", self.servos)
+        servo_panel.setMinimumHeight(284)
+        servo_panel.setMaximumHeight(340)
+        instrument_layout.addWidget(servo_panel)
+
+        self._avatar_panel = ChromePanel("03", "Droid bay  /  R3X", self.avatar)
+        self._avatar_panel.setMinimumWidth(320)
+        self._transcript_panel = ChromePanel("04", "Live transcript", self.conversation)
+        self._transcript_panel.setMinimumWidth(350)
+        self._columns = QSplitter(Qt.Orientation.Horizontal)
+        self._columns.setObjectName("dashboardColumns")
+        self._columns.setChildrenCollapsible(False)
+        self._columns.setHandleWidth(12)
+        self._columns.addWidget(instruments)
+        self._columns.addWidget(self._avatar_panel)
+        self._columns.addWidget(self._transcript_panel)
+        for i, stretch in enumerate((0, 5, 4)):
+            self._columns.setStretchFactor(i, stretch)
+        self._columns.setSizes([310, 560, 510])
+
+        footer = QHBoxLayout()
+        footer.setContentsMargins(4, 0, 4, 0)
+        station = QLabel("R3X  //  FIELD OPERATIONS")
+        station.setObjectName("consoleFootnote")
+        footer.addWidget(station)
+        footer.addStretch(1)
+        hint = QLabel("Drag panel dividers to adjust your station")
+        hint.setObjectName("consoleFootnote")
+        footer.addWidget(hint)
         page = QVBoxLayout()
         page.setContentsMargins(0, 0, 0, 0)
-        page.setSpacing(12)
-        page.addWidget(columns_box, 1)
-        page.addWidget(syslog_panel, 0)
+        page.setSpacing(10)
+        page.addWidget(self._columns, 1)
+        page.addLayout(footer)
         dashboard_page = QWidget()
         dashboard_page.setLayout(page)
 
@@ -289,7 +291,7 @@ class DashboardWindow(QMainWindow):
         self._shell.addWidget(self._main_stack, 1)
 
         self.setCentralWidget(root)
-        self.setStyleSheet(theme.STYLE)
+        self.setStyleSheet(theme.STYLE + theme.REBEL_STYLE)
 
         fps = max(1, int(getattr(config, "GUI_FPS", 20) or 20))
         self._timer = QTimer(self)
@@ -536,7 +538,7 @@ class DashboardWindow(QMainWindow):
             self._shell.setContentsMargins(0, 0, 0, 0)
             self._shell.setSpacing(0)
         else:
-            self._shell.setContentsMargins(14, 8, 14, 14)
+            self._shell.setContentsMargins(18, 14, 18, 12)
             self._shell.setSpacing(12)
 
         if status == "starting":
