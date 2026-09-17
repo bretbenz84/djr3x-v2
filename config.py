@@ -5163,7 +5163,11 @@ MIN_SPEECH_DURATION_SECS = 0.45
 # Include audio before the first VAD-positive chunk so soft starts are not
 # clipped. Question answers get more pre-roll because people often begin while
 # Rex's last syllable or room echo is still fading.
-SPEECH_PREROLL_SECS = 0.45
+# The built-in Mac mic also needs the longer look-back: a quiet opening can
+# precede VAD by more than 0.45s even after the person waits for Rex to finish.
+# This reads existing buffered audio, not an extra wait. The playback floor
+# still prevents reaching into Rex's voice on software-suppression devices.
+SPEECH_PREROLL_SECS = 1.5
 # Below this, a computed capture window is treated as a DROPPED utterance and logged
 # (interaction._speech_capture_secs). Diagnostic only — it changes no behavior; the
 # turn was already being discarded here, just silently (owner 2026-08-05: "he's not

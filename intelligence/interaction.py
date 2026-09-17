@@ -14308,15 +14308,11 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
             preroll=f"{preroll:.2f}s",
             speech_len=f"{finished - float(speech_start_mono):.2f}s",
         )
-    elif _jeopardy_answer_window_open():
-        # The front-clip question ("Rex clipped our answers") cannot be settled
-        # from the run log today: nothing records how far back a capture
-        # actually reached, so a truncated transcript is indistinguishable from
-        # a bad decode. Log the window on game turns, where players routinely
-        # answer over the tail of the clue and the reach-back is what decides
-        # whether their opening words survive.
+    else:
+        # Include ordinary conversation: missing opening words cannot be
+        # distinguished from a bad decode without the actual capture boundary.
         _log.info(
-            "[capture] jeopardy answer window — captured %.2fs "
+            "[capture] speech window — captured %.2fs "
             "(preroll %.2fs, floor %+.2fs vs speech start%s, speech %.2fs)",
             duration, preroll,
             (floor_at - float(speech_start_mono)) if floor_at > 0.0 else 0.0,
@@ -15244,6 +15240,11 @@ def _accumulate_speech(
     capture_end = time.monotonic()
     capture_secs = _speech_capture_secs(speech_start_mono, capture_end)
     segment = stream.get_audio_chunk(capture_secs)
+    _log.info(
+        "[capture] live buffer — requested %.2fs, received %.2fs, mic age %.3fs",
+        capture_secs, len(segment) / float(config.AUDIO_SAMPLE_RATE),
+        stream.last_callback_age(),
+    )
     if not raw_vad and allowed_states == (State.ACTIVE,) and len(segment) > 0:
         # Bind direction and visual evidence to the audio we actually copied,
         # including its pre-roll. Adopting an eager decode can wait another 3 s;
@@ -16261,6 +16262,12 @@ def _scan_reply_input(cursor: float):
         turns.append(turn_coordinator.CapturedTurn(
             audio[i0:i1].copy(), start, stop, conv_memory.transcript_version()[0],
             require_trusted=bool(played and onset < b_end and end > b_start)))
+        _log.info(
+            "[capture] queued reply — captured %.2fs, leading pad %.2fs, "
+            "onset %+.2fs vs playback end, mic age %.3fs",
+            (i1 - i0) / sr, onset - start,
+            onset - b_end if played else 0.0, stream.last_callback_age(),
+        )
         consumed = max(consumed, stop)
     return turns, consumed
 

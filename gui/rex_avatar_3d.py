@@ -5,9 +5,9 @@ import math
 import time
 from functools import lru_cache
 import numpy as np
-from PySide6.QtCore import QByteArray, QObject, Property, QTimer, QUrl, Signal, Qt
+from PySide6.QtCore import QByteArray, QObject, Property, QSize, QTimer, QUrl, Signal, Qt
 from PySide6.QtGui import QColor, QMatrix3x3, QQuaternion, QVector3D
-from PySide6.QtQuick3D import QQuick3DGeometry
+from PySide6.QtQuick3D import QQuick3DGeometry, QQuick3DTextureData
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QVBoxLayout
 import config
@@ -21,8 +21,9 @@ def _geometry_data():
         return {key: archive[key] for key in archive.files}
 
 class DisplayGeometry(QQuick3DGeometry):
-    def __init__(self, vertices):
+    def __init__(self, vertices, uv=None):
         super().__init__()
+        self._uv = uv
         self.setStride(32)
         self.setPrimitiveType(self.PrimitiveType.Triangles)
         self.addAttribute(self.Attribute.Semantic.PositionSemantic, 0, self.Attribute.ComponentType.F32Type)
@@ -31,11 +32,87 @@ class DisplayGeometry(QQuick3DGeometry):
         self.replace(vertices)
 
     def replace(self, vertices):
-        uv = np.column_stack(((vertices[:,0]*.786 + vertices[:,1]*.618 + .15)/.30, np.full(len(vertices), .5)))
+        uv = self._uv if self._uv is not None else np.column_stack(((vertices[:,0]*.786 + vertices[:,1]*.618 + .15)/.30, np.full(len(vertices), .5)))
         a = np.ascontiguousarray(np.concatenate((vertices, uv), axis=1), dtype='<f4')
         self.setVertexData(QByteArray(a.tobytes()))
         self.setBounds(QVector3D(*a[:, :3].min(axis=0)), QVector3D(*a[:, :3].max(axis=0)))
         self.update()
+
+
+class MouthDiffuser(QQuick3DTextureData):
+    """Small, shared emission map: resin scatters each LED into its neighbors.
+
+    Sample the exported aperture positions, preserving the physical row/column
+    mapping and curved grille. No added lights or per-frame geometry uploads.
+    """
+    def __init__(self, patches):
+        super().__init__()
+        self.vertices = np.concatenate(patches)
+        def project(v):
+            return np.column_stack((v[:, 0] * .786 + v[:, 1] * .618, v[:, 2]))
+        projected = project(self.vertices)
+        lo, hi = projected.min(0), projected.max(0)
+        self.uv = (projected - lo) / (hi - lo)
+        centers = np.array([project(v).mean(0) for v in patches])
+        axis = (np.arange(64) + .5) / 64
+        u, v = np.meshgrid(axis, axis)
+        points = lo + np.stack((u, v), axis=-1).reshape(-1, 2) * (hi - lo)
+        # About one LED pitch: distinct bars remain, but their edges blend.
+        distance = ((points[:, None, :] - centers[None, :, :]) / .0045) ** 2
+        weights = np.exp(-.5 * distance.sum(axis=2))
+        self._weights = (weights / np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)).astype(np.float32)
+        self.setSize(QSize(64, 64))
+        self.setFormat(QQuick3DTextureData.Format.RGBA8)
+        self.setHasTransparency(False)
+        self.render(np.zeros((80, 3)))
+
+    def render(self, pixels):
+        rgb = np.einsum('ij,jk->ik', self._weights, pixels, optimize=False)
+        rgba = np.full((4096, 4), 255, dtype=np.uint8)
+        # Texture RGB is sRGB; preserve linear LED energy through decoding.
+        rgb = np.clip(rgb, 0, 1)
+        srgb = np.where(rgb <= .0031308, rgb * 12.92, 1.055 * rgb ** (1 / 2.4) - .055)
+        rgba[:, :3] = np.rint(srgb * 255).astype(np.uint8)
+        self.setTextureData(QByteArray(rgba.tobytes()))
+
+
+@lru_cache(maxsize=1)
+def _studio_probe_data():
+    """Linear HDR illumination: softboxes over a dark floor, not uniform fill."""
+    longitude, latitude = np.meshgrid(
+        (np.arange(512) + .5) * (2 * np.pi / 512) - np.pi,
+        np.pi / 2 - (np.arange(256) + .5) * (np.pi / 256),
+    )
+    direction = np.stack((np.sin(longitude) * np.cos(latitude),
+                          np.sin(latitude), np.cos(longitude) * np.cos(latitude)), axis=-1)
+    rgb = np.broadcast_to(np.array([.035, .045, .06]), (256,512,3)).copy()
+    rgb *= (.25 + .75 * np.clip(direction[:,:,1:2] + .2, 0, 1))
+    # Broad warm key, weaker cool fill, narrow rear reflection. Their finite
+    # extent produces gradients across metal, with dark regions between them.
+    for center, width, height, color in (
+        ((-.65,.65,.5), .38,.65, (4.5,4.1,3.5)),
+        ((.8,.25,.5), .45,.75, (.65,.85,1.1)),
+        ((.3,.5,-.8), .16,.6, (2.,2.4,3.)),
+    ):
+        normal = np.array(center); normal /= np.linalg.norm(normal)
+        right = np.cross([0,1,0],normal); right /= np.linalg.norm(right)
+        up = np.cross(normal,right)
+        forward = direction @ normal
+        u = (direction @ right) / np.maximum(forward,.001)
+        v = (direction @ up) / np.maximum(forward,.001)
+        box = np.exp(-((u/width)**4 + (v/height)**4)) * (forward > 0)
+        rgb += box[:,:,None] * color
+    rgba = np.ones((256,512,4),dtype='<f4'); rgba[:,:,:3] = rgb
+    return rgba.tobytes()
+
+
+class StudioLightProbe(QQuick3DTextureData):
+    def __init__(self):
+        super().__init__()
+        self.setSize(QSize(512,256))
+        self.setFormat(QQuick3DTextureData.Format.RGBA32F)
+        self.setHasTransparency(False)
+        self.setTextureData(QByteArray(_studio_probe_data()))
 
 def tube_vertices(points, radius, sides=8):
     """Round tube following an updated centreline, without stretching wire diameter."""
@@ -62,26 +139,50 @@ class RigViewState(QObject):
         self._transforms = {}
         self._eye = QColor('black')
         self.mouth_animation = MouthAnimation()
-        self._mouth = [QColor('black') for _ in range(80)]
         self._led = [QColor('black') for _ in range(9)]
         self._background = True
+        self._light_probe = StudioLightProbe()
         self.geometries = []
         self._batches = []
-        for batch in json.loads((ASSET_DIR/'materials.json').read_text()):
-            geometry = DisplayGeometry(_geometry_data()[batch['id']])
+        batches = json.loads((ASSET_DIR/'materials.json').read_text())
+        mouth = sorted((b for b in batches if b['kind'] == 'mouth'), key=lambda b: b['lamp'])
+        self._diffuser = MouthDiffuser([_geometry_data()[b['id']] for b in mouth])
+        for batch in batches:
+            if batch['kind'] == 'mouth':
+                continue
+            vertices = _geometry_data()[batch['id']]
+            if batch['id'] == 'mesh_19':
+                # This export batches three disconnected dark parts together.
+                # Only the lower head plate (z .755-.790 m) is silver; preserve
+                # the upper internal mechanism and side insert materials.
+                triangles = vertices.reshape(-1, 3, 6)
+                underside = np.all(triangles[:, :, 2] < .8, axis=1)
+                plate = DisplayGeometry(triangles[underside].reshape(-1, 6))
+                self.geometries.append(plate)
+                silver = next(b for b in self._batches if b['id'] == 'mesh_15')
+                self._batches.append(dict(silver, id='head_underside', geometry=plate))
+                vertices = triangles[~underside].reshape(-1, 6)
+            geometry = DisplayGeometry(vertices)
             self.geometries.append(geometry)
             # Blender stores linear RGB; QColor/QML base colors are sRGB.
             srgb = [12.92*c if c <= .0031308 else 1.055*c**(1/2.4)-.055 for c in batch['color']]
             color = QColor.fromRgbF(*srgb)
             self._batches.append(dict(batch, geometry=geometry, color=color))
+        geometry = DisplayGeometry(self._diffuser.vertices, self._diffuser.uv)
+        self.geometries.append(geometry)
+        self._batches.append(dict(id='mouth_resin', group='head', geometry=geometry,
+                                 color=QColor('#65716d'), metalness=0., roughness=.7,
+                                 kind='mouth', lamp=-1))
         self.spring = DisplayGeometry(tube_vertices(spring_points(pose_matrices({})), .005))
         self.geometries.append(self.spring)
-        for name, geometry, color in [('spring', self.spring, '#10181c')]:
-            self._batches.append(dict(id=name, group='fixed', geometry=geometry, color=QColor(color), metalness=.6, roughness=.35, kind='surface', lamp=-1))
+        self._batches.append(dict(id='spring', group='fixed', geometry=self.spring,
+                                 color=QColor('#10181c'), metalness=.6,
+                                 roughness=.35, kind='surface', lamp=-1))
 
     batches = Property('QVariantList', lambda self: self._batches, constant=True)
     transforms = Property('QVariantMap', lambda self: self._transforms, notify=changed)
-    mouthColors = Property('QVariantList', lambda self: self._mouth, notify=changed)
+    mouthTexture = Property(QObject, lambda self: self._diffuser, constant=True)
+    lightProbe = Property(QObject, lambda self: self._light_probe, constant=True)
     eyeColor = Property(QColor, lambda self: self._eye, notify=changed)
     ledColors = Property('QVariantList', lambda self: self._led, notify=changed)
     background = Property(bool, lambda self: self._background, notify=changed)
@@ -140,7 +241,7 @@ class RexAvatar(AvatarState):
         level = state['brightness'] if state['on'] else 0.
         self._rig._led = lamp_colors(state, time.time())
         pixels = self._rig.mouth_animation.render(self._eye_state, time.time())
-        self._rig._mouth = [QColor.fromRgbF(*row) for row in pixels]
+        self._rig._diffuser.render(pixels)
         self._rig.changed.emit()
 
 

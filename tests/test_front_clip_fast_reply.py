@@ -30,6 +30,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
+import numpy as np
+
 import config
 from audio import echo_cancel
 from intelligence import interaction as I
@@ -154,6 +156,52 @@ class FastReplyWideningTests(unittest.TestCase):
     def test_window_is_clamped_to_the_ring_buffer(self):
         secs = self._window(speech_start=1001.0, finished=1003.0, floor=1.0)
         self.assertLessEqual(secs, float(config.AUDIO_BUFFER_SECONDS))
+
+
+class DelayedMacOnsetTests(unittest.TestCase):
+    """A one-second wait plus late VAD falls outside fast-reply widening.
+
+    Sample markers represent a quiet prefix followed by the louder remainder;
+    this checks capture retention, not recognition of synthesized speech.
+    """
+
+    def _capture(self, detected_at):
+        sr = config.AUDIO_SAMPLE_RATE
+        ring = np.zeros(int(4.5 * sr), dtype=np.float32)
+        ring[:sr] = .9  # Rex, before playback ends at 1000
+        ring[2 * sr:int(2.6 * sr)] = .03  # opening phrase, starts at 1001
+        ring[int(2.6 * sr):int(3.7 * sr)] = .2  # remainder
+        def read(seconds):
+            return ring[-int(seconds * sr):].copy()
+        with mock.patch.object(I.hardware_aec, "is_active", return_value=False), \
+             mock.patch.object(I, "_response_wait_active", return_value=False), \
+             mock.patch.object(I, "_listen_capture_floor_at", 1000.0), \
+             mock.patch.object(I, "_game_barge_floor_at", 0.0), \
+             mock.patch.object(I, "_gap_recovery_floor_at", 0.0), \
+             mock.patch.object(I, "_eager_motion_endpoint_enabled", return_value=False), \
+             mock.patch.object(I, "_note_voice_bearing"), \
+             mock.patch.object(I, "_situation_assessor"), \
+             mock.patch.object(I, "_chunk_for_vad", side_effect=lambda a: a), \
+             mock.patch.object(I._stop_event, "is_set", return_value=False), \
+             mock.patch.object(I._stop_event, "wait"), \
+             mock.patch.object(I.state_module, "get_state", return_value=I.State.ACTIVE), \
+             mock.patch.object(I.time, "monotonic", return_value=1003.5), \
+             mock.patch.object(I.vad, "is_speech", return_value=False), \
+             mock.patch.object(I.stream, "get_audio_chunk", side_effect=read), \
+             mock.patch.object(I.stream, "last_callback_age", return_value=.01):
+            return I._accumulate_speech(detected_at)
+
+    def test_quiet_prefix_survives_late_detection_after_a_one_second_wait(self):
+        segment = self._capture(1002.25)
+        self.assertEqual(np.count_nonzero(segment == np.float32(.03)),
+                         int(2.6 * config.AUDIO_SAMPLE_RATE) - 2 * config.AUDIO_SAMPLE_RATE)
+        self.assertFalse(np.any(segment == np.float32(.9)))
+
+    def test_longer_preroll_still_excludes_rex_at_the_playback_floor(self):
+        with mock.patch.object(config, "CAPTURE_FROM_FLOOR_NEAR_SECS", 0.0):
+            segment = self._capture(1000.5)
+        self.assertFalse(np.any(segment == np.float32(.9)))
+        self.assertTrue(np.any(segment == np.float32(.03)))
 
 
 class GameBargeFloorOverrideTests(unittest.TestCase):

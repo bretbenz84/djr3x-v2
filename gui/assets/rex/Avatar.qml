@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick3D
-import QtQuick3D.Effects
 
 Item {
     id: root
@@ -15,18 +14,29 @@ Item {
     }
     View3D {
         anchors.fill: parent
+        camera: portraitCamera
         environment: SceneEnvironment {
             backgroundMode: SceneEnvironment.Transparent
             antialiasingMode: SceneEnvironment.MSAA
             antialiasingQuality: SceneEnvironment.High
-            lightProbe: Texture { source: "studio.hdr" }
-            probeExposure: 0.7
-            effects: [HDRBloomTonemap { bloomThreshold: 1.5; blurFalloff: 4; tonemappingLerp: 0 }]
+            lightProbe: Texture { textureData: rig ? rig.lightProbe : null }
+            probeExposure: 0.9
+            tonemapMode: SceneEnvironment.TonemapModeAces
+            aoEnabled: true
+            aoDither: false
+            aoSampleRate: 4
+            specularAAEnabled: true
+            aoStrength: 45
+            aoDistance: 8
+            aoSoftness: 30
+            aoBias: 0.03
+            // Use one tone-mapping pass; the legacy bloom effect lifted shadows.
         }
         Node {
             position: Qt.vector3d(5, 51, 0)
             eulerRotation: Qt.vector3d(-8, 25, 0)
             OrthographicCamera {
+                id: portraitCamera
                 z: 250
                 clipNear: 1
                 clipFar: 1000
@@ -34,9 +44,17 @@ Item {
                 verticalMagnification: horizontalMagnification
             }
         }
-        DirectionalLight { eulerRotation: Qt.vector3d(-35, -30, 0); brightness: 1.8; ambientColor: '#919ca3'; castsShadow: true; shadowFactor: 45 }
-        DirectionalLight { eulerRotation: Qt.vector3d(-20, 140, 0); brightness: 1.0 }
-        DirectionalLight { eulerRotation: Qt.vector3d(30, 70, 0); brightness: 0.6 }
+        // Warm window light, restrained cool bounce, and a rear edge highlight.
+        PointLight {
+            position: Qt.vector3d(-85, 145, 110)
+            constantFade: 1; linearFade: 0; quadraticFade: 0.0001
+            color: "#fff0d8"; brightness: 4.0; ambientColor: "#000000"
+            castsShadow: true; shadowFactor: 75
+            shadowMapQuality: Light.ShadowMapQualityHigh
+            shadowFilter: 3; shadowBias: 0.03
+        }
+        PointLight { position: Qt.vector3d(100, 85, 80); color: "#c4ddf4"; brightness: 0.8; constantFade: 1; linearFade: 0; quadraticFade: 0.0001 }
+        DirectionalLight { eulerRotation: Qt.vector3d(-25, 155, 0); color: "#d5e9ff"; brightness: 0.18 }
         // The bay uses the same camera and ground plane as the droid so the
         // deck and contact shadow remain attached as the window is resized.
         Node {
@@ -58,9 +76,9 @@ Item {
                     scale: Qt.vector3d(2.6, 1.7, 0.04)
                     materials: PrincipledMaterial {
                         baseColorMap: Texture { source: "bay_wall.svg" }
-                        baseColor: "#7a8170"
-                        roughness: 0.9
-                        metalness: 0.2
+                        baseColor: "#465045"
+                        roughness: 0.95
+                        metalness: 0.0
                     }
                 }
                 Repeater3D {
@@ -86,6 +104,12 @@ Item {
                 }
             }
         }
+        Texture {
+            id: resinEmission
+            textureData: rig ? rig.mouthTexture : null
+            tilingModeHorizontal: Texture.ClampToEdge
+            tilingModeVertical: Texture.ClampToEdge
+        }
         Node {
             eulerRotation.x: -90
             scale: Qt.vector3d(100, 100, 100)
@@ -99,12 +123,13 @@ Item {
                     materials: PrincipledMaterial {
                         baseColorMap: modelData.kind === 'visor' ? visorTexture : null
                         Texture { id: visorTexture; source: "visor_stripes.svg" }
-                        baseColor: !rig ? modelData.color : modelData.kind === 'visor' ? "white" : modelData.kind === 'mouth' ? rig.mouthColors[modelData.lamp] : modelData.kind === 'eye' ? rig.eyeColor : modelData.kind === 'led' ? rig.ledColors[modelData.lamp] : modelData.color
-                        metalness: (modelData.kind === 'mouth' || modelData.kind === 'eye') ? 0 : modelData.metalness * 0.8
+                        baseColor: !rig ? modelData.color : modelData.kind === 'visor' ? "white" : modelData.kind === 'eye' ? rig.eyeColor : modelData.kind === 'led' ? rig.ledColors[modelData.lamp] : modelData.color
+                        metalness: (modelData.kind === 'mouth' || modelData.kind === 'eye') ? 0 : modelData.metalness
                         roughness: Math.max(modelData.group === "neck" ? 0.18 : 0.35, modelData.roughness)
-                        transmissionFactor: (modelData.kind === 'mouth' || modelData.kind === 'eye') ? 0.15 : 0
+                        emissiveMap: modelData.kind === 'mouth' ? resinEmission : null
+                        transmissionFactor: modelData.kind === 'eye' ? 0.15 : 0
                         cullMode: Material.NoCulling
-                        emissiveFactor: !rig ? Qt.vector3d(0,0,0) : modelData.kind === 'mouth' ? Qt.vector3d(rig.mouthColors[modelData.lamp].r * 5, rig.mouthColors[modelData.lamp].g * 5, rig.mouthColors[modelData.lamp].b * 5) : modelData.kind === 'eye' ? Qt.vector3d(rig.eyeColor.r * 3, rig.eyeColor.g * 3, rig.eyeColor.b * 3) : modelData.kind === 'led' ? Qt.vector3d(rig.ledColors[modelData.lamp].r, rig.ledColors[modelData.lamp].g, rig.ledColors[modelData.lamp].b) : Qt.vector3d(0,0,0)
+                        emissiveFactor: !rig ? Qt.vector3d(0,0,0) : modelData.kind === 'mouth' ? Qt.vector3d(3.5, 3.5, 3.5) : modelData.kind === 'eye' ? Qt.vector3d(rig.eyeColor.r * 3, rig.eyeColor.g * 3, rig.eyeColor.b * 3) : modelData.kind === 'led' ? Qt.vector3d(rig.ledColors[modelData.lamp].r, rig.ledColors[modelData.lamp].g, rig.ledColors[modelData.lamp].b) : Qt.vector3d(0,0,0)
                     }
                 }
             }

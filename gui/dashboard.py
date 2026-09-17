@@ -13,7 +13,7 @@ import time
 from typing import Any, Callable, Optional
 
 try:
-    from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, Signal
+    from PySide6.QtCore import QPointF, QRectF, QSize, QTimer, Qt, Signal
     from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QRadialGradient
     from PySide6.QtWidgets import (
         QApplication,
@@ -69,6 +69,34 @@ def _device_status_color(enabled: bool, connected: bool) -> str:
     return "#ff6b5e"       # red   — configured but offline
 
 
+class LandscapeCameraPanel(ChromePanel):
+    """Prefer a 16:9 camera viewport as the operator resizes the columns.
+
+    VisionPanel still fits each source frame without cropping or stretching.
+    Account for panel chrome and the vision widget's own painting margins.
+    Yield height to the controls on short windows or very wide divider drags.
+    """
+
+    def __init__(self, index, title, content):
+        super().__init__(index, title, content)
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        self.setMinimumHeight(180)
+
+    def heightForWidth(self, width):
+        viewport_width = max(1, width - 20 - 24)
+        return 16 + (self.HEADER_H - 6) + 4 + 16 + round(viewport_width * 9 / 16)
+
+    def sizeHint(self):
+        return QSize(440, self.heightForWidth(self.width()))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.updateGeometry()
+
+
 class DashboardWindow(QMainWindow):
     def __init__(
         self,
@@ -95,7 +123,7 @@ class DashboardWindow(QMainWindow):
 
         self.setWindowTitle(getattr(config, "GUI_WINDOW_TITLE", "DJ-R3X Controller"))
         self.resize(1440, 900)
-        self.setMinimumSize(1100, 740)
+        self.setMinimumSize(1140, 740)
 
         self.vision = VisionPanel()
         self.scene = VisionDescriptionPanel()
@@ -222,12 +250,14 @@ class DashboardWindow(QMainWindow):
         self._shell.addWidget(self._top_bar)
         self._memory_banks_window = None
 
-        # Keep the daily controls visible; diagnostics share the sensor pane.
-        self.vision.setMinimumSize(260, 190)
+        # Camera stays visible above a separate controls/diagnostics notebook.
+        # Its height follows column width, never the remaining window height.
+        self.vision.setMinimumSize(260, 0)
+        self._camera_panel = LandscapeCameraPanel("01", "Visual feed", self.vision)
         self.scene.setMinimumHeight(190)
         self._sensor_tabs = QTabWidget()
         self._sensor_tabs.setObjectName("sensorTabs")
-        self._sensor_tabs.addTab(self.vision, "CAMERA")
+        self._sensor_tabs.addTab(self.servos, "ACTUATORS")
         self._sensor_tabs.addTab(self.scene, "SCENE")
         self._sensor_tabs.addTab(self.syslog, "LOGS")
         self._sensor_tabs.setDocumentMode(True)
@@ -235,7 +265,7 @@ class DashboardWindow(QMainWindow):
         self._sensor_tabs.setElideMode(Qt.TextElideMode.ElideNone)
         self._sensor_tabs.setUsesScrollButtons(False)
         self._sensor_tabs.setTabToolTip(1, "Scene description, contacts, environment, and tracking")
-        self._sensor_tabs.setMinimumHeight(230)
+        self._sensor_tabs.setMinimumHeight(270)
         try:
             from utils.logging import active_log_path
             self._sensor_tabs.setTabToolTip(2, str(active_log_path()))
@@ -243,15 +273,12 @@ class DashboardWindow(QMainWindow):
             pass
 
         instruments = QWidget()
-        instruments.setMinimumWidth(310)
+        instruments.setMinimumWidth(350)
         instrument_layout = QVBoxLayout(instruments)
         instrument_layout.setContentsMargins(0, 0, 0, 0)
         instrument_layout.setSpacing(12)
-        instrument_layout.addWidget(ChromePanel("01", "Sensors", self._sensor_tabs), 1)
-        servo_panel = ChromePanel("02", "Actuators", self.servos)
-        servo_panel.setMinimumHeight(284)
-        servo_panel.setMaximumHeight(340)
-        instrument_layout.addWidget(servo_panel)
+        instrument_layout.addWidget(self._camera_panel)
+        instrument_layout.addWidget(ChromePanel("02", "Systems", self._sensor_tabs), 1)
 
         self._avatar_panel = ChromePanel("03", "Droid bay  /  R3X", self.avatar)
         self._avatar_panel.setMinimumWidth(320)
@@ -264,9 +291,9 @@ class DashboardWindow(QMainWindow):
         self._columns.addWidget(instruments)
         self._columns.addWidget(self._avatar_panel)
         self._columns.addWidget(self._transcript_panel)
-        for i, stretch in enumerate((0, 5, 4)):
+        for i, stretch in enumerate((4, 4, 5)):
             self._columns.setStretchFactor(i, stretch)
-        self._columns.setSizes([310, 560, 510])
+        self._columns.setSizes([440, 440, 500])
 
         footer = QHBoxLayout()
         footer.setContentsMargins(4, 0, 4, 0)

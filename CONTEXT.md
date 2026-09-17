@@ -1158,6 +1158,24 @@ motor/encoder/ToF drivers are Phase 1 — see `docs/motion_system.md` §11, §17
 
 ## GUI
 
+### Mac microphone opening-word regression (2026-09-16)
+
+In `logs/djr3x-2026-09-16-19-06-50.log`, two raw Qwen results read
+"Talking to you." The owner said "we weren't talking to you" and reports waiting
+at least a second after Rex stopped. No mic overflow/stall was logged. The saved
+logs cannot distinguish capture loss from ASR omission or establish GUI causality.
+Do not describe this as confirmed talk-over or a resolved live regression.
+
+The ordinary Mac capture look-back is now 1.5s (previously 0.45s), still clamped
+to the playback floor. This reads buffered samples without adding an endpoint
+wait. A sample-retention regression through `_accumulate_speech` demonstrates
+loss with the old setting after a one-second pause and late VAD detection, and
+retention with the new setting while excluding prior Rex audio. 89 isolated
+checks pass across `front_clip_fast_reply`, `aec_drain_release`, `gap_speech`,
+and `turn_coordinator`. This is a mitigation, pending live verification.
+`[capture]` now logs ordinary capture windows, requested/received buffer length,
+mic callback age, and concurrent queued-capture padding/playback timing.
+
 The PySide6 dashboard is optional and launched with `--gui`.
 
 Important GUI behavior:
@@ -1191,7 +1209,24 @@ Important GUI behavior:
   abort checkpoints (`main._abort_startup_if_shutdown`). The top bar shows
   Booting…/Connected/Startup failed, text input is gated until services are up,
   and a failed boot keeps the window open so the log panel stays readable.
-- A SYSTEM LOG strip at the bottom auto-scrolls the active app log
+- The Rebel-style dashboard keeps a landscape camera panel above the Systems
+  tabs (Actuators, Scene, Logs), with the live 3D droid centered and the readable
+  transcript on the right. The camera panel prefers a 16:9 viewport as column
+  dividers move; short windows reserve room for the controls below it. Source
+  frames retain their actual proportions, without cropping or stretching.
+  The camera remains visible when switching diagnostic tabs.
+- Avatar lighting uses a warm side key, restrained cool fill/rim, shadow mapping,
+  screen-space ambient occlusion, and a cached procedural HDR softbox probe
+  with dark gaps between the lights to shape metallic reflections. ACES is the
+  sole tone-mapping pass; removing the legacy bloom/tonemapping effect restored
+  shadow contrast in native previews. This is real-time approximate lighting,
+  not scene-wide ray-traced GI.
+  The mouth's original 80 aperture meshes share one 64x64 emission texture;
+  LED light is spatially blended using the exported aperture positions to mimic
+  resin diffusion while preserving the firmware animation and colors. Off means
+  zero emission. Native previews and 12 mouth/rig tests passed; the isolated
+  diffuser update measured about 1.8ms, not a full robot workload benchmark.
+- The Systems LOGS tab auto-scrolls the active app log
   (`utils.logging.install_gui_log_handler` mirrors root-logger records into
   `gui_bridge.add_log_line`; `GUI_LOG_PANEL_MAX_LINES`). With `DEBUG_MODE=True`
   the active file is the per-run `logs/djr3x-<stamp>.log`, not `djr3x.log`.
