@@ -47,6 +47,7 @@ from audio import delivery
 
 import hashlib
 import io
+import itertools
 import logging
 import re
 import threading
@@ -62,6 +63,7 @@ import state as state_module
 from audio import echo_cancel
 from audio import output_gate
 from audio import sd_guard
+from audio.speech_level import SpeechLeveler
 from hardware import leds_head, leds_chest, servos
 from intelligence import emotion_orchestrator
 from sequences import animations
@@ -560,6 +562,9 @@ def speak(
     if audio is None or len(audio) == 0:
         logger.error("[tts] audio decode produced empty array — skipping playback")
         return
+    leveler = _speech_leveler(samplerate, synth_text)
+    if leveler is not None:
+        audio = leveler.process(audio, final=True)
     audio = _trim_trailing_silence(audio, samplerate)
 
     if log_text:
@@ -977,6 +982,50 @@ def _end_speech(
         _speaking = False
 
 
+def _speech_leveler(samplerate: int, synth_text: str) -> Optional[SpeechLeveler]:
+    """One policy for ElevenLabs cache playback and live PCM, before mouth RMS."""
+    if not bool(getattr(config, "TTS_LOUDNESS_ENABLED", True)):
+        return None
+    target = float(getattr(config, "TTS_LOUDNESS_TARGET_LUFS", -20.0))
+    if any(m.group(1).strip().lower() == "whispers" for m in _AUDIO_TAG_RE.finditer(synth_text)):
+        target += float(getattr(config, "TTS_LOUDNESS_WHISPER_OFFSET_DB", -4.0))
+    return SpeechLeveler(
+        samplerate,
+        target_lufs=target,
+        max_gain_db=float(getattr(config, "TTS_LOUDNESS_MAX_GAIN_DB", 26.0)),
+        peak_dbfs=float(getattr(config, "TTS_LOUDNESS_PEAK_DBFS", -3.0)),
+        preroll_ms=float(getattr(config, "TTS_LOUDNESS_PREROLL_MS", 300.0)),
+    )
+
+
+def _pcm_playback_chunks(
+    chunks: Iterator[bytes], leveler: Optional[SpeechLeveler],
+    raw_samples: list[np.ndarray],
+) -> Iterator[np.ndarray]:
+    """Decode arbitrary byte boundaries; cache originals and yield leveled audio.
+
+    Check interruption while gathering the pre-roll too. A canceled stream must
+    discard the leveler's buffered tail rather than flush it into the speaker.
+    """
+    carry = b""
+    for chunk in chunks:
+        if echo_cancel.was_canceled() or not delivery.allowed():
+            return
+        raw = carry + chunk
+        usable = len(raw) - len(raw) % 2
+        carry = raw[usable:]
+        if usable:
+            samples = np.frombuffer(raw[:usable], dtype="<i2").astype(np.float32) / 32768.0
+            raw_samples.append(samples)
+            output = leveler.process(samples) if leveler is not None else samples
+            if output.size:
+                yield output
+    if leveler is not None and not echo_cancel.was_canceled() and delivery.allowed():
+        tail = leveler.process(np.empty(0, dtype=np.float32), final=True)
+        if tail.size:
+            yield tail
+
+
 def _speak_streaming(
     synth_text: str,
     spoken_text: str,
@@ -1056,6 +1105,33 @@ def _speak_streaming(
     )
     _note_api_success()   # a completed streaming round-trip clears the fallback breaker
 
+    # Gather the small loudness pre-roll BEFORE starting the device. This avoids
+    # an empty running stream and fires delivery/mouth timing only once playable
+    # audio exists. Keep original samples for the cache and hot-tail check.
+    all_samples: list[np.ndarray] = []
+    playable = _pcm_playback_chunks(
+        itertools.chain((first_chunk,), chunk_iter),
+        _speech_leveler(samplerate, synth_text), all_samples,
+    )
+    try:
+        first_audio = next(playable, None)
+    except Exception as exc:
+        close = getattr(chunk_iter, "close", None)
+        if close:
+            close()
+        if type(exc).__name__ != "ApiError":
+            _note_api_failure()
+        logger.warning("[tts] streaming pre-roll failed (%s) — buffered fallback", exc)
+        return False
+    interrupted = echo_cancel.was_canceled() or not delivery.allowed()
+    if first_audio is None or interrupted:
+        close = getattr(chunk_iter, "close", None)
+        if close:
+            close()
+        if not interrupted:
+            logger.warning("[tts] streaming returned no complete PCM samples — buffered fallback")
+        return interrupted
+
     if log_text:
         try:
             conv_log.log_rex(spoken_text)
@@ -1077,8 +1153,6 @@ def _speak_streaming(
             return True
         with _speaking_lock:
             _speaking = True
-        pcm_carry = b""
-        all_samples: list[np.ndarray] = []
         canceled = False
         play_started_at = time.monotonic()
         stream = None
@@ -1112,27 +1186,22 @@ def _speak_streaming(
                 except Exception:
                     pass
 
-            chunk = first_chunk
-            while chunk is not None:
+            for samples in itertools.chain((first_audio,), playable):
                 if echo_cancel.was_canceled() or not delivery.allowed():
                     canceled = True
                     break
-                raw = pcm_carry + chunk
-                usable = len(raw) - (len(raw) % 2)   # int16 alignment
-                pcm_carry = raw[usable:]
-                if usable:
-                    samples = (
-                        np.frombuffer(raw[:usable], dtype=np.int16).astype(np.float32)
-                        / 32768.0
-                    )
-                    all_samples.append(samples)
-                    # Mouth drive, re-sliced to LED-frame size so a fat network
-                    # chunk still animates at ~30 fps; the pacer holds each level
-                    # until its audio is actually audible.
-                    for piece in _led_chunks(samples, samplerate):
-                        pacer.push(piece)
-                    stream.write(samples)   # blocks on buffer space — natural pacing
-                chunk = next(chunk_iter, None)
+                # The mouth receives exactly the leveled samples sent to the
+                # speaker. Re-slice large network chunks for prompt cancellation.
+                for piece in _led_chunks(samples, samplerate):
+                    if echo_cancel.was_canceled() or not delivery.allowed():
+                        canceled = True
+                        break
+                    pacer.push(piece)
+                    stream.write(piece)
+                if canceled:
+                    break
+
+            canceled = canceled or echo_cancel.was_canceled() or not delivery.allowed()
 
             if canceled:
                 with sd_guard.device_control():
@@ -1205,10 +1274,11 @@ def _speak_streaming(
                     measured[0], measured[1], cache_file.stem[:16],
                 )
                 return True
-            trimmed = _trim_trailing_silence(full, samplerate)
             wav_path = cache_file.with_suffix(".wav")
             wav_path.parent.mkdir(parents=True, exist_ok=True)
-            sf.write(str(wav_path), trimmed, samplerate)
+            # Retain original gain and tail. A fixed silence threshold can cut
+            # quiet source words; cache hits trim only AFTER loudness leveling.
+            sf.write(str(wav_path), full, samplerate)
             logger.info("[tts] saved streamed take to cache: %s", wav_path.name)
         except Exception as exc:
             logger.debug("[tts] streamed cache write failed: %s", exc)

@@ -167,9 +167,9 @@ class StreamedReplyGuardTest(unittest.TestCase):
 
     def test_barge_in_abort_is_guarded_too(self):
         from audio import echo_cancel
-        calls = iter([False, True, True, True])
         with mock.patch.object(tts, "_get_el_client", return_value=self._client()), \
-             mock.patch.object(echo_cancel, "was_canceled", side_effect=lambda: next(calls, True)):
+             mock.patch.object(echo_cancel, "was_canceled", side_effect=lambda: bool(
+                 self.capture.instances and self.capture.instances[0].writes)):
             tts._speak_streaming(
                 "hi", "hi", "v", "m", None, None, "neutral",
                 Path(self._tmp.name) / "x.mp3", log_text=False,

@@ -109,6 +109,11 @@ class FakeESP32Serial:
 
 class _MotionTestBase(unittest.TestCase):
     def setUp(self):
+        # These fixtures simulate only the ESP32. Arm ordering/failures have a
+        # separate fake-Maestro suite in test_throttle_base_interlock.
+        arm_guard = mock.patch('sequences.throttle_arm.prepare_base_motion', return_value=True)
+        arm_guard.start()
+        self.addCleanup(arm_guard.stop)
         self._orig_serial = motion.serial.Serial
         self._orig_paused = getattr(config, "INTERACTION_PAUSED", False)
         self._orig_enabled = config.MOTION_ENABLED

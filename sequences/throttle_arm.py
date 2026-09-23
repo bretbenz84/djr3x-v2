@@ -172,6 +172,10 @@ class Controller:
         self.last_idle = self.last_gesture = None
         self.introduction_until = 0.0
         self.last_expression = None
+        self.base_hold = False
+        self.base_ready = threading.Event()
+        self.base_seq = None
+        self.base_sent_at = None
 
     def _hold(self):
         if self.connection is not None:
@@ -226,10 +230,14 @@ class Controller:
             self.stop_event.wait(0.1)
         raise TimeoutError('Throttle output did not reach its target')
 
-    def _park(self):
+    def _park(self, *, for_base=False):
+        kind = 'RETRACT' if for_base else 'PARK'
+        duration = config.THROTTLE_RETRACT_MOVE_SECS if for_base else config.THROTTLE_PARK_MOVE_SECS
         for target in (TUCK, PARK):
-            if not self.move(target, 'PARK', config.THROTTLE_PARK_MOVE_SECS, parking=True):
+            if not self.move(target, kind, duration, parking=True):
                 return
+        if for_base and self.stop_event.wait(config.THROTTLE_RETRACT_SETTLE_SECS):
+            return
         # Friction retains this position with outputs off; remember ONLY a
         # completed park. Every writer invalidates the marker before moving.
         remember_park()
@@ -263,6 +271,40 @@ class Controller:
                     return
                 if servos._program_servo_updates_blocked():
                     raise InterruptedError('Throttle yielded to servo override/latch')
+                with self.lock:
+                    base_hold = self.base_hold
+                if base_hold:
+                    if not self.base_ready.is_set():
+                        self._park(for_base=True)
+                        if not self.parked:
+                            return
+                        self.base_ready.set()
+                    from hardware import motion
+                    telemetry = motion.telemetry() or {}
+                    now = time.monotonic()
+                    with self.lock:
+                        # Only fresh, post-command idle telemetry can release the arm.
+                        # No telemetry / lost link / rejected command keeps it tucked.
+                        received = telemetry.get('rx_monotonic', 0)
+                        if (self.base_seq is not None and self.base_sent_at is not None
+                                and now - self.base_sent_at >= 0.5
+                                and self.base_sent_at < received <= now
+                                and now - received < 0.5
+                                and telemetry.get('cmd_seq', -1) >= self.base_seq
+                                and telemetry.get('state') == 'idle'
+                                and telemetry.get('owner') == 'auto'):
+                            self.base_hold = False
+                            self.base_ready.clear()
+                        base_hold = self.base_hold
+                    if base_hold:
+                        self.stop_event.wait(0.1)
+                        continue
+                    self.parked = False
+                    for target in STARTUP:
+                        if not self.move(target, 'STARTUP', config.THROTTLE_STARTUP_MOVE_SECS):
+                            break
+                    self.last_expression = None
+                    continue
                 now = time.monotonic()
                 with self.lock:
                     speaking = self.cadence.speaking
@@ -380,3 +422,37 @@ def speech_level(level):
     if controller is not None and not controller.done.is_set():
         with controller.lock:
             controller.cadence.level(level, time.monotonic())
+
+
+def prepare_base_motion(timeout=30.0):
+    """Reserve a parked arm before a base command. Fail closed if unavailable."""
+    if not config.THROTTLE_ARM_ENABLED:
+        return True
+    controller = _controller
+    if controller is None or controller.done.is_set() or controller.stop_event.is_set():
+        return False
+    with controller.lock:
+        controller.base_hold = True
+        controller.base_seq = None
+        controller.base_sent_at = None
+        controller.introduction_until = 0.0
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if controller.done.is_set() or controller.stop_event.is_set():
+            return False
+        if controller.base_ready.wait(0.1):
+            try:
+                actual = servos.read_throttle_pose(controller.connection)
+                return (not servos.throttle_motion_blocked(parking=True)
+                        and all(abs(actual[ch] - PARK[ch]) <= 2 for ch in CHANNELS))
+            except Exception:
+                return False
+    return False
+
+
+def base_motion_sent(seq):
+    controller = _controller
+    if controller is not None:
+        with controller.lock:
+            controller.base_seq = seq
+            controller.base_sent_at = time.monotonic()

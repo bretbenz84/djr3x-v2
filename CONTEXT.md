@@ -3780,3 +3780,12 @@ The existing worker retains sole serial ownership and park/manual-control priori
 Transitions that need staging go through REST with both clearance boxes checked.
 See README “Main-program throttle animation”; simulated regressions are in
 `tests/test_throttle_runtime.py`. Physical appearance still needs owner observation.
+
+Base-clearance continuation: `hardware.motion.send` gates host movement on
+`throttle_arm.prepare_base_motion`; the existing worker retracts to PARK using
+the faster THROTTLE_RETRACT profile and a settling delay. Readback is commanded
+pulse state, not physical joint feedback. The arm stays parked until fresh
+post-command idle telemetry (matching/newer command sequence, auto ownership).
+Stop/estop/zero drive bypass retraction and invalidate waiting movement commands.
+Failure blocks host movement. ESP32-local gamepad control is outside this guard.
+Tests: `throttle_base_interlock`, `throttle_runtime`, `motion` via lean checks.

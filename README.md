@@ -390,6 +390,17 @@ person introductions briefly use the measured level forward extension.
   This takes priority over mood, Pride, and speech poses, then returns to the
   current mood. A bent-elbow rest bridge is used when a direct transition fails
   the independent-joint clearance check. Callbacks never start/recover a worker.
+- **Base movement interlock:** host-issued drive, turn, move, approach and wheel
+  commands wait for the arm to retract through tuck to park. Retraction uses its
+  own brisk profile (`THROTTLE_RETRACT_*`): 0.9 seconds requested per segment,
+  speed caps 30/70/70 and acceleration caps 6/12/12, followed by 0.5 seconds settling.
+  The Maestro reports output pulses, **not actual joint positions**; a stalled
+  servo cannot be detected by this guard. Missing readback, faults or a missing
+  worker block movement when the throttle arm is enabled. Speech and mood cannot
+  extend the arm during travel. Fresh post-command idle telemetry releases the
+  hold; stale telemetry or a lost base link keeps it parked. Stop/estop and zero
+  velocity commands bypass the wait and cancel pending movement. ESP32-local
+  gamepad commands bypass the Mac and are outside this host-side interlock.
 - **Sleep/shutdown:** head and throttle arm park concurrently. The head latches as
   soon as its rest pose is commanded, while the throttle worker may finish only
   the coupled tuck (**1636 / 2100 / 512 µs**) and park (roughly 1.5 seconds per pose).

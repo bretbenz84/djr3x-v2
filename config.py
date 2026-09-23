@@ -643,6 +643,17 @@ TTS_FIRST_SENTENCE_SPLIT_ENABLED = _env_bool("TTS_FIRST_SENTENCE_SPLIT_ENABLED",
 # error falls back to the buffered path. Set False to restore buffered-only playback.
 TTS_STREAMING_PLAYBACK_ENABLED = _env_bool("TTS_STREAMING_PLAYBACK_ENABLED", True)
 TTS_STREAM_PCM_FORMAT = os.environ.get("TTS_STREAM_PCM_FORMAT", "pcm_22050")
+# Equalize ElevenLabs takes at playback, including old MP3/WAV cache entries.
+# One incremental processor handles cache hits and live PCM; raw cache files
+# retain the provider audio. The 300 ms audio pre-roll plus one 20 ms limiter
+# frame lets the first word start at the corrected level (not a volume ramp).
+TTS_LOUDNESS_ENABLED = _env_bool("TTS_LOUDNESS_ENABLED", True)
+TTS_LOUDNESS_TARGET_LUFS = -20.0
+TTS_LOUDNESS_MAX_GAIN_DB = 26.0
+TTS_LOUDNESS_PEAK_DBFS = -3.0
+TTS_LOUDNESS_PREROLL_MS = 300.0
+# An explicit [whispers] tag keeps the take quieter, but still intelligible.
+TTS_LOUDNESS_WHISPER_OFFSET_DB = -4.0
 # Zero-padding written after the last PCM chunk before the stream is stopped, so
 # the final word can't be clipped by the host audio buffer at teardown (CoreAudio
 # has been observed dropping the last ~latency window despite stop()'s drain).
@@ -2996,6 +3007,11 @@ THROTTLE_STARTUP_MOVE_SECS = 1.25
 THROTTLE_IDLE_MOVE_SECS = (2.3, 3.3)
 THROTTLE_SPEECH_MOVE_SECS = (1.35, 2.0)
 THROTTLE_PARK_MOVE_SECS = 1.5
+# Brisk base-clearance retraction, still capped by the tested joint profiles.
+THROTTLE_RETRACT_MOVE_SECS = 0.9
+THROTTLE_RETRACT_SETTLE_SECS = 0.5
+THROTTLE_RETRACT_SPEED = {8: 30, 9: 70, 10: 70}
+THROTTLE_RETRACT_ACCEL = {8: 6, 9: 12, 10: 12}
 THROTTLE_SPEECH_GAP_SECS = (3.5, 5.5)
 THROTTLE_SPEECH_PAUSE_SECS = 0.35
 THROTTLE_SPEECH_FALLBACK_SECS = 6.5

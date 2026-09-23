@@ -36,6 +36,8 @@ _reader_thread: "threading.Thread | None" = None
 _stop = threading.Event()
 _seq_lock = threading.Lock()
 _seq = 0
+_base_command_lock = threading.Lock()
+_stop_generation = 0
 
 _connected = False
 _last_port: "str | None" = None     # remembered for auto-reconnect after a drop
@@ -360,6 +362,35 @@ def _next_seq() -> int:
 
 
 def send(obj: dict) -> "int | None":
+    """Interlock every host movement command; stop/estop never wait for the arm."""
+    global _stop_generation
+    cmd = obj.get('cmd')
+    zero_drive = cmd == 'drive' and obj.get('lin', 0) == 0 and obj.get('ang', 0) == 0
+    if cmd in {'stop', 'estop'} or zero_drive:
+        with _write_lock:
+            _stop_generation += 1
+        return _send(obj)
+    if cmd not in {'turn', 'move', 'come', 'drive', 'wheel'}:
+        return _send(obj)
+    generation = _stop_generation
+    with _base_command_lock:
+        if _ser is None or generation != _stop_generation:
+            return None
+        from sequences import throttle_arm
+        try:
+            if not throttle_arm.prepare_base_motion():
+                _log.warning('Base command %s blocked: throttle park command/readback incomplete', cmd)
+                return None
+        except Exception:
+            _log.warning('Base command blocked: throttle retraction failed', exc_info=True)
+            return None
+        seq = _send(obj, stop_generation=generation)
+        if seq is not None:
+            throttle_arm.base_motion_sent(seq)
+        return seq
+
+
+def _send(obj: dict, *, stop_generation=None) -> "int | None":
     """Write one NDJSON command line. Adds v + seq. Returns the seq, or None if
     the link is down / the write failed (caller treats None as not-sent)."""
     if obj.get("cmd") in {"turn", "move", "come", "drive"}:
@@ -381,7 +412,7 @@ def send(obj: dict) -> "int | None":
                       {k: v for k, v in msg.items() if k not in ("v", "seq", "cmd")})
     line = (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
     with _write_lock:
-        if _ser is None:
+        if _ser is None or (stop_generation is not None and stop_generation != _stop_generation):
             return None
         try:
             _ser.write(line)
