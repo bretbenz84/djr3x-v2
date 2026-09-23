@@ -3798,3 +3798,22 @@ resolved playback frame to the throttle worker; it overrides event body mood
 until speech ends plus its settling grace. Expression changes now log targets.
 Regression coverage includes sad speech over an offended event and all speech
 poses at ambient/speech sadness intensity, with existing clearance/base guards.
+
+## Pride rainbow LEDs (2026-09-23)
+
+Head mouth + chest now support a leased `PRIDE:1`/`PRIDE:0` overlay. The head
+uses a precomputed spatial swirl, preserving speech equalizer masks and idle
+glow; eyes are untouched. Chest rainbow fills all pixels, with different idle
+and speech pacing. The head keepalive and chest refresh thread follow the
+existing Pride state, including expiry; firmware times out after 10 seconds
+without refresh. Special sleep/off/charge/fade modes take priority.
+Tests: pride_leds, head_leds, chest_led_gui, tts_led_cleanup. Both sketches
+compile with installed FastLED 3.10.3. Chest command strings live in PROGMEM
+to improve its tight AVR RAM budget (1745/2048 bytes globals).
+
+Both LED firmware uploads completed with `arduino-cli upload --verify`:
+head `/dev/cu.usbmodem1301`, `arduino:avr:uno`; chest `/dev/cu.usbserial-1420`,
+`arduino:avr:nano:cpu=atmega328`. The chest old-bootloader setting did not
+synchronize; the newer setting succeeded. LED-specific tests: 40 passing.
+The broader pride_mode module has one unchanged baseline failure checking an
+old exact phrase in REX_CORE_PROMPT (config, Pride logic and that test unchanged).

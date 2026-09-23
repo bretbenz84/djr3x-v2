@@ -524,3 +524,22 @@ DJ-R3X v2 is an unofficial fan project. It is not affiliated with, endorsed by, 
 - Bret Benziger
 - OpenAI Codex
 - Claude Code
+
+#### Pride rainbow LEDs
+
+While Pride mode is active, the head mouth displays a rotating rainbow swirl
+across its serpentine 10×8 PCB. Speaking retains the audio-reactive equalizer
+shape and brightness caps; quiet operation retains the dim breathing glow.
+The eyes keep their normal colors. The chest covers all 98 pixels in a moving
+rainbow, slower/dimmer at idle and faster/brighter during speech.
+
+Both sketches accept `PRIDE:1` / `PRIDE:0` as color overlays. The host refreshes
+the active overlay every 1.5 seconds, including during speech; firmware drops
+it after ten seconds without refresh. Sleep, off, charging, startup (chest),
+and shutdown fade retain their own behavior. The host uses the existing
+`intelligence.pride` mode/expiry; no separate activation flag is required.
+
+Firmware: `arduino/head_nano` (this head is detected as **Uno**, build target
+`arduino:avr:uno`) and `arduino/chest_nano` (`arduino:avr:nano:cpu=atmega328`, newer bootloader).
+The mouth rainbow swaps R/G for its GRB PCB on the shared RGB eye data line;
+the chest uses its existing FastLED GRB configuration.

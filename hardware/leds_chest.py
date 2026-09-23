@@ -20,6 +20,39 @@ _log = logging.getLogger(__name__)
 
 _ser: "serial.Serial | None" = None
 _lock = threading.Lock()
+_awake = False
+_pride_sent = False
+_pride_stop = threading.Event()
+_pride_thread = None
+
+
+def _sync_pride() -> None:
+    global _pride_sent
+    if not connected() or not _awake:
+        return
+    from intelligence import pride
+    enabled = pride.is_active()
+    if enabled or _pride_sent:
+        send_command('PRIDE:1' if enabled else 'PRIDE:0')
+    _pride_sent = enabled
+
+
+def _pride_loop():
+    while not _pride_stop.wait(1.5):
+        try:
+            _sync_pride()
+        except Exception:
+            _log.debug('Chest Pride refresh failed', exc_info=True)
+
+
+def _start_pride_refresh():
+    global _pride_thread
+    if _pride_thread is not None and _pride_thread.is_alive():
+        return
+    _pride_stop.clear()
+    _pride_thread = threading.Thread(target=_pride_loop, name='chest-pride', daemon=True)
+    _pride_thread.start()
+
 _DROP_REPORT_INTERVAL_SECS = 5.0
 _dropped_counts: dict[str, int] = {}
 _drop_window_started_at = 0.0
@@ -152,12 +185,16 @@ def connect() -> bool:
             ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD, attempt, attempts,
         )
         _flush_drop_summary("reconnected")
+        _start_pride_refresh()
         return True
     return False
 
 
 def disconnect() -> None:
     global _ser
+    _pride_stop.set()
+    if _pride_thread is not None:
+        _pride_thread.join(timeout=2.0)
     with _lock:
         if _ser and _ser.is_open:
             _ser.close()
@@ -174,6 +211,13 @@ def connected() -> bool:
 
 def send_command(cmd: str) -> None:
     """Send a newline-terminated command string to the chest Arduino."""
+    global _awake
+    family = _cmd_family(cmd)
+    if family in {'STARTUP', 'ACTIVE', 'IDLE', 'SPEAK', 'SPEAK_STOP'}:
+        _awake = True
+        _sync_pride()
+    elif family in {'OFF', 'SLEEP', 'FADEOFF', 'CHARGE'}:
+        _awake = False
     _mirror_gui_chest_led_state(cmd)
     if not CHEST_LEDS_ENABLED:
         _log.debug("send_command no-op: CHEST_LEDS_ENABLED=False (cmd=%r)", cmd)

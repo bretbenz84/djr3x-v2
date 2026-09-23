@@ -31,6 +31,7 @@
  *   SPEAK:{emotion}       Start speaking animation. Also sets the mouth's
  *                         emotion colour used by the idle glow afterwards.
  *                         emotion = neutral | happy | excited | sad | angry | curious
+ *   PRIDE:{0|1}          Rainbow mouth overlay; refresh ON within 10 seconds.
  *   SPEAK_LEVEL:{0-255}   Update audio intensity — drives bar height + motion.
  *                         Send as often as needed; non-blocking.
  *   SPEAK_STOP            Mouth returns to the dim idle glow (current emotion
@@ -150,6 +151,12 @@ AnimMode animMode = ANIM_OFF;
 // the GRB mouth strip — see the EMOTION_COLORS note).
 EmotionColor mouthColor  = { 140, 255, 0 };   // neutral amber (wire order)
 EmotionColor chargeColor = { 0, 255, 0 };     // deep-discharge red (wire order)
+bool prideMouth = false;
+uint32_t prideRefreshMs = 0;
+uint32_t prideGlowFrameMs = 0;
+uint8_t swirlHue[NUM_MOUTH]; // spatial angle + radius, computed once at boot
+#define PRIDE_TIMEOUT_MS 10000UL
+#define PRIDE_GLOW_FRAME_MS 40UL
 uint8_t      speakLevel  = 0;                 // 0–255 audio intensity
 
 // Speaking equalizer state — one bar per mouth column (see tickSpeak).
@@ -317,6 +324,20 @@ inline void mouthOff() {
     for (uint8_t i = MOUTH_START; i < NUM_LEDS; i++) leds[i] = CRGB::Black;
 }
 
+// Return wire-order mouth colour; eyes use RGB, this PCB uses GRB.
+CRGB mouthPixel(uint8_t row, uint8_t col, uint8_t brightness, uint32_t now) {
+    CRGB color;
+    if (prideMouth) {
+        uint8_t hue = swirlHue[row * MOUTH_COLS + col] + (uint8_t)(now / 24UL);
+        CRGB rgb = CHSV(hue, 255, 255);
+        color = CRGB(rgb.g, rgb.r, rgb.b);
+    } else {
+        color = CRGB(mouthColor.r, mouthColor.g, mouthColor.b);
+    }
+    return CRGB(scale8(color.r, brightness), scale8(color.g, brightness),
+                scale8(color.b, brightness));
+}
+
 static uint8_t parseEmotion(const char *s) {
     if (strcmp(s, "happy")   == 0) return EMO_HAPPY;
     if (strcmp(s, "excited") == 0) return EMO_EXCITED;
@@ -403,6 +424,14 @@ void tickBlink() {
 // ---------------------------------------------------------------------------
 
 void handleCommand(char *cmd) {
+    if (strcmp(cmd, "PRIDE:1") == 0 || strcmp(cmd, "PRIDE:0") == 0) {
+        bool enabled = cmd[6] == '1';
+        if (prideMouth != enabled) forceGlowRefresh();
+        prideMouth = enabled;
+        prideRefreshMs = millis();
+        return; // colour overlay only: never wakes or starts the mouth
+    }
+
 
     // SPEAK_LEVEL:{0-255}  — check before SPEAK: to avoid prefix collision
     if (strncmp(cmd, "SPEAK_LEVEL:", 12) == 0) {
@@ -681,11 +710,8 @@ void tickSpeak() {
             }
 
             uint8_t sc = (uint8_t)(bright * 255.0f);
-            CRGB px = CRGB(scale8(mouthColor.r, sc),
-                           scale8(mouthColor.g, sc),
-                           scale8(mouthColor.b, sc));
-            leds[mouthIdx(4 - d, c)] = px;   // upper half
-            leds[mouthIdx(5 + d, c)] = px;   // lower half
+            leds[mouthIdx(4 - d, c)] = mouthPixel(4 - d, c, sc, now);
+            leds[mouthIdx(5 + d, c)] = mouthPixel(5 + d, c, sc, now);
         }
     }
     FastLED.show();
@@ -730,13 +756,18 @@ bool tickMouthGlow(float dt) {
     }
 
     uint8_t sc = (uint8_t)(brightness * 255.0f);
-    if (sc == glowLastScale) return false;   // nothing visible changed
+    uint32_t now = millis();
+    if (prideMouth) {
+        if (glowLastScale != 255 && now - prideGlowFrameMs < PRIDE_GLOW_FRAME_MS) return false;
+        prideGlowFrameMs = now;
+    } else if (sc == glowLastScale) return false;
     glowLastScale = sc;
 
-    CRGB c = CRGB(scale8(mouthColor.r, sc),
-                  scale8(mouthColor.g, sc),
-                  scale8(mouthColor.b, sc));
-    for (uint8_t i = MOUTH_START; i < NUM_LEDS; i++) leds[i] = c;
+    for (uint8_t row = 0; row < MOUTH_ROWS; row++) {
+        for (uint8_t col = 0; col < MOUTH_COLS; col++) {
+            leds[mouthIdx(row, col)] = mouthPixel(row, col, sc, now);
+        }
+    }
     return true;
 }
 
@@ -883,6 +914,14 @@ void tickAnimation() {
 // ---------------------------------------------------------------------------
 
 void setup() {
+    for (uint8_t row = 0; row < MOUTH_ROWS; row++) {
+        for (uint8_t col = 0; col < MOUTH_COLS; col++) {
+            float x = col - 3.5f, y = row - 4.5f;
+            float angle = atan2f(y, x) + PI;
+            swirlHue[row * MOUTH_COLS + col] = (uint8_t)(
+                (uint16_t)(angle * (255.0f / TWO_PI) + sqrtf(x*x + y*y) * 18.0f) & 255);
+        }
+    }
     FastLED.addLeds<WS2812B, DATA_PIN, RGB>(leds, NUM_LEDS);
     FastLED.setBrightness(255);
     // Temporal dithering OFF. FastLED's binary dithering simulates extra
@@ -981,6 +1020,10 @@ void loop() {
         return;
     }
 
+    if (prideMouth && (uint32_t)(millis() - prideRefreshMs) > PRIDE_TIMEOUT_MS) {
+        prideMouth = false;
+        forceGlowRefresh();
+    }
     tickAnimation();   // mouth animation (speak wave, idle)
     tickBlink();       // eye blink state machine (all modes)
 }

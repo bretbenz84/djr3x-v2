@@ -51,6 +51,7 @@ _led_mode = "off"
 #     it never fights the mouth animation or adds serial traffic during the flood.
 _eyes_should_be_on = False
 _speaking = False
+_pride_sent = False
 _heartbeat_thread: "threading.Thread | None" = None
 _heartbeat_stop = threading.Event()
 
@@ -321,10 +322,21 @@ def send_command(cmd: str) -> None:
 
 # ── Command API ────────────────────────────────────────────────────────────────
 
+def _sync_pride_mouth() -> None:
+    """Refresh the firmware colour lease, including during long utterances."""
+    global _pride_sent
+    from intelligence import pride
+    enabled = pride.is_active()
+    if enabled or _pride_sent:
+        send_command('PRIDE:1' if enabled else 'PRIDE:0')
+    _pride_sent = enabled
+
+
 def speak(emotion: str) -> None:
     """Start mouth speak animation for the given emotion. Eyes stay unchanged."""
     global _speaking
     _speaking = True
+    _sync_pride_mouth()
     send_command(f"SPEAK:{emotion}")
 
 
@@ -566,6 +578,8 @@ def _heartbeat_tick() -> None:
     after a firmware reboot mid-session (e.g. a USB blip + auto-reconnect).
     """
     global _eye_color
+    if _serial_online() and (_eyes_should_be_on or _speaking):
+        _sync_pride_mouth()
     with _lock:
         if not _serial_online_locked() or _speaking or not _eyes_should_be_on:
             return

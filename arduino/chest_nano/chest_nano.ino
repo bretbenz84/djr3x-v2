@@ -3,6 +3,7 @@
 
 #include <FastLED.h>
 #include <math.h>
+#include <avr/pgmspace.h>
 
 
 // How many NeoPixels are attached
@@ -105,6 +106,24 @@ enum ChestMode : uint8_t {
     CM_MANUAL,        // NEXT command: cycle gPatterns[] manually
 };
 ChestMode chestMode = CM_OFF;
+bool pridePanels = false;
+uint32_t prideRefreshMs = 0;
+#define PRIDE_TIMEOUT_MS 10000UL
+
+bool prideVisible() {
+    return pridePanels && (chestMode == CM_IDLE || chestMode == CM_ACTIVE ||
+        (chestMode >= CM_SPEAK_NEUTRAL && chestMode <= CM_SPEAK_HAPPY));
+}
+
+void prideRainbow() {
+    bool speaking = chestMode >= CM_SPEAK_NEUTRAL && chestMode <= CM_SPEAK_HAPPY;
+    uint32_t now = millis();
+    uint8_t phase = now / (speaking ? 12UL : 32UL);
+    uint8_t bright = speaking ? 225 : 100 + scale8(sin8(now / 24UL), 55);
+    for (uint8_t i = 0; i < NUM_LEDS; i++) {
+        DJLEDs[i] = CHSV(phase + (uint16_t)i * 256 / NUM_LEDS, 255, bright);
+    }
+}
 uint32_t complimentStartMs = 0;   // millis() when CM_COMPLIMENT began (self-timeout)
 uint8_t chargeSoc = 0;             // 0..100, supplied by off-state battery monitor
 bool chargeConnected = false;
@@ -191,6 +210,7 @@ bool updown = 0;
 // set at command time (in handleCommand).
 
 void runCurrentMode() {
+	if (prideVisible()) { prideRainbow(); return; }
 	switch (chestMode) {
 		case CM_STARTUP:
 			ShortCircuit();
@@ -273,6 +293,7 @@ void runCurrentMode() {
 
 void loop() {
 	readSerial();
+	if (pridePanels && millis() - prideRefreshMs > PRIDE_TIMEOUT_MS) pridePanels = false;
 
 	if (millis() - previousMillis > interval) {
 		previousMillis = millis();
@@ -280,7 +301,7 @@ void loop() {
 		runCurrentMode();
 		// RandomEyes only in active modes — skip during sleep/off and while fading
 		// (the fade freezes the last frame, so nothing should redraw onto it).
-		if (chestMode != CM_SLEEP && chestMode != CM_OFF && chestMode != CM_FADEOFF) RandomEyes();
+		if (!prideVisible() && chestMode != CM_SLEEP && chestMode != CM_OFF && chestMode != CM_FADEOFF) RandomEyes();
 	}
 
 	if (millis() - LEDUpdateMillis > LEDUpdateInterval) {
@@ -356,7 +377,14 @@ void nextPattern()
 //   NEXT             — cycle to next pattern in gPatterns[]
 
 void handleCommand(char *cmd) {
-	if (strcmp(cmd, "STARTUP") == 0) {
+    // Colour overlay only; never changes sleep/off/charge/fade state.
+    if (strcmp_P(cmd, PSTR("PRIDE:1")) == 0 || strcmp_P(cmd, PSTR("PRIDE:0")) == 0) {
+        pridePanels = cmd[6] == '1';
+        prideRefreshMs = millis();
+        return;
+    }
+
+	if (strcmp_P(cmd, PSTR("STARTUP")) == 0) {
 		DecayTime = 80;
 		FadeInterval = 0;
 		FadeMillis = millis();
@@ -364,26 +392,26 @@ void handleCommand(char *cmd) {
 		FastLED.setBrightness(BRIGHTNESS);
 		chestMode = CM_STARTUP;
 
-	} else if (strcmp(cmd, "IDLE") == 0 || strcmp(cmd, "SPEAK_STOP") == 0) {
+	} else if (strcmp_P(cmd, PSTR("IDLE")) == 0 || strcmp_P(cmd, PSTR("SPEAK_STOP")) == 0) {
 		FastLED.setBrightness(BRIGHTNESS);
 		chestMode = CM_IDLE;
 
-	} else if (strcmp(cmd, "ACTIVE") == 0) {
+	} else if (strcmp_P(cmd, PSTR("ACTIVE")) == 0) {
 		FastLED.setBrightness(200);
 		chestMode = CM_ACTIVE;
 
-	} else if (strncmp(cmd, "SPEAK:", 6) == 0) {
+	} else if (strncmp_P(cmd, PSTR("SPEAK:"), 6) == 0) {
 		const char *emotion = cmd + 6;
-		if (strcmp(emotion, "excited") == 0) {
+		if (strcmp_P(emotion, PSTR("excited")) == 0) {
 			FastLED.setBrightness(255);
 			chestMode = CM_SPEAK_EXCITED;
-		} else if (strcmp(emotion, "sad") == 0) {
+		} else if (strcmp_P(emotion, PSTR("sad")) == 0) {
 			FastLED.setBrightness(55);
 			chestMode = CM_SPEAK_SAD;
-		} else if (strcmp(emotion, "angry") == 0) {
+		} else if (strcmp_P(emotion, PSTR("angry")) == 0) {
 			FastLED.setBrightness(255);
 			chestMode = CM_SPEAK_ANGRY;
-		} else if (strcmp(emotion, "happy") == 0) {
+		} else if (strcmp_P(emotion, PSTR("happy")) == 0) {
 			FastLED.setBrightness(200);   // match ACTIVE's energy — happy shouldn't be dimmer than idle chat
 			chestMode = CM_SPEAK_HAPPY;
 		} else {
@@ -392,11 +420,11 @@ void handleCommand(char *cmd) {
 			chestMode = CM_SPEAK_NEUTRAL;
 		}
 
-	} else if (strcmp(cmd, "SLEEP") == 0) {
+	} else if (strcmp_P(cmd, PSTR("SLEEP")) == 0) {
 		FastLED.setBrightness(BRIGHTNESS);
 		chestMode = CM_SLEEP;
 
-	} else if (strncmp(cmd, "CHARGE:", 7) == 0) {
+	} else if (strncmp_P(cmd, PSTR("CHARGE:"), 7) == 0) {
 		int soc = 0;
 		int connected = 0;
 		if (sscanf(cmd + 7, "%d:%d", &soc, &connected) == 2) {
@@ -410,22 +438,22 @@ void handleCommand(char *cmd) {
 			chestMode = CM_CHARGE;
 		}
 
-	} else if (strcmp(cmd, "OFF") == 0) {
+	} else if (strcmp_P(cmd, PSTR("OFF")) == 0) {
 		FastLED.setBrightness(BRIGHTNESS);
 		chestMode = CM_OFF;
 		FastLED.clear();
 		FastLED.show();
 
-	} else if (strcmp(cmd, "NEXT") == 0) {
+	} else if (strcmp_P(cmd, PSTR("NEXT")) == 0) {
 		nextPattern();
 		chestMode = CM_MANUAL;
 
-	} else if (strcmp(cmd, "COMPLIMENT") == 0) {
+	} else if (strcmp_P(cmd, PSTR("COMPLIMENT")) == 0) {
 		FastLED.setBrightness(200);
 		complimentStartMs = millis();
 		chestMode = CM_COMPLIMENT;
 
-	} else if (strcmp(cmd, "FADEOFF") == 0) {
+	} else if (strcmp_P(cmd, PSTR("FADEOFF")) == 0) {
 		// Smoothly fade the current frame to black (shutdown). Idempotent: a
 		// repeat during an in-progress fade is ignored so the fade isn't restarted.
 		if (chestMode != CM_FADEOFF) {
