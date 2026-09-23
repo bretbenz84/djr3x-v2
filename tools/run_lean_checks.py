@@ -43,6 +43,8 @@ def child(module):
         config.REX_DB_PATH = str(Path(temp) / "rex.db")
         config.PLACE_DB_PATH = str(Path(temp) / "places.db")
         config.TTS_CACHE_DIR = str(Path(temp) / "tts")
+        from hardware import throttle_motion
+        throttle_motion.STATE_FILE = Path(temp) / "throttle_arm_parked.json"
         import sqlite3
         from setup_assets import DB_SCHEMA
         with sqlite3.connect(config.DB_PATH) as db:

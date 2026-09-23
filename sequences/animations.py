@@ -26,6 +26,7 @@ import config
 import state as _state_module
 from state import State as _State
 from hardware import servos, leds_head, leds_chest
+from sequences import throttle_arm
 from intelligence import emotion_orchestrator
 from world_state import world_state
 
@@ -878,6 +879,7 @@ def startup() -> None:
     leds_chest.startup()
     leds_head.active()
     leds_head.set_eye_color(255, 200, 0)    # warm gold boot-up eyes
+    throttle_arm.start()
 
     # Raise head + open visor in a background thread while the main thread
     # runs the neck sweep — gives the impression of waking up and looking around
@@ -1046,6 +1048,7 @@ def shutdown() -> None:
         acceleration=int(getattr(config, "SHUTDOWN_DROOP_SERVO_ACCELERATION", 14)),
     )
 
+    throttle_arm.request_park()
     # The elbow travels with the head: powered off the arm falls to ELBOW_REST
     # anyway, so taking it there under control now is what makes the next cold
     # boot's first elbow target a no-op instead of a violent yank (see
@@ -1064,6 +1067,9 @@ def shutdown() -> None:
         servos.latch_shutdown_pose()
     except Exception:
         pass
+    # The head is now protected from late speech/scene writes while the separate
+    # throttle worker finishes only its tuck/park route on channels 8–10.
+    throttle_arm.park()
     # Give the head time to physically arrive at FLOOR before LEDs off / serial
     # close. Don't rely on the shutdown-audio join window (skipped when audio is
     # disabled), or a correct-speed droop could still be cut short.
@@ -1102,6 +1108,7 @@ def sleep() -> None:
         speed=int(getattr(config, "SHUTDOWN_DROOP_SERVO_SPEED", 70)),
         acceleration=int(getattr(config, "SHUTDOWN_DROOP_SERVO_ACCELERATION", 14)),
     )
+    throttle_arm.request_park()
     servos.move_to({3: VISOR_CLOSED}, step_us=25, step_delay=0.035)
     time.sleep(0.25)
     servos.move_to(
@@ -1119,11 +1126,13 @@ def sleep() -> None:
         step_delay=0.035,
     )
     servos.latch_sleep_pose()
+    throttle_arm.park()
 
 
 def wake() -> None:
     """Wake from sleep: head raises, visor opens, active LEDs restore."""
     servos.release_sleep_latch()
+    throttle_arm.start()
     leds_chest.active()
     servos.move_to(
         {

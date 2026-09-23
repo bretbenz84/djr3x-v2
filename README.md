@@ -158,7 +158,7 @@ Instead of starting `main.py` by hand, you can have macOS stay quietly ready and
 
 The same installer adds a **menu bar battery meter** (`tools/rex_battery_menubar.py`) when `MOTION_ESP32_PORT` is set: the drive base's charge, voltage, and current stay visible in the macOS menu bar even while the robot is off, by passively reading the ESP32's always-on telemetry stream. It releases the serial port automatically whenever `main.py` is running (same flock the supervisor uses for the mic) and reclaims it when Rex shuts down. A **"Set Battery to 100%"** menu item lets you sync the firmware's charge gauge the moment your charger's taper current says the pack is full. The same dropdown also carries a **drive joystick** — dragging it sends live drive setpoints straight to the ESP32, so you can move the robot without starting `main.py` (it holds the port only while Rex is off, same as the meter).
 
-It also adds a **"Servo Control" menu bar console** (`tools/rex_servo_menubar.py`) when `MAESTRO_PORT` is set: a dropdown with live sliders for all 8 Maestro servo channels (labelled with the current position in microseconds, initialized from the board's actual positions) plus a **"Restart Pololu"** action that sends the Maestro's go-home command. Sliders command the servos directly over the same wire protocol the robot uses. Like the battery meter, it releases the serial port automatically whenever `main.py` is running and reclaims it when Rex shuts down.
+It also adds a **"Servo Control" menu bar console** (`tools/rex_servo_menubar.py`) when `MAESTRO_PORT` is set: a dropdown with live sliders for all 11 Maestro servo channels (labelled with the current position in microseconds, initialized from the board's actual positions) plus a **"Restart Pololu"** action that sends the Maestro's go-home command. Sliders command the servos directly over the same wire protocol the robot uses. Like the battery meter, it releases the serial port automatically whenever `main.py` is running and reclaims it when Rex shuts down.
 
 And an **"LED Control" menu bar console** (`tools/rex_led_menubar.py`) when `ARDUINO_HEAD_PORT` or `ARDUINO_CHEST_PORT` is set: a dropdown with one button per animation the head and chest firmware support, so you can audition any LED pattern while the robot is off. Head "speak" animations are an equalizer that normally rides a `SPEAK_LEVEL` stream derived from live TTS audio, so clicking one also starts a synthetic level wave to make the mouth actually dance; chest speak patterns animate on their own. It starts in **Battery Meter Mode** (both ports released, buttons inert) because the battery meter needs those same exclusive-open ports to paint the chest charge gauge and the mouth's state-of-charge breathing while Rex is off — holding them permanently left the robot sitting dark on the charger. Toggle the top menu item, or just click any animation, to take the ports; the choice persists across relaunches. It reads ports straight from `.env` and never imports `config.py`, so it runs without API keys configured.
 
@@ -194,7 +194,7 @@ Connecting the Maestro before limits are programmed can drive a servo past its s
 
 ### Direction of travel
 
-**`headtilt` is the only inverted channel.** Every other channel correlates: a higher quarter-microsecond value moves that joint in the direction named below, and a lower value moves it back.
+**Among the original eight channels, `headtilt` is the only inverted channel.** Every other channel correlates: a higher quarter-microsecond value moves that joint in the direction named below, and a lower value moves it back.
 
 | Ch | Channel | Higher value → | Lower value → |
 | --- | --- | --- | --- |
@@ -208,6 +208,225 @@ Connecting the Maestro before limits are programmed can drive a servo past its s
 | 7 | `heroarm` | arm raised toward horizontal | arm hanging down the torso |
 
 The elbow's low end is also its **unpowered rest**: with the robot off the servos go limp and the arm falls there, so `config.SERVO_CHANNELS["elbow"]["rest"]` parks and starts it at that value. See "unpowered rest" in [config.py](config.py).
+
+### Throttle arm commissioning (channels 8–10)
+
+The throttle arm has coupled clearance constraints: a low shoulder restricts elbow
+extension, and wrist clearance depends on both upstream joints. Individual Maestro
+limits do not prevent chassis collisions. The dedicated runtime controller uses a
+limited upward repertoire and the empirically tested coupled clearance boxes.
+
+`config.THROTTLE_SERVO_CHANNELS` defines the linkages separately from the independent
+`SERVO_CHANNELS` table, so generic independent-joint commands cannot move them.
+`sequences/throttle_arm.py` owns their startup, idle, speech, and parking motion.
+The separate menu-bar console provides
+manual commissioning sliders for all three throttle joints, regardless of the main
+program's animation enable flag. These sliders enforce individual limits and apply
+the profiles below before each target, but do not enforce coupled clearance.
+Opening/reloading the helper only reads positions; movement requires a slider action. Generic target/profile APIs reject throttle channels.
+
+| Channel | Name | Measured limits (µs) | Down (µs) | Up (µs) | Speed / acceleration |
+| --- | --- | --- | --- | --- | --- |
+| 8 | `throttle_shoulder` | 535–2280 | 2280 | 535 | 30 / 6 |
+| 9 | `throttle_elbow` | 500–2500 | 500 | 2500 | 70 / 12 |
+| 10 | `throttle_wrist` | 500–2500 | 2500 | 500 | 70 / 12 |
+
+For collecting measurements, turn on **Measurement mode (slow throttle)** in the
+Servo Control menu. Subsequent throttle slider moves and nudges use shoulder speed /
+acceleration 10 / 2 and elbow/wrist 20 / 3. Toggling the mode does not move anything
+or change an already-running move. Each throttle joint has a **Nudge** submenu with
+−10, −5, −1, +1, +5, +10 µs actions, starting from a fresh board pulse readback.
+Nudges require a stationary controller and refuse off/unreadable channels.
+
+Choose **Record this pose…**, type a clearance or obstacle note in the text field,
+and click Record. Recording works in either normal or measurement mode.
+The helper reads all three throttle pulses and appends a timestamped row to
+`data/throttle_measurements.csv`. Recording rejects pending/moving/off/unreadable
+poses and never sends a movement command. Values are controller pulses, not physical
+shaft feedback; check actual clearance before saving. Measurement status and saved
+values appear in the menu. Go-home is hidden while measuring. Turn measurement
+mode off to restore normal profiles on subsequent moves. Coupled clearance remains
+manual during measurement; this mode does not automatically approve recorded poses.
+
+#### Recording a throttle movement sequence
+
+Use **Throttle sequences → Start recording…**, name the demonstration, and wait
+for the menu to say **Recording**. Start recording requires all three throttle
+channels to be on and stationary; it reads the starting pulses without moving them.
+Move the throttle sliders/nudges along a path you observe to be clear. The helper
+records successful throttle target writes, their speed/acceleration settings, their
+order, and elapsed time, including pauses. Other robot channels are not recorded.
+Wait for the arm to settle, then choose **Stop and save recording**. Files are saved
+under `data/throttle_sequences/` as uniquely named JSON; existing files are not
+overwritten. **Discard recording** drops the unsaved demonstration without moving.
+Connection loss or Rex taking over cancels the active session; it never auto-resumes.
+
+**Play saved sequence** is a separate, explicit movement action. Manually return
+along a safe path to the sequence's starting pose first. Playback requires fresh,
+stationary pulse readings within 1 µs of all three recorded starting values and
+refuses to reposition automatically. It reuses the demonstrated timing and profiles,
+even if measurement mode is currently different. Sliders/nudges are blocked during
+playback; go-home is blocked during recording and playback. **Stop playback — hold
+position** cancels future targets and sends the current pulse readbacks as hold
+targets (it does not switch servo torque off). A missed timing deadline aborts playback
+instead of bursting overdue commands. Completion checks the final pulse readbacks.
+
+A demonstrated command sequence is not a measured physical trajectory: the Maestro
+has no shaft feedback, and mechanical lag/obstacles can change. This recorder does
+not certify collision safety or connect sequences to Rex's autonomous behaviors.
+Saved pose notes and sequence recordings remain separate datasets.
+
+The measured shoulder-dependent elbow limits are:
+
+| Shoulder pulse (µs) | Minimum elbow pulse (µs) | Maximum elbow pulse (µs) |
+| --- | --- | --- |
+| 2280 (shoulder fully down) | 1546 | 2500 |
+| 1702 | 636 | 2500 |
+| 1636 | 500 | 2500 |
+
+`config.throttle_elbow_limits(shoulder_qus)` returns this static envelope in
+quarter-microseconds, intersected with the individual elbow limits. Between measured
+points it uses the more restrictive neighboring minimum: 1546 µs above a shoulder
+pulse of 1702, 636 µs above 1636 through 1702, and 500 µs at/below 1636.
+The last range assumes clearance does not decrease as the shoulder rises further.
+No linear clearance interpolation is assumed. This records a pose constraint, not
+a verified movement path; the elbow may need to retract before the shoulder lowers.
+These coupled limits are not enforced by the manual menu-bar sliders. Runtime
+animation additionally checks wrist clearance and every transition's full joint
+progress box in `hardware/throttle_motion.py`.
+
+The owner reconfirmed **1546 µs** as the lowered-shoulder elbow minimum after
+reviewing the saved poses. Measurements 3 and 4 (shoulder 2272 µs, elbow 1397.25 µs)
+therefore conflict with that limit and are excluded from the supervised pose tour;
+the original CSV is retained as raw observations, not a list of approved poses.
+
+`tools/throttle_pose_tour.py` defaults to printing a plan without opening hardware.
+Its explicit `--action park` and `--action run` commands operate only throttle
+channels, acquire Rex's single-instance lock to make the helper release the port,
+and check pulse readback after each move. The supervised tour raises the shoulder
+before adjusting elbow/wrist together, then lowers only after those joints settle.
+It skips the two conflicting poses, holds each included pose for three seconds,
+and finishes parked. This route assumes the owner's confirmed clear setup; it is
+not an autonomous geometric collision planner. Touching `data/throttle-tour.stop`
+or interrupting the process aborts remaining targets and attempts to hold current
+pulses. Remove the stop file deliberately before a future run.
+
+For the owner's explicitly requested all-recorded-poses test, the supervised runner
+also accepts `--limits recorded --dwell 1`. This includes all saved tuples, including
+poses 3 and 4, as exact exceptions; it does not lower the general 1546 µs elbow bound
+or approve unmeasured wrist positions. The default remains `--limits established`
+with a three-second dwell. Recorded mode is for the owner's observed, cleared setup,
+not general autonomous operation. `--dwell` controls the hold after reaching a pose,
+not travel time or the separate brief settling check.
+
+`tools/throttle_coordinated_tour.py` adds supervised shoulder/downstream overlap.
+Without `--run` it only prints a plan. With `--run` it requires the parked pose,
+uses capped proportional speed/acceleration and a single Mini Maestro multi-target
+packet for each movement, and runs all 11 recorded poses without intentional holds.
+Six transitions combine shoulder with elbow/wrist. These use conservative clearance
+boxes so safety does not depend on identical joint progress: the lowered-shoulder
+box keeps elbow at least 1546 µs and wrist at 512 µs; raised/intermediate boxes use
+the owner's elbow/wrist boundary observations and saved intermediate pose. This
+assumes clearance improves with raising the shoulder/curling the elbow. The two
+low-elbow recorded exceptions retain staged transitions. This remains a supervised,
+empirical route, not a geometry-verified autonomous motion planner.
+
+The **reach study** (`tools/throttle_coordinated_tour.py --routine reach-study`)
+plans a short expressive routine: ready → curious reach → forward reach → draw back
+→ offer → extend offer → gather → higher reach → relax → tuck → park. Every segment
+moves shoulder and elbow together. Reaching lifts the shoulder while extending the
+elbow and uncurling the wrist toward 1500 µs; withdrawal reverses that relationship.
+There are no standalone wrist moves or scheduled holds. New intermediate poses are
+checked against the existing clearance boxes, including independent joint progress;
+they do not use the low-elbow recorded exceptions. These are gesture intentions,
+not a calibrated Cartesian hand trajectory. Append `--run` only for an explicitly
+requested supervised execution; default invocation just prints the plan. The start
+must be parked. Plan output is saved at `data/throttle_reach_study_plan.json`.
+
+The **reach-and-up** variation (`--routine reach-and-up`) continues the forward
+reaches into three upward → forward → draw-in gestures before a single return to
+park. Shoulder, elbow, and wrist move together through the upward section, with
+different wrist curls and extensions on each pass. Each upward reach sweeps
+directly into a forward reach before withdrawing; no scheduled holds are added.
+It uses the same clearance checks and capped profiles. Its plan is saved at
+`data/throttle_reach_and_up_plan.json`; append `--run` for supervised execution.
+
+The owner verified the intended startup/shutdown destination: shoulder **2280 µs**,
+elbow **2500 µs**, wrist **500 µs**. These values are recorded as `park` in the
+throttle configuration. The joints retain their position through friction when
+unpowered; they do not fall to a gravity-rest pose. The board's actual quantized
+park is **2272 / 2496 / 512 µs**, which the runtime uses for arrival checks.
+
+#### Main-program throttle animation
+
+`SERVO_THROTTLE_ARM_ENABLED=true` in this robot's `.env` enables the dedicated
+worker on startup and wake. It shares the main program's serial lock; it does not
+open a competing serial connection. Forward reaches remain available only in the
+explicit supervised tour tools and are never selected by normal idle/speech.
+
+- **Startup:** park → shoulder-clearance tuck → gently unfold upward → comfortable
+  bent-elbow rest (**1050 / 1930 / 1280 µs**). Targets roughly 1.25 seconds per pose
+  with a dedicated startup profile, alongside the head startup.
+- **Quiet operation:** small coordinated variations around that upward rest,
+  moving over roughly 2.3–3.3 seconds with 7–12 seconds between movements.
+- **Speech:** four varied upward gestures, with shoulder, elbow, and wrist moving
+  together over roughly 1.35–2 seconds per pose. Wrist poses span 850–2110 µs,
+  with about 1000 µs of wrist travel within each paired gesture. Audio pauses of at least 0.35 seconds
+  are phrase proxies; a sustained opening and sparse fallback cover longer lines.
+  A 3.5–5.5 second minimum interval survives TTS sentence boundaries, so short
+  acknowledgments and individual words do not each cause a gesture. These are
+  acoustic timing cues, not semantic concept analysis. At speech end, the current
+  pose finishes, followed by a rest return after a 1.4-second grace period. During
+  uninterrupted speech, fallback gestures are eligible 6.5 seconds after the last
+  gesture, without adding another full cooldown to that delay.
+- **Sleep/shutdown:** head and throttle arm park concurrently. The head latches as
+  soon as its rest pose is commanded, while the throttle worker may finish only
+  the coupled tuck (**1636 / 2100 / 512 µs**) and park (roughly 1.5 seconds per pose).
+  Serial teardown waits for completion. Late speech callbacks cannot restart the arm.
+
+Timing/profile settings are `THROTTLE_STARTUP_*`, `THROTTLE_IDLE_*`, `THROTTLE_SPEECH_*`, and
+`THROTTLE_PARK_*` in `config.py`, overridable in `user_config.py`. Integer Maestro
+profiles/acceleration may lengthen the requested travel duration. All targets use
+one three-channel packet and fresh pulse readback; the original hero-arm speech
+behavior remains independent.
+
+Startup requires parked pulse readbacks. If all outputs are off, it can reassert
+park only after a previously completed park recorded in the local, ignored
+`data/throttle_arm_parked.json`. A missing marker, partially disabled channels, or
+an unexpected pose prevents automatic repositioning. Runtime, tour, and menu-bar
+writes invalidate that marker before moving; successful runtime/tour parking (or
+an explicit `throttle_pose_tour.py --action inspect` at stationary park) restores it.
+Do not rely on the marker after physically repositioning an unpowered joint or
+using an external controller: inspect/reestablish park first. The Maestro reports
+output pulses, not shaft feedback. Manual override, an unreadable/changed serial
+connection, or a movement timeout stops the worker and holds current pulses where
+possible; it never replays movement after reconnect. Recovery requires a new
+program run from park. Setting `SERVO_THROTTLE_ARM_ENABLED=false` disables the worker.
+
+Profiles use Maestro units and are provisional commissioning values. The menu-bar
+helper applies each joint's profile before a manual target. Runtime uses slower
+idle/speech profiles, capped by each joint's commissioning profile.
+`up`/`down` describe measured endpoints; `park` records the chosen destination.
+Optional paired `SERVO_THROTTLE_<JOINT>_MIN_US` / `_MAX_US` overrides may narrow
+these bounds to match the actual stored board limits; they cannot widen them.
+
+For legacy shoulder-only commissioning, first disable `SERVO_THROTTLE_ARM_ENABLED`,
+keep the elbow and wrist servos disconnected and
+ensure their linkages are supported in a pose that clears the shoulder's movement.
+Set `SERVO_THROTTLE_SHOULDER_STARTUP_US` in `.env` to the deliberately selected
+startup pulse, then set `SERVO_THROTTLE_SHOULDER_ENABLED=true`. A blank or out-of-range
+target stops startup when enabled. The default is disabled with no assumed pose.
+On servo connect the program sends acceleration, speed, then this target on channel 8;
+it sends no throttle elbow/wrist targets. The shoulder holds that target through
+normal neutral/shutdown routines; there is no automatic throttle parking move.
+
+A first pulse can cause a jump from the actual unpowered position despite speed
+limits; the Maestro reports commanded pulse position, not physical joint feedback.
+The software gate does not change board startup/error/home behavior or constrain
+external controllers, including the menu-bar **Restart Pololu (all home)** command.
+Configure board behavior accordingly before applying servo power. The runtime
+repertoire stays within the tested envelope; new reach triggers will need their
+own explicit choreography and clearance checks.
 
 ## Motion Base (optional)
 

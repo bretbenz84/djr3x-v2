@@ -275,6 +275,8 @@ assets/memory/
 data/places.db
 data/places.db-shm
 data/places.db-wal
+data/throttle_arm_parked.json
+data/throttle_arm_parked.tmp
 
 
 # Startup boot-line rotation state — local runtime bookkeeping

@@ -1087,6 +1087,8 @@ from pathlib import Path
 config_path = Path(sys.argv[1])
 env_path = Path(sys.argv[2])
 text = config_path.read_text(encoding="utf-8")
+# Throttle commissioning is configured explicitly in .env; it must not be
+# included in this independent-servo wizard (see README throttle section).
 match = re.search(r"SERVO_CHANNELS\s*=\s*(\{.*?\n\})", text, re.DOTALL)
 if not match:
     raise SystemExit("Could not find SERVO_CHANNELS in config.py")

@@ -2809,7 +2809,7 @@ SERVO_LISTENING_MAX_SECS = 20.0       # safety: auto-stop if a stop is ever miss
 # and SERVO_<NAME>_MAX_US using Maestro Control Center microsecond values.
 # The .env file wins over inherited shell env for servo safety keys, and invalid
 # or incomplete servo limit values raise at startup instead of falling back.
-# DIRECTION OF TRAVEL: headtilt is the ONLY inverted channel (low values = head
+# DIRECTION OF TRAVEL: among the original eight, headtilt is inverted (low values = head
 # high, high values = head low). Every other channel correlates — a higher value
 # moves the joint the way its name implies, so a higher elbow lifts the arm and a
 # lower one lets it hang. The README's "Direction of travel" table is the
@@ -2847,6 +2847,54 @@ SERVO_CHANNELS = {
     "pokerarm": {"ch": 6, "min": 3968, "max": 8000, "neutral": 6000},
     "heroarm":  {"ch": 7, "min": 3968, "max": 8000, "neutral": 6000},
 }
+
+
+# Coupled throttle linkages are deliberately excluded from SERVO_CHANNELS:
+# generic neutral/shutdown/animation poses assume independently safe joints.
+# Values are quarter-microseconds; increasing pulse lowers shoulder and wrist.
+# Profiles are conservative commissioning defaults, not measured safe speeds.
+# park is the owner-verified startup/shutdown destination. Friction holds these
+# joints when unpowered; this is NOT a gravity-rest pose. Runtime animation uses
+# the dedicated coupled controller, separate from the independent channels.
+THROTTLE_SERVO_CHANNELS = {
+    "throttle_shoulder": {"ch": 8, "min": 2140, "max": 9120,
+                          "down": 9120, "up": 2140, "park": 9120, "speed": 30, "acceleration": 6},
+    "throttle_elbow": {"ch": 9, "min": 2000, "max": 10000,
+                       "down": 2000, "up": 10000, "park": 10000, "speed": 70, "acceleration": 12},
+    "throttle_wrist": {"ch": 10, "min": 2000, "max": 10000,
+                       "down": 10000, "up": 2000, "park": 2000, "speed": 70, "acceleration": 12},
+}
+
+
+# Owner-measured shoulder pulse -> minimum elbow pulse, in quarter-microseconds.
+# Smaller shoulder pulses raise the arm. Do not interpolate unmeasured clearance.
+THROTTLE_ELBOW_CLEARANCE = (
+    (1636 * 4, 500 * 4),
+    (1702 * 4, 636 * 4),
+    (2280 * 4, 1546 * 4),
+)
+
+
+def throttle_elbow_limits(shoulder_qus: int) -> tuple[int, int]:
+    """Static elbow envelope for a known shoulder pose, in quarter-microseconds.
+
+    Between measurements use the next lower physical shoulder's stricter bound.
+    At/above the 1636-us shoulder pose, the elbow has its full individual range.
+    This assumes clearance increases as the shoulder rises. It is not a trajectory
+    planner: lowering the shoulder can require retracting the elbow first, and
+    neither wrist clearance nor physical servo lag is modeled here.
+    """
+    shoulder = THROTTLE_SERVO_CHANNELS["throttle_shoulder"]
+    elbow = THROTTLE_SERVO_CHANNELS["throttle_elbow"]
+    if not shoulder["min"] <= shoulder_qus <= shoulder["max"]:
+        raise ValueError("A known shoulder position within its limits is required")
+    for shoulder_bound, elbow_min in THROTTLE_ELBOW_CLEARANCE:
+        if shoulder_qus <= shoulder_bound:
+            minimum = max(elbow["min"], elbow_min)
+            if minimum > elbow["max"]:
+                raise ValueError("No elbow clearance within configured joint limits")
+            return minimum, elbow["max"]
+    raise ValueError("Shoulder position is outside the measured clearance envelope")
 
 
 def _servo_env_raw(env_key: str) -> str:
@@ -2908,6 +2956,59 @@ def _apply_servo_env_overrides() -> None:
 
 
 _apply_servo_env_overrides()
+
+
+def _throttle_startup_settings() -> tuple[bool, int | None]:
+    """Require an explicit shoulder target; never infer rest from a joint limit."""
+    for name, cfg in THROTTLE_SERVO_CHANNELS.items():
+        prefix = f"SERVO_{name.upper()}"
+        lo_key, hi_key = f"{prefix}_MIN_US", f"{prefix}_MAX_US"
+        if _servo_env_is_set(lo_key) != _servo_env_is_set(hi_key):
+            raise RuntimeError(f"{prefix} limits must be provided as a min/max pair")
+        lo = _servo_env_us_to_qus(lo_key, cfg["min"])
+        hi = _servo_env_us_to_qus(hi_key, cfg["max"])
+        if not cfg["min"] <= lo < hi <= cfg["max"]:
+            raise RuntimeError(f"{prefix} limits must stay within the measured joint limits")
+        cfg.update(min=lo, max=hi)
+    enabled_key = "SERVO_THROTTLE_SHOULDER_ENABLED"
+    raw = _servo_env_raw(enabled_key).lower()
+    if raw not in ("", "false", "true", "0", "1"):
+        raise RuntimeError(f"{enabled_key} must be true or false")
+    enabled = raw in ("true", "1")
+    target_key = "SERVO_THROTTLE_SHOULDER_STARTUP_US"
+    target = (_servo_env_us_to_qus(target_key, 0)
+              if _servo_env_is_set(target_key) else None)
+    cfg = THROTTLE_SERVO_CHANNELS["throttle_shoulder"]
+    if target is not None and not cfg["min"] <= target <= cfg["max"]:
+        raise RuntimeError(f"{target_key} must be within the shoulder limits")
+    if enabled and target is None:
+        raise RuntimeError(f"{enabled_key}=true requires an explicit {target_key}")
+    return enabled, target
+
+
+THROTTLE_SHOULDER_ENABLED, THROTTLE_SHOULDER_STARTUP = _throttle_startup_settings()
+
+# Enable the tested, upward-only background repertoire on this robot. The old
+# shoulder-only commissioning switch is ignored when the full arm is enabled.
+THROTTLE_ARM_ENABLED = _servo_env_raw('SERVO_THROTTLE_ARM_ENABLED').lower() in ('true', '1')
+THROTTLE_IDLE_DWELL_SECS = (7.0, 12.0)
+THROTTLE_STARTUP_MOVE_SECS = 1.25
+THROTTLE_IDLE_MOVE_SECS = (2.3, 3.3)
+THROTTLE_SPEECH_MOVE_SECS = (1.35, 2.0)
+THROTTLE_PARK_MOVE_SECS = 1.5
+THROTTLE_SPEECH_GAP_SECS = (3.5, 5.5)
+THROTTLE_SPEECH_PAUSE_SECS = 0.35
+THROTTLE_SPEECH_FALLBACK_SECS = 6.5
+THROTTLE_SPEECH_SETTLE_SECS = 1.4
+# Per-joint caps remain within the tested tour's 30/70/70, 6/12/12.
+THROTTLE_STARTUP_SPEED = {8: 26, 9: 60, 10: 65}
+THROTTLE_STARTUP_ACCEL = {8: 5, 9: 10, 10: 12}
+THROTTLE_IDLE_SPEED = {8: 14, 9: 32, 10: 36}
+THROTTLE_IDLE_ACCEL = {8: 3, 9: 6, 10: 7}
+THROTTLE_SPEECH_SPEED = {8: 24, 9: 56, 10: 70}
+THROTTLE_SPEECH_ACCEL = {8: 5, 9: 10, 10: 12}
+THROTTLE_PARK_SPEED = {8: 26, 9: 60, 10: 65}
+THROTTLE_PARK_ACCEL = {8: 5, 9: 10, 10: 12}
 
 
 def servo_rest_position(name: str) -> int:

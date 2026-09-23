@@ -1,0 +1,336 @@
+{
+  "dwell_seconds": 0,
+  "duration_seconds": 86.17898026693335,
+  "segments": [
+    {
+      "start": {
+        "8": 9088,
+        "9": 9984,
+        "10": 2048
+      },
+      "end": {
+        "8": 2176,
+        "9": 9984,
+        "10": 2048
+      },
+      "seconds": 6.48,
+      "pose_id": null,
+      "note": "Arm fully extended, level."
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 9984,
+        "10": 2048
+      },
+      "end": {
+        "8": 2176,
+        "9": 2601,
+        "10": 5938
+      },
+      "seconds": 3.46078125,
+      "pose_id": 1,
+      "note": "Arm fully extended, level."
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 2601,
+        "10": 5938
+      },
+      "end": {
+        "8": 2176,
+        "9": 9361,
+        "10": 6302
+      },
+      "seconds": 3.16875,
+      "pose_id": 2,
+      "note": "Arm extended, forearm and hand striaght up"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 9361,
+        "10": 6302
+      },
+      "end": {
+        "8": 2176,
+        "9": 7044,
+        "10": 6507
+      },
+      "seconds": 1.2329383664977867,
+      "pose_id": 6,
+      "note": "Arm fully up, forearm and wrist up in line at 45 degrees"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 7044,
+        "10": 6507
+      },
+      "end": {
+        "8": 2176,
+        "9": 7044,
+        "10": 2544
+      },
+      "seconds": 1.85765625,
+      "pose_id": 7,
+      "note": "Arm fully up, forearm up, hand curled backwards up"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 7044,
+        "10": 2544
+      },
+      "end": {
+        "8": 2176,
+        "9": 6388,
+        "10": 9984
+      },
+      "seconds": 3.4875,
+      "pose_id": 8,
+      "note": "Arm fully up, forearm 45 degrees up, wrist level"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 6388,
+        "10": 9984
+      },
+      "end": {
+        "8": 2176,
+        "9": 9508,
+        "10": 9984
+      },
+      "seconds": 1.4625,
+      "pose_id": 9,
+      "note": "Arm fully up, forearm straight up, wrist down"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 9508,
+        "10": 9984
+      },
+      "end": {
+        "8": 2176,
+        "9": 2617,
+        "10": 9984
+      },
+      "seconds": 3.23015625,
+      "pose_id": 10,
+      "note": "Arm fully up, forearm level, wrist fully down"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 2617,
+        "10": 9984
+      },
+      "end": {
+        "8": 2176,
+        "9": 2048,
+        "10": 9017
+      },
+      "seconds": 0.7965106504355335,
+      "pose_id": null,
+      "note": "Arm, forearm, and wrist at lost position in this configuration"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 2048,
+        "10": 9017
+      },
+      "end": {
+        "8": 5538,
+        "9": 2048,
+        "10": 9017
+      },
+      "seconds": 3.151875,
+      "pose_id": 11,
+      "note": "Arm, forearm, and wrist at lost position in this configuration"
+    },
+    {
+      "start": {
+        "8": 5538,
+        "9": 2048,
+        "10": 9017
+      },
+      "end": {
+        "8": 2176,
+        "9": 2048,
+        "10": 9017
+      },
+      "seconds": 3.151875,
+      "pose_id": null,
+      "note": "Arm fully down including forearm and wrist"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 2048,
+        "10": 9017
+      },
+      "end": {
+        "8": 2176,
+        "9": 5589,
+        "10": 9511
+      },
+      "seconds": 1.65984375,
+      "pose_id": null,
+      "note": "Arm fully down including forearm and wrist"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 5589,
+        "10": 9511
+      },
+      "end": {
+        "8": 9088,
+        "9": 5589,
+        "10": 9511
+      },
+      "seconds": 6.48,
+      "pose_id": 3,
+      "note": "Arm fully down including forearm and wrist"
+    },
+    {
+      "start": {
+        "8": 9088,
+        "9": 5589,
+        "10": 9511
+      },
+      "end": {
+        "8": 2176,
+        "9": 5589,
+        "10": 9511
+      },
+      "seconds": 6.48,
+      "pose_id": null,
+      "note": "Arm fully down, wrist fully up"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 5589,
+        "10": 9511
+      },
+      "end": {
+        "8": 2176,
+        "9": 5589,
+        "10": 2048
+      },
+      "seconds": 3.49828125,
+      "pose_id": null,
+      "note": "Arm fully down, wrist fully up"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 5589,
+        "10": 2048
+      },
+      "end": {
+        "8": 9088,
+        "9": 5589,
+        "10": 2048
+      },
+      "seconds": 6.48,
+      "pose_id": 4,
+      "note": "Arm fully down, wrist fully up"
+    },
+    {
+      "start": {
+        "8": 9088,
+        "9": 5589,
+        "10": 2048
+      },
+      "end": {
+        "8": 2176,
+        "9": 5589,
+        "10": 2048
+      },
+      "seconds": 6.48,
+      "pose_id": null,
+      "note": "Arm fully down, forearm level, wrist level"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 5589,
+        "10": 2048
+      },
+      "end": {
+        "8": 2176,
+        "9": 7371,
+        "10": 6507
+      },
+      "seconds": 2.09015625,
+      "pose_id": null,
+      "note": "Arm fully down, forearm level, wrist level"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 7371,
+        "10": 6507
+      },
+      "end": {
+        "8": 9088,
+        "9": 7371,
+        "10": 6507
+      },
+      "seconds": 6.48,
+      "pose_id": 5,
+      "note": "Arm fully down, forearm level, wrist level"
+    },
+    {
+      "start": {
+        "8": 9088,
+        "9": 7371,
+        "10": 6507
+      },
+      "end": {
+        "8": 2176,
+        "9": 7371,
+        "10": 6507
+      },
+      "seconds": 6.48,
+      "pose_id": null,
+      "note": "Park"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 7371,
+        "10": 6507
+      },
+      "end": {
+        "8": 2176,
+        "9": 9984,
+        "10": 2048
+      },
+      "seconds": 2.09015625,
+      "pose_id": null,
+      "note": "Park"
+    },
+    {
+      "start": {
+        "8": 2176,
+        "9": 9984,
+        "10": 2048
+      },
+      "end": {
+        "8": 9088,
+        "9": 9984,
+        "10": 2048
+      },
+      "seconds": 6.48,
+      "pose_id": "park",
+      "note": "Park"
+    }
+  ]
+}

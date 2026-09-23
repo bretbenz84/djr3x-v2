@@ -15,6 +15,7 @@ import time
 import serial
 
 import config
+from hardware import throttle_motion
 from utils.config_loader import MAESTRO_PORT, SERVOS_ENABLED
 
 _log = logging.getLogger(__name__)
@@ -194,6 +195,35 @@ _listening_thread: "threading.Thread | None" = None
 _listening_lock = threading.Lock()
 
 # ── Channel index lookups ──────────────────────────────────────────────────────
+
+
+def _require_independent_channels(channels) -> None:
+    """Throttle targets need a coupled planner; generic writes must not bypass it."""
+    reserved = {cfg["ch"] for cfg in config.THROTTLE_SERVO_CHANNELS.values()}
+    if reserved.intersection(channels):
+        raise ValueError("Throttle joints require the dedicated coupled motion controller")
+
+
+def _apply_throttle_startup_locked() -> None:
+    """Opt-in shoulder-only commissioning, with elbow/wrist physically unplugged.
+
+    This is a commanded pulse, not shaft feedback or a collision-safe move.
+    Repeat on explicit connect; transport retries do not issue extra poses.
+    """
+    if config.THROTTLE_ARM_ENABLED or not config.THROTTLE_SHOULDER_ENABLED:
+        return
+    cfg = config.THROTTLE_SERVO_CHANNELS["throttle_shoulder"]
+    target = config.THROTTLE_SHOULDER_STARTUP
+    if target is None or not cfg["min"] <= target <= cfg["max"]:
+        raise RuntimeError("A valid explicit throttle shoulder startup target is required")
+    throttle_motion.invalidate_park()
+    for cmd, value in ((_CMD_SET_ACCEL, cfg["acceleration"]),
+                       (_CMD_SET_SPEED, cfg["speed"]),
+                       (_CMD_SET_TARGET, target)):
+        if not _send_command_locked(_encode(cmd, cfg["ch"], value)):
+            raise RuntimeError("Could not apply throttle shoulder startup settings")
+    _log.info("Throttle shoulder commissioning target: %.2f us", target / 4)
+
 
 def _channel_cfg(channel: int) -> "dict | None":
     for cfg in config.SERVO_CHANNELS.values():
@@ -378,8 +408,17 @@ def _program_servo_updates_blocked() -> bool:
     )
 
 
+def throttle_motion_blocked(*, parking=False) -> bool:
+    """Head sleep/shutdown latches permit only the throttle's bounded park path.
+
+    Manual ownership always wins. move_throttle_pose separately restricts parking
+    targets to TUCK/PARK, so this cannot admit idle or speech after the head rests.
+    """
+    return _manual_override.is_set() if parking else _program_servo_updates_blocked()
+
+
 def latch_sleep_pose() -> None:
-    """Freeze programmatic servo writes once the sleep pose has been commanded.
+    """Freeze ordinary servo writes; an already-requested throttle park can finish.
 
     Same race as the shutdown latch, on the sleep path (field 2026-08-13: the
     "Going dark" clip's end_speech_motion drove the visor back to neutral around
@@ -397,8 +436,8 @@ def release_sleep_latch() -> None:
 
 
 def latch_shutdown_pose() -> None:
-    """Make the power-down rest pose FINAL: every later programmatic servo write
-    no-ops until process exit. The shutdown droop runs at the TOP of _shutdown()
+    """Make the head/body rest pose final; only the throttle park path may finish.
+    Ordinary writes no-op until process exit. The shutdown droop runs at the TOP of _shutdown()
     (theatrics first) while vision/consciousness threads are still being torn
     down — a periodic scene capture racing that window drove the visor to max +
     the neck to center right after the droop finished, and its own "restore"
@@ -441,6 +480,7 @@ def set_manual_servo(channel: int, position: int) -> bool:
     if not _manual_override.is_set():
         return False
     channel = int(channel)
+    _require_independent_channels([channel])
     position = _clamp(channel, int(position))
     with _lock:
         if SERVOS_ENABLED:
@@ -599,6 +639,11 @@ def connect() -> bool:
             return False
         if bool(getattr(config, "SERVO_APPLY_STARTUP_MOTION_PROFILE", True)):
             _apply_startup_motion_profile_locked()
+        try:
+            _apply_throttle_startup_locked()
+        except RuntimeError:
+            _close_serial_locked()
+            raise
         if bool(getattr(config, "SERVO_ASSERT_STARTUP_REST_POSE", True)):
             rest_pose = _assert_startup_rest_pose_locked()
     if rest_pose:
@@ -608,6 +653,8 @@ def connect() -> bool:
 
 def disconnect() -> None:
     global _ser
+    from sequences import throttle_arm
+    throttle_arm.stop()
     _stop_breathing.set()
     with _lock:
         _close_serial_locked()
@@ -621,18 +668,116 @@ def connected() -> bool:
 
 # ── Core command primitives ────────────────────────────────────────────────────
 
+
+def throttle_connection():
+    """Lease the current transport; a reconnect invalidates throttle animation."""
+    with _lock:
+        if not SERVOS_ENABLED or not connected():
+            raise RuntimeError('Throttle requires an open Maestro connection')
+        return _ser
+
+
+def _throttle_write_locked(connection, packet):
+    # Deliberately no reconnect/replay: other channels may recover their link,
+    # but this arm must not resume motion on a new, unverified controller session.
+    if connection is not _ser or not connected() or not SERVOS_ENABLED:
+        raise RuntimeError('Throttle Maestro connection changed or closed')
+    try:
+        if _ser.write(packet) != len(packet):
+            raise OSError('Incomplete throttle command')
+    except _SERIAL_ERRORS:
+        _close_serial_locked()
+        raise
+
+
+def _read_throttle_locked(connection):
+    result = {}
+    for ch in throttle_motion.CHANNELS:
+        _throttle_write_locked(connection, bytes([_CMD_GET_POSITION, ch]))
+        try:
+            data = _ser.read(2)
+            if len(data) != 2:
+                raise OSError('Incomplete throttle position reply')
+        except _SERIAL_ERRORS:
+            _close_serial_locked()
+            raise
+        result[ch] = struct.unpack('<H', data)[0]
+    return result
+
+
+def read_throttle_pose(connection):
+    """Read current output pulses under the shared serial lock (not shaft feedback)."""
+    with _lock:
+        return _read_throttle_locked(connection)
+
+
+def _throttle_packet(pose):
+    packet = bytearray([0x9F, 3, 8])
+    for ch in throttle_motion.CHANNELS:
+        packet.extend((pose[ch] & 127, pose[ch] >> 7))
+    return packet
+
+
+def move_throttle_pose(connection, pose, *, speed_caps, accel_caps, duration,
+                       cancel=None, cold_start=False, parking=False):
+    """Validate the full travel box and send all three targets atomically.
+
+    The dedicated worker owns targets; speech/idle callbacks never write them.
+    Profiles, fresh pulse reads, and the batch are serialized with hero/head I/O.
+    """
+    limits = {cfg['ch']: cfg for cfg in config.THROTTLE_SERVO_CHANNELS.values()}
+    with _lock:
+        if parking and pose not in (throttle_motion.TUCK, throttle_motion.PARK):
+            raise ValueError('Only the tuck and park targets may finish after a head latch')
+        if (not config.THROTTLE_ARM_ENABLED or throttle_motion_blocked(parking=parking)
+                or (cancel is not None and cancel.is_set())):
+            raise InterruptedError('Throttle motion is disabled or canceled')
+        throttle_motion.validate_pose(pose, limits)
+        current = _read_throttle_locked(connection)
+        if cold_start:
+            if (any(current.values()) or pose != throttle_motion.PARK
+                    or not throttle_motion.cold_start_park_known()):
+                raise ValueError('Cold throttle startup requires a previously completed park')
+            current = dict(throttle_motion.PARK)
+        else:
+            throttle_motion.validate_pose(current, limits)
+        if not throttle_motion.clearance_box(current, pose):
+            raise ValueError('Throttle transition outside the measured clearance model')
+        profile = throttle_motion.profiles(current, pose, limits, speed_caps, accel_caps, duration)
+        throttle_motion.invalidate_park()
+        for ch, (speed, accel) in profile.items():
+            _throttle_write_locked(connection, _encode(_CMD_SET_ACCEL, ch, accel))
+            _throttle_write_locked(connection, _encode(_CMD_SET_SPEED, ch, speed))
+        if throttle_motion_blocked(parking=parking) or (cancel is not None and cancel.is_set()):
+            raise InterruptedError('Throttle motion canceled before target write')
+        _throttle_write_locked(connection, _throttle_packet(pose))
+
+
+def hold_throttle_pose(connection):
+    """Cancel an in-flight target at its current pulse, without reconnecting."""
+    limits = {cfg['ch']: cfg for cfg in config.THROTTLE_SERVO_CHANNELS.values()}
+    with _lock:
+        pose = _read_throttle_locked(connection)
+        throttle_motion.validate_pose(pose, limits)
+        throttle_motion.invalidate_park()
+        _throttle_write_locked(connection, _throttle_packet(pose))
+
+
 def _send_set_target(channel: int, position: int) -> None:
     """Send Maestro compact protocol Set Target command (0x84)."""
+    _require_independent_channels([channel])
     _send_command_locked(_encode(_CMD_SET_TARGET, channel, _clamp(channel, int(_voice_hold_position(channel, position)))))
 
 
 def _send_set_speed(channel: int, speed: int) -> None:
     """Send Maestro compact protocol Set Speed command (0x87)."""
+    _require_independent_channels([channel])
     _send_command_locked(_encode(_CMD_SET_SPEED, channel, max(0, int(speed))))
 
 
 def _send_set_acceleration(channel: int, acceleration: int) -> None:
     """Send Maestro compact protocol Set Acceleration command (0x89)."""
+    _require_independent_channels([channel])
     _send_command_locked(_encode(_CMD_SET_ACCEL, channel, max(0, int(acceleration))))
 
 
@@ -646,6 +791,7 @@ def set_servo(channel: int, position: int) -> None:
     """Move channel to position (quarter-microseconds), clamped to channel limits."""
     if _program_servo_updates_blocked():
         return
+    _require_independent_channels([channel])
     position = _clamp(channel, _voice_hold_position(channel, position))
     if not SERVOS_ENABLED:
         _log.debug("set_servo no-op: SERVOS_ENABLED=False (ch=%d pos=%d)", channel, position)
@@ -735,6 +881,7 @@ def set_servos(channel_dict: "dict[int, int]") -> None:
     """Set multiple channels in one pass. channel_dict maps channel int → position."""
     if _program_servo_updates_blocked():
         return
+    _require_independent_channels(channel_dict)
     channel_dict = {ch: _clamp(ch, int(_voice_hold_position(ch, pos))) for ch, pos in channel_dict.items()}
     if not SERVOS_ENABLED:
         _log.debug("set_servos no-op: SERVOS_ENABLED=False")
@@ -866,6 +1013,8 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
         _speech_poker_direction = -1
         _next_speech_poker_at = 0.0
     _speech_active.set()
+    from sequences import throttle_arm
+    throttle_arm.speech_start()
     set_breathing_emotion(str(frame.get("led_style") or frame.get("affect") or "neutral"))
 
     if SERVOS_ENABLED:
@@ -916,6 +1065,8 @@ def end_speech_motion() -> None:
     """Return speech-owned channels toward their baseline and release arms."""
     global _speech_emotion_frame, _pride_arm_profile
     _speech_active.clear()
+    from sequences import throttle_arm
+    throttle_arm.speech_stop()
     # A sleep/shutdown ack clip ends INSIDE the transition — the state has already
     # flipped (or is about to latch) by the time this fires from the audio-end
     # callback. Restoring the "awake" baseline here re-opens the visor mid-droop
@@ -999,6 +1150,8 @@ def speech_reactive_move(intensity: float) -> None:
     if not SERVOS_ENABLED and not _gui_servo_sim_enabled():
         return
 
+    from sequences import throttle_arm
+    throttle_arm.speech_level(intensity)
     now = time.monotonic()
     with _lock:
         frame = dict(_speech_emotion_frame)
@@ -1636,6 +1789,7 @@ def move_to(
     """
     if _program_servo_updates_blocked():
         return
+    _require_independent_channels(targets)
     targets = {ch: _clamp(ch, int(tgt)) for ch, tgt in targets.items()}
     if not SERVOS_ENABLED:
         _log.debug("move_to no-op: SERVOS_ENABLED=False")

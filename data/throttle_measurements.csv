@@ -1,0 +1,12 @@
+timestamp_utc,shoulder_us,elbow_us,wrist_us,note,source
+2026-09-23T03:05:42.652392+00:00,544.0,650.25,1484.5,"Arm fully extended, level.",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:06:25.750623+00:00,544.0,2340.25,1575.5,"Arm extended, forearm and hand striaght up",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:07:17.056899+00:00,2272.0,1397.25,2377.75,Arm fully down including forearm and wrist,maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:07:42.070501+00:00,2272.0,1397.25,512.0,"Arm fully down, wrist fully up",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:08:16.123212+00:00,2272.0,1842.75,1626.75,"Arm fully down, forearm level, wrist level",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:08:56.419559+00:00,544.0,1761.0,1626.75,"Arm fully up, forearm and wrist up in line at 45 degrees",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:09:17.394210+00:00,544.0,1761.0,636.0,"Arm fully up, forearm up, hand curled backwards up",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:09:49.202801+00:00,544.0,1597.0,2496.0,"Arm fully up, forearm 45 degrees up, wrist level",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:10:28.972465+00:00,544.0,2377.0,2496.0,"Arm fully up, forearm straight up, wrist down",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:11:01.497537+00:00,544.0,654.25,2496.0,"Arm fully up, forearm level, wrist fully down",maestro_pulse_readback_not_shaft_feedback
+2026-09-23T03:12:15.925050+00:00,1384.5,512.0,2254.25,"Arm, forearm, and wrist at lost position in this configuration",maestro_pulse_readback_not_shaft_feedback

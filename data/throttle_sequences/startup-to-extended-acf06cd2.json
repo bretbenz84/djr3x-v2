@@ -1,0 +1,376 @@
+{
+  "version": 1,
+  "name": "Startup to extended",
+  "created_utc": "2026-09-23T03:22:16.812361+00:00",
+  "units": "quarter_microseconds",
+  "start_pose": {
+    "8": 9088,
+    "9": 9984,
+    "10": 2048
+  },
+  "events": [
+    {
+      "at": 7.861806,
+      "channel": 8,
+      "target": 8582,
+      "speed": 30,
+      "acceleration": 6
+    },
+    {
+      "at": 7.969258,
+      "channel": 8,
+      "target": 8103,
+      "speed": 30,
+      "acceleration": 6
+    },
+    {
+      "at": 8.394793,
+      "channel": 8,
+      "target": 6348,
+      "speed": 30,
+      "acceleration": 6
+    },
+    {
+      "at": 8.495483,
+      "channel": 8,
+      "target": 6109,
+      "speed": 30,
+      "acceleration": 6
+    },
+    {
+      "at": 8.919521,
+      "channel": 8,
+      "target": 4035,
+      "speed": 30,
+      "acceleration": 6
+    },
+    {
+      "at": 9.041086,
+      "channel": 8,
+      "target": 3556,
+      "speed": 30,
+      "acceleration": 6
+    },
+    {
+      "at": 9.430526,
+      "channel": 8,
+      "target": 2140,
+      "speed": 30,
+      "acceleration": 6
+    },
+    {
+      "at": 10.063155,
+      "channel": 8,
+      "target": 2140,
+      "speed": 30,
+      "acceleration": 6
+    },
+    {
+      "at": 11.60526,
+      "channel": 9,
+      "target": 10000,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 11.72381,
+      "channel": 9,
+      "target": 9909,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 11.785145,
+      "channel": 9,
+      "target": 9611,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 11.839948,
+      "channel": 9,
+      "target": 9200,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 11.949396,
+      "channel": 9,
+      "target": 9063,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 12.02192,
+      "channel": 9,
+      "target": 8880,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 12.105688,
+      "channel": 9,
+      "target": 8469,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 12.173014,
+      "channel": 9,
+      "target": 8011,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 12.49384,
+      "channel": 9,
+      "target": 7189,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 12.614657,
+      "channel": 9,
+      "target": 5863,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 12.707837,
+      "channel": 9,
+      "target": 4309,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 12.81892,
+      "channel": 9,
+      "target": 2000,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 13.538199,
+      "channel": 9,
+      "target": 2709,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 13.925579,
+      "channel": 9,
+      "target": 2937,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 14.292645,
+      "channel": 9,
+      "target": 2937,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 15.827995,
+      "channel": 10,
+      "target": 2480,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 15.933242,
+      "channel": 10,
+      "target": 3440,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 16.051892,
+      "channel": 10,
+      "target": 3714,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 16.752153,
+      "channel": 10,
+      "target": 4354,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 16.874509,
+      "channel": 10,
+      "target": 5131,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 17.000164,
+      "channel": 10,
+      "target": 5909,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 17.116775,
+      "channel": 10,
+      "target": 6686,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 17.1769,
+      "channel": 10,
+      "target": 6777,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 17.566557,
+      "channel": 10,
+      "target": 6777,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 18.894915,
+      "channel": 10,
+      "target": 6777,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 19.005007,
+      "channel": 10,
+      "target": 6754,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 19.092055,
+      "channel": 10,
+      "target": 6296,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 19.211263,
+      "channel": 10,
+      "target": 6251,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 19.635863,
+      "channel": 10,
+      "target": 6296,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 19.972926,
+      "channel": 10,
+      "target": 6296,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 21.037162,
+      "channel": 9,
+      "target": 2937,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 21.37569,
+      "channel": 9,
+      "target": 3170,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 21.811622,
+      "channel": 9,
+      "target": 3444,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 21.915986,
+      "channel": 9,
+      "target": 3581,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 22.042106,
+      "channel": 9,
+      "target": 3124,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 22.159853,
+      "channel": 9,
+      "target": 2347,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 22.511199,
+      "channel": 9,
+      "target": 2072,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 22.88413,
+      "channel": 9,
+      "target": 2347,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 23.001747,
+      "channel": 9,
+      "target": 2392,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 23.083472,
+      "channel": 9,
+      "target": 2438,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 23.739498,
+      "channel": 9,
+      "target": 2575,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 24.159042,
+      "channel": 9,
+      "target": 2712,
+      "speed": 70,
+      "acceleration": 12
+    },
+    {
+      "at": 24.283616,
+      "channel": 9,
+      "target": 2712,
+      "speed": 70,
+      "acceleration": 12
+    }
+  ],
+  "end_pose": {
+    "8": 2176,
+    "9": 2712,
+    "10": 6296
+  },
+  "duration": 32.47244337480515
+}

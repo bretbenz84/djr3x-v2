@@ -1,0 +1,111 @@
+{
+  "dwell_seconds": 1.0,
+  "limits": "recorded",
+  "park": {
+    "8": 9088,
+    "9": 9984,
+    "10": 2048
+  },
+  "poses": [
+    {
+      "id": 1,
+      "note": "Arm fully extended, level.",
+      "target": {
+        "8": 2176,
+        "9": 2601,
+        "10": 5938
+      }
+    },
+    {
+      "id": 2,
+      "note": "Arm extended, forearm and hand striaght up",
+      "target": {
+        "8": 2176,
+        "9": 9361,
+        "10": 6302
+      }
+    },
+    {
+      "id": 6,
+      "note": "Arm fully up, forearm and wrist up in line at 45 degrees",
+      "target": {
+        "8": 2176,
+        "9": 7044,
+        "10": 6507
+      }
+    },
+    {
+      "id": 7,
+      "note": "Arm fully up, forearm up, hand curled backwards up",
+      "target": {
+        "8": 2176,
+        "9": 7044,
+        "10": 2544
+      }
+    },
+    {
+      "id": 8,
+      "note": "Arm fully up, forearm 45 degrees up, wrist level",
+      "target": {
+        "8": 2176,
+        "9": 6388,
+        "10": 9984
+      }
+    },
+    {
+      "id": 9,
+      "note": "Arm fully up, forearm straight up, wrist down",
+      "target": {
+        "8": 2176,
+        "9": 9508,
+        "10": 9984
+      }
+    },
+    {
+      "id": 10,
+      "note": "Arm fully up, forearm level, wrist fully down",
+      "target": {
+        "8": 2176,
+        "9": 2617,
+        "10": 9984
+      }
+    },
+    {
+      "id": 11,
+      "note": "Arm, forearm, and wrist at lost position in this configuration",
+      "target": {
+        "8": 5538,
+        "9": 2048,
+        "10": 9017
+      }
+    },
+    {
+      "id": 3,
+      "note": "Arm fully down including forearm and wrist",
+      "target": {
+        "8": 9088,
+        "9": 5589,
+        "10": 9511
+      }
+    },
+    {
+      "id": 4,
+      "note": "Arm fully down, wrist fully up",
+      "target": {
+        "8": 9088,
+        "9": 5589,
+        "10": 2048
+      }
+    },
+    {
+      "id": 5,
+      "note": "Arm fully down, forearm level, wrist level",
+      "target": {
+        "8": 9088,
+        "9": 7371,
+        "10": 6507
+      }
+    }
+  ],
+  "skipped_conflicting_poses": []
+}
