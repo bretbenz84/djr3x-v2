@@ -905,5 +905,38 @@ class LeanCallbackSeamTests(unittest.TestCase):
         self.assertEqual(captured["turn_directive"], "one callback cue")
 
 
+class WorldStateCrowdReadTests(unittest.TestCase):
+    """The crowd gates read the REAL world-state singleton (unmocked).
+
+    Both used to call ``world_state.snapshot()`` on the module, which raised
+    and was swallowed, so ``_crowd_ok`` was always False and callback humor
+    never fired live (2026-06-14 .. 2026-09-23)."""
+
+    def _snapshot(self, count):
+        from world_state import world_state as ws
+        return mock.patch.object(ws, "snapshot", return_value={"crowd": {"count": count}})
+
+    def test_crowd_ok_reads_the_world_state_singleton(self):
+        from intelligence import callback_engine as ce
+        import config
+
+        with mock.patch.object(config, "CALLBACK_MAX_CROWD", 2):
+            with self._snapshot(1):
+                self.assertTrue(ce._crowd_ok())
+            with self._snapshot(3):
+                self.assertFalse(ce._crowd_ok())
+
+    def test_unacked_emotional_event_reads_the_world_state_singleton(self):
+        from intelligence import callback_engine as ce
+        from memory import emotional_events as emo
+
+        event = {"last_acknowledged_at": None}
+        with self._snapshot(1), \
+             mock.patch.object(emo, "get_active_events", return_value=[event]), \
+             mock.patch.object(emo, "can_surface_event", return_value=True), \
+             mock.patch.object(emo, "is_heavy_event", return_value=False):
+            self.assertTrue(ce.unacked_emotional_event_pending(7))
+
+
 if __name__ == "__main__":
     unittest.main()

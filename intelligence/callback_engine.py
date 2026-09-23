@@ -245,8 +245,8 @@ def unacked_emotional_event_pending(person_id: Optional[int]) -> bool:
         return False
     try:
         from memory import emotional_events as _emo
-        import world_state
-        ws_now = world_state.snapshot()
+        from world_state import world_state as _ws
+        ws_now = _ws.snapshot()
         crowd = int((ws_now.get("crowd") or {}).get("count", 1) or 1)
         suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
         return any(
@@ -312,8 +312,8 @@ def _tier_eligible(person_id: int) -> bool:
 
 def _crowd_ok() -> bool:
     try:
-        import world_state
-        ws = world_state.snapshot()
+        from world_state import world_state as _ws
+        ws = _ws.snapshot()
         crowd = int((ws.get("crowd") or {}).get("count", 1) or 1)
         return crowd <= int(getattr(config, "CALLBACK_MAX_CROWD", 2))
     except Exception:
