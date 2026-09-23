@@ -332,10 +332,11 @@ class GuesserFlowTest(unittest.TestCase):
             "phase": "guessing", "pending_guess": "tuba", "question_count": 12,
             "guesses": ["banjo", "guitar", "tuba"], "qa_log": [],
         })
-        with _mocked_llm(lambda *a, **k: ""):
+        with _mocked_llm(lambda *a, **k: ""), mock.patch("audio.sound_effects.play") as effect:
             resp, done = games._20q_handle("no", None)
         self.assertTrue(done)
         self.assertEqual(games._game_state["result"], "lose")
+        effect.assert_called_once_with("disappointed", concurrent=True)
 
 
 # ── Decide-engine discipline ─────────────────────────────────────────────────────

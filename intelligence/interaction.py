@@ -3098,6 +3098,7 @@ def _speak_blocking(
     on_audio_end=None,
     comedy_mode: Optional[str] = None,
     generation: Optional[int] = None,
+    sound_effect: Optional[str] = None,
 ) -> bool:
     """
     Enqueue text for speech and block until playback finishes, monitoring for
@@ -3159,6 +3160,7 @@ def _speak_blocking(
         on_audio_end=on_audio_end,
         comedy_mode=comedy_mode,
         generation=generation,
+        sound_effect=sound_effect,
     )
 
     while not done.wait(timeout=0.05):
@@ -16309,6 +16311,7 @@ def _stream_llm_response(
     answered_question: Optional[dict] = None,
     turn_start: Optional[float] = None,
     gap_check_enabled: bool = False,
+    sound_effect: Optional[str] = None,
 ) -> str:
     """Collect the full LLM response, then speak it in a single TTS call.
 
@@ -16541,6 +16544,7 @@ def _stream_llm_response(
                     two_chunk=not _full_streaming,
                     lean_turn_directive=lean_callback_directive,
                     gap_check_enabled=gap_check_enabled,
+                    sound_effect=sound_effect,
                 )
             except _tr.ToolCallRequested as tc:
                 spoken = _execute_tool_routed_action(tc.action, tc.tool_args, text, person_id)
@@ -16707,7 +16711,8 @@ def _stream_llm_response(
             pre_beat_ms=pre_beat_ms,
             post_beat_ms_override=delivery_post_beat_ms,
             voice_settings=delivery_voice_settings,
-            comedy_mode=getattr(comedy_mode, "key", None),
+            comedy_mode=None if empathy_voice_set_ns else getattr(comedy_mode, "key", None),
+            sound_effect=sound_effect or _reply_sound_effect(text),
         )
         if turn_start is not None:
             _latency_log(turn_start, "tts_playback_complete", speak_started)
@@ -17028,6 +17033,24 @@ def _reply_voice_settings(
     return preset
 
 
+_DIRECT_AFFECTION_RE = re.compile(
+    r"(?:(?:hey|rex|dj-r3x)[,\s]+)*"
+    r"(?:i (?:really |truly )?(?:love|adore|appreciate) you(?: too)?|"
+    r"you(?:'re| are) my (?:best |good )?friend)"
+    r"(?:[,\s]+rex)?[.!\s]*$", re.IGNORECASE,
+)
+
+
+def _reply_sound_effect(user_text: str) -> Optional[str]:
+    # These are directed turns already admitted by the addressee gate. A pending
+    # goodbye belongs to this turn only; it cannot leak into a later reply.
+    if end_thread.pending_farewell(user_text):
+        return "goodbye"
+    if _DIRECT_AFFECTION_RE.fullmatch(str(user_text or "").strip().replace("’", "'")):
+        return "warm"
+    return None
+
+
 def _stream_and_speak_sentences(
     user_text: str,
     person_id: Optional[int],
@@ -17041,6 +17064,7 @@ def _stream_and_speak_sentences(
     two_chunk: bool = False,
     lean_turn_directive: str = "",
     gap_check_enabled: bool = False,
+    sound_effect: Optional[str] = None,
 ) -> str:
     """Stream the LLM reply and speak it sentence-by-sentence.
 
@@ -17058,6 +17082,7 @@ def _stream_and_speak_sentences(
     tt = _turn_trace.current()
     priority = 1
     response_generation = speech_queue.generation()
+    reply_sound_effect = sound_effect or _reply_sound_effect(user_text)
 
     def obsolete():
         return _interrupted.is_set() or response_generation != speech_queue.generation()
@@ -17241,9 +17266,10 @@ def _stream_and_speak_sentences(
             log_text=False,  # the whole turn is logged once below
             # One v3 audio tag per reply, on the FIRST sentence only (from the comedy stance +
             # emotion); later sentences suppress it so [sarcastic] doesn't repeat every sentence.
-            comedy_mode=getattr(comedy_mode, "key", None),
+            comedy_mode=None if empathy_voice_set else getattr(comedy_mode, "key", None),
             suppress_audio_tag=not state["first"],
             previous_text=stream_prev_text,   # stitch onto the reply's prior sentences
+            sound_effect=reply_sound_effect if state["first"] else None,
         )
         done_events.append(done)
         # `spoken` feeds the canonical full_text (transcript, memory, handoff) and the
@@ -17412,6 +17438,7 @@ def _stream_and_speak_sentences(
                     emotion=delivery_emotion,
                     generation=response_generation,
                     voice_settings=delivery_voice_settings,
+                    sound_effect=reply_sound_effect,
                 )
                 return fallback if delivered else ""
 
@@ -21418,17 +21445,19 @@ def _play_event_body_beat(event: str, **context) -> Optional[str]:
 
 
 def _set_body_mood(
-    mood: str, *, source: str = "", intensity: Optional[float] = None
+    mood: str, *, source: str = "", intensity: Optional[float] = None,
+    chirp: bool = True,
 ) -> None:
     """Set Rex's sustained body mood (drives his posture/visor between turns). Gated +
     failure-safe; no-op if the body-mood feature is disabled. `intensity` defaults to
     body_mood's own default (a full-strength event mood); pass a smaller value for a
     gentler afterglow (e.g. the per-reply self-emotion mood)."""
     try:
+        chirp_options = {} if chirp else {"chirp": False}
         if intensity is None:
-            body_mood.set_mood(mood, source=source)
+            body_mood.set_mood(mood, source=source, **chirp_options)
         else:
-            body_mood.set_mood(mood, intensity=intensity, source=source)
+            body_mood.set_mood(mood, intensity=intensity, source=source, **chirp_options)
     except Exception as exc:
         _log.debug("[interaction] set_body_mood(%s) failed: %s", mood, exc)
 
@@ -24895,6 +24924,8 @@ def _generate_repair_response(person_id: Optional[int], text: str, repair: dict)
         emotion="neutral",
         pre_beat_ms=150,
         post_beat_ms_override=300,
+        sound_effect=("confused" if kind in {"misheard", "misunderstood"}
+                      else "embarrassed"),
     )
     repair_moves.mark_handled(repair.get("kind") or "")
     _log.info(
@@ -30906,7 +30937,7 @@ def _handle_speech_segment(
             pre_classified_insult = True
             try:
                 _play_event_body_beat("insult.detected")
-                _set_body_mood("offended", source="layer1_insult")
+                _set_body_mood("offended", source="layer1_insult", chirp=False)
             except Exception as exc:
                 _log.debug("[interaction] insult body beat skipped: %s", exc)
             if person_id is not None:
@@ -30927,7 +30958,10 @@ def _handle_speech_segment(
             pre_classified_compliment = True
             try:
                 _play_event_body_beat("compliment.detected")
-                _set_body_mood("proud", source="layer1_compliment")
+                # Affection gets its own queued accent; don't spend the shared
+                # chirp cooldown on a proud fanfare before that reply arrives.
+                _set_body_mood("proud", source="layer1_compliment",
+                               chirp=_reply_sound_effect(text) != "warm")
                 _flash_chest_compliment()
             except Exception as exc:
                 _log.debug("[interaction] compliment body beat skipped: %s", exc)
@@ -31259,6 +31293,7 @@ def _handle_speech_segment(
                                 answered_question=answered_question,
                                 turn_start=turn_start,
                                 gap_check_enabled=gap_check and _gap_attempt == 0,
+                                **({"sound_effect": "angry"} if pre_classified_insult else {}),
                             )
                             break
                         except _GapSpeechDetected as gap:

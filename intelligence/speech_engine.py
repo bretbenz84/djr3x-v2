@@ -177,6 +177,7 @@ def speak_async(
     force_salient: bool = False,
     reactive: bool = False,
     still_valid: Optional[Callable[[], bool]] = None,
+    sound_effect: Optional[str] = None,
 ) -> bool:
     # `on_spoke` fires once the line is committed to the speech queue (only the
     # ENFORCE winner reaches here) — the place for "I fired this" bookkeeping that
@@ -237,7 +238,9 @@ def speak_async(
                 _c._proactive_speech_pending.clear()
                 _c._mark_governor_candidate(candidate_id, "dropped", "stale_candidate")
                 return False
-            done = speech_queue.enqueue(text, emotion, priority=0, log_text=False)
+            done = speech_queue.enqueue(
+                text, emotion, priority=0, log_text=False, sound_effect=sound_effect,
+            )
             # The reply model reads conv_memory's transcript — a proactive line
             # missing from it is invisible to the NEXT turn. Field 2026-08-01:
             # the startup greeting asked "How did watching The Odyssey go?", the
@@ -610,11 +613,15 @@ def generate_and_speak(
             # check-ins): drop a line that opens with the same word as a recent line — the
             # "Good… Good…" field stack. Scoped to chit-chat purposes, so salient reactions
             # are untouched; on a drop the proactive beat simply yields (no canned fallback).
-            if text and _c._proactive_opener_repeats(text, purpose):
+            from intelligence.interaction import _proactive_opener_repeats
+            if text and _proactive_opener_repeats(text, purpose):
                 _log.info("[speech_engine] proactive line dropped — opener repeats a recent line: %r", text)
                 return
             if text and (token is None or _c._proactive_purpose_current(token)):
-                if _c._speak_async(text, emotion, wait_secs=wait_secs, governed=False):
+                effect = (metadata or {}).get("sound_effect")
+                effect_options = {"sound_effect": effect} if effect else {}
+                if _c._speak_async(text, emotion, wait_secs=wait_secs, governed=False,
+                                   **effect_options):
                     if on_spoke is not None:
                         try:
                             on_spoke()

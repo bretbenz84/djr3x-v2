@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from pathlib import Path
@@ -76,7 +77,7 @@ _REGISTRY: dict = {
     "sleepy":       ["Robot_Sleepy_slow_yawn"],
     "warm":         ["Droid_Affectionate"],
     "sarcastic":    ["Droid_Sassy_smug"],
-    # Extra expressive keys (usable by future callers / overrides)
+    # Expressive events, repairs, and comedy delivery (selected at speech playback)
     "confused":     ["Droid_Confused_wobbly"],
     "disappointed": ["Droid_Disappointed"],
     "scared":       ["Droid_Scared_startled"],
@@ -482,7 +483,22 @@ def play(key: str, *, force: bool = False, concurrent: bool = False,
         return False
 
 
-def play_for_speech(emotion: str, tag: Optional[str] = None) -> bool:
+_COMEDY_EFFECTS = {
+    "friendly_roast": "sarcastic",
+    "smug_superiority": "sarcastic",
+    "appliance_conspiracy": "mischievous",
+    "self_own": "embarrassed",
+    "fake_system_error": "error",
+}
+_DELIVERY_EFFECTS = {"laughs": "laughing", "sarcastic": "sarcastic",
+                     "mischievously": "mischievous"}
+_EMOTION_EFFECT_ALIASES = {"affectionate": "warm", "sassy": "sarcastic",
+                           "sheepish": "embarrassed", "startled": "scared"}
+
+
+def play_for_speech(emotion: str, tag: Optional[str] = None, *,
+                    effect: Optional[str] = None, comedy_mode: Optional[str] = None,
+                    text: str = "") -> bool:
     """The speech-queue hook: fire the emotion's chirp as a reaction's TTS starts
     generating. CONCURRENT — the chirp plays through the ~1 s synthesis gap and TTS
     plays normally on top; the chirp's audible content is over in the first second, so
@@ -490,18 +506,33 @@ def play_for_speech(emotion: str, tag: Optional[str] = None) -> bool:
     gate, so TTS is never delayed; it just won't fire if the speaker is already busy
     (so it can't cut off an in-progress reply). Neutral gets nothing.
 
+    An explicit effect overrides emotion/comedy selection; "none" silences the
+    accent. This is used on joke setups so laughter can accompany the punchline.
     Tags in SOUND_EFFECTS_NO_EMOTION_CHIRP_TAGS opt out: impersonation has no
     synthesis gap to cover, and a droid chirp landing a beat before a cloned human
     voice gives the game away."""
-    emotion = str(emotion or "").strip().lower()
-    if not emotion or emotion == "neutral":
-        return False
-    if emotion not in _registry():
-        return False
     muted = getattr(config, "SOUND_EFFECTS_NO_EMOTION_CHIRP_TAGS", ()) or ()
     if tag and str(tag).strip().lower() in {str(t).strip().lower() for t in muted}:
         return False
-    return play(emotion, concurrent=True)
+    # Pick ONE accent, after the speech queue has rejected stale/canceled lines.
+    # Explicit event cues win. Serious emotions keep their own delivery even if a
+    # comedy stance survived from an earlier planning step.
+    emotion = str(emotion or "").strip().lower()
+    emotion = _EMOTION_EFFECT_ALIASES.get(emotion, emotion)
+    key = str(effect or "").strip().lower()
+    if not key and emotion in {"sad", "angry", "annoyed", "scared", "disappointed",
+                               "embarrassed", "confused", "warm", "sleepy"}:
+        key = emotion
+    if not key:
+        for delivery_tag in re.findall(r"\[([a-z]+)\]", str(text or "").lower()):
+            if delivery_tag in _DELIVERY_EFFECTS:
+                key = _DELIVERY_EFFECTS[delivery_tag]
+                break
+    if not key:
+        key = _COMEDY_EFFECTS.get(str(comedy_mode or "").strip().lower(), emotion)
+    if not key or key == "neutral" or key not in _registry():
+        return False
+    return play(key, concurrent=True)
 
 
 def _play_path(path: Path, key: str, mode: str = "gated",

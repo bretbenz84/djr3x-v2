@@ -158,7 +158,8 @@ def canonical_mood(mood: Optional[str]) -> Optional[str]:
     return key if key in _MOOD_POSE else None
 
 
-def set_mood(mood: str, *, intensity: float = 1.0, ttl: Optional[float] = None, source: str = "") -> bool:
+def set_mood(mood: str, *, intensity: float = 1.0, ttl: Optional[float] = None,
+             source: str = "", chirp: bool = True) -> bool:
     """Set Rex's current body mood. Returns True if accepted. A stronger/equal new mood
     replaces a weaker decaying one; a clearly weaker mood does not stomp a fresh strong
     one (so a passing 'curious' doesn't erase an active 'proud')."""
@@ -184,7 +185,7 @@ def set_mood(mood: str, *, intensity: float = 1.0, ttl: Optional[float] = None, 
         _state.update(
             {"mood": canonical, "intensity": intensity, "set_at": _now(), "ttl": ttl, "source": str(source or "")}
         )
-    if fresh_transition:
+    if fresh_transition and chirp:
         _mood_chirp(canonical)
     return True
 
@@ -194,7 +195,7 @@ def set_mood(mood: str, *, intensity: float = 1.0, ttl: Optional[float] = None, 
 # expressive clips would sit unused). Fires ONCE on a fresh transition into the mood;
 # the effect layer owns the cooldown so a flurry of compliments won't stack chirps.
 # Overridable via config.SOUND_EFFECTS_MOOD_CHIRPS.
-_MOOD_CHIRPS = {"proud": "proud", "amused": "laughing"}
+_MOOD_CHIRPS = {"proud": "proud", "amused": "laughing", "offended": "angry"}
 
 
 def _mood_chirp(mood: str) -> None:

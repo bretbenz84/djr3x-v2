@@ -23,7 +23,7 @@ class _Comedy:
     key = "dry"
 
 
-def _run(tokens, *, two_chunk=True):
+def _run(tokens, *, two_chunk=True, sound_effect=None):
     """Run the streamer over a canned token stream; return list of enqueue calls."""
     calls = []
 
@@ -56,11 +56,18 @@ def _run(tokens, *, two_chunk=True):
             "hi", 1, _Frame(), _Comedy(), "",
             {"value": None}, None, None, filler_stop,
             two_chunk=two_chunk,
+            sound_effect=sound_effect,
         )
     return spoken, calls
 
 
 class TwoChunkTest(unittest.TestCase):
+    def test_insult_accent_is_attached_to_first_chunk_only(self):
+        _spoken, calls = _run(["Respect the droid. ", "I have standards."],
+                              sound_effect="angry")
+        self.assertEqual(calls[0]["sound_effect"], "angry")
+        self.assertIsNone(calls[1].get("sound_effect"))
+
     def test_reply_speaks_as_exactly_two_generations(self):
         spoken, calls = _run([
             "Well now. ", "That is a very ", "interesting thought. ",

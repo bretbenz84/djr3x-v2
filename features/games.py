@@ -892,6 +892,12 @@ def _20q_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
         # Not a clean yes → the guess was wrong.
         guesses = _game_state.get("guesses", [])
         if len(guesses) >= _20Q_MAX_GUESSES or q_count >= _20Q_MAX_QUESTIONS:
+            # Rex's own defeat, not a buzzer at a player's wrong answer.
+            try:
+                from audio import sound_effects
+                sound_effects.play("disappointed", concurrent=True)
+            except Exception:
+                pass
             _body_beat("suspicious_glance")
             _game_state["result"] = "lose"
             return (

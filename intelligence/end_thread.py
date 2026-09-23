@@ -254,6 +254,17 @@ def pending_closure() -> Optional[dict]:
         return asdict(_state)
 
 
+def pending_farewell(user_text: str) -> bool:
+    """Whether this exact turn owns an as-yet-unspoken explicit farewell."""
+    with _lock:
+        return bool(
+            _state is not None and _state.closing_pending
+            and _state.user_text == str(user_text or "").strip()
+            and _state.detected_at == _farewell_at
+            and time.monotonic() <= _state.quiet_until
+        )
+
+
 def recent_farewell(within_secs: Optional[float] = None) -> bool:
     """True when the user gave an explicit verbal goodbye recently enough that a
     camera departure now should be read as 'they said bye and left.'"""
@@ -451,4 +462,3 @@ def _note_invitation_accepted(ack_text: str, rex_text: str) -> None:
         ack_text,
         rex_text[:80],
     )
-

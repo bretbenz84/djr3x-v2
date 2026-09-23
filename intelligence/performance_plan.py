@@ -287,6 +287,7 @@ class PerformancePlan:
     pre_beat_ms: int = 0
     post_beat_ms: int = 0
     requires_llm: bool = True
+    sound_effect: Optional[str] = None
 
 
 def _arg_text(args: dict[str, Any] | None, *keys: str) -> str:
@@ -460,6 +461,7 @@ def plan_for_action(
             emotion="happy",
             body_beat=body_beat_for_event("action", action=action),
             delivery_style="quick_punchline",
+            sound_effect="laughing",
             memory_policy=MEMORY_DO_NOT_STORE,
         )
 
@@ -519,6 +521,7 @@ def plan_for_action(
             emotion="curious",
             body_beat=body_beat_for_event("action", action=action),
             delivery_style="consent_roast",
+            sound_effect="sarcastic",
             memory_policy=MEMORY_DO_NOT_STORE,
         )
 
@@ -587,6 +590,8 @@ def plan_for_action(
             emotion=_MOOD_POSE_EMOTIONS.get(canonical, "curious"),
             body_beat=beat,
             delivery_style="mood_pose",
+            sound_effect=("embarrassed" if canonical == "embarrassed"
+                          else "confused" if _body_key(mood) == "confused" else None),
             memory_policy=MEMORY_DO_NOT_STORE,
             requires_llm=False,
         )

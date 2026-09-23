@@ -119,6 +119,10 @@ def execute_plan(
     # Only the FINAL spoken line (the punchline / the single line) gets the landing —
     # never a setup line, or the button would fire mid-joke.
     _land = {"on_audio_end": on_audio_end} if on_audio_end is not None else {}
+    # The accent belongs to delivered speech, not generation/animation time.
+    # On a two-part joke it accompanies the punchline only.
+    effect = "error" if generation_failed else plan.sound_effect
+    _accent = {"sound_effect": effect} if effect else {}
 
     body_beat_failed = False
     if plan.body_beat and play_body_beat is not None and not landing:
@@ -142,6 +146,7 @@ def execute_plan(
                     pre_beat_ms=plan.pre_beat_ms,
                     post_beat_ms_override=0,
                     log_text=False,
+                    **({"sound_effect": "none"} if effect else {}),
                 )
             )
             if completed:
@@ -157,6 +162,7 @@ def execute_plan(
                         post_beat_ms_override=plan.post_beat_ms,
                         log_text=False,
                         **_land,
+                        **_accent,
                     )
                 )
         else:
@@ -168,6 +174,7 @@ def execute_plan(
                     post_beat_ms_override=plan.post_beat_ms,
                     log_text=False,
                     **_land,
+                    **_accent,
                 )
             )
     else:
@@ -179,6 +186,7 @@ def execute_plan(
                 post_beat_ms_override=plan.post_beat_ms,
                 log_text=False,
                 **_land,
+                **_accent,
             )
         )
     return PerformanceOutput(

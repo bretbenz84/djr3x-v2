@@ -7309,7 +7309,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     "or very short Rex line. Do not ask a question. One line only.",
                     frame,
                     label=f"startle sound: {curr_sound}",
-                    metadata={"startle_sound_event": curr_sound},
+                    metadata={"startle_sound_event": curr_sound, "sound_effect": "scared"},
                 )
             elif (
                 curr_sound in notable_prompts

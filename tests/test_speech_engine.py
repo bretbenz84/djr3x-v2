@@ -64,6 +64,23 @@ class PatchTransparencyTest(unittest.TestCase):
         self.assertFalse(spoke)        # gate said no → no speech
         enq.assert_not_called()
 
+    def test_winning_startle_cue_survives_text_generation(self):
+        from types import SimpleNamespace
+        with (mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+              mock.patch.object(consciousness, "_governor_enforcing", return_value=True),
+              mock.patch.object(consciousness, "_observe_governor_candidate", return_value="candidate") as observe,
+              mock.patch.object(consciousness, "_apply_proactive_directive", return_value="Startled."),
+              mock.patch("intelligence.interaction._proactive_opener_repeats", return_value=False),
+              mock.patch.object(consciousness, "_speak_async", return_value=False) as speak,
+              mock.patch("intelligence.llm.get_response", return_value="Yikes!"),
+              mock.patch.object(speech_engine.threading, "Thread",
+                                side_effect=lambda target, **kw: SimpleNamespace(start=target))):
+            speech_engine.generate_and_speak("A bang happened.", "surprised",
+                                             metadata={"sound_effect": "scared"})
+            speak.assert_not_called()  # a candidate alone must stay silent
+            observe.call_args.kwargs["speak_fn"]()
+        self.assertEqual(speak.call_args.kwargs["sound_effect"], "scared")
+
 
 class ReactiveBypassTest(unittest.TestCase):
     """reactive=True (wave-back) must break through the 'awaiting a reply' gate so a wave

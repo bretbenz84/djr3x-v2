@@ -197,7 +197,7 @@ class _Item:
         "done", "tag", "pre_beat_ms", "post_beat_ms", "voice_settings",
         "on_start", "log_text", "on_audio_end",
         "comedy_mode", "suppress_audio_tag", "previous_text", "voice_ref",
-        "on_synth_start", "generation", "loop_stop",
+        "on_synth_start", "generation", "loop_stop", "sound_effect",
     )
 
     def __init__(
@@ -222,6 +222,7 @@ class _Item:
         on_synth_start: Optional[Callable[[], None]] = None,
         generation: Optional[int] = None,
         loop_stop: Optional[threading.Event] = None,
+        sound_effect: Optional[str] = None,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -248,6 +249,7 @@ class _Item:
         # Speech generation this item belongs to (None = never stale-dropped).
         self.generation = generation
         self.loop_stop = loop_stop
+        self.sound_effect = sound_effect
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -298,6 +300,7 @@ class _SpeechQueue:
         voice_ref: Optional[object] = None,
         on_synth_start: Optional[Callable[[], None]] = None,
         generation: Optional[int] = None,
+        sound_effect: Optional[str] = None,
     ) -> threading.Event:
         """Enqueue text for TTS. Returns a DoneEvent set when playback finishes
         (``.played`` tells whether it actually went out).
@@ -319,6 +322,10 @@ class _SpeechQueue:
         log_text=False suppresses the per-item conversation-log/GUI write — used
         by streaming so a reply split across sentences is logged once as a turn.
 
+        sound_effect selects one registered accent instead of the generic emotion
+        chirp ("none" suppresses it). It travels with this item and never plays if
+        the line is dropped before playback.
+
         on_synth_start fires right before the worker calls tts.speak for this
         item (telemetry: when synthesis was requested). Never fires when audio
         output is suppressed — nothing is synthesized then.
@@ -333,6 +340,7 @@ class _SpeechQueue:
             pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
             on_audio_end, comedy_mode, suppress_audio_tag, previous_text, voice_ref,
             on_synth_start=on_synth_start, generation=generation,
+            sound_effect=sound_effect,
         )
 
     def enqueue_audio_file(
@@ -344,11 +352,12 @@ class _SpeechQueue:
         post_beat_ms: int = 0,
         on_start: Optional[Callable[[], None]] = None,
         loop_stop: Optional[threading.Event] = None,
+        sound_effect: Optional[str] = None,
     ) -> threading.Event:
         """Play a file, optionally looping until its owner's loop_stop is set."""
         return self._add(
             None, "neutral", path, priority, tag, pre_beat_ms, post_beat_ms, None, on_start,
-            loop_stop=loop_stop,
+            loop_stop=loop_stop, sound_effect=sound_effect,
         )
 
     def drop_by_tag(self, tag: str) -> int:
@@ -446,6 +455,7 @@ class _SpeechQueue:
         on_synth_start: Optional[Callable[[], None]] = None,
         generation: Optional[int] = None,
         loop_stop: Optional[threading.Event] = None,
+        sound_effect: Optional[str] = None,
     ) -> threading.Event:
         done = DoneEvent()
         if _state_suppresses_output():
@@ -497,7 +507,7 @@ class _SpeechQueue:
                       pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
                       on_audio_end, comedy_mode, suppress_audio_tag, previous_text,
                       voice_ref, on_synth_start=on_synth_start, generation=generation,
-                      loop_stop=loop_stop),
+                      loop_stop=loop_stop, sound_effect=sound_effect),
             )
             self._not_empty.notify()
 
@@ -636,10 +646,14 @@ class _SpeechQueue:
                 # gate, so the TTS below is never delayed; the chirp's audible content
                 # is over in the first second and the reply's audio overlaps only its
                 # trailing silence (see audio.sound_effects._play_concurrent).
-                if item.text and not item.audio_path:
+                if (item.text and not item.audio_path) or item.sound_effect:
                     try:
                         from audio import sound_effects
-                        sound_effects.play_for_speech(item.emotion, tag=item.tag)
+                        sound_effects.play_for_speech(
+                            item.emotion, tag=item.tag, effect=item.sound_effect,
+                            comedy_mode=None if item.suppress_audio_tag else item.comedy_mode,
+                            text=item.text or "",
+                        )
                     except Exception:
                         pass
 
@@ -887,12 +901,14 @@ def enqueue(
     voice_ref: Optional[object] = None,
     on_synth_start: Optional[Callable[[], None]] = None,
     generation: Optional[int] = None,
+    sound_effect: Optional[str] = None,
 ) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
     return _queue.enqueue(
         text, emotion, priority, tag, pre_beat_ms, post_beat_ms,
         voice_settings, on_start, log_text, on_audio_end, comedy_mode, suppress_audio_tag,
         previous_text, voice_ref, on_synth_start=on_synth_start, generation=generation,
+        sound_effect=sound_effect,
     )
 
 
@@ -904,10 +920,11 @@ def enqueue_audio_file(
     post_beat_ms: int = 0,
     on_start: Optional[Callable[[], None]] = None,
     loop_stop: Optional[threading.Event] = None,
+    sound_effect: Optional[str] = None,
 ) -> threading.Event:
     """Enqueue an audio file for playback. Returns an Event set when done."""
     return _queue.enqueue_audio_file(path, priority, tag, pre_beat_ms, post_beat_ms, on_start,
-                                     loop_stop=loop_stop)
+                                     loop_stop=loop_stop, sound_effect=sound_effect)
 
 
 def reset_startup_chime_for_tests() -> None:

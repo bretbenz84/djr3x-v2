@@ -15,6 +15,23 @@ from intelligence import consciousness as c
 
 
 class WorldReactionDedupeTest(unittest.TestCase):
+    def test_startle_candidate_carries_scared_accent_to_speech(self):
+        snapshot = {"time": {}, "weather": {"available": False}, "people": [],
+                    "audio_scene": {"last_sound_event": "bang", "last_sound_event_seq": 1}}
+        profile = types.SimpleNamespace(suppress_proactive=False, rapid_exchange=False)
+        with (mock.patch.object(c, "_can_proactive_speak", return_value=True),
+              mock.patch.object(c, "_startup_known_greeting_pending", return_value=False),
+              mock.patch.object(c, "is_identity_prompt_waiting_for_reply", return_value=False),
+              mock.patch.object(c, "_stage_animal_arrivals"),
+              mock.patch.object(c, "_fire_pending_animal_arrival_reaction", return_value=False),
+              mock.patch.object(c, "_prime_emotion_frame"),
+              mock.patch.object(c, "_last_startle_sound_reaction_at", 0.0),
+              mock.patch.object(c, "_generate_and_speak") as speak,
+              mock.patch.object(config, "WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED", True)):
+            c._step_proactive_reactions(snapshot, profile)
+        speak.assert_called_once()
+        self.assertEqual(speak.call_args.kwargs["metadata"]["sound_effect"], "scared")
+
     def setUp(self):
         self._saved = (
             set(c._acknowledged_dates),
