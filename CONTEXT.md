@@ -3768,3 +3768,15 @@ The legacy `FOLLOWUP_DATED_MAX_AGE_DAYS` setting was removed. Previously expired
 records are not automatically resurrected: old `followed_up` flags do not establish
 whether a question was actually spoken. Regression modules: followup_asked,
 startup_followup_resolution, lean_event_followup, speech_engine, open_threads.
+
+## Throttle emotional positioning (2026-09-22)
+
+`sequences/throttle_arm.py` now reads the decaying `body_mood` and Pride overlay
+for idle, speech, and speech-end resting poses. Sad/bored/resigned lower the arm;
+excited/giddy/happy/proud raise it. Pride curls the wrist down within the established
+clearance box. Accepted person introductions call `throttle_arm.introduction()`
+for an eight-second measured level extension, overriding the other expressions.
+The existing worker retains sole serial ownership and park/manual-control priority.
+Transitions that need staging go through REST with both clearance boxes checked.
+See README “Main-program throttle animation”; simulated regressions are in
+`tests/test_throttle_runtime.py`. Physical appearance still needs owner observation.

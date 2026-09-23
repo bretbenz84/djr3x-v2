@@ -1,7 +1,7 @@
 """Slow upward throttle-arm body language, owned by one background worker.
 
 Audio callbacks only suggest phrase-scale beats; all serial work happens here.
-Normal operation never selects the forward extensions from the supervised tour.
+Explicit social introductions briefly select the measured level extension.
 """
 import logging
 import random
@@ -31,6 +31,43 @@ SPEECH = (
     (pose(650, 2280, 2110), pose(940, 2040, 1070)),
     (pose(790, 2190, 1010), pose(1020, 1930, 2030)),
 )
+
+
+# Measured level extension; low/high anchors stay inside the established boxes.
+INTRODUCTION = pose(544, 650.25, 1484.5)
+LOW = pose(1636, 1930, 1280)
+HIGH = pose(544, 2340.25, 1575.5)
+PRIDE_WRIST = 2254 * 4  # Downward curl within the raised/intermediate clearance box.
+
+
+def expressive_pose(target, mood="neutral", intensity=0.0, pride=False,
+                    introducing=False):
+    """Blend complete poses, preserving phrase variation as mood fades."""
+    if introducing:
+        result = dict(INTRODUCTION)
+    else:
+        anchor = (LOW if mood in {"sad", "bored", "resigned", "sleepy"} else
+                  HIGH if mood in {"excited", "giddy", "happy", "proud"} else None)
+        weight = max(0.0, min(1.0, intensity)) if anchor else 0.0
+        result = {ch: round(target[ch] * (1 - weight) +
+                            (anchor or target)[ch] * weight) for ch in CHANNELS}
+    if pride and not introducing:
+        result[10] = PRIDE_WRIST
+    return result
+
+
+def expression_state():
+    from intelligence import body_mood, pride
+    mood, intensity = body_mood.current_mood()
+    return mood, intensity, pride.is_active()
+
+
+def introduction():
+    """Suggest a bounded greeting; never start or recover the hardware worker."""
+    controller = _controller
+    if controller is not None and not controller.done.is_set():
+        with controller.lock:
+            controller.introduction_until = time.monotonic() + 8.0
 
 
 class SpeechCadence:
@@ -109,6 +146,14 @@ def validate_repertoire():
         for end in normal + (TUCK,):
             if not clearance_box(start, end):
                 raise ValueError('Invalid throttle background transition')
+    # Blends are contained in these endpoint boxes. Verify every anchor/overlay
+    # can return through REST, including an interrupted greeting at shutdown.
+    expressions = (LOW, HIGH, INTRODUCTION) + tuple(
+        expressive_pose(p, pride=True) for p in normal + (LOW, HIGH))
+    for target in expressions:
+        validate_pose(target, limits)
+        if not (clearance_box(target, REST) and clearance_box(REST, target)):
+            raise ValueError('Invalid throttle expression bridge')
     if not clearance_box(TUCK, PARK):
         raise ValueError('Invalid throttle park path')
 
@@ -125,6 +170,8 @@ class Controller:
         self.parked = False
         self.fault = None
         self.last_idle = self.last_gesture = None
+        self.introduction_until = 0.0
+        self.last_expression = None
 
     def _hold(self):
         if self.connection is not None:
@@ -148,6 +195,13 @@ class Controller:
         if self._interrupted(parking):
             self._hold()
             return False
+        # A forward reach and a lowered mood can require a bent-elbow bridge.
+        current = servos.read_throttle_pose(self.connection)
+        if any(current.values()) and not clearance_box(current, target):
+            if not (clearance_box(current, REST) and clearance_box(REST, target)):
+                raise ValueError('No verified throttle expression transition')
+            if not self.move(REST, kind, duration, parking=parking):
+                return False
         try:
             servos.move_throttle_pose(
                 self.connection, target, speed_caps=getattr(config, f'THROTTLE_{kind}_SPEED'),
@@ -219,20 +273,30 @@ class Controller:
                         self.cadence.consume(now, random.uniform(*config.THROTTLE_SPEECH_GAP_SECS))
                     if settle:
                         self.cadence.ended_at = None
-                if beat:
+                mood, intensity, pride = expression_state()
+                with self.lock:
+                    introducing = now < self.introduction_until
+                expression = (mood, round(intensity, 1), pride, introducing)
+                def shaped(target):
+                    return expressive_pose(target, mood, intensity, pride, introducing)
+                if expression != self.last_expression:
+                    self.last_expression = expression
+                    self.move(shaped(REST), 'IDLE', random.uniform(*config.THROTTLE_IDLE_MOVE_SECS))
+                    next_idle = time.monotonic() + random.uniform(*config.THROTTLE_IDLE_DWELL_SECS)
+                elif beat and not introducing:
                     choices = [i for i in range(len(SPEECH)) if i != self.last_gesture]
                     self.last_gesture = random.choice(choices)
                     for target in SPEECH[self.last_gesture]:
                         with self.lock:
                             if not self.cadence.speaking:
                                 break
-                        if not self.move(target, 'SPEECH', random.uniform(*config.THROTTLE_SPEECH_MOVE_SECS)):
+                        if not self.move(shaped(target), 'SPEECH', random.uniform(*config.THROTTLE_SPEECH_MOVE_SECS)):
                             break
                     next_idle = time.monotonic() + random.uniform(*config.THROTTLE_IDLE_DWELL_SECS)
-                elif settle or (not speaking and now >= next_idle):
+                elif not introducing and (settle or (not speaking and now >= next_idle)):
                     target = REST if settle else random.choice([p for p in IDLE if p != self.last_idle])
                     self.last_idle = target
-                    self.move(target, 'IDLE', random.uniform(*config.THROTTLE_IDLE_MOVE_SECS))
+                    self.move(shaped(target), 'IDLE', random.uniform(*config.THROTTLE_IDLE_MOVE_SECS))
                     next_idle = time.monotonic() + random.uniform(*config.THROTTLE_IDLE_DWELL_SECS)
                 self.stop_event.wait(0.1)
         except Exception as exc:

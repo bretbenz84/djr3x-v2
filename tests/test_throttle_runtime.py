@@ -89,6 +89,59 @@ class RuntimeTest(unittest.TestCase):
             self.assertGreaterEqual(abs(end[10] - start[10]), 900 * 4)
         self.assertEqual(arm.STARTUP[0][10], motion.PARK[10])
 
+    def test_emotions_and_pride_use_clear_paths_and_decay(self):
+        normal = arm.IDLE + tuple(p for gesture in arm.SPEECH for p in gesture)
+        for base, mood, intensity, pride in itertools.product(
+                normal, ('sad', 'bored', 'resigned', 'excited', 'giddy', 'neutral'),
+                (0, .2, .5, 1), (False, True)):
+            target = arm.expressive_pose(base, mood, intensity, pride)
+            motion.validate_pose(target, self.limits)
+            self.assertTrue(motion.clearance_box(target, arm.REST))
+            self.assertTrue(motion.clearance_box(arm.REST, target))
+        self.assertEqual(arm.expressive_pose(arm.REST, 'sad', 0), arm.REST)
+        self.assertGreater(arm.expressive_pose(arm.REST, 'sad', 1)[8], arm.REST[8])
+        self.assertLess(arm.expressive_pose(arm.REST, 'excited', 1)[8], arm.REST[8])
+        self.assertEqual(arm.expressive_pose(arm.REST, pride=True)[10], arm.PRIDE_WRIST)
+        self.assertEqual(arm.expressive_pose(arm.REST, pride=True, introducing=True),
+                         arm.INTRODUCTION)
+
+    def test_lowered_pride_to_introduction_and_park_bridge(self):
+        controller = arm.Controller()
+        controller.connection = self.port
+        self.port.pose = arm.expressive_pose(arm.LOW, pride=True)
+        self.assertTrue(controller.move(arm.INTRODUCTION, 'IDLE', 2.5))
+        self.assertEqual(len(self.port.targets), 2)
+        self.assertEqual(self.port.pose, arm.INTRODUCTION)
+        controller._park()
+        self.assertTrue(controller.parked)
+
+    def test_worker_applies_live_mood_then_parks(self):
+        controller = arm.Controller()
+        seen = []
+        target = arm.expressive_pose(arm.REST, 'sad', 1, True)
+        def arrived(pose):
+            seen.append(pose)
+            if pose == target:
+                controller.park_event.set()
+        self.port.on_target = arrived
+        with mock.patch.object(arm, 'expression_state', return_value=('sad', 1, True)):
+            controller.run()
+        self.assertIn(target, seen)
+        self.assertIsNone(controller.fault)
+        self.assertTrue(controller.parked)
+
+    def test_introduction_callback_cannot_start_worker(self):
+        arm.introduction()
+        self.assertIsNone(arm._controller)
+        controller = arm.Controller()
+        with mock.patch.object(arm, '_controller', controller), mock.patch.object(arm.time, 'monotonic', return_value=10):
+            arm.introduction()
+            self.assertEqual(controller.introduction_until, 18)
+            controller.done.set()
+            controller.introduction_until = 0
+            arm.introduction()
+            self.assertEqual(controller.introduction_until, 0)
+
     def test_wire_profiles_are_capped_and_all_targets_share_one_packet(self):
         self.send(arm.TUCK)
         self.assertEqual(len(self.port.targets), 1)

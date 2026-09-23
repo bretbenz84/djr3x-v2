@@ -118,6 +118,7 @@ _MOOD_ALIASES: dict[str, str] = {
     "confused": "thinking",
     "down": "sad",
     "dejected": "sad",
+    "resigned": "sad",
 }
 
 # Ambient emotion-frame affect → a mild mood (used only when no event mood is active).
@@ -131,6 +132,8 @@ _AMBIENT_AFFECT_TO_MOOD: dict[str, str] = {
     "angry": "angry",
     "disgusted": "annoyed",
     "sleepy": "bored",
+    "bored": "bored",
+    "resigned": "sad",
     "neutral": "neutral",
 }
 

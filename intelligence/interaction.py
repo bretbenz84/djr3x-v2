@@ -10988,6 +10988,8 @@ def _handle_relationship_reply(
                 "created_at": time.monotonic(),
                 "asked_at": time.monotonic(),
             }
+            from sequences import throttle_arm
+            throttle_arm.introduction()
             introductions.note_introduction()  # stand down the mystery-guest agenda
             consciousness.note_relationship_slot_handled(slot_id)
             try:
@@ -12687,6 +12689,8 @@ def _handle_introduction_parse(
             "created_at": time.monotonic(),
             "asked_at": time.monotonic(),
         }
+        from sequences import throttle_arm
+        throttle_arm.introduction()
         introductions.note_introduction()  # stand down the mystery-guest agenda
         rel_hint = f" your {parsed.relationship}" if parsed.relationship else ""
         try:
@@ -12731,6 +12735,9 @@ def _handle_introduction_parse(
             parsed.name, introducer_id,
         )
         return None
+
+    from sequences import throttle_arm
+    throttle_arm.introduction()
 
     existing_intro = _resolve_existing_visible_introduced_person(
         parsed.name,

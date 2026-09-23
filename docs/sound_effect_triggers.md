@@ -30,3 +30,20 @@ emotions take precedence over comedy accents. No extra model calls are needed.
 
 Restart the main app after code or same-filename audio replacements; decoded
 sounds are cached for the process lifetime.
+
+## Clip loudness
+
+All 68 MP3s in `assets/audio/sound_effects/` (including `thinking/` and
+`excitement/`) were normalized toward **-20 LUFS in the mono mix used by Rex**.
+The measured range is now -20.73 to -19.91 LUFS, versus -43.63 to -9.46 before.
+This target is close to the original library's median (-19.39 LUFS).
+
+Processing uses a constant gain per clip and a lookahead peak limiter at 192 kHz,
+then encodes from the original source to high-quality MP3. Every encoded result
+was remeasured: the highest true peak is -2.27 dBTP. Filenames, sample counts,
+48 kHz sample rate, and both stereo channels are preserved. No timing edits or
+silence trimming were applied. Existing playback gain and cooldown settings
+continue to apply.
+
+[Per-file before/after measurements](sound_effect_loudness.csv) include the final
+file hashes. Newly replaced clips should be measured against the same profile.

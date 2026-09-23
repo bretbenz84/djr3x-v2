@@ -361,8 +361,8 @@ park is **2272 / 2496 / 512 µs**, which the runtime uses for arrival checks.
 
 `SERVO_THROTTLE_ARM_ENABLED=true` in this robot's `.env` enables the dedicated
 worker on startup and wake. It shares the main program's serial lock; it does not
-open a competing serial connection. Forward reaches remain available only in the
-explicit supervised tour tools and are never selected by normal idle/speech.
+open a competing serial connection. Ordinary idle/speech remains upward; explicit
+person introductions briefly use the measured level forward extension.
 
 - **Startup:** park → shoulder-clearance tuck → gently unfold upward → comfortable
   bent-elbow rest (**1050 / 1930 / 1280 µs**). Targets roughly 1.25 seconds per pose
@@ -379,6 +379,17 @@ explicit supervised tour tools and are never selected by normal idle/speech.
   pose finishes, followed by a rest return after a 1.4-second grace period. During
   uninterrupted speech, fallback gestures are eligible 6.5 seconds after the last
   gesture, without adding another full cooldown to that delay.
+- **Emotion:** the existing decaying body mood blends idle and speech poses toward
+  a lowered pose for sad/bored/resigned moods and a raised pose for excited/giddy,
+  happy, or proud moods. Mood expiry returns the normal repertoire. Lowering stops
+  at the established intermediate clearance boundary, rather than using the two
+  excluded fully-down measurements. Pride mode curls the wrist downward to
+  2254 µs, within the clearance box; it releases when that mode expires.
+- **Introductions:** an accepted person introduction requests an eight-second
+  level extension (**544 / 650.25 / 1484.5 µs**, from the labeled measurement).
+  This takes priority over mood, Pride, and speech poses, then returns to the
+  current mood. A bent-elbow rest bridge is used when a direct transition fails
+  the independent-joint clearance check. Callbacks never start/recover a worker.
 - **Sleep/shutdown:** head and throttle arm park concurrently. The head latches as
   soon as its rest pose is commanded, while the throttle worker may finish only
   the coupled tuck (**1636 / 2100 / 512 µs**) and park (roughly 1.5 seconds per pose).
