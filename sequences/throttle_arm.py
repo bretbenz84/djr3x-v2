@@ -35,7 +35,7 @@ SPEECH = (
 
 # Measured level extension; low/high anchors stay inside the established boxes.
 INTRODUCTION = pose(544, 650.25, 1484.5)
-LOW = pose(1636, 1930, 1280)
+LOW = pose(1636, 1550, 1500)
 HIGH = pose(544, 2340.25, 1575.5)
 PRIDE_WRIST = 2254 * 4  # Downward curl within the raised/intermediate clearance box.
 
@@ -49,6 +49,11 @@ def expressive_pose(target, mood="neutral", intensity=0.0, pride=False,
         anchor = (LOW if mood in {"sad", "bored", "resigned", "sleepy"} else
                   HIGH if mood in {"excited", "giddy", "happy", "proud"} else None)
         weight = max(0.0, min(1.0, intensity)) if anchor else 0.0
+        if anchor is LOW:
+            # Ambient sadness is only 0.4; linear blending barely lowered the
+            # shoulder and let upward speech poses overwhelm the expression.
+            # Keep continuous decay to neutral, but make moderate sadness legible.
+            weight = 1.0 - (1.0 - weight) ** 4
         result = {ch: round(target[ch] * (1 - weight) +
                             (anchor or target)[ch] * weight) for ch in CHANNELS}
     if pride and not introducing:
@@ -59,6 +64,13 @@ def expressive_pose(target, mood="neutral", intensity=0.0, pride=False,
 def expression_state():
     from intelligence import body_mood, pride
     mood, intensity = body_mood.current_mood()
+    controller = _controller
+    if controller is not None and not controller.done.is_set():
+        with controller.lock:
+            if (controller.speech_expression is not None
+                    and (controller.cadence.speaking
+                         or time.monotonic() < controller.speech_expression_until)):
+                mood, intensity = controller.speech_expression
     return mood, intensity, pride.is_active()
 
 
@@ -172,6 +184,8 @@ class Controller:
         self.last_idle = self.last_gesture = None
         self.introduction_until = 0.0
         self.last_expression = None
+        self.speech_expression = None
+        self.speech_expression_until = 0.0
         self.base_hold = False
         self.base_ready = threading.Event()
         self.base_seq = None
@@ -323,7 +337,11 @@ class Controller:
                     return expressive_pose(target, mood, intensity, pride, introducing)
                 if expression != self.last_expression:
                     self.last_expression = expression
-                    self.move(shaped(REST), 'IDLE', random.uniform(*config.THROTTLE_IDLE_MOVE_SECS))
+                    rest = shaped(REST)
+                    _log.info('Throttle expression mood=%s intensity=%.2f pride=%s intro=%s target_us=%s',
+                              mood, intensity, pride, introducing,
+                              [rest[ch] / 4 for ch in CHANNELS])
+                    self.move(rest, 'IDLE', random.uniform(*config.THROTTLE_IDLE_MOVE_SECS))
                     next_idle = time.monotonic() + random.uniform(*config.THROTTLE_IDLE_DWELL_SECS)
                 elif beat and not introducing:
                     choices = [i for i in range(len(SPEECH)) if i != self.last_gesture]
@@ -403,18 +421,26 @@ def stop():
         controller.thread.join(timeout=2.0)
 
 
-def speech_start():
+def speech_start(frame=None):
     controller = _controller
     if controller is not None and not controller.done.is_set():
         with controller.lock:
             controller.cadence.begin(time.monotonic())
+            # The already-resolved frame is also driving LEDs and the other arm.
+            # Even neutral speech replaces a stale offended body mood for this turn.
+            controller.speech_expression = (
+                (str(frame.get('affect') or 'neutral'), float(frame.get('intensity', 0)))
+                if frame is not None else None)
+            controller.speech_expression_until = 0.0
 
 
 def speech_stop():
     controller = _controller
     if controller is not None and not controller.done.is_set():
         with controller.lock:
-            controller.cadence.end(time.monotonic())
+            now = time.monotonic()
+            controller.cadence.end(now)
+            controller.speech_expression_until = now + config.THROTTLE_SPEECH_SETTLE_SECS
 
 
 def speech_level(level):

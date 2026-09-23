@@ -1014,7 +1014,7 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
         _next_speech_poker_at = 0.0
     _speech_active.set()
     from sequences import throttle_arm
-    throttle_arm.speech_start()
+    throttle_arm.speech_start(frame)
     set_breathing_emotion(str(frame.get("led_style") or frame.get("affect") or "neutral"))
 
     if SERVOS_ENABLED:

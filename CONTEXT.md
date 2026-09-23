@@ -3789,3 +3789,12 @@ post-command idle telemetry (matching/newer command sequence, auto ownership).
 Stop/estop/zero drive bypass retraction and invalidate waiting movement commands.
 Failure blocks host movement. ESP32-local gamepad control is outside this guard.
 Tests: `throttle_base_interlock`, `throttle_runtime`, `motion` via lean checks.
+
+Throttle sadness field fix (23:34:39 run): the ambient mood intensity of 0.4
+previously blended too weakly toward a still-curled elbow. LOW is now
+1636/1550/1500 µs with a continuous nonlinear subdued blend, keeping even upward
+speech poses low at moderate sadness. `servos.begin_speech_motion` passes the
+resolved playback frame to the throttle worker; it overrides event body mood
+until speech ends plus its settling grace. Expression changes now log targets.
+Regression coverage includes sad speech over an offended event and all speech
+poses at ambient/speech sadness intensity, with existing clearance/base guards.

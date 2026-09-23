@@ -105,6 +105,36 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(arm.expressive_pose(arm.REST, pride=True, introducing=True),
                          arm.INTRODUCTION)
 
+    def test_moderate_sadness_stays_low_through_every_speech_pose(self):
+        # Reproduce the ambient fallback (0.4) and sad speech profile (0.48).
+        for intensity in (.4, .48):
+            for base in (arm.REST,) + tuple(p for gesture in arm.SPEECH for p in gesture):
+                target = arm.expressive_pose(base, 'sad', intensity)
+                self.assertGreaterEqual(target[8], 1500 * 4)
+                self.assertLessEqual(target[9], 1650 * 4)
+                self.assertTrue(motion.clearance_box(target, arm.REST))
+                self.assertTrue(motion.clearance_box(target, arm.TUCK))
+        self.assertEqual(arm.expressive_pose(arm.REST, 'sad', 0), arm.REST)
+
+    def test_sad_reply_overrides_offended_mood_until_speech_settles(self):
+        controller = arm.Controller()
+        with (mock.patch.object(arm, '_controller', controller),
+              mock.patch('intelligence.body_mood.current_mood', return_value=('offended', .9)),
+              mock.patch('intelligence.pride.is_active', return_value=False),
+              mock.patch.object(arm.time, 'monotonic', return_value=10) as clock):
+            arm.speech_start({'affect': 'sad', 'intensity': .48})
+            self.assertEqual(arm.expression_state(), ('sad', .48, False))
+            clock.return_value = 30  # Long speech retains the explicit frame.
+            self.assertEqual(arm.expression_state(), ('sad', .48, False))
+            arm.speech_stop()
+            self.assertEqual(arm.expression_state(), ('sad', .48, False))
+            clock.return_value = 30 + config.THROTTLE_SPEECH_SETTLE_SECS + .1
+            self.assertEqual(arm.expression_state(), ('offended', .9, False))
+            arm.speech_start({'affect': 'excited', 'intensity': .8})
+            self.assertEqual(arm.expression_state(), ('excited', .8, False))
+            controller.done.set()
+            self.assertEqual(arm.expression_state(), ('offended', .9, False))
+
     def test_lowered_pride_to_introduction_and_park_bridge(self):
         controller = arm.Controller()
         controller.connection = self.port

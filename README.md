@@ -383,7 +383,12 @@ person introductions briefly use the measured level forward extension.
   a lowered pose for sad/bored/resigned moods and a raised pose for excited/giddy,
   happy, or proud moods. Mood expiry returns the normal repertoire. Lowering stops
   at the established intermediate clearance boundary, rather than using the two
-  excluded fully-down measurements. Pride mode curls the wrist downward to
+  excluded fully-down measurements. The lowered anchor is **1636 / 1550 / 1500 µs**;
+  a nonlinear blend makes moderate sadness visibly lower the shoulder and forearm
+  even during speech. The explicit playback emotion takes priority over body mood
+  during a reply and its settling grace, matching the frame used by the LEDs.
+  Expression changes log the mood, strength, and target pulses for field diagnosis.
+  Pride mode curls the wrist downward to
   2254 µs, within the clearance box; it releases when that mode expires.
 - **Introductions:** an accepted person introduction requests an eight-second
   level extension (**544 / 650.25 / 1484.5 µs**, from the labeled measurement).
