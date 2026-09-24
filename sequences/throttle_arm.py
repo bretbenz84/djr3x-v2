@@ -37,6 +37,7 @@ SPEECH = (
 INTRODUCTION = pose(544, 650.25, 1484.5)
 LOW = pose(1636, 1550, 1500)
 HIGH = pose(544, 2340.25, 1575.5)
+COMMAND_POSES = {"down": LOW, "offer": INTRODUCTION, "high_five": HIGH, "rest": REST}
 PRIDE_WRIST = 2254 * 4  # Downward curl within the raised/intermediate clearance box.
 
 
@@ -72,6 +73,24 @@ def expression_state():
                          or time.monotonic() < controller.speech_expression_until)):
                 mood, intensity = controller.speech_expression
     return mood, intensity, pride.is_active()
+
+
+def request_pose(name):
+    """Queue a ten-second pose hold on the existing worker; never start hardware."""
+    controller = _controller
+    if (name not in COMMAND_POSES or not config.THROTTLE_ARM_ENABLED
+            or controller is None or not controller.thread.is_alive()
+            or controller.done.is_set() or controller.stop_event.is_set()
+            or controller.park_event.is_set() or not servos._automatic_motion_allowed()
+            or servos._program_servo_updates_blocked()):
+        return False
+    with controller.lock:
+        if controller.base_hold:
+            return False
+        controller.pose_request = (name, object())
+        controller.pose_until = None
+        controller.introduction_until = 0.0
+    return True
 
 
 def introduction():
@@ -183,6 +202,8 @@ class Controller:
         self.fault = None
         self.last_idle = self.last_gesture = None
         self.introduction_until = 0.0
+        self.pose_request = None
+        self.pose_until = None
         self.last_expression = None
         self.speech_expression = None
         self.speech_expression_until = 0.0
@@ -318,6 +339,23 @@ class Controller:
                         if not self.move(target, 'STARTUP', config.THROTTLE_STARTUP_MOVE_SECS):
                             break
                     self.last_expression = None
+                    continue
+                now = time.monotonic()
+                with self.lock:
+                    requested = self.pose_request
+                    pose_until = self.pose_until
+                if requested is not None:
+                    if pose_until is None:
+                        reached = self.move(COMMAND_POSES[requested[0]], 'IDLE', 2.0)
+                        with self.lock:
+                            if self.pose_request == requested and reached:
+                                self.pose_until = time.monotonic() + 10.0
+                    elif now >= pose_until:
+                        with self.lock:
+                            if self.pose_request == requested:
+                                self.pose_request = None
+                        self.last_expression = None
+                    self.stop_event.wait(0.1)
                     continue
                 now = time.monotonic()
                 with self.lock:
@@ -459,6 +497,8 @@ def prepare_base_motion(timeout=30.0):
         return False
     with controller.lock:
         controller.base_hold = True
+        controller.pose_request = None
+        controller.pose_until = None
         controller.base_seq = None
         controller.base_sent_at = None
         controller.introduction_until = 0.0

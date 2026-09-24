@@ -603,6 +603,43 @@ def _parse_themed_trivia(normalized: str, original: str) -> dict | None:
     return None
 
 
+def _parse_arm_or_pride(text: str):
+    # Whole-utterance commands only: quoted narration and negation must not move hardware.
+    clean = _plain(text).replace('-', ' ')
+    clean = re.sub(r"^(?:hey )?(?:rex|r3x)[, ]+", "", clean)
+    clean = re.sub(r"^(?:(?:can|could|would) you )?(?:please )?", "", clean)
+    clean = re.sub(r"(?: please| rex)$", "", clean).strip()
+    poses = {
+        "put your arm down": "down", "lower your arm": "down", "arm down": "down",
+        "hold out your hand": "offer", "hold your hand out": "offer",
+        "extend your arm": "offer", "hold out your arm": "offer",
+        "give me a high five": "high_five", "high five": "high_five",
+        "raise your hand": "high_five", "put your hand up": "high_five",
+        "raise your arm": "high_five", "lift your arm": "high_five",
+        "lift your hand": "high_five", "put your arm up": "high_five",
+        "hold your arm up": "high_five", "hold your hand up": "high_five",
+        "arm up": "high_five", "high five me": "high_five",
+        "give me five": "high_five",
+        "outstretch your arm": "offer", "stretch out your arm": "offer",
+        "stretch your arm out": "offer", "hold your arm out": "offer",
+        "reach out your hand": "offer", "reach your hand out": "offer",
+        "extend your hand": "offer", "put your arm straight out": "offer",
+        "hold your arm straight out": "offer", "offer me your hand": "offer",
+        "lower your hand": "down", "put your hand down": "down",
+        "bring your arm down": "down", "bring your hand down": "down",
+        "hold your arm down": "down",
+        "relax your arm": "rest", "rest your arm": "rest",
+        "bring your arm back": "rest", "bring your hand back": "rest",
+        "pull your arm back": "rest", "pull your hand back": "rest",
+        "return your arm to rest": "rest", "return your arm to neutral": "rest",
+    }
+    if clean in poses:
+        return CommandMatch("throttle_pose", "pattern", {"pose": poses[clean]})
+    if clean in {"stand down pride mode", "turn off pride mode", "stop pride mode", "end pride mode"}:
+        return CommandMatch("pride_off", "pattern", {})
+    return None
+
+
 def _parse_wave(normalized: str, original: str) -> dict | None:
     clean = _plain(normalized)
     if not clean.startswith(("wave", "please wave", "can you wave", "can you please wave")):
@@ -1160,6 +1197,9 @@ def parse(text: str) -> CommandMatch | None:
     """
     normalized = _normalize(text)
     original = text.strip()
+    physical = _parse_arm_or_pride(original)
+    if physical is not None:
+        return physical
 
     if is_standalone_sleep_command(original):
         return CommandMatch("sleep", "exact", {})

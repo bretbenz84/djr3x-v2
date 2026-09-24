@@ -1922,7 +1922,7 @@ def _legacy_command_blocked_by_dialogue(
 # "remember that Dana is allergic to shellfish" still routes mid-frame while
 # narration does not. Do not add another durable key here without a bar there.
 _LEGACY_ANSWER_FRAME_BREAKOUT_KEYS = frozenset({
-    "wave_to", "volume_up", "volume_down",
+    "wave_to", "throttle_pose", "pride_off", "volume_up", "volume_down",
     "set_personality", "query_personality", "memory_remember_fact",
 })
 
@@ -18389,6 +18389,22 @@ def _execute_command(
     # ── Physical attention / movement ─────────────────────────────────────────
     if key == "directed_look":
         return _execute_directed_look_command(args, person_id, person_name, raw_text)
+
+    if key == "pride_off":
+        from intelligence import pride
+        pride.deactivate()
+        resp = "Pride mode standing down."
+        _speak_blocking(resp)
+        return resp
+
+    if key == "throttle_pose":
+        from sequences import throttle_arm
+        accepted = throttle_arm.request_pose(args.get("pose"))
+        resp = ({"down": "Lowering my arm.", "offer": "Holding out my hand.",
+                 "high_five": "High five!", "rest": "Relaxing my arm."}.get(args.get("pose"))
+                if accepted else "I can't move that arm right now.")
+        _speak_blocking(resp)
+        return resp
 
     if key == "wave_to":
         return _execute_wave_command(args, person_id, person_name)

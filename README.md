@@ -543,3 +543,23 @@ Firmware: `arduino/head_nano` (this head is detected as **Uno**, build target
 `arduino:avr:uno`) and `arduino/chest_nano` (`arduino:avr:nano:cpu=atmega328`, newer bootloader).
 The mouth rainbow swaps R/G for its GRB PCB on the shared RGB eye data line;
 the chest uses its existing FastLED GRB configuration.
+
+#### Spoken throttle-arm poses
+
+- “Put your arm down” / “lower your arm”: the lowered shoulder/forearm pose.
+- “Hold out your hand” / “extend your arm” / “outstretch your arm” /
+  “stretch your arm out” / “reach out your hand”: the measured level forward reach.
+- “Give me a high five” / “raise your hand” / “raise your arm” / “lift your arm” /
+  “put your arm up”: the measured raised-hand pose.
+- “Relax your arm” / “pull your arm back” / “return your arm to neutral”: the
+  normal bent-elbow rest pose.
+
+Commands accept polite prefixes and hold for ten seconds **after arrival**, then
+return to emotional animation. These are poses, not contact-detecting gestures.
+The worker owns every target; sleep/shutdown, manual overrides, and the base
+retraction interlock take priority. A new pose replaces the pending hold. If the
+worker is unavailable or the base owns the arm, Rex says he cannot move it.
+
+“Stand down pride mode”, “turn off pride mode”, “stop pride mode”, and “end pride
+mode” immediately clear the voice/body overlay and send `PRIDE:0` to both LED
+boards. No firmware change is needed for these new spoken commands.

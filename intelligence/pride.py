@@ -116,6 +116,17 @@ def reset() -> None:
     _active_until = 0.0
 
 
+def deactivate() -> None:
+    """Clear voice/body mode and tell both LED boards immediately."""
+    reset()
+    from hardware import leds_head, leds_chest
+    for board in (leds_head, leds_chest):
+        try:
+            board.send_command("PRIDE:0")
+        except Exception:
+            _log.debug("Pride LED exit failed", exc_info=True)
+
+
 _DIRECTIVE = (
     "QUEENY MODE — someone just asked about your sexuality, and yes: you are "
     "GAY, sis, and proud of it. This section OVERRIDES the persona's baseline "

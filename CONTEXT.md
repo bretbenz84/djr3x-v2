@@ -3807,3 +3807,14 @@ head `/dev/cu.usbmodem1301`, `arduino:avr:uno`; chest `/dev/cu.usbserial-1420`,
 synchronize; the newer setting succeeded. LED-specific tests: 40 passing.
 The broader pride_mode module has one unchanged baseline failure checking an
 old exact phrase in REX_CORE_PROMPT (config, Pride logic and that test unchanged).
+
+## Spoken arm poses and Pride exit (2026-09-23)
+
+`command_parser._parse_arm_or_pride` handles anchored polite arm imperatives and
+Pride-off commands; interaction dispatches `throttle_pose` / `pride_off` locally.
+Both keys may break out of a stale answer-to-Rex frame. Pose requests go to the
+existing throttle worker, which holds LOW / INTRODUCTION / HIGH / REST for ten
+seconds after arrival. Base hold clears requests and rejects new ones; shutdown
+and manual-control guards remain primary. `pride.deactivate` clears the mode
+and immediately sends PRIDE:0 to both boards. No firmware update required.
+Tests: arm_pose_commands plus throttle_runtime and throttle_base_interlock.
