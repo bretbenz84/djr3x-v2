@@ -79,12 +79,12 @@ class CommandTests(unittest.TestCase):
               mock.patch('hardware.leds_head.send_command') as head,
               mock.patch('hardware.leds_chest.send_command') as chest):
             response = I._execute_command(command_parser.parse('give me a high five'), None, None, 'give me a high five')
-            self.assertEqual(response, 'High five!')
+            self.assertIn(response, ('OK.', 'Alright.', 'Sounds good.'))
             request.assert_called_once_with('high_five')
             request.reset_mock()
             response = I._execute_command(command_parser.parse('Outstretch your hand.'),
                                           None, None, 'Outstretch your hand.')
-            self.assertEqual(response, 'Holding out my hand.')
+            self.assertIn(response, ('OK.', 'Alright.', 'Sounds good.'))
             request.assert_called_once_with('offer')
             request.return_value = False
             response = I._execute_command(command_parser.parse('hold out your hand'), None, None, 'hold out your hand')

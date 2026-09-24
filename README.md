@@ -584,6 +584,8 @@ or tuck detour. The reverse lowering transition retains its staged route.
 
 Commands accept polite prefixes and hold for ten seconds **after arrival**, then
 return to emotional animation. These are poses, not contact-detecting gestures.
+Accepted arm commands use a brief “OK,” “Alright,” or “Sounds good” acknowledgment
+instead of repeating the requested movement. Unavailable motion is still reported.
 The worker owns every target; sleep/shutdown, manual overrides, and the base
 retraction interlock take priority. A new pose replaces the pending hold. If the
 worker is unavailable or the base owns the arm, Rex says he cannot move it.
