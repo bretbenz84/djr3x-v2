@@ -159,13 +159,34 @@ class RuntimeTest(unittest.TestCase):
         seen = []
         self.port.on_target = lambda p: seen.append(p)
         self.assertTrue(controller.move(expected, 'IDLE', 2))
-        self.assertEqual(seen, [motion.RETRACT_RAISED, motion.FULL_DOWN_RAISED, expected])
+        self.assertEqual(seen, [{**arm.REST, 8: motion.RAISED}, motion.FULL_DOWN_RAISED, expected])
         seen.clear()
         with mock.patch.object(config, 'THROTTLE_RETRACT_SETTLE_SECS', 0):
             controller._park(for_base=True)
         self.assertTrue(controller.parked)
         self.assertEqual(seen, [motion.FULL_DOWN_RAISED, motion.RETRACT_RAISED,
                                 motion.TUCK, motion.PARK])
+
+    def test_lowering_preserves_wrist_until_raised_then_moves_directly_down(self):
+        starts = (arm.REST, arm.INTRODUCTION, arm.HIGH, arm.LOW, motion.PARK,
+                  motion.TUCK, arm.expressive_pose(arm.REST, pride=True))
+        starts += arm.IDLE + tuple(p for gesture in arm.SPEECH for p in gesture)
+        for start in starts:
+            with self.subTest(start=start):
+                self.port.pose = dict(start)
+                seen = []
+                self.port.on_target = lambda p: seen.append(p)
+                controller = arm.Controller()
+                controller.connection = self.port
+                self.assertTrue(controller.move(motion.FULL_DOWN, 'IDLE', 2))
+                self.assertEqual(seen, [{**start, 8: motion.RAISED},
+                                        motion.FULL_DOWN_RAISED, motion.FULL_DOWN])
+                # Every commanded segment still passes the independent-joint
+                # clearance check; no intermediate wrist-up target is introduced.
+                for previous, target in zip([start] + seen, seen):
+                    self.assertTrue(motion.clearance_box(previous, target))
+                self.assertEqual(seen[0][10], start[10])
+                self.assertEqual(seen[1][10], motion.FULL_DOWN[10])
 
     def test_full_down_exception_does_not_relax_other_low_shoulder_poses(self):
         self.assertFalse(motion.clearance_box(arm.REST, motion.FULL_DOWN))

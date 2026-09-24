@@ -3850,9 +3850,11 @@ simulated serial packets, not physical speed measurements.
 Owner reconfirmed recorded pose 3 and safe entry/exit despite the older general
 elbow bound. Spoken `down` now selects 2272 / 1397.25 / 2377.75 µs, separate from
 the moderate emotional LOW anchor. A narrow clearance exception permits only
-shoulder travel with that recorded elbow/wrist tuple fixed. Entry uses raised
-tuck, then raised recorded downstream joints, then lowers the shoulder; exit
-reverses those stages. Retraction bridges are permitted after the head latch,
+shoulder travel with that recorded elbow/wrist tuple fixed. Entry now raises
+the shoulder while preserving the current elbow/wrist, then sets the recorded
+downstream joints and lowers the shoulder. This removes the reported wrist-up
+curl caused by using raised tuck on entry. Exit still raises then tucks.
+Retraction bridges are permitted after the head latch,
 so shutdown/base parking can complete from full-down or interrupted travel.
 General limits and other recorded-pose exclusions remain unchanged. Regression
 tests use simulated Maestro I/O; no live motion was performed.

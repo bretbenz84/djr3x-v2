@@ -270,7 +270,10 @@ class Controller:
                         return False
                 return self.move(target, kind, duration, parking=parking)
             if full_down_corridor(target):
-                for stage in (RETRACT_RAISED, FULL_DOWN_RAISED, target):
+                # Raise with the current elbow/wrist unchanged. The retraction
+                # bridge curls the wrist fully up and is only needed on exit.
+                raised_current = {**current, 8: FULL_DOWN_RAISED[8]}
+                for stage in (raised_current, FULL_DOWN_RAISED, target):
                     if not self.move(stage, kind, duration, parking=parking):
                         return False
                 return True

@@ -303,8 +303,10 @@ the original CSV is retained as raw observations, not a list of approved poses.
 On 2026-09-23 the owner subsequently confirmed recorded pose 3 (2272 / 1397.25 /
 2377.75 µs) and entry/exit clearance. Runtime “arm down” now uses that exact pose.
 Its exception permits shoulder travel only with the recorded elbow and wrist
-fixed. The worker raises the shoulder before changing those downstream joints,
-then lowers it; exit reverses this route through a raised tuck configuration.
+fixed. On entry the worker raises the shoulder with the current elbow and wrist
+unchanged, moves those joints directly to the recorded down position, then lowers
+the shoulder. This avoids an unnecessary wrist-up curl before lowering. Exit
+raises the shoulder, then uses a raised tuck configuration for retraction.
 This also supports shutdown and base retraction, including interrupted shoulder
 travel. General elbow/wrist limits remain unchanged; pose 4 is not approved by
 this exception. The standalone tour's established-limit filtering is unchanged.
