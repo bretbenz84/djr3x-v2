@@ -494,8 +494,7 @@ LEAN_SUPPRESSED_PROACTIVE_PURPOSES = {
 
 # Fire a tiny throwaway OpenAI completion at startup (in a background thread) so
 # the first real turn doesn't pay cold TLS / HTTP-connection setup on the OpenAI
-# clients used by the answer LLM and the action router (separate clients, each
-# with its own connection pool). Disable for offline development.
+# client used by the answer LLM. Disable for offline development.
 OPENAI_WARMUP_ON_STARTUP = True
 
 # Local Ollama model used for low-latency sidecar intelligence (intent routing,
@@ -2574,14 +2573,6 @@ COMMAND_FUZZY_THRESHOLD = 0.82
 # about Rex's own capabilities / time / weather / uptime / vision get answered
 # with real data instead of free-form LLM guesses. Disable if latency suffers.
 INTENT_CLASSIFIER_ENABLED = True
-
-# Deterministic intent rules handle the common low-latency intents locally.
-# Anything the rules do not recognize can use the configured sidecar classifier
-# before falling through to the main conversation path.
-INTENT_CLASSIFIER_LLM_FALLBACK_ENABLED = True
-INTENT_CLASSIFIER_LLM_BACKEND = "ollama"  # "ollama" or "openai"
-INTENT_CLASSIFIER_LOCAL_TIMEOUT_SECS = 0.75
-INTENT_CLASSIFIER_OPENAI_TIMEOUT_SECS = 1.5
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EMPATHY / EMOTIONAL INTELLIGENCE
@@ -5888,19 +5879,10 @@ ACTION_GOVERNOR_REPEAT_COOLDOWN_SECS = 45.0
 # Higher-level user-turn action router.
 #
 # Execution is limited first by intelligence.action_router.EXECUTABLE_ACTIONS,
-# then by ACTION_ROUTER_EXECUTE_ACTIONS below. Keep this list conservative while
-# the router graduates from shadow mode; destructive/state-changing actions stay
-# on the legacy path until each category has earned trust.
-ACTION_ROUTER_SHADOW_ENABLED = False
-# ── Tool-calling router, Phase 0 shadow (docs/tool_router_scope.md) ──────────
-# When ON, each routed turn ALSO asks the conversation model to pick a tool for
-# the same utterance/context, and logs the choice next to the shipped decision
-# ([tool_router_shadow] lines; aggregate with tools/tool_router_report.py).
-# Costs one small hosted call per routed turn — enable in user_config.py for a
-# collection week, decide cutover from the report, then turn it back off.
-TOOL_ROUTER_SHADOW_ENABLED = False
-TOOL_ROUTER_SHADOW_MODEL = ""        # "" = LLM_CONVERSATION_MODEL
-TOOL_ROUTER_SHADOW_TIMEOUT_SECS = 8.0
+# then by ACTION_ROUTER_EXECUTE_ACTIONS below. Keep this list conservative;
+# destructive/state-changing actions stay on the legacy path until each category
+# has earned trust.
+# ── Tool-calling router (docs/tool_router_scope.md) ──────────────────────────
 # Phase 1 LIVE cutover (2026-08-01, on the collection evidence: tool router
 # ~92% vs shipped ~80%, decoy false-positives 0/6): the actions below ride the
 # lean REPLY call as native tools — the model answers in prose OR calls one,
@@ -6058,18 +6040,6 @@ SPECIFIC_FORGET_CONFIRM_TIMEOUT_SECS = 30.0
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True
 ACTION_ROUTER_EXECUTE_ENABLED = True
-# Skip the router's LLM call on deterministically-conversational turns (no action cue
-# words, no active game/music, deterministic intent = general). Measured ~0.8s saved
-# per chat turn (2026-07-06 latency work); canonical commands still hit the explicit
-# regex classifiers, and any cue word keeps the LLM router in the loop.
-ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED = _env_bool("ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED", True)
-# Mirror-image skip for the opposite case: the deterministic intent classifier
-# ALREADY claims the turn as a self-knowledge query answered from local data
-# (time/date/weather/uptime/capabilities/games/who-is-speaking). The LLM router
-# can only agree, so skip its call and let the intent classifier execute as it
-# would have anyway (~0.9s saved per basic query, measured 2026-08-02). Music,
-# memory, and vision intents deliberately still route through the LLM.
-ACTION_ROUTER_SELF_QUERY_SKIP_ENABLED = _env_bool("ACTION_ROUTER_SELF_QUERY_SKIP_ENABLED", True)
 ACTION_ROUTER_EXECUTE_ACTIONS = {
     "conversation.repair",
     "humor.tell_joke",
@@ -6092,10 +6062,7 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     # allowlist_result that did not describe what happened. Listing them makes the
     # audit line true and gives both a real kill switch (drop a key in
     # user_config.py and that write stops executing instead of being logged as if it
-    # had). It also un-deadens two branches that the allowlist alone had been
-    # blocking: _handle_router_takeover_action's memory.forget_specific arm and the
-    # router emotional.boundary block — both now clear
-    # action_router.missing_required_evidence_reason first.
+    # had).
     "memory.forget_specific",
     "emotional.boundary",
     "identity.who_is_speaking",
@@ -6132,8 +6099,7 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     # The takeovers still run BEFORE the dialogue-act gate on purpose — a physical
     # command is never an answer to Rex's last question (ccd839e, 2026-06-23:
     # "move forward." / "Move backwards" labelled answer_to_rex and the motion path
-    # skipped entirely) — and an LLM-decided motion.* still has to clear
-    # action_router.missing_required_evidence_reason before dispatch.
+    # skipped entirely).
     "motion.turn",
     "motion.move",
     "motion.arc",
@@ -6153,39 +6119,6 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "motion.face",
 }
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
-# The JSON-prose fallback router -- decide()'s blocking LLM call. OFF since
-# 2026-08-13 (tool-router Phase 4). It no longer routes anything; it only costs.
-# Measured on this checkout's own field logs before flipping it:
-#   * 1,340 audited turns -> the LLM branch produced exactly TWO executions, both
-#     character.preference_query, an action RETIRED the same day (6267d38). Every
-#     other router_takeover.* in the whole corpus (system.shutdown x8,
-#     memory.recent_discard x3, identity.name_correction x1) came from decide()'s
-#     DETERMINISTIC pre-LLM ladder, not from the model.
-#   * 567 routed turns carried a [latency] action_router sample: 30.5% paid the
-#     call, median 0.74s / p90 1.03s -- 42% of pre-reply turn latency on the turns
-#     that pay it, against a 1.77s median transcript->first-audio.
-#   * The prompt was silently TRUNCATED: _compact_json caps the payload at
-#     ACTION_ROUTER_MAX_CONTEXT_CHARS and the catalog alone is 5,310 chars, so
-#     weather.query and web.search fell off the end of the router's own catalog.
-#     It has been running degraded.
-# Everything it could still legally execute is either a LIVE tool on the reply
-# call or gated behind an evidence regex the deterministic lane already matched:
-# motion.* requires classify_explicit_motion to agree, so _explicit_motion_takeover
-# has always claimed those turns before decide() runs. That is why this lands
-# BEFORE motion Phase 3 rather than after it.
-# ROLLBACK = set this True in user_config.py. decide()'s ladder, the cue-word
-# skip, _SYSTEM_PROMPT and _coerce_decision are all still in place, so the flag is
-# a true revert, not a partial one. Offline it is inert either way --
-# connectivity.guard_client raises OfflineError before the request leaves.
-ACTION_ROUTER_LLM_FALLBACK_ENABLED = _env_bool("ACTION_ROUTER_LLM_FALLBACK_ENABLED", False)
-# Decoupled from LLM_MODEL 2026-08-02: gpt-4o-mini's ~1.08s median TTFT was the
-# whole cost of the blocking routing call; gpt-5.4-nano benchmarks at ~0.63s and
-# is priced/positioned for classification+routing. Calls go through llm_compat
-# (GPT-5 param contract) with reasoning effort "none" to keep TTFT low.
-# ROLLBACK = set this back to "gpt-4o-mini" (or LLM_MODEL) in user_config.py.
-ACTION_ROUTER_MODEL = "gpt-5.4-nano"
-ACTION_ROUTER_REASONING_EFFORT = "none"
-ACTION_ROUTER_MAX_CONTEXT_CHARS = 5000
 
 # Full people-memory wipes require an access code in the spoken confirmation.
 # Override in .env with DJR3X_FULL_MEMORY_WIPE_ACCESS_CODE for a private build.
@@ -10987,8 +10920,6 @@ except ImportError:
 # reach them. (AUDIO_OUTPUT_SUPPRESSED ← NO_AUDIO_MODE and
 # COMMON_FIRST_NAME_LAST_NAME_MIN_PERSON_TURNS ← LONG_CONVERSATION_MIN_EXCHANGES
 # track bases that are intentionally NOT exposed in user_config, so they stay.)
-# ACTION_ROUTER_MODEL no longer follows LLM_MODEL (decoupled 2026-08-02, see its
-# definition above) — override it directly in user_config.py if needed.
 STARTUP_BOOT_TTS_LINE = STARTUP_BOOT_TTS_LINES[0]
 
 # ── Short-clip continuity (intelligence/interaction.py, 2026-08-22) ──────────

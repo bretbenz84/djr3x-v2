@@ -137,7 +137,7 @@ Untracked local/runtime files:
 
 Never commit real secrets, local databases, generated TTS cache, local music, or downloaded model files.
 
-`config.py` ends with the `from user_config import *` override import followed by a re-derive tail that recomputes values built from a base the user may have overridden (`ACTION_ROUTER_MODEL = LLM_MODEL`, `STARTUP_BOOT_TTS_LINE`), so overriding the base propagates. Computed `Path(__file__)` state-paths and `.env`-only serial ports are deliberately NOT exposed in `user_config`. Deeper internal tuning (CV/audio thresholds, cooldowns, scoring weights, prompt fragments) stays in `config.py`.
+`config.py` ends with the `from user_config import *` override import followed by a re-derive tail that recomputes values built from a base the user may have overridden (`STARTUP_BOOT_TTS_LINE`), so overriding the base propagates. Computed `Path(__file__)` state-paths and `.env`-only serial ports are deliberately NOT exposed in `user_config`. Deeper internal tuning (CV/audio thresholds, cooldowns, scoring weights, prompt fragments) stays in `config.py`.
 
 ## Repository Map
 
@@ -173,14 +173,14 @@ intelligence/
   interaction.py         Main turn pipeline for speech and GUI text input.
   consciousness.py       Proactive loop, greetings, presence, empty-room behavior.
   dialogue_act.py        Cheap conversational-frame gate before executable actions.
-  action_router.py       LLM action routing.
+  action_router.py       Deterministic action routing (shutdown pre-pass, explicit
+                         classifiers, evidence gates); no LLM call.
   tool_router.py         Native tool-calling router. LIVE: the live-action tool
                          schemas ride the lean REPLY call, so a routed turn costs
                          zero extra LLM round-trips; a tool choice unwinds as
-                         ToolCallRequested before any speech. Also holds the
-                         off-by-default shadow collector.
+                         ToolCallRequested before any speech.
   command_parser.py      Fast/local command recognition.
-  intent_classifier.py   Intent fallback and deterministic guards.
+  intent_classifier.py   Deterministic intent labels (regex rules; no LLM).
   llm.py                 Main LLM prompt assembly and response generation.
   local_llm.py           Ollama sidecar for low-latency local calls.
   empathy.py             Affect classification and emotional event handling.
@@ -304,8 +304,8 @@ The desired routing hierarchy is now:
 - Legacy `command_parser` claims go through `_legacy_command_execution_block_reason(...)`.
 - Deterministic intent claims go through `_intent_execution_block_reason(...)`.
 - Both gates consult the dialogue decision and `action_router.missing_required_evidence_reason(...)`.
-- Legacy fuzzy command execution is disabled by default via `LEGACY_COMMAND_FUZZY_EXECUTE_ENABLED` being absent/false.
-- The live interaction path uses `intent_classifier.classify_deterministic(...)`, so the intent-classifier LLM fallback is not called during normal turns.
+- Legacy fuzzy command matches never execute (blocked as `legacy_fuzzy_disabled`). Fuzzy matching still drives the is-command checks and the game stop-confirmation.
+- The live interaction path uses `intent_classifier.classify_deterministic(...)`. The intent-classifier LLM fallback (`classify`/`_classify_with_llm`) was removed in dead-code Stage 2 (2026-09-23); the module is deterministic only.
 
 When investigating false positives, search logs for:
 
@@ -319,9 +319,7 @@ The failure mode to avoid: a normal contextual response gets a second chance in 
 
 `intelligence/tool_router.py` is the fifth and LAST routing layer, and it is **live**
 (`TOOL_ROUTER_LIVE_ENABLED = True`, Phase 1 cutover 2026-08-01, Phase 2 batch
-2026-08-02). Full plan + cutover evidence: `docs/tool_router_scope.md`. NOTE the
-module docstring still says "Phase 0 (SHADOW ONLY)" — it is stale; the shadow
-collector is only the second half of the file.
+2026-08-02). Full plan + cutover evidence: `docs/tool_router_scope.md`.
 
 How it works: `live_reply_tools()` attaches the LIVE subset of tool schemas to the
 lean **reply** call, so the model either answers in prose or calls a tool. Routing
@@ -354,11 +352,13 @@ Rules to preserve:
   `BaseException`'s reserved attribute and silently coerces a dict to a tuple of its
   KEYS — this deafened the robot in the field (see the 2026-08-03 section). A
   source-scan test pins it.
-- Humor / character / motion actions are deliberately NOT live: their fast lanes work.
+- Humor and performance actions went live 2026-08-13 (Phase 2), and
+  `motion.turn`/`move`/`arc`/`come` in Phase 3 the same day (the regex fast lane still
+  claims first; the tool only sees its misses). `motion.stop` and `motion.explore` are
+  deliberately NOT live, and `character.preference_query` was retired (6267d38).
 - Kill switch `TOOL_ROUTER_LIVE_ENABLED` reverts to pre-cutover behavior instantly.
-  `TOOL_ROUTER_SHADOW_ENABLED` (default False) is the separate off-path collector —
-  one extra small call per routed turn, for a collection week; report via
-  `tools/tool_router_report.py`.
+  The Phase 0 shadow collector (`TOOL_ROUTER_SHADOW_ENABLED`,
+  `tools/tool_router_report.py`) was deleted in dead-code Stage 2 (2026-09-23).
 
 Tests: `tests/test_tool_router.py` (contracts + coverage-enforcement: a new
 `ActionSpec` without a tool definition fails CI).
@@ -1275,7 +1275,7 @@ venv/bin/python main.py
 - Exact TTFS logging.
 - `[character_loop]` per-turn telemetry.
 - Slow-path acknowledgments (general/memory/vision) and the latency filler exist but are now **disabled by default** (`SLOW_PATH_ACK_ENABLED` / `LATENCY_FILLER_ENABLED` = False) — see the Latency And Telemetry section.
-- Action-router guardrails downgrade common false positives: ongoing status updates are not event cancellations, pronoun-only fragments are not introductions, named holiday explanations are not date queries, and relationship-score questions outside games route to memory.
+- The action-router demotion rails (status updates vs event cancellations, pronoun-only introductions, named-day explanations vs date queries, relationship-score questions vs game answers) were deleted in dead-code Stage 2 (2026-09-23): they only ever filtered the retired LLM router. The live equivalents are in `intent_classifier._deterministic_label`: named-day questions and "Me and you" return `general`, and friendship/relationship-score questions return `query_memory`. The router rail that remains is `identity.name_correction` → `event.cancel` for plan/status retractions.
 - Dialogue-act frame gate (`intelligence/dialogue_act.py`) protects normal replies to Rex's last turn before routers can claim them.
 - Central turn-policy gates in `interaction.py` now require legacy command-parser and deterministic intent claims to pass dialogue context plus action-shaped evidence.
 - Intent classifier live path is deterministic only; no extra LLM classifier call is added on normal turns.
@@ -1395,13 +1395,13 @@ venv/bin/python main.py
   reply-callback surface. Tests: `tests/test_lean_memory_musing.py`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
-- User-facing override layer: `config.py` ends with `from user_config import *` (try/except ImportError) so `user_config.py` — gitignored, copied from the committed `user_config.example.py` template by `setup_macos.sh` — overrides defaults without editing `config.py`. Defaults stay in `config.py` (source of truth); `from config import X` is unaffected since the change is purely an additive tail. A re-derive tail after the import recomputes `ACTION_ROUTER_MODEL` (= `LLM_MODEL`) and `STARTUP_BOOT_TTS_LINE` so overriding their base propagates. Scope is ~45 essentials (models, personality dials + base prompt, location, feature toggles, timeouts); each ships commented-out at its current default. See the Configuration And Secrets section.
+- User-facing override layer: `config.py` ends with `from user_config import *` (try/except ImportError) so `user_config.py` — gitignored, copied from the committed `user_config.example.py` template by `setup_macos.sh` — overrides defaults without editing `config.py`. Defaults stay in `config.py` (source of truth); `from config import X` is unaffected since the change is purely an additive tail. A re-derive tail after the import recomputes `STARTUP_BOOT_TTS_LINE` so overriding its base propagates (the original `ACTION_ROUTER_MODEL` alias was dropped 2026-08-02; the key itself was deleted in dead-code Stage 2, 2026-09-23). Scope is ~45 essentials (models, personality dials + base prompt, location, feature toggles, timeouts); each ships commented-out at its current default. See the Configuration And Secrets section.
 
 - Expressive TTS voice: `tts.speak()` derives ElevenLabs `voice_settings` from the turn's emotion frame (`emotion_orchestrator.voice_settings_for_emotion`) when the caller passes no override; `TTS_MODEL_ID=eleven_multilingual_v2` (honors `style`); voice settings + model_id are in the TTS cache key and `is_cached()/ensure_cached()` take `emotion`. Don't send `voice_settings=None` on normal turns; empathy/grief overrides win. Knobs: `TTS_VOICE_SETTINGS_*`, `TTS_EXPRESSIVE_VOICE_ENABLED`.
 - **Eleven v3 audio tags — leading AND inline/mid-sentence** (`TTS_V3_AUDIO_TAGS_ENABLED`): the affect-mapped LEADING tag ([sarcastic]/[laughs]/… from comedy_mode+emotion, `tts.resolve_audio_tag`) rides chunk 1 of a reply only; INLINE tags mid-reply come from (a) authored canned seam lines — e.g. `repair_moves`' "[excited] I'm sure we'll have better luck next time!" appended after a correction reply — and (b) the lean brain, whose system prompt gains a one-tag-max rule from `tts.llm_inline_tag_rule()` (`TTS_V3_LLM_INLINE_TAGS_ENABLED`). Every synthesis path sanitizes inline tags (`tts._sanitize_inline_tags`: whitelist + `TTS_V3_INLINE_TAG_CAP` on v3; STRIPPED entirely on v2/turbo or kill-switch-off — brackets must never be read aloud); `suppress_audio_tag` only skips the leading prepend, never the sanitize. Tags reach ElevenLabs ONLY: the shared strip helper is `utils/audio_tags.py` (re-exported as `tts.strip_audio_tags`), applied centrally in `conv_log` (transcript+GUI) and to interaction's canonical `spoken`/full_text (memory, handoff, dialogue frames). `repair_moves` matching is tag-insensitive (`_contains_recovery_line`, `note_assistant_turn`). Tests: `tests/test_v3_audio_tags.py`, `tests/test_repair_variation.py`.
 - Streaming answer→TTS: audio turns stream sentence-by-sentence (`interaction._stream_and_speak_sentences`) — first sentence speaks ASAP, the rest queue through the single one-at-a-time speech queue (no overlap).
 - WorldState lost-update fix: `world_state.mutate(field, fn)` does the read-modify-write under the lock; every `people` writer uses it (not `get()`+`update()`).
-- OpenAI warmup: `llm.warmup()` + `action_router.warmup()` run in a background thread (`OPENAI_WARMUP_ON_STARTUP`) so the first turn skips cold TLS/HTTP.
+- OpenAI warmup: `llm.warmup()` runs in a background thread (`OPENAI_WARMUP_ON_STARTUP`) so the first turn skips cold TLS/HTTP. (`action_router.warmup()` was deleted with the JSON-prose router, 2026-09-23.)
 - Stale-event-cancel guard: `memory.events.looks_like_cancellation` requires a cancellation phrase AND no false-positive idiom ("not going to lie", etc.).
 - **Voice-primary identity** (`VOICE_PRIMARY_IDENTITY_ENABLED`, default on): WHO is speaking is decided by the VOICE, not the visible face — see the "Identity And Multiple Speakers" section. A *confident* voice match (≥`SPEAKER_ID_CONFIDENT_THRESHOLD` 0.70) wins regardless of who's on camera, but an *accepted-but-not-confident* match (0.45–0.70) pointing at someone OTHER than the single visible known face does NOT override that face — the present known person anchors identity (`voice_weak_face_wins`), since a sub-confident score is exactly where an absent/poor print lands a voice on its nearest neighbor (the Bret→Wade failure); the off-camera voice is kept only if the active-speaker latch names a *different* on-camera talker. A weak/absent match lets the visible face only CORROBORATE (when `raw_best_id == that person`) and otherwise resolves off-screen/unknown; voiceprint auto-refresh is gated on `raw_best_id == person_id` so a different voice can't pollute a print. The old "single visible face wins regardless of voice" rule is retained only behind the flag (`_single_visible_face_voice_override`). Decision logic is the pure, unit-tested `_voice_primary_face_decision`; `tests/test_voice_primary_identity.py`. (Earlier note, now superseded: "sub-0.75 floors require raw_best_id == person, so a 2nd speaker in a 1:1 is treated as off-camera" — the corroboration rule generalizes this to all frames.)
 - Bug fixes to keep: `SCENE_MUSIC_BAND_ENERGY_MIN=2e-6` (was a typo making music always "detected"); dead `GUI_SHOW_FPS` removed; `social_frame` optional-lookup excepts log at debug.
@@ -1869,16 +1869,19 @@ A measured pass over every fixed cost on a turn, after a field session averaged
   claim must still pass the router's OWN evidence regexes (the classifier's patterns
   are looser), active games keep full routing, and **music/memory/vision are
   deliberately excluded** — the router owns their args and disambiguation.
+  *Both skips, their flags and the routing call they skipped were deleted in
+  dead-code Stage 2 (2026-09-23).*
 - **Action router on `gpt-5.4-nano`** via `llm_compat` (0.78s → 0.68s warm, cheaper
   per token). `ACTION_ROUTER_MODEL` is now DECOUPLED from `LLM_MODEL` — the
   user_config re-derive alias was removed, so override `ACTION_ROUTER_MODEL` directly
   to roll back. (The general/utility model stays `gpt-4o-mini`; the conversation path
-  is `LLM_CONVERSATION_MODEL = gpt-5.4-mini`.)
+  is `LLM_CONVERSATION_MODEL = gpt-5.4-mini`.) *The router's LLM call and
+  `ACTION_ROUTER_MODEL` were deleted in dead-code Stage 2 (2026-09-23).*
 - **Warmup 400s fixed.** `llm.warmup()`'s `max_tokens=1` ping had failed on every
   boot since the gpt-5.4-mini flip: GPT-5-family models **400 on a cap they cannot
   finish within** instead of truncating. This was the mystery startup "400 Bad
   Request" in field logs. Cap raised to 16 tokens (same fix in the action_router
-  warmup). Keep this in mind for any new GPT-5-class warmup ping.
+  warmup, since deleted). Keep this in mind for any new GPT-5-class warmup ping.
 - **Endpoint hold `SILENCE_TIMEOUT_SECS` 0.85 → 0.65s** — the largest fixed cost
   left once everything else was tuned. 0.85 is the known-good fallback if
   mid-sentence cutoffs return; the turn-completion repair prompt is the backstop.
@@ -3040,10 +3043,10 @@ surfaced five distinct failures; each is fixed at its own layer:
   next field session (`mic_skip_output_busy_sfx` vs `mic_skip_rex_speaking`) BEFORE
   changing anything. If sfx are confirmed, the fix is ducking them out of the human's
   reply window, not disabling them.
-- **Tool router Phases 3-4** (`docs/tool_router_scope.md`): humor/character actions are
-  still shadow-only (their fast lanes work); `motion` is unchanged. Phase 4 cleanup
-  merges the per-action schemas in `tool_router._TOOL_DEFS` into `ActionSpec` itself.
-  The module docstring still describes Phase 0 and should be rewritten at that point.
+- **Tool router Phase 4 remainder** (`docs/tool_router_scope.md`): humor/performance
+  (Phase 2) and motion (Phase 3) went live 2026-08-13, and the JSON-prose fallback
+  router was deleted 2026-09-23 (Phase 4b). Still open: merge the per-action schemas
+  in `tool_router._TOOL_DEFS` into `ActionSpec` itself.
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.
 - Decide whether the streaming answer path is sufficient latency cover on its own, or whether to re-enable (and tune) the slow-path ack / latency filler for the slowest paths.
 - Deeper conversation steering: detect a topic shift semantically (not just explicit "I like / I'm building X") and update/expire the active interest accordingly; today a new subject the user is clearly engaged in but doesn't name in an interest form is not picked up.

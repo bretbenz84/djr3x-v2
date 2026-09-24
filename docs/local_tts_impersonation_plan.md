@@ -260,6 +260,8 @@ Mirror the `--noaudio` env-seed mechanism exactly (`main.py`
     (`missing_performance_request_evidence`), so a stray "that was a good
     impression" can't trigger it. Verify the gate treats it correctly; add the
     explicit-request evidence check if `performance.*` isn't already wired there.
+    *(`PERFORMANCE_ACTIONS` was deleted 2026-09-23 in dead-code Stage 2; the
+    performance tool actions are listed in `_PERFORMANCE_TOOL_ACTIONS`.)*
 - Handler lives in a new module `features/impersonation.py` (it's a performance
   feature, like games), called from the action-execution switch in
   `interaction.py`. Keep `interaction.py`'s footprint to: pending-slot plumbing +

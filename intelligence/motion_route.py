@@ -24,7 +24,7 @@ The second tool is the decline. A single forced tool cannot say no, which would
 make the ASR-garbage arm of the corpus ("and the other, and the other, and the
 other...") unrepresentable as anything but a drive command.
 
-House style, borrowed from tool_router.shadow_decide: this module NEVER raises.
+House style: this module NEVER raises.
 Errors come back inside the result dict. The caller sits inside
 interaction._handle_speech_segment's fast-takeover ladder, whose except-handler
 logs at DEBUG under an unrelated message ("action router shadow start failed") and

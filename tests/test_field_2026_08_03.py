@@ -55,13 +55,11 @@ class RouterShutdownPrePassTest(unittest.TestCase):
     def _decide_no_llm(self, text):
         calls = []
 
-        def _fake_create(**kw):
+        def _fake_create(*a, **kw):
             calls.append(1)
             raise RuntimeError("llm consulted")
 
-        with mock.patch.object(
-            AR._client.chat.completions, "create", side_effect=_fake_create
-        ):
+        with mock.patch("intelligence.llm_compat.create", side_effect=_fake_create):
             decision = AR.decide(text, {})
         return decision, len(calls)
 
@@ -105,9 +103,8 @@ class BatteryIntentTest(unittest.TestCase):
             )
 
     def test_battery_action_fully_wired(self):
-        """The six-point checklist, greppable: catalog spec, evidence gate,
-        self-query skip, execute allowlist, tool-router catalog + live set,
-        intent-action map."""
+        """The five-point checklist, greppable: catalog spec, evidence gate,
+        execute allowlist, tool-router catalog + live set, intent-action map."""
         from intelligence import tool_router
         from intelligence import interaction as I
         self.assertIn("status.battery", {s.key for s in AR.ACTION_SPECS})
@@ -115,28 +112,10 @@ class BatteryIntentTest(unittest.TestCase):
             "what's your state of charge?",
             AR.ActionDecision(action="status.battery", confidence=0.9),
         ))
-        self.assertEqual(
-            AR._SELF_QUERY_SKIP_INTENTS.get("query_battery"), "status.battery")
         self.assertIn("status.battery", config.ACTION_ROUTER_EXECUTE_ACTIONS)
         self.assertIn("status.battery", config.TOOL_ROUTER_LIVE_ACTIONS)
         self.assertIn("status.battery", tool_router._TOOL_DEFS)
-        self.assertIn("status.battery", tool_router._DEFAULT_LIVE_ACTIONS)
         self.assertEqual(I._INTENT_ACTION_MAP.get("query_battery"), "status.battery")
-
-    def test_router_self_query_skip_saves_llm_call(self):
-        calls = []
-
-        def _fake_create(**kw):
-            calls.append(1)
-            raise RuntimeError("llm consulted")
-
-        with mock.patch.object(
-            AR._client.chat.completions, "create", side_effect=_fake_create
-        ):
-            decision = AR.decide("What's your state of charge?", {})
-        self.assertEqual(decision.action, "conversation.reply")
-        self.assertIn("self-query", decision.reason)
-        self.assertEqual(len(calls), 0)
 
 
 class BatteryHandlerTest(unittest.TestCase):

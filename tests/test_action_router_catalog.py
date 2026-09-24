@@ -1,7 +1,4 @@
-import json
-from types import SimpleNamespace
 import unittest
-from unittest import mock
 
 
 class ActionRouterCatalogTests(unittest.TestCase):
@@ -25,10 +22,7 @@ class ActionRouterCatalogTests(unittest.TestCase):
 
         spec_keys = {spec.key for spec in action_router.ACTION_SPECS}
 
-        self.assertEqual(set(action_router.ACTION_CATALOG), spec_keys)
-        self.assertEqual(set(action_router.ACTION_CATEGORIES), spec_keys)
         self.assertTrue(action_router.EXECUTABLE_ACTIONS.issubset(spec_keys))
-        self.assertTrue(action_router.PERFORMANCE_ACTIONS.issubset(spec_keys))
 
     def test_humor_and_performance_actions_are_executable(self):
         from intelligence import action_router
@@ -42,40 +36,15 @@ class ActionRouterCatalogTests(unittest.TestCase):
             "performance.mood_pose",
         }
 
-        self.assertTrue(planned.issubset(action_router.ACTION_CATALOG))
-        self.assertTrue(planned.issubset(action_router.PERFORMANCE_ACTIONS))
+        categories = {
+            spec.key: spec.category for spec in action_router.ACTION_SPECS
+        }
+
+        self.assertTrue(planned.issubset(categories))
+        self.assertTrue(
+            all(categories[key] in {"humor", "performance"} for key in planned)
+        )
         self.assertTrue(planned.issubset(action_router.EXECUTABLE_ACTIONS))
-
-    def test_router_accepts_new_catalog_actions_from_llm(self):
-        from intelligence import action_router
-
-        decision = action_router._coerce_decision({
-            "action": "humor.tell_joke",
-            "confidence": 0.96,
-            "args": {"style": "rex"},
-            "requires_confirmation": False,
-            "reason": "explicit joke request",
-        })
-
-        self.assertEqual(decision.action, "humor.tell_joke")
-        self.assertEqual(decision.confidence, 0.96)
-        self.assertEqual(decision.args["style"], "rex")
-
-    def test_router_prompt_teaches_humor_and_performance_boundaries(self):
-        from intelligence import action_router
-
-        prompt = action_router._SYSTEM_PROMPT
-
-        self.assertIn("tell me a joke", prompt)
-        self.assertIn("Use humor.roast only for explicit roast/tease requests", prompt)
-        self.assertIn("Use performance.dj_bit", prompt)
-        self.assertIn("Use performance.body_beat", prompt)
-        self.assertIn("Use performance.mood_pose", prompt)
-        self.assertIn("Use vision.snapshot", prompt)
-        self.assertIn("Use identity.name_correction", prompt)
-        self.assertIn("Use memory.recent_discard", prompt)
-        self.assertIn("args.body_beat", prompt)
-        self.assertIn("tiny_victory_dance", prompt)
 
     def test_explicit_humor_classifier_routes_obvious_requests(self):
         from intelligence import action_router
@@ -269,7 +238,10 @@ class ActionRouterCatalogTests(unittest.TestCase):
         from intelligence import action_router, rex_preferences
 
         self.assertFalse(hasattr(action_router, "classify_explicit_character_preference"))
-        self.assertNotIn("character.preference_query", action_router.ACTION_CATALOG)
+        self.assertNotIn(
+            "character.preference_query",
+            {spec.key for spec in action_router.ACTION_SPECS},
+        )
 
         for text in ("do you like music", "what's your favorite color?",
                      "do you prefer jazz or silence?"):
@@ -295,23 +267,12 @@ class ActionRouterCatalogTests(unittest.TestCase):
     def test_opinion_question_is_not_claimed_by_any_deterministic_lane(self):
         """No regex claims it any more, so the model gets the turn.
 
-        "music" is an _ACTION_CUE_RE token, so this still consults the LLM router
-        rather than short-circuiting — the point is only that nothing deterministic
-        answers it with a canned line first.
+        The point is only that nothing deterministic answers it with a canned
+        line first.
         """
         from intelligence import action_router
 
-        payload = json.dumps({
-            "action": "conversation.reply",
-            "confidence": 0.4,
-            "args": {},
-            "reason": "opinion question",
-        })
-        response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=payload))]
-        )
-        with mock.patch("intelligence.llm_compat.create", return_value=response):
-            decision = action_router.decide("do you like music?", {})
+        decision = action_router.decide("do you like music?", {})
 
         self.assertEqual(decision.action, "conversation.reply")
 

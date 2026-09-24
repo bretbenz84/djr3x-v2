@@ -121,8 +121,9 @@ class ClassifierTests(unittest.TestCase):
 
     def test_spec_registered(self):
         self.assertIn("motion.explore", ar.EXECUTABLE_ACTIONS)
-        self.assertIn("motion.explore", ar._VALID_ACTIONS)
-        self.assertEqual(ar.ACTION_CATEGORIES["motion.explore"], "motion")
+        specs = {s.key: s for s in ar.ACTION_SPECS}
+        self.assertIn("motion.explore", specs)
+        self.assertEqual(specs["motion.explore"].category, "motion")
 
     def test_directed_look_still_declines(self):
         # The existing "look around and tell me what you see" path must keep it.

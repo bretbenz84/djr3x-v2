@@ -255,6 +255,56 @@ them are deleted; tests that also cover live code are retargeted.
 
 ### Stage 2 — Retired routing machinery (MEDIUM: env-flippable rollbacks) — ~1,500 prod lines
 
+> **Landed 2026-09-23** (on top of `2d2989c`; about 3,680 lines deleted: ~1,500 prod, ~850
+> tools, ~920 test net, ~70 config). All four sub-stages landed. Every symbol was re-grepped
+> repo-wide before deletion.
+> - `action_router`: `decide()` ends in an unconditional `conversation.reply` (same 0.6
+>   confidence) after the shutdown pre-pass and the three explicit classifiers. The LLM tail,
+>   `warmup` (+ `main.py` call), `start_shadow_decision`, `_client`, `_SYSTEM_PROMPT`,
+>   `_coerce_decision`, `_strip_code_fence`, the catalog sets, the skip machinery, the dead
+>   `_apply_context_overrides` branches (the live name_correction→event.cancel override
+>   stays), the listed regexes, `_pending_question_context` and the repair evidence branch
+>   are gone.
+> - `intent_classifier`: only `classify_deterministic` remains (no LLM, no `_log`).
+> - `tool_router`: the Phase 0 shadow and `_DEFAULT_LIVE_ACTIONS` are gone.
+>   `live_actions()` reads `config.TOOL_ROUTER_LIVE_ACTIONS` directly.
+> - `interaction`: the dead takeover arms, the helpers, the repair check (with its
+>   `router_action` param), the router `emotional.boundary` block, the event.cancel executor
+>   and both shadow call sites are deleted. The `LEGACY_COMMAND_FUZZY_EXECUTE_ENABLED` read
+>   is collapsed.
+> - Config: `ACTION_ROUTER_{LLM_FALLBACK_ENABLED,MODEL,REASONING_EFFORT,MAX_CONTEXT_CHARS,
+>   DETERMINISTIC_SKIP_ENABLED,SELF_QUERY_SKIP_ENABLED,SHADOW_ENABLED}`, `TOOL_ROUTER_SHADOW_*`
+>   and `INTENT_CLASSIFIER_{LLM_FALLBACK_ENABLED,LLM_BACKEND,LOCAL_TIMEOUT_SECS,
+>   OPENAI_TIMEOUT_SECS}` are removed, along with the stale comments that described them.
+>   `user_config.example.py` drops `TOOL_ROUTER_SHADOW_ENABLED` and the action-router
+>   mention.
+> - Tools/docs: `tools/{conversation_text_harness,gpt5_ab_test,tool_router_report}.py` and
+>   `TOOL_ROUTER_TEST_SCRIPT.md` are deleted (D10; the script was pulled forward from Stage 8).
+>   CONTEXT.md, README, `docs/tool_router_scope.md` (Phase 4b marked done),
+>   `docs/gpt-5_4_mini.md`, `docs/local_tts_impersonation_plan.md` and the CLAUDE.md
+>   known-failure list are updated. Stale docstrings in `audio/tts.py` and `motion_route.py`
+>   are fixed.
+> - Tests: `test_router_downgrades_*`/`allows_*` (15), `test_router_sleep_candidate_must_be_standalone`
+>   and `test_actor_harness_strips_speaker_prefixes` are deleted from gating. 14 gating tests
+>   moved to `classify_deterministic`. The gating module runs 407 tests with 4 failures, all
+>   of them in the `c00eed5` baseline.
+>
+> Skipped:
+> - `test_review_regressions::test_intent_classifier_allows_known_named_person_memory_topic`
+>   is RETARGETED to `classify_deterministic` instead of deleted. Its mocked LLM was never
+>   reached, and it is the only coverage of live known-person memory routing.
+> - `"conversation.repair"` stays in `ACTION_ROUTER_EXECUTE_ACTIONS`. `decide()` can no longer
+>   produce it, but dropping it is a policy edit (and `test_action_router_execution_gate`
+>   pins it), not a deletion.
+> - Fixed in the review pass (comment-only): stale mentions of deleted symbols in
+>   `interaction.py` (`_deterministic_self_query_intent`, `_SELF_QUERY_SKIP_INTENTS`),
+>   `action_router.py` (`tools/tool_router_report.py` ×4, the "LLM-decided motion branch in
+>   `_handle_router_takeover_action`", `_GAME_STOP_REQUEST_RE`) and `tool_router.py` (the
+>   "JSON-prose router prompt" / `_handle_router_takeover_action` arg-name lists), plus the
+>   CONTEXT.md "action-router guardrails" bullet. `test_action_router_skip` re-pins the 13
+>   chat/self-query utterances (and an offline pair) that the deleted skip tests covered as
+>   `decide()` → `conversation.reply`.
+
 Owner already scheduled this: `docs/tool_router_scope.md:113-122` "Phase 4b, once the flag has
 held off in the field" (off since 2026-08-13). No API call is paid today; removal is
 behavior-neutral (only the unlogged `decision.reason` string changes).
@@ -535,14 +585,14 @@ opportunistically when touching a module, never as a sweep. Do NOT collapse: run
 - Move stale history to `docs/archive/`: `rework.md`, `docs/junecodereview.md` (after carrying its still-open
   items), `comedy_improvements.md`, `callback_humor_design.md`, `active_speaker_detection.md`,
   `exploration_mode_plan.md`, `gpt-5_4_mini.md`, `local_tts_impersonation_plan.md`,
-  `motion_sensing_roadmap.md`, `CONVERSATION_TEST_SCRIPT.md`, `TOOL_ROUTER_TEST_SCRIPT.md`, the
+  `motion_sensing_roadmap.md`, `CONVERSATION_TEST_SCRIPT.md`, the
   `field_2026_09_15_*`/`come_here_2026-09-06`/`jeopardy_live_reliability_review` field notes.
 - CONTEXT.md: move the dated changelog (1269-3032, 3055-3819; ~2,500 lines) to
   `docs/archive/context_changelog.md`, keep the architecture reference (1-1268) + "Likely Future Work"
   (refresh it); refile the 2026-09-16 mic item misfiled under `## GUI`.
 - CLAUDE.md known-failure list: remove the failures deleted with their dead code
   (`test_idle_monologue_is_excluded_from_the_cooldown`, `test_first_sight_sparse_profile_uses_basic_profile_question`,
-  `test_router_keeps_known_named_person_topic_as_memory_query`, `test_one_word_passion_answer_drives_engaged_curiosity`,
+  `test_one_word_passion_answer_drives_engaged_curiosity`,
   `test_cold_signature_needs_strict_bar`), add/resolve A6.
 - Untracked, unreferenced: `.recovery/` (694 MB, 09-16 snapshot) and `models/dj_r3x/` (421 MB avatar
   build files) — owner to delete or gitignore.

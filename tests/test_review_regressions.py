@@ -178,29 +178,6 @@ class PeopleNameValidationTests(unittest.TestCase):
 
 
 class PersonMemoryRoutingTests(unittest.TestCase):
-    def test_router_keeps_known_named_person_topic_as_memory_query(self):
-        from intelligence import action_router, person_memory_targets
-
-        decision = action_router.ActionDecision(
-            action="memory.query",
-            confidence=0.90,
-            args={},
-            reason="person memory question",
-        )
-
-        with mock.patch.object(
-            person_memory_targets,
-            "_load_known_person_names",
-            return_value=["Daniel Benziger"],
-        ):
-            routed = action_router._apply_context_overrides(
-                decision,
-                "What do you know about Daniel?",
-                {},
-            )
-
-        self.assertEqual(routed.action, "memory.query")
-
     def test_known_person_helper_ignores_sentence_like_stored_names(self):
         from intelligence import person_memory_targets
 
@@ -223,16 +200,12 @@ class PersonMemoryRoutingTests(unittest.TestCase):
     def test_intent_classifier_allows_known_named_person_memory_topic(self):
         from intelligence import intent_classifier, person_memory_targets
 
-        with (
-            mock.patch.object(
-                person_memory_targets,
-                "_load_known_person_names",
-                return_value=["Daniel Benziger"],
-            ),
-            mock.patch.object(intent_classifier.config, "INTENT_CLASSIFIER_LLM_FALLBACK_ENABLED", True),
-            mock.patch.object(intent_classifier, "_classify_with_llm", return_value="query_memory"),
+        with mock.patch.object(
+            person_memory_targets,
+            "_load_known_person_names",
+            return_value=["Daniel Benziger"],
         ):
-            intent = intent_classifier.classify("What do you know about Daniel?")
+            intent = intent_classifier.classify_deterministic("What do you know about Daniel?")
 
         self.assertEqual(intent, "query_memory")
 

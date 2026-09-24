@@ -1460,8 +1460,7 @@ def _game_active_for_router() -> bool:
 # first. They are safe to escape because no game ANSWER looks like "let's play
 # jeopardy". The query keys (time/date/vision/who-am-I) are deliberately NOT here:
 # a Jeopardy response is phrased "What is X?", the same shape as those queries,
-# which is exactly why action_router._deterministic_self_query_intent refuses to
-# skip routing while a game is active.
+# so they must not escape the game claim.
 _GAME_ESCAPE_COMMAND_KEYS = frozenset({
     "stop_game", "sleep", "shutdown", "quiet_mode", "wake_up",
     "dj_stop", "dj_skip", "volume_up", "volume_down",
@@ -1806,11 +1805,6 @@ def _router_audit_note_fast_local_action(
     _router_audit_note_decision(audit, decision)
 
 
-def _router_audit_note_execute_disabled(audit: Optional[_RouterDecisionAudit]) -> None:
-    if audit is not None and audit.allowlist_result == "not_run":
-        audit.allowlist_result = "execute_disabled_shadow"
-
-
 def _router_blocked_confirmation_response(
     decision: Optional[action_router.ActionDecision],
     block_reason: Optional[str],
@@ -2139,10 +2133,7 @@ def _legacy_command_execution_block_reason(
         return None
     if _legacy_command_blocked_by_dialogue(match, dialogue_decision, text):
         return "blocked_by_dialogue_act"
-    if (
-        match.match_type == "fuzzy"
-        and not bool(getattr(config, "LEGACY_COMMAND_FUZZY_EXECUTE_ENABLED", False))
-    ):
+    if match.match_type == "fuzzy":
         return "legacy_fuzzy_disabled"
     decision = _legacy_command_action_decision(match)
     if decision is None:
@@ -2204,15 +2195,13 @@ def _intent_execution_block_reason(
     text: str,
     context: Optional[dict[str, Any]] = None,
     dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
-    router_action: Optional[str] = None,
 ) -> Optional[str]:
     """Central turn-policy gate for deterministic intent-classifier claims."""
     if not intent or intent == "general":
         return None
     if intent == "query_games" and action_router.tool_router_owns("game.start"):
         # query_games is the ONE deterministic intent with no action mapping and no
-        # evidence rule (action_router._SELF_QUERY_SKIP_INTENTS says exactly that),
-        # so it reaches _handle_classified_intent unchecked — and
+        # evidence rule, so it reaches _handle_classified_intent unchecked — and
         # intent_classifier._GAMES_QUERY_RE claims "play a game" and "start a game"
         # outright, answering a LAUNCH with the canned games menu. That was masked
         # while command_parser executed start_game first; demoting start_game to the
@@ -2228,13 +2217,6 @@ def _intent_execution_block_reason(
     decision = _intent_action_decision(intent)
     if decision is None:
         return None
-    # The LLM router already judged this turn a conversational REPAIR (a
-    # correction or complaint like "you didn't give me time to answer"). A
-    # repair is never a clock/date/weather/data query — so don't let a keyword
-    # match in the deterministic fallback hijack it into a tool answer (this is
-    # what produced "It's 8:33 PM." in response to a pacing complaint).
-    if (router_action or "") == "conversation.repair":
-        return "router_classified_repair"
     # Stage 1 of the tool-router migration: for the actions the LIVE tool router
     # owns, this lane is a DETECTOR, not a claim. Returning a reason here IS the
     # demotion — the caller sets intent="general", the turn falls through to
@@ -4230,20 +4212,6 @@ def _format_current_date_response(now: Optional[datetime] = None) -> str:
     """Return a deterministic date answer without an LLM round trip."""
     now = now or datetime.now()
     return f"Today is {now.strftime('%A, %B')} {now.day}, {now.year}."
-
-
-_DATE_QUERY_PAT = re.compile(
-    # date-vs-time tiebreaker: explicit date words only (no bare "today", which
-    # also appears in time questions like "what time is it today").
-    r"\b(?:date|weekday|day\s+of\s+(?:the\s+)?week)\b|"
-    r"\bwhat(?:'s| is)?\s+today'?s\s+date\b|"
-    r"^\s*what\s+day\b",
-    re.IGNORECASE,
-)
-
-
-def _looks_like_date_query(text: str) -> bool:
-    return bool(_DATE_QUERY_PAT.search(text or ""))
 
 
 def _wake_ack() -> None:
@@ -15738,10 +15706,10 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
         # silently (the aa9acce failure mode). game.start has no _INTENT_ACTION_MAP
         # entry and never will; the executor is the legacy one, reached through a
         # schema-validated door instead of a regex.
-        # Falling back to `text` when the model named no game mirrors
-        # _handle_router_takeover_action: games._normalize_game reads its aliases
-        # out of the raw sentence, and games.start_game answers an unknown name
-        # with the games list rather than failing.
+        # Falling back to `text` when the model named no game is deliberate:
+        # games._normalize_game reads its aliases out of the raw sentence, and
+        # games.start_game answers an unknown name with the games list rather
+        # than failing.
         game = str(
             (args or {}).get("game") or (args or {}).get("game_name") or ""
         ).strip()
@@ -16014,9 +15982,9 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
 
     if action == "event.cancel":
         # Off-pattern cancellations ("we're not going to Lake Folsom anymore",
-        # field 2026-08-02) — mirror the router's event.cancel branch: cancel
-        # matching stored events (events_memory.looks_like_cancellation stays
-        # as the write guard), resolve open commitments, ack in character.
+        # field 2026-08-02) — mirror the turn handler's deterministic cancel
+        # path: cancel matching stored events (events_memory.looks_like_cancellation
+        # stays as the write guard), resolve open commitments, ack in character.
         resp = None
         try:
             hint = str((args or {}).get("event_hint") or "").strip()
@@ -16038,7 +16006,7 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
                 _log.debug("[tool_router] commitments resolve failed: %s", commit_exc)
             if not labels and hint and events_memory.looks_like_cancellation(text):
                 # LLM-confirmed cancel with no stored row — still acknowledge
-                # so the user hears the plan is off (matches router behavior).
+                # so the user hears the plan is off.
                 labels = [hint]
             if labels:
                 resp = _event_cancellation_ack(labels, cancel_pid)
@@ -16081,10 +16049,10 @@ def _execute_tool_routed_action(action: str, args: dict, text: str,
         try:
             if intent == "query_who_is_speaking":
                 # This handler answers from BIOMETRIC ground truth, and the tool
-                # path was the only caller not passing it: the intent lane and
-                # _handle_router_takeover_action both thread raw_best_* through,
-                # so a tool-routed "who's speaking?" silently took the no-match
-                # branch ("no idea, who's asking?") even on a 0.9 voice score.
+                # path was the only caller not passing it: the intent lane
+                # threads raw_best_* through, so a tool-routed "who's speaking?"
+                # silently took the no-match branch ("no idea, who's asking?")
+                # even on a 0.9 voice score.
                 # Live since 2026-08-02, but Stage 1 makes the tool the PRIMARY
                 # route for the loose phrasings, so the gap had to close first.
                 ev = _current_turn_speaker_evidence or {}
@@ -21288,30 +21256,6 @@ def _router_arg_text(
     return ""
 
 
-def _visible_known_name_for_intent() -> Optional[str]:
-    try:
-        for p in world_state.get("people") or []:
-            if p.get("person_db_id") is not None and p.get("face_id"):
-                return str(p["face_id"])
-    except Exception:
-        pass
-    return None
-
-
-def _router_system_command(text: str, decision: action_router.ActionDecision) -> Optional[str]:
-    mode = _router_arg_text(decision, "mode", "state", "target")
-    haystack = f"{text} {mode}".lower()
-    if any(word in haystack for word in ("shutdown", "shut down", "power off", "turn off")):
-        return "shutdown"
-    if any(word in haystack for word in ("quiet", "mute", "silent")):
-        return "quiet_mode"
-    if "wake" in haystack:
-        return "wake_up"
-    if not command_parser.is_standalone_sleep_command(text):
-        return None
-    return "sleep"
-
-
 def _play_performance_body_beat(beat: str) -> None:
     from sequences import animations
     animations.play_body_beat(beat)
@@ -22166,26 +22110,6 @@ def _negation_is_answer(repair_move: Optional[dict], dialogue_decision) -> bool:
         and dialogue_decision is not None
         and getattr(dialogue_decision, "label", "") == "answer_to_rex"
     )
-
-
-def _router_repair_move(
-    text: str,
-    decision: action_router.ActionDecision,
-) -> dict:
-    repair = repair_moves.detect(text)
-    if repair is not None:
-        return repair
-    repair_kind = (
-        _router_arg_text(decision, "repair_kind", "kind", "type")
-        or "misunderstood"
-    )
-    correction = _router_arg_text(decision, "correction", "corrected_text", "clarification")
-    return {
-        "kind": repair_kind,
-        "severity": "medium",
-        "correction": correction,
-        "user_text": text,
-    }
 
 
 def _handle_router_identity_name_correction(
@@ -23357,16 +23281,6 @@ def _handle_router_takeover_action(
     if action == "conversation.reply":
         return None
 
-    if action == "conversation.repair":
-        repair = _router_repair_move(text, decision)
-        _log.info(
-            "[action_router] executing conversation.repair kind=%s person_id=%s text=%r",
-            repair.get("kind"),
-            person_id,
-            text,
-        )
-        return _generate_repair_response(person_id, text, repair)
-
     if action == "identity.name_correction":
         _log.info(
             "[action_router] executing identity.name_correction person_id=%s text=%r",
@@ -23388,37 +23302,6 @@ def _handle_router_takeover_action(
             router_audit=router_audit,
         )
 
-    if action == "performance.impersonate":
-        target = _router_arg_text(decision, "target", "person", "who", "name")
-        _log.info(
-            "[action_router] executing performance.impersonate person_id=%s target=%r text=%r",
-            person_id, target, text,
-        )
-        return _handle_router_impersonation(decision, text, person_id, person_name, target)
-
-    if action == "memory.forget_specific":
-        target = _router_arg_text(decision, "target", "topic", "memory")
-        if not target:
-            target = forgetting.extract_specific_forget_target(text)
-        if not target:
-            return None
-        _log.info(
-            "[action_router] executing memory.forget_specific person_id=%s target=%r text=%r",
-            person_id,
-            target,
-            text,
-        )
-        return _execute_command(
-            command_parser.CommandMatch(
-                "forget_specific",
-                "action_router",
-                {"target": target},
-            ),
-            person_id,
-            person_name,
-            text,
-        )
-
     if action == "memory.recent_discard":
         _log.info(
             "[action_router] executing memory.recent_discard person_id=%s text=%r",
@@ -23426,200 +23309,6 @@ def _handle_router_takeover_action(
             text,
         )
         return _execute_memory_boundary_command(person_id, utterance=str(text or ""))
-
-    if action == "identity.who_is_speaking":
-        _log.info(
-            "[action_router] executing identity.who_is_speaking person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent(
-            "query_who_is_speaking",
-            text,
-            person_id,
-            raw_best_id=raw_best_id,
-            raw_best_name=raw_best_name,
-            raw_best_score=raw_best_score,
-            visible_known_name=_visible_known_name_for_intent(),
-        )
-
-    if action == "game.start":
-        game = _router_arg_text(decision, "game", "game_name", "target")
-        _log.info(
-            "[action_router] executing game.start person_id=%s game=%r text=%r",
-            person_id,
-            game,
-            text,
-        )
-        return _execute_command(
-            command_parser.CommandMatch(
-                "start_game",
-                "action_router",
-                {"game": game or text},
-            ),
-            person_id,
-            person_name,
-            text,
-        )
-
-    if action == "game.stop":
-        _log.info(
-            "[action_router] executing game.stop person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _execute_command(
-            command_parser.CommandMatch("stop_game", "action_router", {}),
-            person_id,
-            person_name,
-            text,
-        )
-
-    if action == "game.answer":
-        try:
-            from features import games as games_mod
-            if not games_mod.is_active():
-                return None
-            _log.info(
-                "[action_router] executing game.answer person_id=%s text=%r",
-                person_id,
-                text,
-            )
-            resp = games_mod.handle_input(text, person_id)
-            completed = _speak_blocking(resp)
-            if completed:
-                games_mod.on_response_spoken()
-                after_audio = games_mod.consume_pending_audio_after_response()
-                if after_audio and not _interrupted.is_set():
-                    speech_queue.enqueue_audio_file(
-                        after_audio,
-                        priority=1,
-                        tag="game:after_audio",
-                    )
-            return resp
-        except Exception as exc:
-            _log.debug("router game.answer failed: %s", exc)
-            _router_audit_note_result(
-                router_audit,
-                handler_error=f"game_answer_failed:{type(exc).__name__}",
-            )
-            return None
-
-    if action == "music.play":
-        _log.info(
-            "[action_router] executing music.play person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent("play_music", text, person_id)
-
-    if action == "music.stop":
-        _log.info(
-            "[action_router] executing music.stop person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _execute_command(
-            command_parser.CommandMatch("dj_stop", "action_router", {}),
-            person_id,
-            person_name,
-            text,
-        )
-
-    if action == "music.skip":
-        _log.info(
-            "[action_router] executing music.skip person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _execute_command(
-            command_parser.CommandMatch("dj_skip", "action_router", {}),
-            person_id,
-            person_name,
-            text,
-        )
-
-    if action == "music.options":
-        _log.info(
-            "[action_router] executing music.options person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent("query_music_options", text, person_id)
-
-    if action == "vision.describe_scene":
-        _log.info(
-            "[action_router] executing vision.describe_scene person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent("query_what_do_you_see", text, person_id)
-
-    if action == "memory.query":
-        _log.info(
-            "[action_router] executing memory.query person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent(
-            "query_memory",
-            text,
-            person_id,
-            raw_best_id=raw_best_id,
-            raw_best_name=raw_best_name,
-            raw_best_score=raw_best_score,
-            visible_known_name=_visible_known_name_for_intent(),
-        )
-
-    if action == "time.query":
-        _log.info(
-            "[action_router] executing time.query person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        if _looks_like_date_query(text):
-            return _handle_classified_intent("query_date", text, person_id)
-        return _handle_classified_intent("query_time", text, person_id)
-
-    if action == "date.query":
-        _log.info(
-            "[action_router] executing date.query person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent("query_date", text, person_id)
-
-    if action == "weather.query":
-        _log.info(
-            "[action_router] executing weather.query person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent("query_weather", text, person_id)
-
-    if action == "status.capabilities":
-        _log.info(
-            "[action_router] executing status.capabilities person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent("query_capabilities", text, person_id)
-
-    if action == "status.uptime":
-        _log.info(
-            "[action_router] executing status.uptime person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent("query_uptime", text, person_id)
-
-    if action == "status.battery":
-        _log.info(
-            "[action_router] executing status.battery person_id=%s text=%r",
-            person_id,
-            text,
-        )
-        return _handle_classified_intent("query_battery", text, person_id)
 
     if action == "system.shutdown":
         # is_shutdown_request (not the standalone form): the parser still owns
@@ -23646,70 +23335,6 @@ def _handle_router_takeover_action(
             person_name,
             text,
         )
-
-    if action == "system.sleep":
-        key = _router_system_command(text, decision)
-        if key is None:
-            _log.info(
-                "[action_router] ignored non-standalone system.sleep candidate person_id=%s text=%r",
-                person_id,
-                text,
-            )
-            return None
-        _log.info(
-            "[action_router] executing system.sleep mapped_key=%s person_id=%s text=%r",
-            key,
-            person_id,
-            text,
-        )
-        return _execute_command(
-            command_parser.CommandMatch(key, "action_router", {}),
-            person_id,
-            person_name,
-            text,
-        )
-
-    if action == "motion.explore":
-        _log.info(
-            "[action_router] executing motion.explore person_id=%s text=%r",
-            person_id, text,
-        )
-        return _handle_explore_invite(
-            text, person_id=person_id, person_name=person_name,
-            router_audit=router_audit, source="router",
-        )
-
-    if action == "motion.face":
-        _log.info("[action_router] executing motion.face person_id=%s text=%r",
-                  person_id, text)
-        return _handle_face_requester(person_id)[0]
-
-    if action == "motion.route":
-        # The retired JSON-prose router (ACTION_ROUTER_LLM_FALLBACK_ENABLED, off since
-        # 2026-08-13) is the only thing that reaches this branch today, but a takeover
-        # with no arm falls OPEN into conversation with no error — the failure mode
-        # the new-executable-action checklist exists for — so it is wired anyway.
-        decisions, refusal = _motion_route_from_tool_args(decision.args or {})
-        if not decisions:
-            _log.info("[action_router] motion.route rejected: %s args=%s",
-                      refusal, decision.args)
-            return None
-        if _motion_route_transcript_blocked() or not _motion_route_legs_executable(decisions):
-            _log.info("[action_router] motion.route blocked by policy text=%r", text)
-            return None
-        _log.info(
-            "[action_router] executing motion.route person_id=%s steps=%d text=%r",
-            person_id, len(decisions), text,
-        )
-        _clear_motion_continuation()
-        return _handle_motion_route(decisions, requester_person_id=person_id)[0]
-
-    if action in _MOTION_ACTIONS:
-        _log.info(
-            "[action_router] executing %s person_id=%s args=%s text=%r",
-            action, person_id, decision.args, text,
-        )
-        return _handle_router_motion_action(decision, requester_person_id=person_id)
 
     return None
 
@@ -29803,14 +29428,6 @@ def _handle_speech_segment(
                 router_decision = action_router.decide(text, router_context)
                 _latency_log(turn_start, "action_router", router_started)
                 action_router.log_decision(router_decision, router_context, mode="execute")
-                # Phase 0 tool-router shadow: fire-and-forget comparison of the
-                # conversation model's tool choice vs the shipped decision
-                # (docs/tool_router_scope.md). No-op unless enabled in config.
-                try:
-                    from intelligence import tool_router
-                    tool_router.start_shadow(text, router_context, router_decision.action)
-                except Exception as exc:
-                    _log.debug("[tool_router] shadow launch failed: %s", exc)
                 _router_audit_note_decision(
                     router_audit,
                     router_decision,
@@ -29818,9 +29435,6 @@ def _handle_speech_segment(
                     context=router_context,
                     dialogue_decision=dialogue_decision,
                 )
-            else:
-                _router_audit_note_execute_disabled(router_audit)
-                action_router.start_shadow_decision(text, router_context)
             router_block_reason = _router_execution_block_reason(
                 router_decision,
                 text=text,
@@ -30021,62 +29635,12 @@ def _handle_speech_segment(
                 context=router_context,
                 dialogue_decision=dialogue_decision,
             )
-            and router_decision.action not in {"conversation.reply", "emotional.boundary"}
+            and router_decision.action != "conversation.reply"
         ):
             _router_audit_note_result(
                 router_audit,
                 handler_error="router_takeover_no_response",
             )
-
-        if (
-            _router_decision_executable(
-                router_decision,
-                text=text,
-                context=router_context,
-                dialogue_decision=dialogue_decision,
-            )
-            and router_decision.action == "emotional.boundary"
-        ):
-            router_boundary_person_id = boundary_person_id or person_id
-            if router_boundary_person_id is None and recent_engagement and not _has_unknown_visible_or_recent():
-                try:
-                    router_boundary_person_id = int(recent_engagement.get("person_id"))
-                except (TypeError, ValueError):
-                    router_boundary_person_id = None
-            boundary_response = _handle_router_emotional_boundary(
-                router_boundary_person_id,
-                text,
-                topic_hint=(
-                    _session_router_control_topics.get(int(router_boundary_person_id))
-                    if router_boundary_person_id is not None
-                    else None
-                ),
-            )
-            if boundary_response:
-                _dismiss_pending_consent_prompts(router_boundary_person_id, text)
-                try:
-                    consciousness.clear_response_wait()
-                except Exception:
-                    pass
-                completed = _speak_blocking(
-                    boundary_response,
-                    emotion="neutral",
-                    pre_beat_ms=200,
-                    post_beat_ms_override=300,
-                )
-                response_text = boundary_response
-                final_executed_path = "router_takeover.emotional.boundary"
-                _log_router_audit(
-                    router_audit,
-                    final_executed_path,
-                    completed=completed,
-                    spoken_text=boundary_response,
-                )
-                conv_memory.add_to_transcript("Rex", boundary_response)
-                conv_log.log_rex(boundary_response)
-                _session_exchange_count += 1
-                _register_rex_utterance(boundary_response)
-                return
 
         if answered_question is None:
             answered_question = _maybe_capture_pending_qa(
@@ -30700,37 +30264,6 @@ def _handle_speech_segment(
                     events_memory.resolve_matching_commitments(cancel_person_id, text)
                 except Exception as _commit_exc:
                     _log.debug("[commitments] resolve failed: %s", _commit_exc)
-                if (
-                    not labels
-                    and _router_decision_executable(
-                        router_decision,
-                        text=text,
-                        context=router_context,
-                        dialogue_decision=dialogue_decision,
-                    )
-                    and router_decision.action == "event.cancel"
-                ):
-                    event_hint = (
-                        router_decision.args.get("event_hint")
-                        or router_decision.args.get("target")
-                        or router_decision.args.get("plan")
-                        or ""
-                    )
-                    if event_hint:
-                        labels = _cancel_stale_event_memory(
-                            cancel_person_id,
-                            text,
-                            event_hint={"event_name": str(event_hint)},
-                        )
-                    if not labels:
-                        labels = [str(event_hint).strip() or "that plan"]
-                        _log.info(
-                            "[action_router] executed event.cancel without matching "
-                            "stored row person_id=%s label=%r text=%r",
-                            cancel_person_id,
-                            labels[0],
-                            text,
-                        )
                 if labels:
                     if cancel_person_id is not None:
                         try:
@@ -30984,9 +30517,6 @@ def _handle_speech_segment(
                     text=routing_text,
                     context=router_context,
                     dialogue_decision=dialogue_decision,
-                    router_action=(
-                        router_decision.action if router_decision is not None else None
-                    ),
                 )
                 if intent_block_reason:
                     # "tool_router_owns_action" is a HANDOFF, not a block — the

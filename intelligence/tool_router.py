@@ -1,44 +1,27 @@
 """
-intelligence/tool_router.py — Phase 0 (SHADOW ONLY) of the tool-calling router.
+intelligence/tool_router.py — tool schemas and the live tool surface.
 
-See docs/tool_router_scope.md. This module never executes anything: for each
-routed turn it asks the conversation model to pick a tool for the same
-utterance/context the shipping regex+JSON router saw, and logs the choice NEXT
-TO the shipped decision so the two can be compared over real traffic. Cutover
-happens category-by-category later, on measured agreement — not here.
+See docs/tool_router_scope.md. This module never executes anything: it builds
+the tool schemas for the action catalog, attaches the LIVE subset
+(config.TOOL_ROUTER_LIVE_ACTIONS, gated in live_actions()) to the lean reply
+call, and resolves a streamed tool call back to its action key. Dispatch to the
+existing executors happens in intelligence/interaction.py.
 
 Design notes:
   * Tool schemas are keyed off action_router.ACTION_SPECS (the catalog source of
-    truth). For Phase 0 the per-action parameter schemas + "when" hints live in
-    this module's _TOOL_DEFS table; tests/test_tool_router.py enforces that the
+    truth). The per-action parameter schemas + "when" hints live in this
+    module's _TOOL_DEFS table; tests/test_tool_router.py enforces that the
     table covers every spec, so a new ActionSpec without a tool definition fails
-    CI instead of silently missing from the shadow. At Phase 4 cleanup these
-    merge into ActionSpec itself.
-  * Args are judged SEMANTICALLY in the report (did it extract "left"/"90"),
-    not against the executor's exact kwarg names — arg-contract alignment is
-    cutover work, not shadow work.
-  * OFF by default (config.TOOL_ROUTER_SHADOW_ENABLED): the shadow costs one
-    small hosted call per routed turn. Enable it in user_config.py for a
-    collection week, then run tools/tool_router_report.py.
+    CI instead of silently missing from the catalog.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-import threading
-import time
-from typing import Any, Optional
 
-import apikeys
 import config
 from intelligence.action_router import ACTION_SPECS
 from intelligence import performance_plan
-from openai import OpenAI
-
-_log = logging.getLogger(__name__)
-from intelligence import connectivity as _connectivity
-_client = _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "tool_router")
 
 # ── tool definitions: action key → (when-hint, JSON-schema properties, required) ──
 # Keep "when" to ONE sentence — it is appended to the spec description and is the
@@ -79,10 +62,9 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     # because the model is now the first thing standing between an idiom and a
     # delete.
     #
-    # The arg is "target", not "statement": ActionSpec, the JSON-prose router prompt,
-    # _apply_context_overrides, _handle_router_takeover_action and _execute_command
-    # ALL say args.target, so a "statement" arg arrived in a key nobody read and the
-    # executor took its empty-target branch. Same arg-name drift class as
+    # The arg is "target", not "statement": ActionSpec, the regex classifier and
+    # _execute_command all say args.target, so a "statement" arg arrived in a key
+    # nobody read and the executor took its empty-target branch. Same arg-name drift class as
     # performance.impersonate's who->target fix.
     "memory.forget_specific": (
         "The user asks Rex to forget a specific thing he has STORED about them — a "
@@ -172,10 +154,10 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
         {"mood": {"type": "string", "enum": _MOOD_POSES,
                   "description": "the emotion to pose"}},
         ["mood"]),
-    # The arg is "target", not "who": ActionSpec, the JSON-prose router prompt and
-    # the regex classifier all say args.target, and the executor reads target
-    # first. One arg name across all three routers — arg-name drift is the same
-    # failure class as the tool_args/args bug documented below.
+    # The arg is "target", not "who": ActionSpec and the regex classifier both say
+    # args.target, and the executor reads target first. One arg name across both
+    # routers — arg-name drift is the same failure class as the tool_args/args bug
+    # documented below.
     "performance.impersonate": (
         "An explicit request to impersonate, imitate, or 'talk like' someone — a "
         "passing compliment about an impression is not one.",
@@ -297,8 +279,8 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
         "'Come here' / 'come closer' / 'roll over to me' — find the person speaking "
         "and drive to them. Never the idioms ('come on', 'come to think of it') and "
         "never someone else's invitation being retold.", {}, []),
-    # motion.stop and motion.explore are catalog tools for the SHADOW only and are
-    # deliberately absent from the live sets. Stop: docs/tool_router_scope.md 2.2 —
+    # motion.stop and motion.explore are catalog-only tools and are deliberately
+    # absent from the live set. Stop: docs/tool_router_scope.md 2.2 —
     # a stop that waits for a reply-call round trip is a stop that arrives late, and
     # the deterministic escape (interaction._errand_stop_demanded +
     # motion_controller.is_moving(), watched by the eager endpointer) already claims
@@ -434,61 +416,10 @@ class ToolCallRequested(Exception):
         self.tool_args = dict(tool_args or {})
 
 
-# Phase 1 live set (docs/tool_router_scope.md): the intent-backed actions where
-# every measured shipped-miss lived, all served by the existing
-# _handle_classified_intent executor. Humor/character keep their working fast
-# lanes and stay shadow-only for now.
-_DEFAULT_LIVE_ACTIONS = (
-    "time.query", "date.query", "weather.query",
-    "status.capabilities", "status.uptime", "status.battery",
-    "vision.describe_scene", "music.options",
-    "system.sleep", "system.shutdown", "web.search",
-    "event.cancel", "memory.query", "identity.who_is_speaking",
-    "music.play", "music.stop", "music.skip", "vision.snapshot",
-    "identity.name_correction", "memory.forget_person",
-    "humor.tell_joke", "humor.roast", "humor.free_bit",
-    "performance.dj_bit", "performance.body_beat", "performance.mood_pose",
-    "performance.impersonate",
-    "memory.forget_specific", "memory.recent_discard", "emotional.boundary",
-    # conversation.stay_quiet (2026-09-05): live, but OPTIONAL — attached to the
-    # reply call only when the addressee hint asks for it (see live_reply_tools).
-    "conversation.stay_quiet",
-    # Phase 2 games (2026-08-13): game.start is the win — command_parser was
-    # the only thing that ever started a game and it is blind to "quiz me",
-    # "game time", "fire up trivia", "deal me in". game.stop is live for the
-    # no-game-running case; mid-game the deterministic escape keeps the claim.
-    # game.answer is NOT live and must not be (scope doc 2.2).
-    "game.start", "game.stop",
-    # Phase 3 motion (2026-08-13) — the last family, and the only one where the regex
-    # KEEPS the first claim: motion.* is NOT in action_router.TOOL_ROUTER_OWNED_ACTIONS,
-    # so a >=0.95 classifier match still executes immediately at today's latency and
-    # the tool governs only what it missed (docs/tool_router_scope.md §3). Measured
-    # misses on this checkout, all currently answered as conversation: "rotate ninety
-    # degrees", "rotate 90 degrees", "back yourself up a bit", "scoot a little
-    # closer", "get closer", "back it up", "back away", "drive up here", "go straight",
-    # "face me", "swivel left", "hang a left", "veer right", "why don't you scoot
-    # forward", "scootch to your right".
-    # motion.stop and motion.explore are ABSENT ON PURPOSE — see _TOOL_DEFS above.
-    "motion.turn", "motion.move", "motion.arc", "motion.come",
-    # motion.face ships LIVE rather than phase-gated like motion.route below: its
-    # worst case is ONE bounded turn onto a sensed bearing, and the status quo it
-    # replaces is worse than that — "turn to face me" reaching motion.turn, whose
-    # schema forces left/right/around, so he guessed a side and then suppressed
-    # realign for 45 s.
-    "motion.face",
-    # motion.route is listed so this tuple stays the honest catalog of the reply
-    # call's motion surface, but it is PHASE-GATED in live_actions() below: the
-    # organic path is the half of docs/motion_route_tool_plan.md that can invent a
-    # route out of banter, and it stays off until live decoy numbers say otherwise.
-    "motion.route",
-)
-
-
 def live_actions() -> "set[str]":
     if not bool(getattr(config, "TOOL_ROUTER_LIVE_ENABLED", True)):
         return set()
-    live = {str(a) for a in getattr(config, "TOOL_ROUTER_LIVE_ACTIONS",
-                                   _DEFAULT_LIVE_ACTIONS)}
+    live = {str(a) for a in config.TOOL_ROUTER_LIVE_ACTIONS}
     if not motion_route_organic_enabled():
         # Phase 2 of docs/motion_route_tool_plan.md. Dropped HERE rather than left
         # out of the tuple so that config.TOOL_ROUTER_LIVE_ACTIONS still reads as the
@@ -599,76 +530,3 @@ def tool_schemas() -> list[dict]:
             },
         })
     return tools
-
-
-_SYSTEM = (
-    "You are the action-selection layer of DJ R3X, a physical droid with a drive "
-    "base, camera, music player, games, and a person-memory. Given ONE user "
-    "utterance plus context, decide whether it asks for an ACTION. If it clearly "
-    "does, call the matching tool (extract arguments from the utterance). If it is "
-    "ordinary conversation — including banter that merely MENTIONS jokes, music, "
-    "moving, or memory without requesting them — call NO tool and reply with the "
-    "single word: reply. When context shows an active game, bare answers belong to "
-    "game_answer. Never call a tool speculatively."
-)
-
-
-def shadow_decide(text: str, context: dict[str, Any] | None = None) -> dict:
-    """One tool-choice decision (no execution). Returns
-    {"action", "args", "secs", "error"?} — action is an ACTION_SPECS key."""
-    from intelligence import llm_compat
-
-    model = str(getattr(config, "TOOL_ROUTER_SHADOW_MODEL", "") or "") or llm_compat.conversation_model()
-    payload = {"utterance": text, "context": context or {}}
-    t0 = time.perf_counter()
-    try:
-        resp = llm_compat.create(
-            _client,
-            model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)[:4000]},
-            ],
-            max_tokens=96,
-            temperature=0,
-            timeout=float(getattr(config, "TOOL_ROUTER_SHADOW_TIMEOUT_SECS", 8.0)),
-            extra={"tools": tool_schemas(), "tool_choice": "auto"},
-        )
-        secs = time.perf_counter() - t0
-        msg = resp.choices[0].message
-        calls = getattr(msg, "tool_calls", None) or []
-        if not calls:
-            return {"action": "conversation.reply", "args": {}, "secs": secs}
-        fn = calls[0].function
-        key = _NAME_TO_KEY.get(str(fn.name or ""), "conversation.reply")
-        try:
-            args = json.loads(fn.arguments or "{}")
-        except json.JSONDecodeError:
-            args = {"_unparsed": str(fn.arguments)[:200]}
-        return {"action": key, "args": args, "secs": secs}
-    except Exception as exc:
-        return {"action": None, "args": {}, "secs": time.perf_counter() - t0,
-                "error": f"{type(exc).__name__}: {exc}"}
-
-
-def start_shadow(text: str, context: dict[str, Any] | None, shipped_action: str) -> None:
-    """Fire-and-forget shadow comparison for one live turn. Never blocks the turn."""
-    if not bool(getattr(config, "TOOL_ROUTER_SHADOW_ENABLED", False)):
-        return
-
-    def _run() -> None:
-        result = shadow_decide(text, context)
-        record = {
-            "utterance": text,
-            "shipped": shipped_action,
-            "tool": result.get("action"),
-            "args": result.get("args"),
-            "agree": result.get("action") == shipped_action,
-            "secs": round(float(result.get("secs") or 0.0), 3),
-        }
-        if result.get("error"):
-            record["error"] = result["error"]
-        # Single JSON payload per line — tools/tool_router_report.py parses these.
-        _log.info("[tool_router_shadow] %s", json.dumps(record, ensure_ascii=False, default=str))
-
-    threading.Thread(target=_run, daemon=True, name="tool-router-shadow").start()

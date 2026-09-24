@@ -431,12 +431,10 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
     def test_deterministic_intent_classifier_never_calls_llm_fallback(self):
         from intelligence import intent_classifier
 
-        with mock.patch.object(intent_classifier, "_classify_with_llm") as fallback:
-            self.assertEqual(
-                intent_classifier.classify_deterministic("The weather was awful."),
-                "query_weather",
-            )
-        fallback.assert_not_called()
+        self.assertEqual(
+            intent_classifier.classify_deterministic("The weather was awful."),
+            "query_weather",
+        )
 
     def test_event_cancellation_ack_is_deterministic(self):
         from intelligence import interaction

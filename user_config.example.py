@@ -32,8 +32,8 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # knobs). This is the one to change to alter Rex's wit/persona quality.
 # LLM_CONVERSATION_MODEL = "gpt-5.4-mini"
 
-# Utility model: intent routing, JSON/classifier calls, the action router, vision
-# JSON. Cheap + fast matters more than wit here. (The action router follows this.)
+# Utility model: JSON/classifier calls, vision JSON. Cheap + fast matters more
+# than wit here.
 # LLM_MODEL = "gpt-4o-mini"
 
 # Image / scene analysis model (room scans, captions).
@@ -44,12 +44,6 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 
 # Model used at session end to consolidate memories.
 # MEMORY_CONSOLIDATION_MODEL = "gpt-4o-mini"
-
-# Tool-router Phase 0 shadow (docs/tool_router_scope.md): log the conversation
-# model's tool choice next to every shipped routing decision, for the cutover
-# report (tools/tool_router_report.py). Costs one small hosted call per routed
-# turn — turn on for a collection week, then back off.
-# TOOL_ROUTER_SHADOW_ENABLED = False
 
 # Local low-latency sidecar (intent/classifiers). False = OpenAI-only fallback.
 # LOCAL_LLM_ENABLED = True

@@ -593,8 +593,8 @@ class TurnTakingTest(unittest.TestCase):
 
 
 class TimeQueryAndRepairRoutingTest(unittest.TestCase):
-    """B1/B2: 'give me time to answer' is not a clock query, and a router-judged
-    repair never falls through to a keyword data intent ('It's 8:33 PM.')."""
+    """B1/B2: 'give me time to answer' is not a clock query ('It's 8:33 PM.'),
+    and an interruption complaint is detected as a repair."""
 
     def test_pacing_complaint_is_not_a_time_query(self):
         from intelligence import intent_classifier as ic
@@ -607,15 +607,6 @@ class TimeQueryAndRepairRoutingTest(unittest.TestCase):
         )
         # Real clock queries still classify.
         self.assertEqual(ic.classify_deterministic("what time is it"), "query_time")
-
-    def test_router_repair_blocks_deterministic_data_intent(self):
-        from intelligence import interaction
-        reason = interaction._intent_execution_block_reason(
-            "query_time",
-            text="You didn't give me any time to answer",
-            router_action="conversation.repair",
-        )
-        self.assertEqual(reason, "router_classified_repair")
 
     def test_interruption_complaint_is_a_repair(self):
         from intelligence import repair_moves

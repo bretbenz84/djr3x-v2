@@ -14,20 +14,14 @@ from dataclasses import dataclass, field
 import json
 import logging
 import re
-import threading
 from typing import Any
 
-import apikeys
 import config
-from intelligence.person_memory_targets import references_person_memory_target
 from intelligence import performance_plan
 from memory.name_validation import normalize_person_name
-from openai import OpenAI
 
 
 _log = logging.getLogger(__name__)
-from intelligence import connectivity as _connectivity
-_client = _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "action_router")
 
 
 @dataclass(frozen=True)
@@ -343,107 +337,9 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
     ),
 )
 
-ACTION_CATALOG: dict[str, str] = {
-    spec.key: spec.description for spec in ACTION_SPECS
-}
-ACTION_CATEGORIES: dict[str, str] = {
-    spec.key: spec.category for spec in ACTION_SPECS
-}
-PERFORMANCE_ACTIONS = {
-    spec.key
-    for spec in ACTION_SPECS
-    if spec.category in {"humor", "performance"}
-}
-_VALID_ACTIONS = set(ACTION_CATALOG)
 EXECUTABLE_ACTIONS = {
     spec.key for spec in ACTION_SPECS if spec.executable
 }
-
-_SYSTEM_PROMPT = """You are DJ-R3X's action router.
-Choose the single best action for the user's latest utterance using the catalog.
-Return JSON only. Do not write a conversational reply.
-
-Rules:
-- Prefer the user's actual intent over keyword matching.
-- Pick exactly one stable action key. Do not invent one-off actions for narrow
-  conversational snafus; use conversation.reply or conversation.repair unless a
-  catalog action clearly fits.
-- If context.pending.pending_question exists, treat short fragments as answers
-  to Rex's pending question, not as new feature commands.
-- If the pending question key is favorite_music, a bare genre/artist/style like
-  "classical music" is a preference answer. Use conversation.reply unless the
-  user explicitly asks to play/put on/start music.
-- Only use memory.forget_specific when the utterance explicitly asks to forget,
-  delete, remove, erase, wipe, or clear a remembered thing. Preference statements
-  like "I like Disneyland" are conversation.reply and may be learned as interests.
-- Use memory.recent_discard for "forget I said that", "don't remember that",
-  "don't store that", or "don't save that" when the scope is the immediately
-  recent utterance rather than a named stored fact.
-- If the utterance asks what you remember or know about someone, use memory.query.
-  If it asks what Rex generally knows about a topic, franchise, place, hobby,
-  object, or field, use conversation.reply so the main LLM can answer.
-- If the utterance explicitly says a remembered plan is canceled, stale, over,
-  or no longer happening, use event.cancel. Status updates like "we're still
-  driving home" are normal conversation.reply.
-- For event.cancel, put the plan/topic being canceled in args.event_hint when possible.
-- Only use emotional.boundary when the user explicitly asks not to talk about,
-  ask about, mention, or bring up a topic. A bare health/sad topic like "back pain"
-  is conversation.reply unless the user says not to discuss it.
-- Use conversation.repair when the user corrects Rex, says Rex misunderstood, or
-  asks Rex to try that again. Do not use it for ordinary topic disagreement.
-- Use identity.name_correction when the user corrects who Rex thinks is speaking
-  or what to call the current speaker, e.g. "that's not Bret, I'm Daniel" or
-  "call me JT". Put the corrected name in args.name when present. Use
-  conversation.repair if the correction has no identity/name content. Do not use
-  identity.name_correction for plan/status retractions like "that's not
-  happening anymore".
-- Use humor.tell_joke only for explicit joke/pun/one-liner requests like
-  "tell me a joke"; do not treat general mentions of jokes as a joke request.
-- Use humor.roast only for explicit roast/tease requests. Put the roast target in
-  args.target, e.g. "speaker", "room", or a provided name.
-- Use humor.free_bit for broader requests like "say something funny", "do a bit",
-  or "make me laugh" when no specific joke format or roast target is requested.
-- Use performance.dj_bit for DJ patter, hype lines, cantina banter, or station
-  breaks. Use music.play only when the user asks to actually play audio.
-- Use performance.body_beat for explicit physical pose/gesture/dance/look/tilt
-  requests. Put one of these exact names in args.body_beat:
-  agreement_nod, anger_flash, disagreement_shake, disbelief_stare,
-  disgust_recoil, giddy_wiggle, happy_bounce, sad_droop, surprise_pop,
-  suspicious_glance, proud_dj_pose, offended_recoil, thinking_tilt,
-  dramatic_visor_peek, tiny_victory_dance, eye_roll, double_take, mic_drop,
-  spit_take. Do not use it for ordinary
-  "look at this" vision requests.
-- Use performance.mood_pose for emotion-driven physical acting requests such as
-  "act embarrassed", "look annoyed", or "look proud". Put one of these exact
-  mood names in args.mood: agreement, disagreement, disbelief, disgusted,
-  embarrassed, annoyed, angry, proud, suspicious, thinking, happy, giddy,
-  sad, surprised, offended.
-- Use performance.impersonate when the user explicitly asks Rex to do an
-  impersonation/impression of someone, to copy/imitate someone's voice, or to
-  "talk/sound like" a person: "do an impersonation of me", "impersonate Jimmy
-  Carter", "can you do my voice", "talk like Patrick Stewart". Put who to imitate
-  in args.target — use "speaker" for the user themselves, otherwise the provided
-  name. Do NOT use it for a passing compliment about an impression ("that was a
-  good impression").
-- Use vision.snapshot only when the user asks Rex/you to remember, save, store,
-  or keep in mind what Rex currently sees, such as "remember what you see" or
-  "take a look and keep that in mind". Set requires_confirmation=true. Do not
-  use it for the user's own first-person plans like "I want to take a picture"
-  or "I'm going to save this view"; those are conversation.reply. Do not use it
-  for ordinary "what do you see?" questions; those are vision.describe_scene.
-- If a game is active and the utterance asks to stop, quit, end, or stop playing, use game.stop.
-- If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
-- If the utterance asks for the clock time, use time.query.
-- If the utterance asks for today's date or day of week, use date.query.
-- If a game is active and the utterance is a short fragment that is not clearly a stop/control command, prefer game.answer over identity or general actions. If no game is active, do not use game.answer.
-- Do not use identity.introduce_person for first-person facts like "I'm an IT systems administrator"; those are normal conversation.reply turns so memory extraction can learn them.
-- Do not use identity.introduce_person for pronoun-only fragments like "me and
-  you", "you and me", "us", or "me"; treat them as answers to the current
-  conversation unless a real introduced name is present.
-- If the utterance is normal chat, use conversation.reply.
-- Use requires_confirmation=true when an action is broad/destructive or ambiguous. A specific forget request with a clear target does not require confirmation.
-- Confidence is 0.0 to 1.0.
-"""
 
 _MUSIC_PLAY_REQUEST_RE = re.compile(
     r"(?:^|[.!?]\s+)\s*(?:please\s+)?"
@@ -471,12 +367,6 @@ _GAME_START_REQUEST_RE = re.compile(
     r"20\s+questions|twenty\s+questions|word\s+association)\b|"
     r"\b(?:let'?s|lets|can\s+we|could\s+we|i\s+want\s+to)\s+"
     r"(?:play|start|do)\b.{0,40}\b(?:game|trivia|jeopardy|i\s+spy|"
-    r"20\s+questions|twenty\s+questions|word\s+association)\b",
-    re.IGNORECASE,
-)
-_GAME_STOP_REQUEST_RE = re.compile(
-    r"^\s*(?:stop|quit|end)(?:\s+(?:the\s+)?game)?\s*$|"
-    r"\b(?:stop|quit|end)\b.{0,30}\b(?:game|trivia|jeopardy|i\s+spy|"
     r"20\s+questions|twenty\s+questions|word\s+association)\b",
     re.IGNORECASE,
 )
@@ -659,17 +549,6 @@ _WHO_SPEAKING_RE = re.compile(
     r"can you see me|who do you think i am)\b",
     re.IGNORECASE,
 )
-_FORGET_SPECIFIC_REQUEST_RE = re.compile(
-    r"\b("
-    r"forget|delete|remove|erase|wipe|clear"
-    r")\b.{0,80}\b("
-    r"memory|remember|remembered|about|that|this|it|from your memory"
-    r")\b|"
-    r"\b("
-    r"forget|delete|remove|erase|wipe|clear"
-    r")\b\s+.+",
-    re.IGNORECASE,
-)
 _RECENT_DISCARD_REQUEST_RE = re.compile(
     r"\b("
     r"forget|don['’]?t\s+remember|do\s+not\s+remember|don['’]?t\s+store|"
@@ -695,29 +574,17 @@ _MEMORY_KEEP_INTENT_RE = re.compile(
 def _is_recent_discard_request(text: str) -> bool:
     """True for an explicit 'drop what I just said', False for its inverse.
 
-    Shared by the deterministic classifier, the evidence gate and the
-    post-LLM sanity pass so a "don't forget" can't reach the discard handler
-    down ANY of the three routes.
+    Shared by the deterministic classifier and the evidence gate so a "don't
+    forget" can't reach the discard handler down EITHER route.
     """
     cleaned = text or ""
     if not _RECENT_DISCARD_REQUEST_RE.search(cleaned):
         return False
     return not _MEMORY_KEEP_INTENT_RE.search(cleaned)
-_BOUNDARY_REQUEST_RE = re.compile(
-    r"\b("
-    r"don'?t|do not|stop|quit|please don'?t|please do not"
-    r")\b.{0,80}\b("
-    r"talk|ask|bring|mention|discuss"
-    r")\b|"
-    r"\b(rather not|don'?t want to|do not want to|can we not|"
-    r"change the subject|talk about something else|drop it|leave it alone|"
-    r"no more check-?ins?)\b",
-    re.IGNORECASE,
-)
 # ── memory.*/boundary evidence: keep the NEGATIVE half only (2026-08-13) ──────
-# Phase 2b, same split as humor/performance below. The POSITIVE patterns
-# (_FORGET_SPECIFIC_REQUEST_RE, _BOUNDARY_REQUEST_RE) stop being the evidence once
-# the tool router owns these actions; what stays is the set of turns that must
+# Phase 2b, same split as humor/performance below. The POSITIVE forget/boundary
+# request patterns stopped being the evidence once the tool router owned these
+# actions (and are gone now); what stays is the set of turns that must
 # NEVER reach a delete or a durable consent write, whichever router chose it.
 #
 # 1. The dismissal idiom. A real forget request ENDS at its target ("forget about
@@ -734,8 +601,8 @@ _FORGET_DISMISSAL_RE = re.compile(
     re.IGNORECASE,
 )
 # 2. delete/remove/erase/wipe/clear are ordinary English about ordinary objects;
-#    only FORGET is inherently about memory. _FORGET_SPECIFIC_REQUEST_RE's second
-#    alternative accepts ANY tail after any of the six verbs, so "Remove the lid
+#    only FORGET is inherently about memory. The old positive forget pattern's
+#    second alternative accepted ANY tail after any of the six verbs, so "Remove the lid
 #    before microwaving.", "Delete the extra whitespace in that file." and "Clear
 #    the table when you're done." all cleared the gate (measured 2026-08-13). The
 #    other five verbs now need a memory anchor; "forget" needs none, because saying
@@ -763,15 +630,6 @@ _BOUNDARY_RELEASE_RE = re.compile(
 _MEMORY_WRITE_TOOL_ACTIONS = frozenset({
     "memory.forget_specific", "memory.recent_discard", "emotional.boundary",
 })
-_REPAIR_REQUEST_RE = re.compile(
-    r"\b(?:you\s+(?:misheard|misunderstood|got\s+that\s+wrong|got\s+it\s+wrong)|"
-    r"that'?s\s+(?:wrong|incorrect|not\s+what\s+i\s+said)|"
-    r"no\s*,?\s+that'?s\s+wrong|"
-    r"no\s*,?\s+i\s+(?:said|meant)|"
-    r"actually\s*,?\s+i\s+(?:said|meant)|"
-    r"try\s+again)\b",
-    re.IGNORECASE,
-)
 _NAME_CORRECTION_REQUEST_RE = re.compile(
     r"\b(?:call\s+me|rename\s+me(?:\s+to)?|my\s+name\s+is|"
     r"you\s+(?:got|have)\s+my\s+name\s+wrong|"
@@ -784,18 +642,6 @@ _NAME_FROM_TEXT_RE = re.compile(
     r"(?P<name>[A-Za-z][A-Za-z' -]{0,60})",
     re.IGNORECASE,
 )
-_TOPIC_KNOWLEDGE_QUERY_RE = re.compile(
-    r"\b(?:what\s+do\s+you\s+know|do\s+you\s+know\s+anything|"
-    r"tell\s+me|explain)\s+(?:about\s+)?(?P<topic>[^?.,!;]{3,100})",
-    re.IGNORECASE,
-)
-_NAMED_DAY_EXPLANATION_RE = re.compile(
-    r"\b(?:what(?:'s| is)?|tell me about|explain|describe)\s+"
-    r"(?:the\s+)?(?:holiday\s+(?:called|named)\s+)?"
-    r"(?!(?:today|today's|todays|date|the\s+date|day|weekday|day\s+of\s+week)\b)"
-    r"(?:[a-z0-9][a-z0-9'’.-]*\s+){0,6}day\b",
-    re.IGNORECASE,
-)
 _EVENT_CANCEL_OR_STALE_RE = re.compile(
     r"\b("
     r"cancel(?:ed|led|s|ing)?|called?\s+off|not\s+happening|"
@@ -805,39 +651,6 @@ _EVENT_CANCEL_OR_STALE_RE = re.compile(
     r"scrap(?:ped|ping)?|ditch(?:ed|ing)?|postpon(?:e|ed|ing)|"
     r"reschedul(?:e|ed|ing)|already\s+happened|already\s+passed|"
     r"is\s+over|it['’]?s\s+over|was\s+over|ended|finished|wrapped\s+up"
-    r")\b",
-    re.IGNORECASE,
-)
-_EVENT_CONTINUATION_STATUS_RE = re.compile(
-    r"\b("
-    r"still|currently|right\s+now|on\s+(?:my|our|the)\s+way|"
-    r"heading|headed|driving|riding|walking|flying|going"
-    r")\b",
-    re.IGNORECASE,
-)
-_PRONOUN_ONLY_INTRO_RE = re.compile(
-    r"^\s*(?:me|you|us|me\s+and\s+you|you\s+and\s+me|me\s*&\s*you|"
-    r"you\s*&\s*me|between\s+me\s+and\s+you|between\s+you\s+and\s+me)\s*[?.!]*\s*$",
-    re.IGNORECASE,
-)
-_NAMED_PERSON_FACT_STATEMENT_RE = re.compile(
-    r"^\s*[A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*){0,3}\s+"
-    r"(?:is|has|works|likes|loves|hates|prefers|plays|collects)\b",
-)
-_NAMED_RELATION_INTRO_RE = re.compile(
-    r"\bis\s+my\s+(?:"
-    r"best\s+friend|partner|spouse|wife|husband|girlfriend|boyfriend|"
-    r"fianc[eé]e?|father|dad|mother|mom|parent|son|daughter|child|"
-    r"brother|sister|sibling|friend|boss|manager|supervisor|employee|"
-    r"coworker|co[-\s]?worker|colleague|roommate|neighbor|neighbour"
-    r")\b",
-    re.IGNORECASE,
-)
-_RELATIONSHIP_SCORE_QUERY_RE = re.compile(
-    r"\b("
-    r"friendship\s+score|relationship\s+score|our\s+score|"
-    r"score\s+between\s+(?:me\s+and\s+you|you\s+and\s+me)|"
-    r"(?:me\s+and\s+you|you\s+and\s+me).{0,40}\bscore"
     r")\b",
     re.IGNORECASE,
 )
@@ -1482,18 +1295,6 @@ def _compact_json(value: Any, *, max_chars: int = 1200) -> str:
     if len(text) > max_chars:
         return text[: max_chars - 3] + "..."
     return text
-
-
-def _strip_code_fence(text: str) -> str:
-    cleaned = (text or "").strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
-    return cleaned
 
 
 def _clean_roast_target(raw: str) -> str:
@@ -2916,7 +2717,7 @@ def humor_performance_refusal_reason(text: str, action: str) -> str | None:
     dispatcher must call THIS for these seven. Otherwise going live silently drops
     the c7ef872 guards on the one path that needs them: a model that decides to
     roast on "they mock me at school for my accent" has to be stopped by the same
-    code whether the LLM router or the reply call chose it.
+    code whether the deterministic lane or the reply call chose it.
     """
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
@@ -2925,9 +2726,9 @@ def humor_performance_refusal_reason(text: str, action: str) -> str | None:
     if not humor and action not in _PERFORMANCE_TOOL_ACTIONS:
         return None
     # Reason strings are unchanged from the positive-pattern era on purpose: the
-    # per-turn audit line (allowlist_result) and tools/tool_router_report.py join on
-    # them, and "this turn carries no evidence of a request" is still what they mean
-    # — it is now established by the turn refusing rather than by a pattern missing.
+    # per-turn audit line (allowlist_result) joins on them, and "this turn carries
+    # no evidence of a request" is still what they mean — it is now established by
+    # the turn refusing rather than by a pattern missing.
     reason = (
         "missing_joke_request_evidence" if action == "humor.tell_joke"
         else "missing_roast_request_evidence" if action == "humor.roast"
@@ -2980,9 +2781,9 @@ def memory_boundary_refusal_reason(text: str, action: str) -> str | None:
     it would drop the guards on the one path that needs them most.
 
     Reason strings are deliberately one-per-action rather than one-per-guard: the
-    per-turn audit line (allowlist_result) and tools/tool_router_report.py join on
-    them, and "this turn carries no evidence of a request" is still what they mean.
-    The specific guard is logged instead.
+    per-turn audit line (allowlist_result) joins on them, and "this turn carries no
+    evidence of a request" is still what they mean. The specific guard is logged
+    instead.
     """
     cleaned = " ".join((text or "").strip().split())
     if not cleaned or action not in _MEMORY_WRITE_TOOL_ACTIONS:
@@ -3037,8 +2838,8 @@ def game_request_refusal_reason(text: str, action: str) -> str | None:
     game", "wrap it up" and "kill the trivia".
 
     Reason strings are unchanged from the positive-pattern era on purpose: the
-    per-turn audit line (allowlist_result) and tools/tool_router_report.py join on
-    them, and "this turn carries no evidence of a request" is still what they mean.
+    per-turn audit line (allowlist_result) joins on them, and "this turn carries no
+    evidence of a request" is still what they mean.
     """
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
@@ -3099,7 +2900,7 @@ def has_game_start_request_evidence(text: str) -> bool:
 # degrees", "back yourself up a bit", "scoot a little closer", "get closer", "back it
 # up", "hang a left", "face me", "drive up here", "why don't you scoot forward"),
 # refuses 47 of 48 figurative decoys, and refuses NONE of the commands the regex
-# already claims — so the JSON-prose router path does not regress. Known residuals,
+# already claims — so the deterministic lane does not regress. Known residuals,
 # left documented rather than hacked around: "Scoot over, I'm sitting down." is
 # admitted (a verb-first imperative that happens to be aimed at a human) and "give me
 # a spin" is refused. Both still need the MODEL to pick motion.* first.
@@ -3249,7 +3050,7 @@ def motion_command_refusal_reason(text: str, action: str) -> str | None:
     deterministic classifier.
 
     Reason string is unchanged from the classifier-agreement era on purpose: the
-    per-turn audit line (allowlist_result) and tools/tool_router_report.py join on it.
+    per-turn audit line (allowlist_result) joins on it.
     """
     cleaned = " ".join((text or "").strip().split())
     if not cleaned:
@@ -3310,8 +3111,8 @@ def missing_required_evidence_reason(
 ) -> str | None:
     """Return a block reason when an executable action lacks direct evidence.
 
-    The action router may use an LLM, but execution should still require an
-    action-shaped utterance. Ambiguous conversational replies fall through to
+    The tool router's choice comes from an LLM, but execution should still
+    require an action-shaped utterance. Ambiguous conversational replies fall through to
     normal conversation unless they contain this deterministic evidence.
     """
     context = context or {}
@@ -3329,8 +3130,6 @@ def missing_required_evidence_reason(
             if _text_has_identity_name_correction_content(cleaned, decision)
             else "missing_identity_name_evidence"
         )
-    if action == "conversation.repair":
-        return None if _REPAIR_REQUEST_RE.search(cleaned) else "missing_repair_evidence"
     if action in _MEMORY_WRITE_TOOL_ACTIONS:
         # GUARDS ONLY (2026-08-13, Phase 2b) — same redesign as the humor/performance
         # branch below. These two branches used to re-run the very classifiers this
@@ -3341,15 +3140,15 @@ def missing_required_evidence_reason(
         # blocked "give me a zinger" and "Go to sleep, Rex.".
         #
         # emotional.boundary JOINS the gate here; it had NO branch at all before, so
-        # its only guard was the _apply_context_overrides demotion below — which is
-        # unreachable for a tool-router-owned action, because tool_router_owns() is
-        # checked at the top of that function. Going live without this branch would
-        # leave an LLM consent write completely ungated.
+        # its only guard was an _apply_context_overrides demotion (since deleted) —
+        # which is unreachable for a tool-router-owned action, because
+        # tool_router_owns() is checked at the top of that function. Going live
+        # without this branch would leave an LLM consent write completely ungated.
         #
         # What does NOT move: memory_boundary_refusal_reason still calls
         # _is_recent_discard_request, so c7ef872's "don't forget that we have dinner
         # tomorrow" inversion guard (_MEMORY_KEEP_INTENT_RE) is intact and still
-        # blocks a discard down all three routes.
+        # blocks a discard down every route.
         #
         # And the delete's real backstop is NOT here: memory.forget_specific arms a
         # spoken confirmation naming what would go (interaction._offer_specific_forget),
@@ -3383,8 +3182,8 @@ def missing_required_evidence_reason(
                   "motion.stop", "motion.route", "motion.face"}:
         # Added 2026-08-13 when the motion.* keys joined ACTION_ROUTER_EXECUTE_ACTIONS:
         # that also un-gated the LLM-decided motion branch in
-        # interaction._handle_router_takeover_action, which had been dead ONLY because
-        # the allowlist blocked it. Measured without any gate: a 0.9-confidence model
+        # interaction._handle_router_takeover_action (deleted 2026-09-23, dead-code
+        # Stage 2), which had been dead ONLY because the allowlist blocked it. Measured without any gate: a 0.9-confidence model
         # read of "I think we should move on from that topic" becomes fully executable
         # and drives the base.
         #
@@ -3429,14 +3228,15 @@ def missing_required_evidence_reason(
     if action == "game.stop":
         # Guards-only PLUS the active_game condition, kept on purpose and now
         # load-bearing for the first time. It used to be dead code: the first
-        # alternative of _GAME_STOP_REQUEST_RE already matched a bare
-        # "stop"/"quit"/"end" anchored end-to-end, so `active_game and bare_stop`
-        # could never be the deciding clause (verified 2026-08-13 — all three
-        # return True with no context at all). With the positive pattern gone,
-        # active_game is the ONLY thing separating "stop" meaning THIS game from
-        # "stop" meaning the music or a filler word, so it is inverted into a real
-        # condition here, and interaction._execute_tool_routed_action reads the same
-        # live state to choose stop_game_fast vs the music-salvage branch.
+        # alternative of _GAME_STOP_REQUEST_RE (deleted 2026-09-23, dead-code
+        # Stage 2) already matched a bare "stop"/"quit"/"end" anchored end-to-end,
+        # so `active_game and bare_stop` could never be the deciding clause
+        # (verified 2026-08-13 — all three return True with no context at all).
+        # With the positive pattern gone, active_game is the ONLY thing separating
+        # "stop" meaning THIS game from "stop" meaning the music or a filler word, so
+        # it is inverted into a real condition here, and
+        # interaction._execute_tool_routed_action reads the same live state to choose
+        # stop_game_fast vs the music-salvage branch.
         reason = game_request_refusal_reason(cleaned, action)
         if reason:
             return reason
@@ -3498,96 +3298,12 @@ def missing_required_evidence_reason(
     return None
 
 
-def _coerce_decision(payload: Any) -> ActionDecision:
-    if not isinstance(payload, dict):
-        return ActionDecision(reason="router returned non-object JSON")
-
-    action = str(payload.get("action") or "conversation.reply").strip()
-    if action not in _VALID_ACTIONS:
-        action = "conversation.reply"
-
-    try:
-        confidence = float(payload.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    confidence = max(0.0, min(1.0, confidence))
-
-    args = payload.get("args")
-    if not isinstance(args, dict):
-        args = {}
-
-    requires_confirmation = bool(payload.get("requires_confirmation", False))
-    if action == "memory.forget_person":
-        requires_confirmation = True
-    if action == "vision.snapshot":
-        requires_confirmation = True
-    if action == "memory.forget_specific" and not str(args.get("target") or "").strip():
-        confidence = min(confidence, 0.45)
-    if action == "identity.name_correction":
-        raw_name = str(
-            args.get("name")
-            or args.get("new_name")
-            or args.get("person_name")
-            or ""
-        ).strip()
-        cleaned_name = _clean_name_arg(raw_name)
-        if cleaned_name:
-            args = dict(args)
-            args["name"] = cleaned_name
-    if action == "performance.body_beat":
-        raw_beat = str(
-            args.get("body_beat")
-            or args.get("beat")
-            or args.get("gesture")
-            or args.get("pose")
-            or ""
-        ).strip()
-        canonical = performance_plan.canonical_body_beat(raw_beat)
-        if canonical:
-            args = dict(args)
-            args["body_beat"] = canonical
-        else:
-            confidence = min(confidence, 0.45)
-    if action == "performance.mood_pose":
-        raw_mood = str(
-            args.get("mood")
-            or args.get("emotion")
-            or args.get("pose")
-            or ""
-        ).strip()
-        canonical = performance_plan.canonical_mood_pose(raw_mood)
-        if canonical:
-            args = dict(args)
-            args["mood"] = canonical
-        else:
-            confidence = min(confidence, 0.45)
-    reason = str(payload.get("reason") or "").strip()
-    if len(reason) > 240:
-        reason = reason[:237] + "..."
-
-    return ActionDecision(
-        action=action,
-        confidence=confidence,
-        args=args,
-        requires_confirmation=requires_confirmation,
-        reason=reason,
-    )
-
-
-def _pending_question_context(context: dict[str, Any]) -> dict[str, Any] | None:
-    pending = (context or {}).get("pending")
-    if not isinstance(pending, dict):
-        return None
-    question = pending.get("pending_question")
-    return question if isinstance(question, dict) else None
-
-
 # Actions whose FIRST claim moved from the regex classifiers above to the LIVE
 # tool router on 2026-08-13 (docs/tool_router_scope.md Phase 2). The classifiers
 # are NOT deleted and still run in decide()'s ladder — online they act as a
 # DETECTOR rather than a claim: a match means "this turn is a bit request", the
-# turn is handed to conversation WITHOUT paying the ~0.8s JSON-prose router call,
-# and the lean reply call that was going to happen anyway picks the
+# turn is handed to conversation, and the lean reply call that was going to
+# happen anyway picks the
 # humor_*/performance_* tool (arguments included) for zero extra round trips.
 # They are retained on purpose for OFFLINE mode, where the local reply model is
 # called with NO tool surface — with the link down these classifiers are the only
@@ -3707,12 +3423,10 @@ def _apply_context_overrides(
     text: str,
     context: dict[str, Any],
 ) -> ActionDecision:
-    """Deterministic safety rails for contexts the LLM router often misses."""
+    """Deterministic safety rails applied to every decide() return."""
     # Humor + performance ride the lean REPLY call as native tools now, so this
-    # module must not claim them from EITHER lane: not from the explicit
-    # classifiers (whose match is only a detector now) and not from the JSON-prose
-    # fallback, which would otherwise front-run the reply call by ~0.8s and re-take
-    # exactly the turns being handed over. Every decide() return passes through
+    # module must not claim them from the explicit classifiers (whose match is
+    # only a detector now). Every decide() return passes through
     # here, which is why the handoff lives in one place. Offline or with the kill
     # switch off, tool_router_owns is False and the decision stands unchanged.
     # game.stop is the one owned action whose ownership depends on live state, so
@@ -3743,78 +3457,6 @@ def _apply_context_overrides(
             )
 
     if (
-        decision.action == "memory.forget_specific"
-        and not _FORGET_SPECIFIC_REQUEST_RE.search(text or "")
-    ):
-        return ActionDecision(
-            action="conversation.reply",
-            confidence=min(float(decision.confidence or 0.0), 0.40),
-            args={},
-            requires_confirmation=False,
-            reason="preference/topic mention is not an explicit forget request",
-        )
-
-    if (
-        decision.action == "memory.recent_discard"
-        and not _is_recent_discard_request(text or "")
-    ):
-        return ActionDecision(
-            action="conversation.reply",
-            confidence=min(float(decision.confidence or 0.0), 0.40),
-            args={},
-            requires_confirmation=False,
-            reason="recent discard requires an explicit do-not-store/forget-that request",
-        )
-
-    if (
-        decision.action == "vision.snapshot"
-        and _HUMAN_VISUAL_PLAN_RE.search(text or "")
-    ):
-        return ActionDecision(
-            action="conversation.reply",
-            confidence=min(float(decision.confidence or 0.0), 0.40),
-            args={},
-            requires_confirmation=False,
-            reason="first-person photo/visual-memory plan is not a command to Rex",
-        )
-
-    if (
-        decision.action == "emotional.boundary"
-        and not _BOUNDARY_REQUEST_RE.search(text or "")
-    ):
-        return ActionDecision(
-            action="conversation.reply",
-            confidence=min(float(decision.confidence or 0.0), 0.40),
-            args={},
-            requires_confirmation=False,
-            reason="sensitive topic mention is not an explicit boundary request",
-        )
-
-    if decision.action == "memory.query":
-        topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(text or "")
-        topic = (topic_match.group("topic") if topic_match else "").strip()
-        if topic and not references_person_memory_target(topic):
-            return ActionDecision(
-                action="conversation.reply",
-                confidence=min(float(decision.confidence or 0.0), 0.40),
-                args={},
-                requires_confirmation=False,
-                reason="general topic knowledge question should use LLM conversation",
-            )
-
-    if (
-        decision.action == "date.query"
-        and _NAMED_DAY_EXPLANATION_RE.search(text or "")
-    ):
-        return ActionDecision(
-            action="conversation.reply",
-            confidence=min(float(decision.confidence or 0.0), 0.40),
-            args={},
-            requires_confirmation=False,
-            reason="named holiday explanation is not a current date query",
-        )
-
-    if (
         decision.action == "identity.name_correction"
         and _EVENT_CANCEL_OR_STALE_RE.search(text or "")
         and not _text_has_identity_name_correction_content(text or "", decision)
@@ -3827,220 +3469,7 @@ def _apply_context_overrides(
             reason="plan/status retraction is not an identity name correction",
         )
 
-    if (
-        decision.action == "event.cancel"
-        and _EVENT_CONTINUATION_STATUS_RE.search(text or "")
-        and not _EVENT_CANCEL_OR_STALE_RE.search(text or "")
-    ):
-        return ActionDecision(
-            action="conversation.reply",
-            confidence=min(float(decision.confidence or 0.0), 0.40),
-            args={},
-            requires_confirmation=False,
-            reason="ongoing status update is not an event cancellation",
-        )
-
-    if decision.action == "identity.introduce_person":
-        introduced_names = {
-            " ".join(str(decision.args.get(key) or "").strip().lower().split())
-            for key in ("name", "person_name", "new_person_name")
-            if str(decision.args.get(key) or "").strip()
-        }
-        if _PRONOUN_ONLY_INTRO_RE.match(text or "") or bool(introduced_names & {
-            "me",
-            "you",
-            "us",
-            "me and you",
-            "you and me",
-        }):
-            return ActionDecision(
-                action="conversation.reply",
-                confidence=min(float(decision.confidence or 0.0), 0.40),
-                args={},
-                requires_confirmation=False,
-                reason="pronoun-only fragment is not a person introduction",
-            )
-        if (
-            _NAMED_PERSON_FACT_STATEMENT_RE.match(text or "")
-            and not _NAMED_RELATION_INTRO_RE.search(text or "")
-        ):
-            return ActionDecision(
-                action="conversation.reply",
-                confidence=min(float(decision.confidence or 0.0), 0.40),
-                args={},
-                requires_confirmation=False,
-                reason="named third-person fact should be learned as conversation",
-            )
-
-    active_game = bool((context or {}).get("active_game"))
-    if decision.action == "game.answer" and not active_game:
-        if _RELATIONSHIP_SCORE_QUERY_RE.search(text or ""):
-            return ActionDecision(
-                action="memory.query",
-                confidence=min(max(float(decision.confidence or 0.0), 0.85), 0.95),
-                args={},
-                requires_confirmation=False,
-                reason="score question outside an active game is a relationship memory query",
-            )
-        return ActionDecision(
-            action="conversation.reply",
-            confidence=min(float(decision.confidence or 0.0), 0.40),
-            args={},
-            requires_confirmation=False,
-            reason="game answer requires an active game",
-        )
-
-    pending_question = _pending_question_context(context)
-    if not pending_question:
-        return decision
-
-    question_key = str(pending_question.get("question_key") or "").strip()
-    if (
-        question_key == "favorite_music"
-        and decision.action == "music.play"
-        and not _MUSIC_PLAY_REQUEST_RE.search(text or "")
-    ):
-        return ActionDecision(
-            action="conversation.reply",
-            confidence=min(float(decision.confidence or 0.0), 0.40),
-            args={},
-            requires_confirmation=False,
-            reason=(
-                "pending favorite_music answer should be stored/acknowledged; "
-                "no explicit play request"
-            ),
-        )
-
     return decision
-
-
-# Action-domain cue words: any hit keeps the LLM router in the loop (the utterance is
-# plausibly actionable even though the explicit regexes missed). Deliberately GENEROUS --
-# a false cue just costs the old ~0.8s router call; a missed cue on a fuzzy action
-# phrase falls through to conversation (recoverable: the user re-asks explicitly, and
-# canonical command forms are still caught by the explicit classifiers above).
-_ACTION_CUE_RE = re.compile(
-    r"\b(look|watch|see|turn|spin|rotate|move|drive|roll|come|follow|stop|halt|freeze|"
-    r"forward|backward|back ?up|"
-    r"play|pause|skip|song|music|sing|dance|dj|beat|pose|volume|louder|quieter|softer|mute|"
-    r"game|trivia|jeopardy|twenty questions|quiz|guess|"
-    r"joke|roast|impression|bit|"
-    r"remember|forget|memory|memories|recall|"
-    r"who'?s|who is|name|introduce|"
-    r"picture|photo|snapshot|describe|camera|scene|"
-    r"sleep|wake|shut ?down|power|capabilit\w*|uptime|"
-    r"weather|forecast|temperature|time|date|day|o'?clock|"
-    r"cancel|favorite|favourite)\b",
-    re.IGNORECASE,
-)
-
-
-# Deterministic self-knowledge intents that the intent classifier answers from
-# real local data (clock, wttr cache, uptime, capability list, biometric speaker
-# ID). For these the LLM router can only ever agree ("What day is it?" burned a
-# 0.91s routing call to return conversation.reply at 0.00 and was discarded,
-# live-logged 2026-08-02 13:03). Excluded on purpose: play_music /
-# query_music_options (router owns args + pending favorite_music override),
-# query_memory (forget/boundary disambiguation), query_what_do_you_see (vision
-# evidence + consent rules).
-# Maps each skippable intent to its stable action key so the router's own
-# evidence regexes can vet the claim (keep in sync with the same entries in
-# interaction._INTENT_ACTION_MAP). query_games has no action mapping and no
-# evidence rule — its deterministic regex is the whole claim.
-_SELF_QUERY_SKIP_INTENTS = {
-    "query_time": "time.query",
-    "query_date": "date.query",
-    "query_weather": "weather.query",
-    "query_uptime": "status.uptime",
-    "query_battery": "status.battery",
-    "query_capabilities": "status.capabilities",
-    "query_games": None,
-    "query_who_is_speaking": "identity.who_is_speaking",
-}
-
-# Stage 1 additions, kept SEPARATE from the map above on purpose: these skip the
-# router only while tool_router_owns() says yes, so TOOL_ROUTER_LIVE_ENABLED=False
-# and offline mode route these turns exactly as they did pre-migration — which is
-# what makes the kill switch a true revert rather than a partial one. Measured on
-# this checkout, all four pay the ~0.8s JSON-prose call today and then get
-# answered by the deterministic lane anyway: "play some jazz", "what kind of music
-# can you play", "help me understand what you meant", "did you see the game last
-# night".
-_TOOL_ROUTED_SKIP_INTENTS = {
-    "query_what_do_you_see": "vision.describe_scene",
-    "query_memory": "memory.query",
-    "play_music": "music.play",
-    "query_music_options": "music.options",
-}
-
-
-def _deterministic_self_query_intent(text: str, context: dict[str, Any]) -> str | None:
-    """Return the deterministic self-knowledge intent claiming this turn, if any.
-
-    Active games keep full routing: Jeopardy answers are phrased "what is ..."
-    and could regex-match a query (game.answer must win those turns). The claim
-    must also pass the router's evidence regexes — the intent classifier's
-    patterns are looser ("something about the weather maybe" classifies as
-    query_weather but is not a weather question), and the downstream execution
-    gate would block exactly the same way.
-    """
-    if not bool(getattr(config, "ACTION_ROUTER_SELF_QUERY_SKIP_ENABLED", True)):
-        return None
-    if context.get("active_game"):
-        return None
-    try:
-        from intelligence import intent_classifier
-        intent = intent_classifier.classify_deterministic(text)
-    except Exception:
-        return None
-    if intent not in _SELF_QUERY_SKIP_INTENTS and intent not in _TOOL_ROUTED_SKIP_INTENTS:
-        return None
-    # A compound turn that ALSO asks for a game keeps full routing. game.start is
-    # not a live tool yet, so skipping the router is the only thing standing
-    # between "what's the weather? let's play trivia" and a weather answer with no
-    # game.
-    if _GAME_START_REQUEST_RE.search(text) or _GAME_STOP_REQUEST_RE.search(text):
-        return None
-    if intent in _SELF_QUERY_SKIP_INTENTS:
-        action = _SELF_QUERY_SKIP_INTENTS[intent]
-        # Once the tool router owns the action, this evidence check is not a safety
-        # property — it is a latency tax. The decision is conversation.reply either
-        # way; the stricter regex only decides whether we pay the ~0.8s JSON-prose
-        # call on the way there. Offline / kill switch off, tool_router_owns is
-        # False and the check runs exactly as before — there the intent lane still
-        # CLAIMS, so the stricter regex is the only thing keeping "my coffee's
-        # cold" off the weather feed.
-        if action is not None and not tool_router_owns(action):
-            evidence_reason = missing_required_evidence_reason(
-                text,
-                ActionDecision(action=action, confidence=0.94),
-                context=context,
-            )
-            if evidence_reason:
-                return None
-        return intent
-    return intent if tool_router_owns(_TOOL_ROUTED_SKIP_INTENTS[intent]) else None
-
-
-def _clearly_conversational(text: str, context: dict[str, Any]) -> bool:
-    """True when this turn is deterministically plain conversation -- safe to skip the
-    LLM routing call (~0.8s, the single largest fixed cost on chat turns, measured
-    2026-07-06). Requires ALL of: no action-domain cue word, no active game/music
-    (mid-game answers and bare 'stop' must keep full routing), and the deterministic
-    intent classifier agreeing it's 'general'."""
-    if not bool(getattr(config, "ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED", True)):
-        return False
-    if context.get("active_game") or context.get("active_music"):
-        return False
-    if _ACTION_CUE_RE.search(text):
-        return False
-    try:
-        from intelligence import intent_classifier
-        if intent_classifier.classify_deterministic(text) != "general":
-            return False
-    except Exception:
-        return False
-    return True
 
 
 def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
@@ -4079,134 +3508,24 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     if explicit_performance is not None:
         return _apply_context_overrides(explicit_performance, text, context)
 
-    self_query_intent = _deterministic_self_query_intent(text, context)
-    if self_query_intent is not None:
-        _log.info(
-            "[action_router] deterministic self-query skip -- intent=%s, "
-            "LLM routing call saved",
-            self_query_intent,
-        )
-        # conversation.reply falls through to the intent classifier, which
-        # executes the same handler the router's executable action would have —
-        # identical final path (intent_classifier.<intent>), minus the LLM call.
-        return _apply_context_overrides(
-            ActionDecision(
-                action="conversation.reply",
-                confidence=0.6,
-                reason=f"deterministic: self-query {self_query_intent}; "
-                       "intent classifier owns it",
-            ),
-            text,
-            context,
-        )
-
-    if _clearly_conversational(text, context):
-        _log.info(
-            "[action_router] deterministic conversational skip -- no action cues, "
-            "LLM routing call saved"
-        )
-        return _apply_context_overrides(
-            ActionDecision(
-                action="conversation.reply",
-                confidence=0.6,
-                reason="deterministic: conversational, no action cues",
-            ),
-            text,
-            context,
-        )
-
-    # Phase 4 (2026-08-13): the JSON-prose router below is OFF by default. Every
-    # family it used to claim first now rides the lean reply call as a native tool
-    # (docs/tool_router_scope.md), so this call front-runs that decision by ~0.74s
-    # median to hand back an answer the reply call was about to make for free.
-    # Measured before flipping it: across 1,340 audited field turns the LLM branch
-    # produced TWO executions, both character.preference_query -- retired the same
-    # day in 6267d38. Zero others. conversation.reply is what those turns became.
-    #
-    # Everything ABOVE this line stays: the shutdown pre-pass and the three
-    # explicit classifiers are where every logged router_takeover.* actually came
+    # Phase 4 (2026-08-13) retired the JSON-prose LLM router that used to sit
+    # here; every family it claimed now rides the lean reply call as a native tool
+    # (docs/tool_router_scope.md). The shutdown pre-pass and the three explicit
+    # classifiers above are where every logged router_takeover.* actually came
     # from, and offline they are the only routing Rex has.
     #
-    # confidence 0.6 matches the sibling deterministic returns. It is logging-only
-    # for a conversation.reply -- interaction._router_execution_block_reason
-    # returns "not_executable" before it ever reads the confidence threshold.
-    if not bool(getattr(config, "ACTION_ROUTER_LLM_FALLBACK_ENABLED", False)):
-        return _apply_context_overrides(
-            ActionDecision(
-                action="conversation.reply",
-                confidence=0.6,
-                reason="tool router owns routing; JSON-prose fallback retired",
-            ),
-            text,
-            context,
-        )
-
-    max_context_chars = int(getattr(config, "ACTION_ROUTER_MAX_CONTEXT_CHARS", 5000))
-    user_payload = {
-        "utterance": text,
-        "context": context,
-        "action_catalog": ACTION_CATALOG,
-        "output_schema": {
-            "action": "one action_catalog key",
-            "confidence": "number 0.0 to 1.0",
-            "args": "object; include target/game/music_query/person_name/event_hint when relevant",
-            "requires_confirmation": "boolean",
-            "reason": "short internal routing reason",
-        },
-    }
-    prompt = _compact_json(user_payload, max_chars=max_context_chars)
-
-    try:
-        # llm_compat translates the GPT-5-family param contract (max_completion_tokens,
-        # temperature dropped, reasoning_effort) — a no-op for classic models like
-        # gpt-4o-mini, so rollback via ACTION_ROUTER_MODEL alone stays valid.
-        from intelligence import llm_compat
-        resp = llm_compat.create(
-            _client,
-            model=getattr(config, "ACTION_ROUTER_MODEL", config.LLM_MODEL),
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_tokens=240,
-            reasoning_effort=str(getattr(config, "ACTION_ROUTER_REASONING_EFFORT", "none")),
-        )
-        raw = resp.choices[0].message.content or ""
-        payload = json.loads(_strip_code_fence(raw))
-        return _apply_context_overrides(_coerce_decision(payload), text, context)
-    except Exception as exc:
-        _log.debug("[action_router] decision failed: %s", exc)
-        return ActionDecision(reason=f"router error: {type(exc).__name__}")
-
-
-def warmup() -> bool:
-    """Open the action-router's OpenAI connection pool (a separate client from
-    llm._client) so the first ambiguous turn doesn't pay cold TLS / HTTP setup.
-    """
-    # Nothing to warm while the JSON-prose fallback is off: _client has no other
-    # caller, so an unconditional warmup is one hosted call per boot to open a
-    # connection pool that is never used again (Phase 4, 2026-08-13). Called from
-    # main.py's background _warm_openai thread.
-    if not bool(getattr(config, "ACTION_ROUTER_LLM_FALLBACK_ENABLED", False)):
-        return False
-    try:
-        from intelligence import llm_compat
-        # max_tokens=16, not 1: GPT-5-family models 400 on a cap they cannot
-        # finish within ("Could not finish the message...") instead of
-        # truncating like gpt-4o-mini does.
-        llm_compat.create(
-            _client,
-            model=getattr(config, "ACTION_ROUTER_MODEL", config.LLM_MODEL),
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=16,
-            reasoning_effort=str(getattr(config, "ACTION_ROUTER_REASONING_EFFORT", "none")),
-        )
-        _log.info("[action_router] OpenAI connection warmed")
-        return True
-    except Exception as exc:
-        _log.debug("[action_router] OpenAI warmup failed (non-fatal): %s", exc)
-        return False
+    # confidence 0.6 is logging-only for a conversation.reply --
+    # interaction._router_execution_block_reason returns "not_executable" before
+    # it ever reads the confidence threshold.
+    return _apply_context_overrides(
+        ActionDecision(
+            action="conversation.reply",
+            confidence=0.6,
+            reason="tool router owns routing; JSON-prose fallback retired",
+        ),
+        text,
+        context,
+    )
 
 
 def log_decision(
@@ -4233,16 +3552,3 @@ def log_decision(
         (context or {}).get("active_game"),
         (context or {}).get("active_music"),
     )
-
-
-def start_shadow_decision(text: str, context: dict[str, Any] | None = None) -> None:
-    """Launch a background shadow decision and log the result."""
-    if not bool(getattr(config, "ACTION_ROUTER_SHADOW_ENABLED", False)):
-        return
-
-    def _run() -> None:
-        decision = decide(text, context)
-        log_decision(decision, context, mode="shadow")
-
-    thread = threading.Thread(target=_run, daemon=True, name="action-router-shadow")
-    thread.start()

@@ -3647,21 +3647,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 self.assertIsNotNone(match)
                 self.assertEqual(match.command_key, "wake_up")
 
-    def test_router_sleep_candidate_must_be_standalone(self):
-        from intelligence import action_router, interaction
-
-        decision = action_router.ActionDecision(
-            action="system.sleep",
-            confidence=0.94,
-            args={},
-            reason="system state request",
-        )
-
-        self.assertEqual(interaction._router_system_command("go to sleep", decision), "sleep")
-        self.assertIsNone(
-            interaction._router_system_command("I told the kids to go to sleep", decision)
-        )
-
     def test_sleep_command_speaks_then_enters_sleep_animation(self):
         from intelligence import interaction
         from sequences import animations
@@ -6111,24 +6096,6 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("What now?", governed.text)
         self.assertNotIn("Another question?", governed.text)
 
-    def test_actor_harness_strips_speaker_prefixes(self):
-        from tools import conversation_text_harness
-
-        self.assertEqual(
-            conversation_text_harness._clean_actor_reply(
-                "Bret Benziger: I am just testing this thing.",
-                "Bret Benziger",
-            ),
-            "I am just testing this thing.",
-        )
-        self.assertEqual(
-            conversation_text_harness._clean_actor_reply(
-                "Human: Yeah, that question got weird.",
-                "Bret",
-            ),
-            "Yeah, that question got weird.",
-        )
-
     def test_social_frame_keeps_tiny_opener_with_next_sentence(self):
         from intelligence import social_frame
 
@@ -8104,74 +8071,6 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         speak.assert_called_once()
         self.assertIsNone(interaction._pending_music_offer)
 
-    def test_router_downgrades_bare_music_answer_under_pending_question(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="music.play",
-            confidence=0.90,
-            args={"music_query": "classical music"},
-            reason="genre phrase",
-        )
-        context = {
-            "pending": {
-                "pending_question": {
-                    "question_key": "favorite_music",
-                    "question_text": "What kind of music are you into?",
-                }
-            }
-        }
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "classical music",
-            context,
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLess(routed.confidence, 0.85)
-
-    def test_router_allows_explicit_music_play_under_pending_question(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="music.play",
-            confidence=0.90,
-            args={"music_query": "classical music"},
-            reason="explicit play",
-        )
-        context = {
-            "pending": {
-                "pending_question": {
-                    "question_key": "favorite_music",
-                    "question_text": "What kind of music are you into?",
-                }
-            }
-        }
-
-        # Since the Stage 1 demotion (2026-08-13) music.play is tool-router-owned,
-        # so the reply call decides and this rail returns conversation.reply. The
-        # SAFETY direction is unchanged and still pinned below: a bare genre answer
-        # under this pending question must never start playback.
-        routed = action_router._apply_context_overrides(
-            decision, "play classical music", context,
-        )
-        self.assertEqual(routed.action, "conversation.reply")
-
-        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
-            self.assertEqual(
-                action_router._apply_context_overrides(
-                    decision, "play classical music", context,
-                ).action,
-                "music.play",
-            )
-            self.assertEqual(
-                action_router._apply_context_overrides(
-                    decision, "classical music", context,
-                ).action,
-                "conversation.reply",
-            )
-
     def test_intent_classifier_does_not_treat_music_mention_as_options_query(self):
         from intelligence import intent_classifier
 
@@ -8182,15 +8081,8 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             "What music does she like?",
         ]
         for text in casual_mentions:
-            with (
-                self.subTest(text=text),
-                mock.patch.object(
-                    intent_classifier,
-                    "_classify_with_llm",
-                    return_value="query_music_options",
-                ),
-            ):
-                label = intent_classifier.classify(text)
+            with self.subTest(text=text):
+                label = intent_classifier.classify_deterministic(text)
 
             self.assertEqual(label, "general")
 
@@ -8198,23 +8090,18 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         from intelligence import intent_classifier
 
         self.assertEqual(
-            intent_classifier.classify("What kind of music can you play?"),
+            intent_classifier.classify_deterministic("What kind of music can you play?"),
             "query_music_options",
         )
         self.assertEqual(
-            intent_classifier.classify("What genres do you have?"),
+            intent_classifier.classify_deterministic("What genres do you have?"),
             "query_music_options",
         )
 
     def test_intent_classifier_does_not_play_non_music_games_with_play_word(self):
         from intelligence import intent_classifier
 
-        with mock.patch.object(
-            intent_classifier,
-            "_classify_with_llm",
-            return_value="play_music",
-        ):
-            label = intent_classifier.classify("play a game with me")
+        label = intent_classifier.classify_deterministic("play a game with me")
 
         self.assertNotEqual(label, "play_music")
 
@@ -8227,15 +8114,8 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             "Any favorite songs you enjoy?",
         ]
         for text in preference_questions:
-            with (
-                self.subTest(text=text),
-                mock.patch.object(
-                    intent_classifier,
-                    "_classify_with_llm",
-                    return_value="play_music",
-                ),
-            ):
-                label = intent_classifier.classify(text)
+            with self.subTest(text=text):
+                label = intent_classifier.classify_deterministic(text)
 
             self.assertNotEqual(label, "play_music")
 
@@ -8243,119 +8123,9 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         from intelligence import intent_classifier
 
         self.assertEqual(
-            intent_classifier.classify("play some jazz music"),
+            intent_classifier.classify_deterministic("play some jazz music"),
             "play_music",
         )
-
-    def test_router_downgrades_preference_misread_as_forget(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="memory.forget_specific",
-            confidence=0.90,
-            args={"target": "Disneyland"},
-            reason="misread preference as forget request",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "I like Disneyland",
-            {},
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLess(routed.confidence, 0.85)
-
-    def test_router_allows_explicit_specific_forget_request(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="memory.forget_specific",
-            confidence=0.90,
-            args={"target": "Disneyland"},
-            reason="explicit forget request",
-        )
-
-        # memory.forget_specific is tool-router-owned since Phase 2b
-        # (2026-08-13) — and it no longer deletes from a routed decision at all:
-        # the tool arms a spoken confirmation naming what would go. Offline the
-        # old routing is intact.
-        routed = action_router._apply_context_overrides(
-            decision, "forget that I like Disneyland", {},
-        )
-        self.assertEqual(routed.action, "conversation.reply")
-
-        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
-            self.assertEqual(
-                action_router._apply_context_overrides(
-                    decision, "forget that I like Disneyland", {},
-                ).action,
-                "memory.forget_specific",
-            )
-
-    def test_router_downgrades_bare_sensitive_topic_as_boundary(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="emotional.boundary",
-            confidence=0.90,
-            args={},
-            reason="misread health topic as boundary",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "back pain",
-            {},
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLess(routed.confidence, 0.85)
-
-    def test_router_allows_explicit_topic_boundary(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="emotional.boundary",
-            confidence=0.90,
-            args={"topic": "back pain"},
-            reason="explicit boundary",
-        )
-
-        # emotional.boundary is tool-router-owned since Phase 2b (2026-08-13):
-        # the durable consent row is the model's call now, so this rail hands the
-        # turn to the reply call. Offline the old routing is intact.
-        routed = action_router._apply_context_overrides(
-            decision, "Please don't ask me about back pain again", {},
-        )
-        self.assertEqual(routed.action, "conversation.reply")
-
-        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
-            self.assertEqual(
-                action_router._apply_context_overrides(
-                    decision, "Please don't ask me about back pain again", {},
-                ).action,
-                "emotional.boundary",
-            )
-
-    def test_router_downgrades_general_topic_knowledge_from_memory_query(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="memory.query",
-            confidence=0.90,
-            args={"person_name": "Star Trek"},
-            reason="misread topic as memory target",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "What do you know about Star Trek?",
-            {},
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLess(routed.confidence, 0.85)
 
     def test_conversation_reply_general_knowledge_skips_memory_learning(self):
         from intelligence import action_router, interaction
@@ -8416,127 +8186,6 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             )
         )
 
-    def test_router_keeps_person_memory_question_as_memory_query(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="memory.query",
-            confidence=0.90,
-            args={},
-            reason="person memory question",
-        )
-
-        # memory.query is tool-router-owned since Stage 1 (2026-08-13) — the reply
-        # call answers person-memory questions now. Offline the rail still keeps
-        # it as memory.query rather than downgrading it to general knowledge,
-        # which is the property this test was written for.
-        routed = action_router._apply_context_overrides(
-            decision, "What do you know about my dad?", {},
-        )
-        self.assertEqual(routed.action, "conversation.reply")
-
-        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
-            self.assertEqual(
-                action_router._apply_context_overrides(
-                    decision, "What do you know about my dad?", {},
-                ).action,
-                "memory.query",
-            )
-
-    def test_router_downgrades_named_day_as_date_query(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="date.query",
-            confidence=0.90,
-            args={},
-            reason="misread holiday explanation as current date",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "What's Truman Day?",
-            {},
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLess(routed.confidence, 0.85)
-
-    def test_router_downgrades_ongoing_status_from_event_cancel(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="event.cancel",
-            confidence=0.90,
-            args={"event_hint": "driving home"},
-            reason="misread ongoing trip as cancellation",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "We're still driving home",
-            {},
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLess(routed.confidence, 0.85)
-
-    def test_router_allows_explicit_event_cancel_with_continuation_words(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="event.cancel",
-            confidence=0.90,
-            args={"event_hint": "driving home"},
-            reason="explicit cancellation",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "We're not driving home anymore",
-            {},
-        )
-
-        self.assertEqual(routed.action, "event.cancel")
-
-    def test_router_downgrades_pronoun_only_intro_fragment(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="identity.introduce_person",
-            confidence=0.90,
-            args={"name": "you"},
-            reason="misread score clarification as introduction",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "Me and you",
-            {},
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLess(routed.confidence, 0.85)
-
-    def test_router_downgrades_named_person_fact_from_introduction(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="identity.introduce_person",
-            confidence=0.90,
-            args={"name": "Jeff"},
-            reason="misread fact as introduction",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "Jeff is a newspaper editor.",
-            {},
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLess(routed.confidence, 0.85)
-
     def test_nonexecuted_introduce_person_keeps_memory_learning_available(self):
         from intelligence import action_router, interaction
 
@@ -8589,74 +8238,36 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             )
         )
 
-    def test_router_routes_score_query_outside_game_to_memory(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="game.answer",
-            confidence=1.0,
-            args={},
-            reason="misread score question as game answer",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "And our score is?",
-            {"active_game": False},
-        )
-
-        self.assertEqual(routed.action, "memory.query")
-        self.assertGreaterEqual(routed.confidence, 0.85)
-
-    def test_router_downgrades_game_answer_when_no_game_is_active(self):
-        from intelligence import action_router
-
-        decision = action_router.ActionDecision(
-            action="game.answer",
-            confidence=1.0,
-            args={},
-            reason="misread bare direction as game answer",
-        )
-
-        routed = action_router._apply_context_overrides(
-            decision,
-            "down",
-            {"active_game": False},
-        )
-
-        self.assertEqual(routed.action, "conversation.reply")
-        self.assertLessEqual(routed.confidence, 0.40)
-
     def test_intent_classifier_short_circuits_topic_knowledge_questions(self):
         from intelligence import intent_classifier
 
         self.assertEqual(
-            intent_classifier.classify("What do you know about Star Trek?"),
+            intent_classifier.classify_deterministic("What do you know about Star Trek?"),
             "general",
         )
-        self.assertEqual(intent_classifier.classify("Star Trek"), "general")
+        self.assertEqual(intent_classifier.classify_deterministic("Star Trek"), "general")
 
     def test_intent_classifier_keeps_contextual_followups_in_conversation(self):
         from intelligence import intent_classifier
 
-        self.assertEqual(intent_classifier.classify("what about the tech?"), "general")
-        self.assertEqual(intent_classifier.classify("and the transporters?"), "general")
+        self.assertEqual(intent_classifier.classify_deterministic("what about the tech?"), "general")
+        self.assertEqual(intent_classifier.classify_deterministic("and the transporters?"), "general")
 
     def test_intent_classifier_does_not_route_closure_to_tools(self):
         from intelligence import intent_classifier
 
-        self.assertEqual(intent_classifier.classify("later."), "general")
+        self.assertEqual(intent_classifier.classify_deterministic("later."), "general")
         self.assertEqual(
-            intent_classifier.classify("Well it was nice speaking, I'll talk to you later."),
+            intent_classifier.classify_deterministic("Well it was nice speaking, I'll talk to you later."),
             "general",
         )
-        self.assertEqual(intent_classifier.classify("Goodbye"), "general")
+        self.assertEqual(intent_classifier.classify_deterministic("Goodbye"), "general")
 
     def test_intent_classifier_does_not_treat_weekday_statement_as_date_query(self):
         from intelligence import intent_classifier
 
         self.assertEqual(
-            intent_classifier.classify("I'm going to Las Vegas on Thursday"),
+            intent_classifier.classify_deterministic("I'm going to Las Vegas on Thursday"),
             "general",
         )
 
@@ -8669,19 +8280,12 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             "What is Memorial Day?",
         ]
         for text in named_day_questions:
-            with (
-                self.subTest(text=text),
-                mock.patch.object(
-                    intent_classifier,
-                    "_classify_with_llm",
-                    return_value="query_date",
-                ),
-            ):
-                self.assertEqual(intent_classifier.classify(text), "general")
+            with self.subTest(text=text):
+                self.assertEqual(intent_classifier.classify_deterministic(text), "general")
 
-        self.assertEqual(intent_classifier.classify("what day is it?"), "query_date")
+        self.assertEqual(intent_classifier.classify_deterministic("what day is it?"), "query_date")
         self.assertEqual(
-            intent_classifier.classify("what's today's date?"),
+            intent_classifier.classify_deterministic("what's today's date?"),
             "query_date",
         )
 
@@ -8689,11 +8293,11 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         from intelligence import intent_classifier
 
         self.assertEqual(
-            intent_classifier.classify("What sort of stuff are you good for?"),
+            intent_classifier.classify_deterministic("What sort of stuff are you good for?"),
             "query_capabilities",
         )
         self.assertEqual(
-            intent_classifier.classify("what are you good at?"),
+            intent_classifier.classify_deterministic("what are you good at?"),
             "query_capabilities",
         )
 
@@ -8701,22 +8305,22 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         from intelligence import intent_classifier
 
         self.assertEqual(
-            intent_classifier.classify("Can you tell me about myself?"),
+            intent_classifier.classify_deterministic("Can you tell me about myself?"),
             "query_memory",
         )
         self.assertEqual(
-            intent_classifier.classify("What are my plans for Thursday?"),
+            intent_classifier.classify_deterministic("What are my plans for Thursday?"),
             "query_memory",
         )
         self.assertEqual(
-            intent_classifier.classify("How many times have you greeted me?"),
+            intent_classifier.classify_deterministic("How many times have you greeted me?"),
             "query_memory",
         )
         self.assertEqual(
-            intent_classifier.classify("What's my friendship score?"),
+            intent_classifier.classify_deterministic("What's my friendship score?"),
             "query_memory",
         )
-        self.assertEqual(intent_classifier.classify("Me and you"), "general")
+        self.assertEqual(intent_classifier.classify_deterministic("Me and you"), "general")
 
     def test_query_memory_unknown_person_falls_through_to_llm(self):
         # "Tell me about your friend R2D2": person-shaped, but R2D2 is not in
@@ -8862,11 +8466,11 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         from intelligence import intent_classifier
 
         self.assertEqual(
-            intent_classifier.classify("I want to talk about Star Trek The Next Generation"),
+            intent_classifier.classify_deterministic("I want to talk about Star Trek The Next Generation"),
             "general",
         )
         self.assertEqual(
-            intent_classifier.classify("Star Trek Voyager, and Captain Janeway"),
+            intent_classifier.classify_deterministic("Star Trek Voyager, and Captain Janeway"),
             "general",
         )
 
@@ -8874,15 +8478,15 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         from intelligence import intent_classifier
 
         self.assertEqual(
-            intent_classifier.classify("Thats right, I wiped your memory at some point."),
+            intent_classifier.classify_deterministic("Thats right, I wiped your memory at some point."),
             "general",
         )
         self.assertEqual(
-            intent_classifier.classify("Can you tell me about my dogs?"),
+            intent_classifier.classify_deterministic("Can you tell me about my dogs?"),
             "query_memory",
         )
         self.assertEqual(
-            intent_classifier.classify("Do you remember what I do for work?"),
+            intent_classifier.classify_deterministic("Do you remember what I do for work?"),
             "query_memory",
         )
 

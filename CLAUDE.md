@@ -70,13 +70,13 @@ against clean HEAD the same day:
 
 Two more appeared between then and 2026-08-20 (the tree is 284 modules now, not
 241). Both verified pre-existing that day by swapping the pre-batch
-`intelligence/action_router.py` back in and re-running — they fail identically:
+`intelligence/action_router.py` back in and re-running. The
+`test_review_regressions` one was deleted with the retired router overrides
+(dead-code Stage 2, 2026-09-23); the other still fails identically:
 
 - `tests/test_reaction_awareness.py` — 3 failures in `NewsDigestContractTests`
   (`test_bans_the_closing_fetch_menu`, `test_bans_the_press_release_tics`,
   `test_caps_the_spoken_length`)
-- `tests/test_review_regressions.py` —
-  `test_router_keeps_known_named_person_topic_as_memory_query`
 
 Three more surfaced in the 2026-09-05 sweep (300 modules, 466 s, servo/audio-device
 modules skipped) and were verified pre-existing that day by swapping the 16 changed

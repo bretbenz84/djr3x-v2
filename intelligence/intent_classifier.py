@@ -1,44 +1,19 @@
 """
-intelligence/intent_classifier.py — Fast intent classification for the LLM
-fallback path in interaction.py.
+intelligence/intent_classifier.py — Fast deterministic intent labels for the
+intent lane in interaction.py.
 
 The command parser uses exact / fuzzy string matching, which misses natural
 phrasing like "hey what time is it again" or "so what can you actually do".
-This module sits between the parser and the full LLM call: a single tiny
-GPT-4o-mini request returns one of a fixed set of intent labels (or
-'general'), so the interaction loop can answer self-knowledge questions
-locally with real data instead of letting Rex hallucinate over them.
+This module sits between the parser and the full LLM call: cheap regex rules
+return one of a fixed set of intent labels (or 'general'), so the interaction
+loop can answer self-knowledge questions locally with real data instead of
+letting Rex hallucinate over them.
 """
 
-import logging
 import re
 
 import config
-import apikeys
-from intelligence import local_llm
 from intelligence.person_memory_targets import references_person_memory_target
-from openai import OpenAI
-
-_log = logging.getLogger(__name__)
-
-from intelligence import connectivity as _connectivity
-_client = _connectivity.guard_client(OpenAI(api_key=apikeys.OPENAI_API_KEY), "intent_classifier")
-
-_VALID_INTENTS = {
-    "query_time",
-    "query_date",
-    "query_weather",
-    "query_games",
-    "query_capabilities",
-    "query_uptime",
-    "query_battery",
-    "query_what_do_you_see",
-    "query_who_is_speaking",
-    "query_memory",
-    "play_music",
-    "query_music_options",
-    "general",
-}
 
 _MUSIC_OPTION_CONTEXT_RE = re.compile(
     r"\b("
@@ -113,7 +88,6 @@ _TOPIC_KNOWLEDGE_QUERY_RE = re.compile(
     r"tell\s+me|explain)\s+(?:about\s+)?(?P<topic>[^?.,!;]{3,100})",
     re.IGNORECASE,
 )
-_BARE_TOPIC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '&:-]{2,60}$")
 
 # Only real clock queries — NOT "give me time to answer" / "any time" (duration).
 # "what time", "the/current time", "time is it/now", or "o'clock"/"the clock".
@@ -354,161 +328,9 @@ def _deterministic_label(text: str) -> str:
     return "general"
 
 
-_PROMPT_TEMPLATE = (
-    'Classify this input into exactly one category. Reply with only the '
-    'category name. Categories: query_time, query_date, query_weather, query_games, '
-    'query_capabilities, query_uptime, query_battery, query_what_do_you_see, '
-    'query_who_is_speaking, query_memory, play_music, query_music_options, general. '
-    'Note: query_battery covers questions about Rex\'s OWN battery or power '
-    'state — "what\'s your state of charge?", "how are your batteries?", '
-    '"are you charging?", "what\'s your charge level?". Someone else\'s '
-    'battery (a phone, a car) is general. '
-    'Note: query_time covers clock-time questions like "what time is it?" '
-    'or "tell me the time". query_date covers current date/day questions like '
-    '"what day is it?", "what is today?", "tell me today\'s date". '
-    'Do NOT use query_date for named holiday or named-day explanation questions '
-    'like "what is Truman Day?" or "what is Memorial Day?"; those are general. '
-    'Note: query_who_is_speaking covers "who\'s speaking?", "who am I?", '
-    '"do you know who I am?", "you know who that is?", "can you tell who I am?". '
-    'Note: query_memory covers requests to recall stored memory about a person '
-    'or relationship, e.g. "tell me what you know about me", "what do you '
-    'remember about myself?", "tell me about my partner", "what do you know '
-    'about Jeff?", "what have I told you about Exudica?", "what is my '
-    'friendship score?", "how many times have you greeted me?". Do NOT use '
-    'query_memory for immediate identity recognition like "who am I?" or '
-    '"do you know who is speaking?" — those are query_who_is_speaking. '
-    'Note: play_music covers any request to play music, a song, a track, an '
-    'artist, a genre, a vibe, or a radio station — e.g. "play some jazz", '
-    '"can you play jazz music?", "put on something chill", "play me a song", '
-    '"play the Beatles", "throw on some lo-fi". Do NOT use play_music for '
-    'games such as Jeopardy, Trivia, I Spy, 20 Questions, or Word Association; '
-    'volume / skip / stop controls are general. '
-    'Note: query_music_options covers asking what music is available, e.g. '
-    '"what kind of music can you play?", "what genres do you have?", '
-    '"what stations can you play?". Do NOT classify "what can you play?" as '
-    'music unless the input explicitly says music, songs, stations, radio, '
-    'genres, artist, track, or playlist. Closure/correction phrases like '
-    '"nevermind", "no", "that was not about music" are general. '
-    'Input: "{text}"'
-)
-
-_LOCAL_SYSTEM_PROMPT = (
-    "You are a strict intent classifier. Return exactly one category name and "
-    "nothing else. Never explain your choice."
-)
-
-
-def classify(text: str) -> str:
-    """Return one of _VALID_INTENTS for the given user utterance.
-
-    Falls back to 'general' on any error or unrecognized label so a misfire
-    never blocks the normal LLM path.
-    """
-    if not text or not text.strip():
-        return "general"
-
-    cleaned = " ".join(text.strip().split())
-    if _NAMED_DAY_EXPLANATION_RE.search(cleaned):
-        return "general"
-
-    label = _deterministic_label(cleaned)
-    if label != "general":
-        return label
-
-    topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(cleaned)
-    topic = (topic_match.group("topic") if topic_match else "").strip()
-    if topic and not references_person_memory_target(topic):
-        return "general"
-
-    if (
-        _BARE_TOPIC_RE.match(cleaned)
-        and "?" not in cleaned
-        and 2 <= len(re.findall(r"[A-Za-z0-9']+", cleaned)) <= 5
-        and not _MUSIC_PLAY_ACTION_RE.search(cleaned)
-    ):
-        return "general"
-    if not bool(getattr(config, "INTENT_CLASSIFIER_LLM_FALLBACK_ENABLED", True)):
-        return "general"
-
-    try:
-        label = _classify_with_llm(cleaned)
-    except Exception as exc:
-        _log.debug("intent_classifier classify failed: %s", exc)
-        return "general"
-
-    # Tolerate stray punctuation / quotes from the model.
-    label = label.strip(' "\'.`')
-    if label in _VALID_INTENTS:
-        if label != "general" and _llm_label_blocked(cleaned, label):
-            _log.info(
-                "[intent_classifier] overriding %s → general; deterministic guard for %r",
-                label,
-                text,
-            )
-            return "general"
-        if label in {"play_music", "query_music_options"} and not _music_intent_allowed(text, label):
-            _log.info(
-                "[intent_classifier] overriding %s → general; no explicit music intent in %r",
-                label,
-                text,
-            )
-            return "general"
-        return label
-
-    for candidate in _VALID_INTENTS:
-        if candidate in label:
-            if candidate != "general" and _llm_label_blocked(cleaned, candidate):
-                _log.info(
-                    "[intent_classifier] overriding %s → general; deterministic guard for %r",
-                    candidate,
-                    text,
-                )
-                return "general"
-            if (
-                candidate in {"play_music", "query_music_options"}
-                and not _music_intent_allowed(text, candidate)
-            ):
-                _log.info(
-                    "[intent_classifier] overriding %s → general; no explicit music intent in %r",
-                    candidate,
-                    text,
-                )
-                return "general"
-            return candidate
-
-    return "general"
-
-
 def classify_deterministic(text: str) -> str:
     """Return only the cheap rule-based label; never call an LLM backend."""
     return _deterministic_label(text)
-
-
-def _llm_label_blocked(text: str, label: str) -> bool:
-    """Reject feature intents the fallback LLM often invents for ordinary chat."""
-    if _CLOSURE_RE.search(text):
-        return True
-    if _CONTEXTUAL_FOLLOWUP_RE.match(text):
-        return True
-    if label == "query_date" and _NAMED_DAY_EXPLANATION_RE.search(text):
-        return True
-    if label == "query_date" and not _DATE_QUERY_RE.search(text):
-        return True
-    if label == "query_time" and not _TIME_QUERY_RE.search(text):
-        return True
-    if label == "query_weather" and not _WEATHER_QUERY_RE.search(text):
-        return True
-    if label == "query_games" and not _GAMES_QUERY_RE.search(text):
-        return True
-    if label == "query_capabilities" and not _CAPABILITIES_QUERY_RE.search(text):
-        return True
-    if label == "query_what_do_you_see" and not _VISION_QUERY_RE.search(text):
-        return True
-    if label == "query_who_is_speaking" and not _WHO_QUERY_RE.search(text):
-        return True
-    if label == "query_memory" and not _memory_query_allowed(text):
-        return True
-    return False
 
 
 def _memory_query_allowed(text: str) -> bool:
@@ -531,26 +353,3 @@ def _memory_query_allowed(text: str) -> bool:
     # Non-topic openers ("what have I told you about X", "how many times ...") — the whole-sentence
     # person check is correct here (there is no "tell me about" opener injecting a spurious "me").
     return references_person_memory_target(cleaned)
-
-
-def _classify_with_llm(text: str) -> str:
-    backend = str(getattr(config, "INTENT_CLASSIFIER_LLM_BACKEND", "ollama")).lower()
-    prompt = _PROMPT_TEMPLATE.format(text=text)
-
-    if backend == "ollama":
-        return local_llm.generate(
-            prompt,
-            system=_LOCAL_SYSTEM_PROMPT,
-            temperature=0,
-            max_tokens=8,
-            timeout_secs=float(getattr(config, "INTENT_CLASSIFIER_LOCAL_TIMEOUT_SECS", 0.75)),
-        ).strip().lower()
-
-    resp = _client.chat.completions.create(
-        model=config.LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        max_tokens=20,
-        timeout=float(getattr(config, "INTENT_CLASSIFIER_OPENAI_TIMEOUT_SECS", 1.5)),
-    )
-    return (resp.choices[0].message.content or "").strip().lower()

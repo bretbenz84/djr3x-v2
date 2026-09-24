@@ -100,6 +100,18 @@ arg-name drifts in the motion tool schemas (`degrees`/`distance`+`unit`/arc's
 lone `direction`) and one enum-VALUE drift — the move schema said `backward`
 while the executor tests `== "back"`, so "back up" would have driven Rex FORWARD.
 
+PHASE 4b LANDED 2026-09-23 (dead-code removal Stage 2,
+`docs/dead_code_removal_plan.md`): the retired branch is DELETED, not just
+flagged off. `decide()` now ends in an unconditional `conversation.reply` after
+its deterministic ladder (shutdown pre-pass + explicit classifiers). Gone:
+the LLM tail, `_SYSTEM_PROMPT`, `_coerce_decision`, `_strip_code_fence`,
+`warmup`, the cue-word and self-query skips, `ACTION_CATALOG` /
+`ACTION_CATEGORIES`, the `_apply_context_overrides` branches that only demoted
+LLM decisions, the dead `_handle_router_takeover_action` arms, the intent
+classifier's LLM fallback, the Phase 0 shadow below, and their config keys
+(`ACTION_ROUTER_LLM_FALLBACK_ENABLED`, `ACTION_ROUTER_MODEL` et al.). Rollback
+is now a git revert of that commit.
+
 PHASE 4a LANDED 2026-08-13: the JSON-prose fallback router is RETIRED behind
 `ACTION_ROUTER_LLM_FALLBACK_ENABLED` (default False). The field logs made the
 case — across 1,340 audited turns the LLM branch produced TWO executions, both
@@ -110,16 +122,12 @@ latency), and its prompt was silently truncated at
 `ACTION_ROUTER_MAX_CONTEXT_CHARS` — `weather.query` and `web.search` fell off the
 end of the router's own catalog, so it had been running degraded for weeks.
 
-Retired behind a flag rather than deleted, deliberately: `_SYSTEM_PROMPT`,
-`_coerce_decision`, `_clearly_conversational` and `_ACTION_CUE_RE` all stay, so
-the rollback is a config flip rather than a code revert.
-
-Remaining (Phase 4b, once the flag has held off in the field): delete the retired
-branch and its now-dead helpers. `_clearly_conversational` has exactly one
-caller; nothing else in the repo consults it. `conversation.repair` is the only
-action the fallback was ever the sole route for, and it is deliberately NOT
-becoming a live tool — `repair_moves.detect` served all 48 logged repairs, and
-the router lane bypasses the bare-restatement and correction-reroute guards.
+4a retired it behind a flag rather than deleting it, so the rollback stayed a
+config flip; Phase 4b (above) deleted the branch and its helpers once the flag
+had held off in the field. `conversation.repair` was the only action the
+fallback was ever the sole route for, and it deliberately did NOT become a live
+tool — `repair_moves.detect` served all 48 logged repairs, and
+the router lane bypassed the bare-restatement and correction-reroute guards.
 
 Phase 1 record follows.
 
@@ -139,7 +147,9 @@ motion unchanged. Phase 0 record follows:
 PHASE 0 SHIPPED 2026-08-01 — `intelligence/tool_router.py` (shadow-only,
 off by default: set `TOOL_ROUTER_SHADOW_ENABLED = True` in user_config.py to
 collect), report via `tools/tool_router_report.py`, contracts pinned in
-`tests/test_tool_router.py`. Live smoke test: 10/10 correct tool choices
+`tests/test_tool_router.py`. (The shadow — `TOOL_ROUTER_SHADOW_*`,
+`shadow_decide`/`start_shadow`, `tools/tool_router_report.py` and
+`TOOL_ROUTER_TEST_SCRIPT.md` — was deleted in Phase 4b, 2026-09-23.) Live smoke test: 10/10 correct tool choices
 including the banter traps and context-bound game answers. Phase-0 deviation
 from §2.1: per-action schemas live in tool_router._TOOL_DEFS (coverage-enforced
 by tests) rather than on ActionSpec — they merge into the spec at Phase 4. Owner decision driving this:
@@ -151,10 +161,14 @@ call per routed turn rather than adding one.
 
 ## 1. What exists today (inventory)
 
+*Written 2026-08-01, before the migration. Items marked "deleted 2026-09-23"
+went in Phase 4b (dead-code removal Stage 2).*
+
 ### 1.1 The action catalog — 40 actions, 14 categories
 
 Source of truth: `ACTION_SPECS` in `intelligence/action_router.py` (auto-derives
-`ACTION_CATALOG` / `ACTION_CATEGORIES` / valid + executable sets).
+`ACTION_CATALOG` / `ACTION_CATEGORIES` / valid + executable sets; only
+`EXECUTABLE_ACTIONS` remains — the rest were deleted 2026-09-23).
 
 | Category | Actions | Notes |
 |---|---|---|
@@ -183,10 +197,11 @@ Source of truth: `ACTION_SPECS` in `intelligence/action_router.py` (auto-derives
    a `_NON_MOTION_ACTION_WORDS` stoplist
 4. `classify_explicit_impersonation` — regex
 5. "deterministic conversational skip" — if no cue words, return
-   `conversation.reply` WITHOUT any LLM call
+   `conversation.reply` WITHOUT any LLM call *(deleted 2026-09-23)*
 6. Fallback: an **extra LLM call** (`ACTION_ROUTER_MODEL`, JSON-in-prose, no
    native tools) with the catalog pasted into the prompt, parsed by
-   `_strip_code_fence` + `json.loads`
+   `_strip_code_fence` + `json.loads` *(deleted 2026-09-23; `decide()` now
+   returns `conversation.reply` here)*
 7. `_apply_context_overrides` on every path (games/music context, etc.)
 
 Layered ON TOP of that, in `interaction.py`:
@@ -219,10 +234,12 @@ Layered ON TOP of that, in `interaction.py`:
 
 - `start_shadow_decision()` + `log_decision(mode="shadow")` + config flag
   `ACTION_ROUTER_SHADOW_ENABLED` — shadow infrastructure is ALREADY BUILT.
+  *(`start_shadow_decision` and the flag were deleted 2026-09-23;
+  `log_decision` stays.)*
 - `[action_router_audit]` / `[character_loop]` JSON log lines — per-turn record
   of utterance, decision, allowlist result, executed path. This is the
   evaluation dataset: weeks of real labeled traffic in `logs/`.
-- `tools/conversation_text_harness.py` + `evals/` — offline replay harness.
+- `evals/` — offline replay harness.
 - `llm_compat.create(...)` — the single chokepoint for the conversation model
   call, where the `tools=[...]` parameter gets added.
 - `ActionSpec` — becomes the single source for generated tool schemas.
@@ -299,6 +316,9 @@ matches the fast lane do we consider retiring it — and "stop" never retires.
 Delete demoted regex families + the JSON-prose fallback router + the
 `_SYSTEM_PROMPT` rule list; ACTION_SPECS becomes the whole contract. The
 six wiring points become: spec (with schema) + executor + allowlist entry.
+*The JSON-prose router and `_SYSTEM_PROMPT` were deleted 2026-09-23 (Phase 4b).
+The demoted regex families stay as the OFFLINE path (§2.4), and merging
+`tool_router._TOOL_DEFS` into `ActionSpec` is still open.*
 
 ## 4. Effort & risk
 

@@ -42,9 +42,9 @@ surface area: **37 `chat.completions.create` call sites across 14 files**.
 | Wired conversation calls | `intelligence/llm.py` | 6 user-facing generators routed through the shim via `llm_compat.conversation_model()`: `warmup`, `stream_response` (main path), `scenery_change_remark`, `generate_curiosity_question`, `generate_onboarding_reaction`, `generate_expression_reaction`. |
 | Mock tests | `tests/test_llm_compat.py` | 17 tests locking the param-translation contract (no network). |
 | Live smoke test (retired) | `tools/gpt5_smoke_test.py` (deleted 2026-09-23; git history at `c00eed5`) | One real API call per shape; settled the temperature question on 2026-06-17. Not in CI. |
-| A/B runner | `tools/gpt5_ab_test.py` | Runs a fixed corpus through both models (real pipeline), writes a side-by-side. Not in CI. See "A/B results" below. |
+| A/B runner (retired) | `tools/gpt5_ab_test.py` (deleted 2026-09-23; git history at `2d2989c`) | Ran a fixed corpus through both models (real pipeline), wrote a side-by-side. Not in CI. See "A/B results" below. |
 
-The other ~31 call sites (action router, intent/empathy/address classifiers, memory
+The other call sites (empathy/address classifiers, memory
 extraction, session summary, vision, games, trivia) **still call the client directly**
 and stay on `gpt-4o-mini`. They are listed under "Full migration" below.
 
@@ -161,13 +161,9 @@ the smoke test proves temperature behavior — they're the riskiest.
 
 You can run full conversation turns with **no hardware**:
 
-- **Text harness** (fastest iteration):
-  ```bash
-  venv/bin/python tools/conversation_text_harness.py --person "Bret Benziger" \
-    "not much, just eating pizza" "I've made progress on my robot" "I like classical music"
-  ```
-  Run the *same* turns once with `LLM_CONVERSATION_MODEL="gpt-4o-mini"` and once with
-  `"gpt-5.4-mini"`, and diff the replies for quality (curiosity, repetition, persona).
+- **Text harness** (retired): `tools/conversation_text_harness.py` was deleted
+  2026-09-23 (dead-code Stage 2; it bypassed today's router/lean path). Git history
+  at `2d2989c`.
 
 - **Text-only GUI** for a live feel: `python main.py --gui --noaudio`.
 
@@ -189,14 +185,10 @@ and writes a side-by-side.
 
 ### A/B runner
 
-`tools/gpt5_ab_test.py` runs a fixed corpus through the REAL pipeline once per model
-(clean reset between), captures Rex's reply + per-turn wall time, and writes a
-side-by-side `.md`/`.jsonl` to `logs/gpt5_ab/` (gitignored). Live API; not in CI.
-```bash
-venv/bin/python tools/gpt5_ab_test.py                          # baseline vs gpt-5.4-mini@none
-venv/bin/python tools/gpt5_ab_test.py --candidate-verbosity low
-venv/bin/python tools/gpt5_ab_test.py --file corpus.txt --candidate-effort low
-```
+`tools/gpt5_ab_test.py` ran a fixed corpus through the REAL pipeline once per model
+(clean reset between), captured Rex's reply + per-turn wall time, and wrote a
+side-by-side `.md`/`.jsonl` to `logs/gpt5_ab/` (gitignored). Deleted 2026-09-23
+(dead-code Stage 2); git history at `2d2989c`.
 
 ### A/B results (run 2026-06-17, `gpt-5.4-mini` @ `effort=none`, `pass_temp=true`)
 
@@ -253,8 +245,7 @@ own model config so you can flip them independently. **Test JSON + temperature o
 
 | Group | Files / calls | Notes |
 |---|---|---|
-| Action routing | `intelligence/action_router.py` (decide, warmup) | `temperature=0` — needs the temp answer first |
-| Classifiers | `intent_classifier.py`, `empathy.py` (JSON), `awareness/address_mode.py`, `llm.py:classify_surprise/analyze_sentiment` | `temperature=0`, several JSON |
+| Classifiers | `empathy.py` (JSON), `awareness/address_mode.py`, `llm.py:classify_surprise/analyze_sentiment` | `temperature=0`, several JSON |
 | Memory extraction | `llm.py` extract_facts/preferences/interests/events, `consolidate_session_memories` (JSON), `extract_name*` (JSON) | `temperature=0`, large `max_tokens`, JSON |
 | Session summary / arc | `llm.py:generate_session_summary`, `_call_openai_summarizer` (`CONVERSATION_ARC_OPENAI_MODEL`) | background, can tolerate higher latency |
 | Vision | `vision/scene.py`, `vision/face.py` (×3), `features/games.py` | `image_url` + `detail`; keep on `VISION_MODEL` until tested |

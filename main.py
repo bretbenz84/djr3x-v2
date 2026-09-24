@@ -1584,14 +1584,13 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             _preload_breath()
 
     if bool(getattr(config, "OPENAI_WARMUP_ON_STARTUP", True)):
-        # Warm both OpenAI clients (answer LLM + action router) in the background
-        # so the first turn doesn't eat cold TLS / connection setup. Non-blocking;
+        # Warm the answer LLM's OpenAI client in the background so the first
+        # turn doesn't eat cold TLS / connection setup. Non-blocking;
         # failures (e.g. offline / missing key) are swallowed inside warmup().
         def _warm_openai() -> None:
             try:
-                from intelligence import llm, action_router
+                from intelligence import llm
                 llm.warmup()
-                action_router.warmup()
             except Exception as exc:
                 logger.debug("OpenAI warmup thread failed: %s", exc)
 

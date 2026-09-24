@@ -2137,7 +2137,7 @@ def _get_el_client():
 
 def warmup_api() -> bool:
     """Open the ElevenLabs TLS connection at startup so the session's FIRST spoken
-    reply doesn't pay the cold handshake. Mirrors action_router.warmup() for the
+    reply doesn't pay the cold handshake. Mirrors llm.warmup() for the
     OpenAI pool. The key is TTS-only scoped, so the metadata probe 401s — that is
     FINE: an HTTP error still means a completed round-trip over a now-open pooled
     connection (the whole point); only a network-level failure counts as cold."""

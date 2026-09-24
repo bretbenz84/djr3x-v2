@@ -558,7 +558,10 @@ class RexOpinionContextTest(unittest.TestCase):
         import config
         from intelligence import action_router, tool_router
 
-        self.assertNotIn("character.preference_query", action_router.ACTION_CATALOG)
+        self.assertNotIn(
+            "character.preference_query",
+            {spec.key for spec in action_router.ACTION_SPECS},
+        )
         self.assertNotIn(
             "character.preference_query", config.ACTION_ROUTER_EXECUTE_ACTIONS
         )
@@ -640,8 +643,7 @@ class HumorPerformanceToolMigrationTest(unittest.TestCase):
                 self.assertEqual(
                     action_router.decide(text, {}).action, "conversation.reply", text
                 )
-            # And it still skips the ~0.8s JSON-prose router call, because the
-            # regex match is itself proof the turn is actionable.
+            # And it pays no routing LLM call on the way.
             self.assertFalse(create.called)
 
     def test_offline_the_classifier_still_claims_the_turn(self):
@@ -781,15 +783,6 @@ class IntentClassifierDemotionTest(unittest.TestCase):
         self.assertEqual(kwargs.get("raw_best_id"), 7)
         self.assertEqual(kwargs.get("raw_best_name"), "Bret")
         self.assertAlmostEqual(kwargs.get("raw_best_score"), 0.91)
-
-    def test_compound_game_turn_keeps_full_routing(self):
-        # game.start is not a live tool yet, so skipping the router would answer
-        # the weather half and silently drop the game.
-        self.assertIsNone(
-            action_router._deterministic_self_query_intent(
-                "what's the weather? let's play trivia", {}
-            )
-        )
 
 
 class MemoryWriteMigrationTest(unittest.TestCase):
@@ -1029,61 +1022,6 @@ class MotionPhase3Test(unittest.TestCase):
                                ("stop moving", "motion.stop")):
             decision = action_router.classify_explicit_motion(text)
             self.assertEqual(_act(decision), expected, text)
-
-
-class JsonProseRouterRetirementTest(unittest.TestCase):
-    """Phase 4: the fallback router is retired behind a flag, not deleted."""
-
-    def _calls(self, text, context=None):
-        seen = []
-
-        def _fake(**kwargs):
-            seen.append(1)
-            raise RuntimeError("llm consulted")
-
-        with mock.patch.object(
-            action_router._client.chat.completions, "create", side_effect=_fake
-        ):
-            decision = action_router.decide(text, context or {})
-        return decision, len(seen)
-
-    def test_default_off_costs_nothing_and_hands_the_turn_over(self):
-        # Across 1,340 audited field turns this branch produced TWO executions,
-        # both character.preference_query — an action retired the same day. It
-        # was 42% of pre-reply latency on the ~30% of turns that paid it.
-        for text in ("let's do that trivia thing again",
-                     "could you look over there",
-                     "I want to hear a song"):
-            decision, calls = self._calls(text)
-            self.assertEqual(calls, 0, text)
-            self.assertEqual(decision.action, "conversation.reply", text)
-
-    def test_rollback_flag_restores_it(self):
-        import config
-
-        with mock.patch.object(
-            config, "ACTION_ROUTER_LLM_FALLBACK_ENABLED", True, create=True
-        ):
-            _decision, calls = self._calls("let's do that trivia thing again")
-        self.assertEqual(calls, 1)
-
-    def test_the_deterministic_ladder_is_untouched(self):
-        # Every logged router_takeover.* came from this ladder, not the model.
-        self.assertEqual(
-            self._calls("I would like you to shut down.")[0].action,
-            "system.shutdown")
-        self.assertEqual(
-            self._calls("Call me JT.")[0].action, "identity.name_correction")
-        with mock.patch("intelligence.connectivity.is_offline", return_value=True):
-            self.assertEqual(
-                self._calls("tell me a joke")[0].action, "humor.tell_joke")
-
-    def test_warmup_does_not_open_a_pool_for_a_retired_client(self):
-        with mock.patch.object(
-            action_router._client.chat.completions, "create"
-        ) as create:
-            self.assertFalse(action_router.warmup())
-        self.assertFalse(create.called)
 
 
 class VisionHoldingFieldFailureTest(unittest.TestCase):
