@@ -513,29 +513,13 @@ _ANGER_RULES = {
     4: "Anger level 4 (SHUTDOWN): Refuse to engage. Deliver a final dismissal line and ignore further input.",
 }
 
-_RESPONSE_LENGTH_TOKEN_BUDGET = {
-    "micro": 35,
-    "brief": 55,
-    "short": 70,
-    "medium": 120,
-    "long": 240,
-}
-_RESPONSE_LENGTH_TARGET_PAT = re.compile(
-    r"Response length control:\s*\n-\s*Target:\s*([a-z_]+)",
-    re.IGNORECASE,
-)
-
 
 def _max_tokens_for_agenda(agenda_directive: Optional[str]) -> int:
     default = 150
     if not agenda_directive:
         return default
-    match = _RESPONSE_LENGTH_TARGET_PAT.search(agenda_directive)
-    if match:
-        return _RESPONSE_LENGTH_TOKEN_BUDGET.get(match.group(1).lower(), default)
-    # Slim-contract path (Phase 1): the verbose "Response length control / Target:"
-    # block is gone, but the contract still carries the hard "max_words=N" cap.
-    # Derive a comparable token budget from it (~1.7 tokens/word + headroom).
+    # The slim contract (Phase 1) carries the hard "max_words=N" cap. Derive a
+    # token budget from it (~1.7 tokens/word + headroom).
     mw = re.search(r"max_words=(\d+)", agenda_directive)
     if mw:
         return max(35, min(default, int(int(mw.group(1)) * 1.7)))
@@ -2288,42 +2272,6 @@ def generate_diary_entry(
     except Exception as exc:
         _log.error("generate_diary_entry failed: %s", exc)
         return None
-
-
-def scenery_change_remark(previous_scene: str, current_scene: str) -> str:
-    """Compare Rex's last-run startup snapshot to this run's. If it's a clearly DIFFERENT
-    place, return ONE short in-character remark about the change of scenery; otherwise "".
-    One cheap text call; robust to wording/lighting/clutter differences in the same room."""
-    prev = (previous_scene or "").strip()
-    now = (current_scene or "").strip()
-    if not prev or not now:
-        return ""
-    prompt = (
-        "You are DJ-R3X (Rex), a witty droid powering up. Last time you booted you saw:\n"
-        f"  {prev}\n"
-        "Now, booting again, you see:\n"
-        f"  {now}\n\n"
-        "If this is CLEARLY a different physical location — a different room, indoors vs "
-        "outdoors, or a new place/venue — reply with ONE short, in-character Rex remark "
-        "noticing the change of scenery (max ~20 words, no preamble). If it's basically "
-        "the SAME place (ignore differences in wording, lighting, clutter, or who's "
-        "present), reply with exactly: SAME"
-    )
-    try:
-        resp = llm_compat.create(
-            _client,
-            model=llm_compat.conversation_model(),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=60,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-    except Exception as exc:
-        _log.error("scenery_change_remark failed: %s", exc)
-        return ""
-    if not text or text.strip().upper().rstrip(".!") == "SAME":
-        return ""
-    return clean_response_text(text)
 
 
 def extract_name_from_reply(text: str) -> Optional[str]:

@@ -118,8 +118,7 @@ class LocalTakePlaybackGuardTest(unittest.TestCase):
             for _ in range(3):
                 yield np.full(1200, 0.1, dtype=np.float32)
 
-        with mock.patch.object(config, "LOCAL_TTS_CACHE_ENABLED", False), \
-             mock.patch.object(local_tts, "generate_stream", gen):
+        with mock.patch.object(local_tts, "generate_stream", gen):
             handled = tts._speak_local("hi rex", REX_REF, "neutral", log_text=False)
         self.assertTrue(handled)
         self.assertEqual(len(self.capture.instances), 1)

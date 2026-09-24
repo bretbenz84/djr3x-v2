@@ -107,14 +107,11 @@ _log = logging.getLogger(__name__)
 _state = {
     "neck_hits": 0,
     "far_hits": 0,
-    "orient_hits": 0,        # consecutive nobody-on-camera ticks with a radar body
     "last_turn_at": 0.0,
     "last_approach_at": 0.0,
     "last_flinch_at": 0.0,
-    "orient_last_at": 0.0,   # radar-orient cooldown stamp
     "wake_orient_at": 0.0,   # name-call reflex cooldown stamp
-    "voice_bearing_at": 0.0, # last fresh voice bearing (radar orient defers to it)
-    "orient_visited": [],    # (world_bearing_deg, at) — bodies already looked at
+    "voice_bearing_at": 0.0, # last fresh voice bearing (idle wander defers to it)
     "wander_pending": None,  # in-flight weight-shift pair (out leg + inverse)
     "wander_next_at": 0.0,   # randomized idle-wander cooldown stamp
     "edge_hits": 0,          # consecutive edge-in-eligible conversation ticks
@@ -993,7 +990,8 @@ def _radar_bodies(now: float, since: "float | None" = None,
     most persistent, then most confident, then least turning.
 
     Defaults serve the come-here search (post-turn settle stamp). ``since`` /
-    ``window`` let other callers (radar orient) sample their own window."""
+    ``window`` let other callers (the voice tie-break, face-me) sample their own
+    window."""
     try:
         from hardware import radar
         if not (radar.connected() and radar.radar_ok()):
@@ -2103,140 +2101,16 @@ def _any_visible_face(snapshot: dict) -> bool:
     return False
 
 
-def _maybe_radar_orient(snapshot: dict, now: float) -> bool:
-    """ORIENT — face a radar body when the camera has nobody (owner spec
-    2026-08-19: "use radar to orient towards people if there are no people in
-    camera"). Neck-first, wheels last, same as everything else: a body within
-    the neck's reach gets a glance the camera can act on (face tracking takes
-    over the moment a face appears); only a body beyond the neck turns the
-    base. Requires the body to persist across frames (the _radar_bodies
-    min-frames rule) AND the no-face condition to hold for consecutive ticks,
-    so one dropped detection frame never spins him away from a conversation.
-    Returns True when it consumed the tick with an action."""
-    if _any_visible_face(snapshot):
-        _reset("orient_hits")
-        return False
-    if _voice_bearing_fresh(now):
-        # The talker's own direction is on record — the name-call reflex / the
-        # turn's voice bearing already pointed him. A radar return now is a dog,
-        # a ghost, or the same person; none of them justify a blind ±60° spin.
-        _reset("orient_hits")
-        return False
-    cooldown = _num("MOTION_RADAR_ORIENT_COOLDOWN_SECS", 30.0)
-    if (now - float(_state.get("orient_last_at") or 0.0)) < cooldown:
-        return False
-    # Radar bearings smear while the base rotates — only decide from a stretch
-    # with no recent maneuver of ours.
-    quiet = _num("MOTION_RADAR_ORIENT_QUIET_SECS", 3.0)
-    busy_at = max(float(_state.get("last_turn_at") or 0.0),
-                  float(_state.get("last_approach_at") or 0.0),
-                  float(_state.get("last_flinch_at") or 0.0))
-    if (now - busy_at) < quiet:
-        return False
-    window = _num("MOTION_RADAR_ORIENT_WINDOW_SECS", 2.5)
-    bodies, ready = _radar_bodies(now, since=now - window, window=window)
-    if not ready or not bodies:
-        _reset("orient_hits")
-        return False
-    # A body he already turned toward and found NOBODY at is spent for a while —
-    # field 2026-08-19 22:49-50: three +60° chases of a rear return (+172, +109,
-    # +175) in three minutes, each spinning him away from where the owner sat,
-    # never finding a face. One look per bearing per TTL; ghosts don't get laps.
-    yaw = _base_yaw_deg()
-    visited_ttl = _num("MOTION_RADAR_ORIENT_VISITED_TTL_SECS", 150.0)
-    visited_deg = _num("MOTION_RADAR_ORIENT_VISITED_DEG", 30.0)
-    visited = [
-        (w, t) for (w, t) in (_state.get("orient_visited") or [])
-        if (now - t) < visited_ttl
-    ]
-    _state["orient_visited"] = visited
-    best = None
-    for body in bodies:
-        if yaw is not None and any(
-            abs(_wrap180((yaw + float(body["bearing_deg"])) - w)) <= visited_deg
-            for w, _t in visited
-        ):
-            continue
-        best = body
-        break
-    if best is None:
-        _reset("orient_hits")
-        return False       # every persistent body has had its look already
-    bearing = float(best["bearing_deg"])
-    if float(best["confidence"]) < _num("MOTION_RADAR_ORIENT_MIN_CONFIDENCE", 0.30):
-        _reset("orient_hits")
-        return False
-    if abs(bearing) < _num("MOTION_RADAR_ORIENT_MIN_BEARING_DEG", 20.0):
-        _reset("orient_hits")
-        return False       # already roughly facing them — the camera's problem now
-    _state["orient_hits"] = int(_state.get("orient_hits") or 0) + 1
-    if _state["orient_hits"] < int(_num("MOTION_RADAR_ORIENT_CONFIRM_TICKS", 3)):
-        return False
-    _reset("orient_hits")
-    if yaw is not None:
-        # Mark the WORLD bearing as looked-at the moment we commit to it; if a
-        # face shows up there, tracking owns the head and this note is moot.
-        visited.append((_wrap180(yaw + bearing), now))
-        _state["orient_visited"] = visited
-
-    neck_reach = _num("MOTION_RADAR_ORIENT_NECK_MAX_DEG", 40.0)
-    if abs(bearing) <= neck_reach:
-        # The neck can cover it — glance, and let face tracking take over the
-        # moment a face lands in frame. Never fight another head owner.
-        if _wander_owns_neck():
-            return False
-        try:
-            from hardware import servos
-            if servos.speech_motion_active() or servos.listening_motion_active():
-                return False
-        except Exception:
-            pass
-        side = "left" if bearing > 0 else "right"   # radar + = left/CCW (REP-103)
-        frac = min(1.0, abs(bearing) / _num("MOTION_COME_NECK_HALF_SPAN_DEG", 45.0))
-        try:
-            from sequences import animations
-            from intelligence import consciousness
-            animations.travel_glance_pose(side, "level", fraction=frac)
-            consciousness.hold_directed_gaze(
-                side, secs=_num("MOTION_RADAR_ORIENT_NECK_HOLD_SECS", 6.0))
-        except Exception:
-            return False
-        _state["orient_last_at"] = now
-        _log.info(
-            "[motion_agency] radar orient: body at %+.0f° (%.1fm), nobody on "
-            "camera — neck glance %s", bearing, best["range_m"], side,
-        )
-        return True
-
-    # Beyond the neck: turn the base (a drive — traction rules apply).
-    if _traction_lost(now):
-        return False
-    max_deg = _num("MOTION_FACE_TURN_MAX_DEG", 60.0)
-    deg = max(-max_deg, min(max_deg, bearing))      # turn + = left/CCW, same frame
-    seq = motion_controller.turn(deg, rate=_num("MOTION_COME_SCAN_RATE_DEG_S", 40.0))
-    if seq is not None:
-        _state["orient_last_at"] = now
-        _state["last_turn_at"] = now
-        _log.info(
-            "[motion_agency] radar orient: body at %+.0f° (%.1fm), nobody on "
-            "camera and beyond the neck — base turn %+.0f°",
-            bearing, best["range_m"], deg,
-        )
-    return True
-
-
 # ── Name-call reflex ─────────────────────────────────────────────────────────────
 # "Hey Rex" from off camera (owner spec 2026-09-02): turn toward the voice the
-# way a person turns toward their name. Same shape as radar orient — neck first,
-# wheels only beyond the neck — but ONE SHOT and synchronous (the wake-word
-# thread spawns it), driven by the Flex XVF3800's direction of arrival over the
-# phrase itself rather than a persistent radar body.
+# way a person turns toward their name — neck first, wheels only beyond the
+# neck — ONE SHOT and synchronous (the wake-word thread spawns it), driven by the
+# Flex XVF3800's direction of arrival over the phrase itself.
 
 
 def note_voice_bearing(bearing_deg: "float | None" = None) -> None:
-    """Someone just spoke and the Flex DoA said where from. Radar orient stands
-    down for MOTION_RADAR_ORIENT_VOICE_DEFER_SECS: the ring cannot tell a dog or
-    a ghost from the person who is talking, the voice can."""
+    """Someone just spoke and the Flex DoA said where from. No new idle wander
+    starts for MOTION_IDLE_WANDER_VOICE_DEFER_SECS: they may call again."""
     _state["voice_bearing_at"] = time.monotonic()
     # Somebody is talking to him: an idle sway or meander right now swings the
     # ring under the very voice the reflex needs (field 2026-09-02 22:33).
@@ -2245,7 +2119,7 @@ def note_voice_bearing(bearing_deg: "float | None" = None) -> None:
 
 def _voice_bearing_fresh(now: float) -> bool:
     at = float(_state.get("voice_bearing_at") or 0.0)
-    return at > 0.0 and (now - at) < _num("MOTION_RADAR_ORIENT_VOICE_DEFER_SECS", 20.0)
+    return at > 0.0 and (now - at) < _num("MOTION_IDLE_WANDER_VOICE_DEFER_SECS", 20.0)
 
 
 def _voice_lands_on_visible_face(bearing_deg: float) -> bool:
@@ -2556,7 +2430,7 @@ def face_requester(person_id: "int | None" = None) -> "tuple[float | None, str]"
         # — the camera's + = Rex's RIGHT is the frame that needs negating. Sending a
         # radar bearing through _come_turn_for_bearing would mirror it: he would
         # turn exactly as far the wrong way. (docs/radar-bearing-prior-spec.md;
-        # _step_come_radar and _maybe_radar_orient both pass it through unnegated.)
+        # _step_come_radar passes it through unnegated too.)
         if abs(bearing) < _num("MOTION_FACE_ME_CENTERED_DEG", 12.0):
             return None, "already_facing"
         max_deg = _num("MOTION_FACE_ME_TURN_MAX_DEG", 180.0)
@@ -3548,15 +3422,10 @@ def _step_inner(snapshot: dict, profile) -> None:
         _state['startup_target'] = None
         _reset("neck_hits", "far_hits")
         _state["neck_strain_since"] = 0.0   # no tracked face = no tracking strain
-        # Nobody on camera — but the radar ring may know where they are.
-        if (_flag("MOTION_RADAR_ORIENT_ENABLED", True)
-                and _maybe_radar_orient(snapshot, now)):
-            return
         # Nothing social to do — maybe shift his weight (one maneuver per tick).
         if _flag("MOTION_IDLE_WANDER_ENABLED", True):
             _maybe_idle_wander(profile, now)
         return
-    _reset("orient_hits")
 
     frac = neck_offset_fraction()
 

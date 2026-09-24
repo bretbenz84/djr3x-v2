@@ -91,7 +91,6 @@ def main():
     config.NO_AUDIO_MODE = args.text_only
     config.AUDIO_OUTPUT_SUPPRESSED = False
     I._text_only_mode = True
-    I._start_latency_filler_timer = lambda: __import__('threading').Event()
     I._prefetch_stream_audio = lambda *a, **kw: None
     # Turn processing can schedule physical flourishes even with no audio.
     from hardware import servos

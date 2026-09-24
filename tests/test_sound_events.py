@@ -253,7 +253,6 @@ class NotableReactionTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
                 mock.patch.object(consciousness, "_generate_and_speak", return_value=True) as speak,
                 mock.patch("sequences.animations.play_body_beat"),
-                mock.patch("config.WORLD_SOUND_EVENT_REACTIONS_ENABLED", False),
                 mock.patch("config.SOUND_AWARENESS_REACTIONS_ENABLED", flags.get("enabled", True)),
                 mock.patch("config.SOUND_EVENT_REACTION_COOLDOWN_SECS", flags.get("cooldown", 0.0)),
             ):

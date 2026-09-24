@@ -10,7 +10,6 @@ In `config.py`:
 
 ```python
 GUI_ENABLED = True
-GUI_BACKEND = "pyside6"
 ```
 
 Then run Rex normally from the project venv:

@@ -423,9 +423,7 @@ _pending_music_offer: Optional[dict] = None
 _no_response_recovery_token: int = 0
 _no_response_recovery_lock = threading.Lock()
 
-# Anti-repeat for latency filler and slow-path acknowledgment lines
-_last_filler: Optional[str] = None
-_last_slow_path_ack: Optional[str] = None
+# Anti-repeat for wake and sleep acknowledgment lines
 _last_wake_ack: Optional[str] = None
 _last_sleep_mode_ack: Optional[str] = None
 _last_wake_from_sleep_ack: Optional[str] = None
@@ -489,8 +487,7 @@ _game_barge_floor_at: float = 0.0
 # Monotonic time the current/most recent mic turn's capture ENDED — i.e. the
 # start of the span the blocked loop goes blind for (LLM generation + playback).
 # Armed right before _handle_speech_segment on the mic paths; 0 = disarmed.
-# Advanced by a phase-1 merge (its capture consumed the buffer through then) and
-# consumed one-shot by the phase-2 catch-up scan when the loop resumes. Never
+# Consumed one-shot by the catch-up scan when the loop resumes. Never
 # armed for GUI/text turns (no mic audio to recover).
 _gap_watch_started_at: float = 0.0
 # First speech-queue playback start after arming (stamped by _note_rex_spoke_item
@@ -498,15 +495,10 @@ _gap_watch_started_at: float = 0.0
 # pre-playback thinking gap on no-AEC machines. 0 = nothing played yet.
 _gap_first_audio_at: float = 0.0
 # One-shot capture-floor override for a catch-up utterance still in progress when
-# the phase-2 scan runs: its onset sits BEHIND the playback-end capture floor
+# the catch-up scan runs: its onset sits BEHIND the playback-end capture floor
 # (in the thinking gap or, with hardware AEC, under playback), so the normal
 # floor would clip its front exactly like the game-barge case above. 0 = inactive.
 _gap_recovery_floor_at: float = 0.0
-
-# When True, a post-TTS cleanup flush already happened and the next detected
-# speech onset should simply clear this marker. Question handoffs usually leave
-# this False so a fast human answer is not deleted.
-_post_tts_flush_needed: bool = False
 
 # Monotonic time of the most recent question/fast-response post-TTS handoff. Used
 # to keep the responsive (no-flush) window sticky so a trailing-statement handoff
@@ -3366,7 +3358,7 @@ def _apply_post_tts_handoff(
     *,
     source: str = "speech_queue",
 ) -> _PostTtsHandoffPolicy:
-    global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed, _last_speech_at
+    global _listen_resume_at, _listen_capture_floor_at, _last_speech_at
     global _last_fast_handoff_at, _post_question_retro_scan_at
     policy = _post_tts_handoff_policy(text)
     now = time.monotonic()
@@ -3463,11 +3455,6 @@ def _apply_post_tts_handoff(
         _post_question_retro_scan_at = now
     else:
         _post_question_retro_scan_at = 0.0
-    if policy.flush_buffer:
-        stream.flush()
-        _post_tts_flush_needed = True
-    else:
-        _post_tts_flush_needed = False
     try:
         vad.reset_state()
     except Exception as exc:
@@ -4272,7 +4259,7 @@ def _wake_from_sleep_line() -> str:
 
 
 def _clear_listening_state_for_sleep() -> None:
-    global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
+    global _listen_resume_at, _listen_capture_floor_at
     global _post_question_retro_scan_at
     try:
         speech_queue.clear_below_priority(999)
@@ -4298,7 +4285,6 @@ def _clear_listening_state_for_sleep() -> None:
     _interrupted.clear()
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
-    _post_tts_flush_needed = False
     _post_question_retro_scan_at = 0.0
     _disarm_gap_watch()
 
@@ -4350,10 +4336,6 @@ def _wake_from_quiet() -> None:
     _wake_ack()
 
 
-def _vad_barge_in_enabled() -> bool:
-    return bool(getattr(config, "VAD_BARGE_IN_ENABLED", False))
-
-
 def _effect_allows_listening() -> bool:
     """Keep reading the mic when the only thing playing is a NON-muting sound effect.
 
@@ -4371,8 +4353,7 @@ def _effect_allows_listening() -> bool:
 
     Speech-family chirps are voice-like and still mute (they'd be transcribed as words),
     and real speech playback is unaffected — this only relaxes the gate for effects
-    that were already exempt. `SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC=True` restores the
-    old deafening behavior for the whole class.
+    that were already exempt.
     """
     try:
         if speech_queue.is_speaking():
@@ -4563,42 +4544,6 @@ def _is_bare_wake_address(text: str) -> bool:
     return bool(_BARE_WAKE_ADDRESS_PAT.match(text or ""))
 
 
-def _is_sleep_wake_transcript(text: str) -> bool:
-    """Return True for explicit transcribed phrases that should exit sleep."""
-    raw = str(text or "").strip().lower()
-    if not raw:
-        return False
-    cleaned = re.sub(r"[^a-z0-9]+", " ", raw).strip()
-    compact = re.sub(r"[^a-z0-9]", "", raw)
-    if compact in {
-        "wakeuprex",
-        "wakeupr3x",
-        "wakeuprx",
-        "rexwakeup",
-        "r3xwakeup",
-        "rxwakeup",
-    }:
-        return True
-    rex_name = r"(?:d\s*j\s+)?(?:rex|r\s*3\s*x|r3x|rx)"
-    wake_prefix = r"(?:(?:hey|yo|ok|okay|alright)\s+)*(?:please\s+)?"
-    # A trailing address or particle is not content — "Rex, wake up buddy" and
-    # "wake up rex, come on" left him ASLEEP under the old bare fullmatch, and a
-    # missed wake is the expensive direction of this error (he cannot be woken by
-    # voice at all until someone says the exact phrase). A false wake just makes
-    # him listen, so tolerating filler here is the safe asymmetry.
-    wake_suffix = (
-        r"(?:\s+(?:please|now|already|buddy|bud|pal|dude|man|boy|"
-        r"friend|come\s+on|will\s+you))*"
-    )
-    # Rex's NAME stays mandatory: a bare "wake up" is ambient speech in a room he
-    # is asleep in, not an address to him (pinned by
-    # test_sleep_wake_transcript_requires_explicit_rex_wake_phrase).
-    return bool(
-        re.fullmatch(rf"{wake_prefix}wake\s+up\s+{rex_name}{wake_suffix}", cleaned)
-        or re.fullmatch(rf"{wake_prefix}{rex_name}\s+wake\s+up{wake_suffix}", cleaned)
-    )
-
-
 def _shutdown_requested() -> bool:
     try:
         if _stop_event.is_set():
@@ -4638,35 +4583,6 @@ def _prefill_wake_ack_cache() -> None:
         _log.debug("[wake_word] wake ack cache prefill unavailable: %s", exc)
 
 
-def _prefill_slow_path_ack_cache() -> None:
-    """Warm slow-path acknowledgment TTS so live turns never fetch it."""
-    if bool(
-        getattr(config, "NO_AUDIO_MODE", False)
-        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
-    ):
-        return
-    if not bool(getattr(config, "SLOW_PATH_ACK_ENABLED", True)):
-        return
-    if not bool(getattr(config, "SLOW_PATH_ACK_REQUIRE_CACHE", True)):
-        return
-    pool = _all_slow_path_ack_lines()
-    if not pool:
-        return
-    try:
-        from audio import tts
-        for line in pool:
-            try:
-                tts.ensure_cached(line)
-            except Exception as exc:
-                _log.debug(
-                    "[slow_path_ack] cache prefill failed for %r: %s",
-                    line,
-                    exc,
-                )
-    except Exception as exc:
-        _log.debug("[slow_path_ack] cache prefill unavailable: %s", exc)
-
-
 def _prefill_motion_route_ack_cache() -> None:
     """Warm the 'plotting that out' lines so the rescue ack costs no TTS latency.
 
@@ -4697,222 +4613,18 @@ def _prefill_motion_route_ack_cache() -> None:
         _log.debug("[motion_route] cache prefill unavailable: %s", exc)
 
 
-def _interrupt_ack() -> None:
-    _speak_blocking(random.choice(config.INTERRUPT_ACKNOWLEDGMENTS), priority=2)
-
-
-def _speak_filler() -> None:
-    """Speak a latency filler line asynchronously, never repeating back-to-back."""
-    global _last_filler
-    if not getattr(config, "LATENCY_FILLER_ENABLED", True):
-        return
-    pool = config.LATENCY_FILLER_LINES
-    candidates = [l for l in pool if l != _last_filler] or pool
-    chosen = random.choice(candidates)
-    if getattr(config, "LATENCY_FILLER_REQUIRE_CACHE", True):
-        try:
-            from audio import tts
-            if not tts.is_cached(chosen):
-                _log.debug("[interaction] latency filler skipped — not cached: %r", chosen)
-                return
-        except Exception as exc:
-            _log.debug("[interaction] latency filler cache check failed: %s", exc)
-            return
-    _last_filler = chosen
-    speech_queue.enqueue(chosen, "neutral", priority=1, tag="latency_filler")
-
-
-def _configured_slow_path_ack_lines(kind: str) -> list[str]:
-    raw = getattr(config, "SLOW_PATH_ACK_LINES", {}) or {}
-    lines: list[str] = []
-    if isinstance(raw, dict):
-        value = raw.get(kind) or raw.get("default") or []
-        if isinstance(value, str):
-            lines = [value]
-        else:
-            lines = [str(line) for line in value if str(line).strip()]
-    elif isinstance(raw, str):
-        lines = [raw]
-    else:
-        lines = [str(line) for line in raw if str(line).strip()]
-    return [line.strip() for line in lines if line.strip()]
-
-
-def _all_slow_path_ack_lines() -> list[str]:
-    raw = getattr(config, "SLOW_PATH_ACK_LINES", {}) or {}
-    lines: list[str] = []
-    if isinstance(raw, dict):
-        for value in raw.values():
-            if isinstance(value, str):
-                lines.append(value)
-            else:
-                lines.extend(str(line) for line in value if str(line).strip())
-    elif isinstance(raw, str):
-        lines.append(raw)
-    else:
-        lines.extend(str(line) for line in raw if str(line).strip())
-    seen: set[str] = set()
-    result: list[str] = []
-    for line in lines:
-        cleaned = str(line).strip()
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            result.append(cleaned)
-    return result
-
-
 def _word_count(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9']+", text or ""))
 
 
-def _simple_question(text: str) -> bool:
-    cleaned = (text or "").strip()
-    if "?" not in cleaned:
-        return False
-    return _word_count(cleaned) <= 8
-
-
-def _slow_path_ack_expected_slow(kind: str) -> bool:
-    try:
-        minimum = float(getattr(config, "SLOW_PATH_ACK_MIN_EXPECTED_SECS", 1.5))
-    except (TypeError, ValueError):
-        minimum = 1.5
-    raw = getattr(config, "SLOW_PATH_ACK_EXPECTED_SECS", {}) or {}
-    expected = None
-    if isinstance(raw, dict):
-        expected = raw.get(kind, raw.get("default"))
-    else:
-        expected = raw
-    try:
-        return float(expected) >= minimum
-    except (TypeError, ValueError):
-        return True
-
-
-def _slow_path_ack_allowed_for_turn(
-    kind: str,
-    text: str = "",
-    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
-) -> bool:
-    if kind != "general":
-        return True
-    try:
-        min_words = int(getattr(config, "SLOW_PATH_ACK_GENERAL_MIN_WORDS", 9) or 0)
-    except (TypeError, ValueError):
-        min_words = 9
-    if min_words > 0 and _word_count(text) < min_words:
-        return False
-    if (
-        not bool(getattr(config, "SLOW_PATH_ACK_GENERAL_ALLOW_SIMPLE_QUESTIONS", False))
-        and _simple_question(text)
-    ):
-        return False
-    if dialogue_decision is not None and dialogue_decision.label == "answer_to_rex":
-        return False
-    return True
-
-
-def _try_slow_path_ack(
-    kind: str,
-    *,
-    text: str = "",
-    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
-) -> bool:
-    """Queue a cached, non-blocking acknowledgment for a known slow path."""
-    global _last_slow_path_ack
-    if not bool(getattr(config, "SLOW_PATH_ACK_ENABLED", True)):
-        return False
-    if not _slow_path_ack_allowed_for_turn(kind, text, dialogue_decision):
-        return False
-    if not _slow_path_ack_expected_slow(kind):
-        return False
-    trace = _current_character_loop_trace.get()
-    if trace is not None and trace.first_response_queued_at is not None:
-        return False
-    if speech_queue.is_speaking() or output_gate.is_busy() or _interrupted.is_set():
-        return False
-
-    pool = _configured_slow_path_ack_lines(kind)
-    if not pool:
-        return False
-    candidates = [line for line in pool if line != _last_slow_path_ack] or pool
-    chosen = random.choice(candidates)
-
-    audio_suppressed = bool(
-        getattr(config, "NO_AUDIO_MODE", False)
-        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
-    )
-    if audio_suppressed and not bool(getattr(config, "SLOW_PATH_ACK_IN_TEXT_ONLY", False)):
-        return False
-    if bool(getattr(config, "SLOW_PATH_ACK_REQUIRE_CACHE", True)) and not audio_suppressed:
-        try:
-            from audio import tts
-            if not tts.is_cached(chosen):
-                _log.debug(
-                    "[slow_path_ack] skipped kind=%s because TTS is not cached: %r",
-                    kind,
-                    chosen,
-                )
-                return False
-        except Exception as exc:
-            _log.debug("[slow_path_ack] cache check failed kind=%s: %s", kind, exc)
-            return False
-
-    queued = _mark_first_response_queued(trace, text=chosen, priority=1)
-
-    def _on_playback_start() -> None:
-        _mark_first_response_audio_started(trace)
-
-    try:
-        speech_queue.enqueue(
-            chosen,
-            "neutral",
-            priority=1,
-            tag="slow_path_ack",
-            on_start=_on_playback_start if trace is not None else None,
-        )
-        _last_slow_path_ack = chosen
-        _log.info("[slow_path_ack] queued kind=%s text=%r", kind, chosen)
-        return True
-    except Exception as exc:
-        _log.debug("[slow_path_ack] enqueue failed kind=%s: %s", kind, exc)
-        return queued
-
-
 def _start_latency_filler_timer() -> threading.Event:
-    """Start a delayed filler timer and return an event that cancels it.
+    """Return the reply path's filler-stop event, already set.
 
-    Filler used to fire immediately for every utterance, including short grief
-    flow replies. Delaying it keeps normal turns quiet while still covering
-    genuinely slow LLM calls.
+    The latency filler is retired; the event is still threaded through the
+    streaming reply path, which sets it when a reply ends.
     """
     stop = threading.Event()
-    if not getattr(config, "LATENCY_FILLER_ENABLED", True):
-        stop.set()
-        return stop
-
-    delay = float(getattr(config, "LATENCY_FILLER_DELAY_SECS", 1.4))
-    if delay <= 0:
-        _speak_filler()
-        stop.set()
-        return stop
-
-    trace = _current_character_loop_trace.get()
-
-    def _timer() -> None:
-        if stop.wait(delay):
-            return
-        if trace is not None and trace.first_response_queued_at is not None:
-            return
-        if (
-            state_module.get_state() == State.ACTIVE
-            and not speech_queue.is_speaking()
-            and not output_gate.is_busy()
-            and not _interrupted.is_set()
-        ):
-            _speak_filler()
-
-    threading.Thread(target=_timer, daemon=True, name="latency-filler").start()
+    stop.set()
     return stop
 
 
@@ -14279,23 +13991,9 @@ def _maybe_recover_post_question_answer() -> Optional[float]:
 # blocked inside _handle_speech_segment and live VAD is dead — a second line
 # spoken there ("...oh, and one more thing") sits clean in the rolling buffer
 # and used to be erased when the post-TTS handoff stamped the capture floor.
-# Phase 1 (_reply_gap_speech_onset / _merge_gap_speech) catches it at the
-# moment the reply's first sentence exists — before any TTS — and regenerates
-# with both lines. Phase 2 (_maybe_catch_up_gap_speech) sweeps the whole blind
-# span when the loop resumes and dispatches what phase 1 couldn't see.
+# The catch-up (_maybe_catch_up_gap_speech) sweeps the whole blind span when
+# the loop resumes and dispatches what it finds.
 # ─────────────────────────────────────────────────────────────────────────────
-
-class _GapSpeechDetected(Exception):
-    """Raised out of the streaming reply path — before any TTS is fetched or
-    queued — when the person spoke during the generation gap. Unwinds like
-    ToolCallRequested: the reply call site catches it, captures the second
-    line, and regenerates ONCE with both lines as the turn."""
-
-    def __init__(self, onset_at: float, armed_at: float) -> None:
-        super().__init__(f"user speech in reply gap (onset={onset_at:.2f})")
-        self.onset_at = float(onset_at)
-        self.armed_at = float(armed_at)
-
 
 def _gap_recovery_on(flag_name: str) -> bool:
     if _text_only_mode or bool(getattr(config, "NO_AUDIO_MODE", False)):
@@ -14378,103 +14076,6 @@ def _gap_voiced_runs(audio: np.ndarray, actual_start: float) -> list[tuple[float
         else:
             runs.append((start_abs, end_abs))
     return runs
-
-
-def _reply_gap_speech_onset() -> Optional[float]:
-    """Phase-1 check, run once per streamed reply at the moment the first
-    sentence exists (nothing spoken or fetched yet): did the person keep
-    talking during the generation gap? Returns the absolute speech onset, or
-    None. Conservative by design — a false positive abandons a drafted reply
-    and regenerates (~2-4s of real latency), so anything untrustworthy returns
-    None and the phase-2 catch-up is the backstop."""
-    armed = _gap_watch_started_at
-    if armed <= 0.0 or not _gap_recovery_on("GAP_MERGE_ENABLED"):
-        return None
-    now = time.monotonic()
-    span = now - armed
-    min_span = float(getattr(config, "GAP_MERGE_MIN_SPAN_SECS", 0.40))
-    if span < min_span or span > float(getattr(config, "GAP_MERGE_MAX_SPAN_SECS", 12.0)):
-        return None
-    # Playback poisons the span on a no-AEC machine and smears it everywhere
-    # else. The reply's own audio hasn't been queued yet, but acks/effects can
-    # land here: if audio is sounding right now, skip entirely; if something
-    # finished inside the span, trust only what came after it (+echo decay).
-    scan_start = armed
-    try:
-        if echo_cancel.is_suppressed() or output_gate.is_busy():
-            return None
-        ended = float(echo_cancel.last_playback_ended_at() or 0.0)
-        if ended > scan_start:
-            scan_start = ended + float(
-                getattr(config, "GAP_SPEECH_POST_PLAYBACK_SKIP_SECS", 0.25)
-            )
-    except Exception:
-        return None
-    if (now - scan_start) < min_span:
-        return None
-    audio, actual_start = _gap_span_audio(scan_start, now)
-    runs = _gap_voiced_runs(audio, actual_start)
-    voiced = sum(end - start for start, end in runs)
-    if voiced < float(getattr(config, "GAP_SPEECH_MIN_VOICED_SECS", 0.35)):
-        return None
-    onset = runs[0][0]
-    _log.info(
-        "[gap_speech] user spoke during the reply gap (%.2fs voiced, onset %.2fs "
-        "into a %.2fs gap) — yielding the drafted reply to merge",
-        voiced, onset - armed, span,
-    )
-    return onset
-
-
-def _merge_gap_speech(onset_at: float, armed_at: float) -> Optional[str]:
-    """Capture + transcribe the second line found by _reply_gap_speech_onset,
-    waiting out the person like a normal turn (they may still be talking) so
-    the regenerated reply answers their COMPLETE thought. Returns the cleaned
-    transcript, or None when the audio turned out unusable — the caller then
-    regenerates the original reply unchanged, so a false positive costs
-    latency, never silence."""
-    global _listen_capture_floor_at
-    # The previous capture consumed the buffer through the watermark — never
-    # let merge preroll reach back past it and re-swallow the line-1 tail.
-    if armed_at > _listen_capture_floor_at:
-        _listen_capture_floor_at = armed_at
-    try:
-        vad.reset_state()
-    except Exception:
-        pass
-    audio_seg = _accumulate_speech(onset_at)
-    # The eager probe may already have decoded this line (see
-    # _adopt_probe_transcript). Pop it HERE, whatever happens next: this path
-    # never reaches _handle_speech_segment, so an un-popped transcript would
-    # surface as the NEXT turn's words.
-    eager_line2 = _pop_eager_transcript()
-    # Whatever happens next, the buffer through now has been examined; the
-    # phase-2 scan after the (regenerated) reply covers only fresh audio.
-    _arm_gap_watch()
-    if audio_seg is None or len(audio_seg) == 0:
-        _capture_dropped("gap_merge_capture_empty")
-        return None
-    if eager_line2 is not None and str(eager_line2).strip():
-        line2 = str(eager_line2).strip()
-    else:
-        try:
-            line2 = str(transcription.transcribe(audio_seg) or "").strip()
-        except Exception as exc:
-            _log.warning("[gap_speech] merge transcription failed: %s", exc)
-            _capture_dropped("gap_merge_transcribe_failed")
-            return None
-    if not line2:
-        _capture_dropped("gap_merge_transcript_empty")
-        return None
-    if _is_non_speech_vocalization(line2):
-        _capture_dropped("gap_merge_non_speech", text=repr(line2))
-        return None
-    if _looks_like_own_echo(line2):
-        _capture_dropped("gap_merge_own_echo", text=repr(line2))
-        return None
-    _capture_outcome("gap_merge_captured")
-    _log.info("[gap_speech] merged gap line into the turn: %r", line2)
-    return line2
 
 
 def _gap_span_median_rms(
@@ -14575,7 +14176,7 @@ def _gap_catchup_candidates(
 
 
 def _maybe_catch_up_gap_speech() -> Optional[tuple[str, Optional[float]]]:
-    """Phase-2 one-shot catch-up when the loop resumes listening after a turn.
+    """One-shot catch-up when the loop resumes listening after a turn.
 
     Scans the span the loop was blind for (endpoint → now). A FINISHED missed
     utterance is sliced out of the buffer and dispatched through the normal
@@ -14759,20 +14360,19 @@ def _eager_motion_endpoint_enabled() -> bool:
         return False
     if not motion_controller.available():
         return False
-    if not bool(getattr(config, "MOTION_EAGER_ENDPOINT_DURING_GAMES", False)):
-        try:
-            from features import games as games_mod
-            # A game turn is never a drive command, and the probe's decode takes
-            # MLX_LOCK ahead of the turn's REAL transcription. Field 2026-08-26:
-            # ~65 probe decodes across one Jeopardy run, zero matches, and the
-            # turn's own decode queued behind them for up to 8 s.
-            # The stop-while-moving safety cut still runs: MOTION_HOLD_DURING_GAMES
-            # parks only the SOCIAL lanes — the flinch reflex and an explicit
-            # come-here still drive — so a moving base keeps eager endpointing.
-            if games_mod.is_active() and not motion_controller.is_moving():
-                return False
-        except Exception as exc:
-            _log.debug("eager-endpoint game probe failed: %s", exc)
+    try:
+        from features import games as games_mod
+        # A game turn is never a drive command, and the probe's decode takes
+        # MLX_LOCK ahead of the turn's REAL transcription. Field 2026-08-26:
+        # ~65 probe decodes across one Jeopardy run, zero matches, and the
+        # turn's own decode queued behind them for up to 8 s.
+        # The stop-while-moving safety cut still runs: MOTION_HOLD_DURING_GAMES
+        # parks only the SOCIAL lanes — the flinch reflex and an explicit
+        # come-here still drive — so a moving base keeps eager endpointing.
+        if games_mod.is_active() and not motion_controller.is_moving():
+            return False
+    except Exception as exc:
+        _log.debug("eager-endpoint game probe failed: %s", exc)
     if bool(getattr(config, "MOTION_EAGER_ENDPOINT_REQUIRE_AEC", True)):
         # Endpointing behavior is tuned per-platform: robot only (hardware AEC
         # present); dev-Mac sessions keep stock segmentation.
@@ -15130,27 +14730,6 @@ def _accumulate_speech(
     if adopt_probe is not None:
         _adopt_probe_transcript(adopt_probe)
     return segment
-
-
-def _wake_from_sleep_if_transcribed(audio_segment: Optional[np.ndarray]) -> bool:
-    """Wake from sleep when a transcribed sleep utterance is an explicit wake phrase."""
-    global _last_speech_at
-    if audio_segment is None or len(audio_segment) == 0:
-        return False
-    try:
-        text = transcription.transcribe(audio_segment).strip()
-    except Exception as exc:
-        _log.debug("[sleep_mode] wake transcript failed: %s", exc)
-        return False
-    if not text:
-        return False
-    if not _is_sleep_wake_transcript(text):
-        _log.info("[sleep_mode] ignored sleeping speech text=%r", text)
-        return False
-    _log.info("[sleep_mode] waking from transcribed phrase text=%r", text)
-    _last_speech_at = time.monotonic()
-    _wake_from_sleep()
-    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -16155,8 +15734,7 @@ _reply_input_owner = contextvars.ContextVar("reply_input_owner", default=False)
 def _capture_during_reply():
     global _gap_watch_started_at
     if (_reply_input_owner.get() or _gap_watch_started_at <= 0.0
-            or not _gap_recovery_on("CONTINUOUS_REPLY_CAPTURE_ENABLED")
-            or bool(getattr(config, "GAP_MERGE_ENABLED", False))):
+            or not _gap_recovery_on("CONTINUOUS_REPLY_CAPTURE_ENABLED")):
         yield
         return
     armed = _gap_watch_started_at
@@ -16184,7 +15762,6 @@ def _stream_llm_response(
     person_id: Optional[int],
     answered_question: Optional[dict] = None,
     turn_start: Optional[float] = None,
-    gap_check_enabled: bool = False,
     sound_effect: Optional[str] = None,
 ) -> str:
     """Collect the full LLM response, then speak it in a single TTS call.
@@ -16342,37 +15919,30 @@ def _stream_llm_response(
             lean_callback_directive = "\n".join(
                 s for s in (lean_callback_directive, _why_directive) if s
             )
-        if getattr(config, "TURN_PLANNER_SLIM_CONTRACT", True):
-            # Phase 1 / "Bet 2": hand the LLM ONE compact contract instead of the
-            # ~40-segment stacked block. frame + comedy_mode were computed from the
-            # RICH directive above (so every regex-consumer still sees it); only the
-            # LLM-facing string shrinks. govern_response (post-gen) reads the
-            # structured frame, so the safety net is unchanged.
-            primary_purpose = _extract_primary_purpose(turn_plan.directive)
-            agenda_directive = social_frame.render_slim_contract(
-                frame, primary_purpose=primary_purpose
-            )
-            # The slim contract drops the rich comedy block, but the per-turn comedic
-            # STANCE still has to reach the LLM or the whole humor stack (premise
-            # rotation, self-own lanes, line banks) is dead text. A CLAIMED banked
-            # callback takes the richer build_directive() path (it carries the premise
-            # text — the only path it travels); every other humor-eligible turn gets
-            # the compact build_slim_directive() stance instead. "straight" (care)
-            # turns yield "" from both, so they stay clean.
-            if cb_claim is not None:
-                callback_directive = comedy_modes.build_directive(comedy_mode)
-                if callback_directive:
-                    agenda_directive = "\n".join([agenda_directive, callback_directive])
-            else:
-                slim_comedy = comedy_modes.build_slim_directive(comedy_mode)
-                if slim_comedy:
-                    agenda_directive = "\n".join([agenda_directive, slim_comedy])
+        # Phase 1 / "Bet 2": hand the LLM ONE compact contract instead of the
+        # ~40-segment stacked block. frame + comedy_mode were computed from the
+        # RICH directive above (so every regex-consumer still sees it); only the
+        # LLM-facing string shrinks. govern_response (post-gen) reads the
+        # structured frame, so the safety net is unchanged.
+        primary_purpose = _extract_primary_purpose(turn_plan.directive)
+        agenda_directive = social_frame.render_slim_contract(
+            frame, primary_purpose=primary_purpose
+        )
+        # The slim contract drops the rich comedy block, but the per-turn comedic
+        # STANCE still has to reach the LLM or the whole humor stack (premise
+        # rotation, self-own lanes, line banks) is dead text. A CLAIMED banked
+        # callback takes the richer build_directive() path (it carries the premise
+        # text — the only path it travels); every other humor-eligible turn gets
+        # the compact build_slim_directive() stance instead. "straight" (care)
+        # turns yield "" from both, so they stay clean.
+        if cb_claim is not None:
+            callback_directive = comedy_modes.build_directive(comedy_mode)
+            if callback_directive:
+                agenda_directive = "\n".join([agenda_directive, callback_directive])
         else:
-            agenda_directive = "\n".join([
-                agenda_directive,
-                social_frame.build_directive(frame),
-                comedy_modes.build_directive(comedy_mode),
-            ])
+            slim_comedy = comedy_modes.build_slim_directive(comedy_mode)
+            if slim_comedy:
+                agenda_directive = "\n".join([agenda_directive, slim_comedy])
         if news_followup is not None:
             # The forced search above fell through (disabled / failed / no
             # citations) — ground the normal reply on the cached story so "tell
@@ -16417,7 +15987,6 @@ def _stream_llm_response(
                     # generation while chunk 1 plays.
                     two_chunk=not _full_streaming,
                     lean_turn_directive=lean_callback_directive,
-                    gap_check_enabled=gap_check_enabled,
                     sound_effect=sound_effect,
                 )
             except _tr.ToolCallRequested as tc:
@@ -16937,7 +16506,6 @@ def _stream_and_speak_sentences(
     filler_stop: threading.Event,
     two_chunk: bool = False,
     lean_turn_directive: str = "",
-    gap_check_enabled: bool = False,
     sound_effect: Optional[str] = None,
 ) -> str:
     """Stream the LLM reply and speak it sentence-by-sentence.
@@ -17033,17 +16601,6 @@ def _stream_and_speak_sentences(
         thread.start()
 
     def _consume(raw_sentence: str) -> None:
-        # Thinking-gap check — the last moment before this reply becomes real
-        # (nothing spoken, no TTS fetched). If the person kept talking during
-        # the generation gap, abandon the draft and let the call site merge
-        # their line and regenerate (see _GapSpeechDetected). One batched VAD
-        # pass over the gap span (~tens of ms) is the only cost on the TTFS
-        # path when nobody spoke.
-        if state["first"] and gap_check_enabled:
-            gap_onset = _reply_gap_speech_onset()
-            if gap_onset is not None:
-                _turn_trace.stamp("gap_speech")
-                raise _GapSpeechDetected(gap_onset, _gap_watch_started_at)
         if obsolete():
             return
         prepared = _prepare_stream_sentence(raw_sentence, frame, comedy_mode)
@@ -17243,12 +16800,9 @@ def _stream_and_speak_sentences(
         # Tool-router cutover: the model chose a LIVE tool instead of prose.
         # Nothing has been spoken (the stream raises only when no content was
         # yielded) — unwind to _stream_llm_response, which dispatches the
-        # action's existing executor. _GapSpeechDetected unwinds the same way
-        # (the person spoke during the generation gap; the call site merges
-        # their line and regenerates) — swallowing it here would let the
-        # partial-text fallback below speak the abandoned draft.
+        # action's existing executor.
         from intelligence import tool_router as _tr
-        if isinstance(exc, (_tr.ToolCallRequested, _GapSpeechDetected)):
+        if isinstance(exc, _tr.ToolCallRequested):
             filler_stop.set()
             raise
         _log.error("[interaction] streaming LLM error: %s", exc)
@@ -22759,9 +22313,9 @@ def _speak_motion_route_ack() -> None:
     against the plan's 1.2 s budget. Enqueued, it overlaps the call it is hiding and
     the drive confirmation simply queues behind it.
 
-    Same guards as _try_slow_path_ack, for the same reasons: never speak over
-    something already playing, never fetch TTS at speak time (the prefill thread
-    warms these at startup), and stay silent in a no-audio build.
+    Guards: never speak over something already playing, never fetch TTS at
+    speak time (the prefill thread warms these at startup), and stay silent in a
+    no-audio build.
     """
     if not bool(getattr(config, "MOTION_ROUTE_ENABLED", True)):
         return
@@ -25507,11 +25061,6 @@ def _handle_classified_intent(
         "or personal facts unless the user asked for them in this turn."
     )
 
-    if intent == "query_what_do_you_see":
-        _try_slow_path_ack("vision")
-    elif intent == "query_memory":
-        _try_slow_path_ack("memory")
-
     if intent == "query_time":
         resp = _format_current_time_response()
         _speak_blocking(resp)
@@ -25721,8 +25270,7 @@ def _handle_classified_intent(
             genre_list = "a variety of genres"
         return _say(
             f"The user asked what kind of music you can play. Your real radio "
-            f"genre buckets are: {genre_list}. You can also play local tracks by "
-            f"title, artist, or vibe. Answer in ONE short Rex-style line — list "
+            f"genre buckets are: {genre_list}. Answer in ONE short Rex-style line — list "
             f"the genres tersely (comma-separated is fine), no preamble, no fluff."
         )
 
@@ -30676,54 +30224,13 @@ def _handle_speech_segment(
                                 )
                         except Exception as exc:
                             _log.debug("emotional event ack error: %s", exc)
-                    _try_slow_path_ack(
-                        "general",
-                        text=text,
-                        dialogue_decision=dialogue_decision,
+                    response_text = _stream_llm_response(
+                        text,
+                        person_id,
+                        answered_question=answered_question,
+                        turn_start=turn_start,
+                        **({"sound_effect": "angry"} if pre_classified_insult else {}),
                     )
-                    # Thinking-gap merge (phase 1): the reply path checks the
-                    # mic buffer right before its first sentence becomes audible
-                    # and unwinds here if the person kept talking. Their line is
-                    # captured, logged as its own human turn, and the reply is
-                    # regenerated ONCE seeing both lines (the lean transcript
-                    # carries line 1; the merged `text` feeds memory/audit).
-                    # A dry merge (false trigger / unusable audio) regenerates
-                    # the original unchanged — latency, never silence.
-                    llm_turn_text = text
-                    gap_check = (
-                        not text_input
-                        and _gap_watch_started_at > 0.0
-                        and _gap_recovery_on("GAP_MERGE_ENABLED")
-                    )
-                    for _gap_attempt in range(2):
-                        try:
-                            response_text = _stream_llm_response(
-                                llm_turn_text,
-                                person_id,
-                                answered_question=answered_question,
-                                turn_start=turn_start,
-                                gap_check_enabled=gap_check and _gap_attempt == 0,
-                                **({"sound_effect": "angry"} if pre_classified_insult else {}),
-                            )
-                            break
-                        except _GapSpeechDetected as gap:
-                            line2 = _merge_gap_speech(gap.onset_at, gap.armed_at)
-                            if line2:
-                                merge_label = person_name or "user"
-                                try:
-                                    conv_memory.add_to_transcript(merge_label, line2)
-                                    conv_log.log_heard(person_name, line2)
-                                    print(f"[HEARD] {merge_label}: {line2}", flush=True)
-                                except Exception as exc:
-                                    _log.debug("[gap_speech] merge logging failed: %s", exc)
-                                try:
-                                    _note_user_speech_for_engagement()
-                                except Exception:
-                                    pass
-                                text = f"{text} {line2}"
-                                # The lean brain reads line 1 from the session
-                                # transcript; the merged line is the current turn.
-                                llm_turn_text = line2
                     used_agenda_llm = True
                     final_executed_path = _consume_tool_routed_path() or "llm.stream"
 
@@ -30937,7 +30444,7 @@ def submit_text(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _loop() -> None:
-    global _last_speech_at, _listen_resume_at, _post_tts_flush_needed, _barge_yield_onset_at
+    global _last_speech_at, _listen_resume_at, _barge_yield_onset_at
     global _game_barge_floor_at, _gap_recovery_floor_at
 
     idle_timeout = config.CONVERSATION_IDLE_TIMEOUT_SECS
@@ -30987,30 +30494,6 @@ def _loop() -> None:
                     _last_speech_at = time.monotonic()
                     _wake_from_sleep()
                     continue
-            if bool(getattr(config, "SLEEP_ONNX_ONLY_WAKE", True)) or not bool(
-                getattr(config, "SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED", False)
-            ):
-                _stop_event.wait(0.05)
-                continue
-            if time.monotonic() < _listen_resume_at:
-                _stop_event.wait(_CHUNK_SECS)
-                continue
-            chunk = stream.get_audio_chunk(_CHUNK_SECS)
-            if len(chunk) == 0:
-                _stop_event.wait(_CHUNK_SECS)
-                continue
-            _sleep_speech = vad.is_speech(_chunk_for_vad(chunk))
-            _situation_assessor.set_vad_active(_sleep_speech)
-            if not _sleep_speech:
-                _stop_event.wait(_CHUNK_SECS)
-                continue
-            _log.info("[sleep_mode] speech detected while asleep — checking wake phrase")
-            speech_start = time.monotonic()
-            audio_segment = _accumulate_speech(
-                speech_start,
-                allowed_states=(State.SLEEP,),
-            )
-            _wake_from_sleep_if_transcribed(audio_segment)
             _stop_event.wait(0.05)
             continue
 
@@ -31029,11 +30512,7 @@ def _loop() -> None:
 
             # Never let Rex's own playback in IDLE self-trigger the interaction
             # loop into ACTIVE.
-            listen_during_dj = (
-                bool(getattr(config, "IDLE_LISTEN_DURING_DJ_PLAYBACK", True))
-                and _dj_is_playing()
-            )
-            if _dj_suppresses_conversation() and not listen_during_dj:
+            if _dj_suppresses_conversation():
                 try:
                     _situation_assessor.set_vad_active(False)
                 except Exception:
@@ -31049,7 +30528,7 @@ def _loop() -> None:
             if (
                 speech_queue.is_speaking()
                 or output_gate.is_busy()
-                or (echo_cancel.is_suppressed() and not listen_during_dj)
+                or echo_cancel.is_suppressed()
             ):
                 _stop_event.wait(0.05)
                 continue
@@ -31104,13 +30583,6 @@ def _loop() -> None:
             if not _idle_speech:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
-
-            # First detected speech after the post-TTS window may be the human's
-            # immediate answer to Rex's question. If cleanup already happened,
-            # just clear the marker; do not discard this VAD-positive chunk.
-            global _post_tts_flush_needed
-            if _post_tts_flush_needed:
-                _post_tts_flush_needed = False
 
             _log.info("[interaction] speech detected in IDLE — activating without wake word")
             state_module.set_state(State.ACTIVE)
@@ -31282,7 +30754,7 @@ def _loop() -> None:
                 direct_audio_path is not None
                 and _is_interruptible_game_audio_path(direct_audio_path)
             )
-            if (not interruptible_audio and not _vad_barge_in_enabled()
+            if (not interruptible_audio
                     and not _effect_allows_listening()):
                 # Rex (or a sound effect / servo chirp) is producing audio, so the
                 # mic is not read. A servo sfx landing in the human's reply window
@@ -31311,9 +30783,9 @@ def _loop() -> None:
             # re-find the same words after that turn completes.
             _disarm_gap_watch()
         else:
-            # Thinking-gap catch-up (phase 2): sweep the span this loop was
+            # Thinking-gap catch-up: sweep the span this loop was
             # blind for (generation + playback) for a line the person spoke
-            # that phase 1 couldn't see. A finished utterance was dispatched
+            # there. A finished utterance was dispatched
             # as a full turn inside the call; one still in progress becomes a
             # recovered onset for the normal capture below.
             gap_catch = _maybe_catch_up_gap_speech()
@@ -31343,12 +30815,6 @@ def _loop() -> None:
         else:
             _situation_assessor.set_vad_active(True)
 
-        # First detected speech after the post-TTS window may be the human's
-        # immediate answer. If cleanup already happened, just clear the marker;
-        # keep this chunk and start accumulating.
-        if _post_tts_flush_needed:
-            _post_tts_flush_needed = False
-
         # ── Speech detected ────────────────────────────────────────────────────
         speech_start = retro_speech_start or time.monotonic()
         # If a proactive line just yielded because the user began talking during its generation gap,
@@ -31366,10 +30832,9 @@ def _loop() -> None:
         except Exception:
             pass
 
-        # Mid-speech interruption: stop TTS, acknowledge, flush the mic buffer of
-        # Rex's voice tail, then WAIT for a fresh VAD rising edge before
-        # accumulating. Without this, the rolling buffer still holds ~seconds of
-        # Rex's own voice which Whisper concatenates onto the user's utterance.
+        # Speech while Rex's audio is playing: game audio may be kept or
+        # interrupted for the player; anything else is not a barge-in (the wake
+        # word is the intentional mid-speech interruption path).
         if speech_queue.is_speaking() or output_gate.is_busy():
             if _keep_game_music_during_capture(direct_audio_path):
                 _pin_game_barge_capture_floor(speech_start)
@@ -31410,7 +30875,7 @@ def _loop() -> None:
                     "[interaction] interrupted game audio for player speech: %s",
                     direct_audio_path,
                 )
-            elif not _vad_barge_in_enabled():
+            else:
                 global _last_vad_barge_in_suppressed_log_at
                 now = time.monotonic()
                 if now - _last_vad_barge_in_suppressed_log_at >= 2.0:
@@ -31421,35 +30886,6 @@ def _loop() -> None:
                 _end_user_turn()
                 _stop_event.wait(_CHUNK_SECS)
                 continue
-            else:
-                _interrupted.set()
-                _turn_trace.cancel("vad_barge")
-                speech_queue.invalidate_pending("vad_barge")
-                try:
-                    import sounddevice as sd
-                    echo_cancel.request_cancel()
-                    sd.stop()
-                except Exception:
-                    pass
-                # Brief settle so the worker can clean up its finally block
-                time.sleep(0.1)
-                _interrupted.clear()
-                if direct_audio_path:
-                    # Non-speech clips/music beds are interruptible: keep the user's
-                    # current utterance instead of saying "yeah?" and forcing a repeat.
-                    _log.info("[interaction] direct audio interrupted by user speech: %s", direct_audio_path)
-                else:
-                    _interrupt_ack()
-
-                    # Drop the polluted buffer and re-arm. The next user utterance must
-                    # trigger VAD again; the original speech_start is discarded.
-                    stream.flush()
-                    _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
-                    _post_tts_flush_needed = True
-                    # The flush emptied the span the gap watch pointed at.
-                    _disarm_gap_watch()
-                    _end_user_turn()
-                    continue
 
         _dj_restore_volume = _duck_dj_for_speech()
         try:
@@ -31509,7 +30945,7 @@ def _loop() -> None:
 def start(*, text_only: bool = False) -> None:
     """Start the wake word detector and the continuous interaction loop."""
     global _thread, _identity_prompt_until, _awaiting_followup_event
-    global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
+    global _listen_resume_at, _listen_capture_floor_at
     global _post_question_retro_scan_at
     global _pending_common_first_name_identity
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
@@ -31539,7 +30975,6 @@ def start(*, text_only: bool = False) -> None:
     _identity_reask_count = 0
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
-    _post_tts_flush_needed = False
     _post_question_retro_scan_at = 0.0
     _disarm_gap_watch()
     _awaiting_followup_event = None
@@ -31587,11 +31022,6 @@ def start(*, text_only: bool = False) -> None:
         name="wake-ack-cache-prefill",
     ).start()
     threading.Thread(
-        target=_prefill_slow_path_ack_cache,
-        daemon=True,
-        name="slow-path-ack-cache-prefill",
-    ).start()
-    threading.Thread(
         target=_prefill_motion_route_ack_cache,
         daemon=True,
         name="motion-route-ack-cache-prefill",
@@ -31623,7 +31053,7 @@ def start(*, text_only: bool = False) -> None:
 def stop() -> None:
     """Stop the interaction loop and wake word detector, waiting for clean exit."""
     global _thread, _awaiting_followup_event, _identity_prompt_until
-    global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
+    global _listen_resume_at, _listen_capture_floor_at
     global _post_question_retro_scan_at
     global _pending_introduction, _pending_intro_followup
     global _pending_common_first_name_identity
@@ -31647,7 +31077,6 @@ def stop() -> None:
     _identity_reask_count = 0
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
-    _post_tts_flush_needed = False
     _post_question_retro_scan_at = 0.0
     _disarm_gap_watch()
     _session_person_turn_counts.clear()

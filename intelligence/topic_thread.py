@@ -8,14 +8,13 @@ session-local; durable memories belong in memory/*.
 
 It also owns the **conversation arc** (Bet 1): a short running summary of the
 live conversation — topics covered, what landed vs flopped, the person's mood,
-and open threads — maintained off the speech path by a cheap LLM (default backend
-OpenAI gpt-4o-mini, config.CONVERSATION_ARC_BACKEND='openai'; set ='local' for the
-Ollama sidecar) and fed back
+and open threads — maintained off the speech path by a cheap LLM (OpenAI
+gpt-4o-mini) and fed back
 into the system prompt so Rex can see what he already asked/roasted (stop
 repeating himself) and call back to an earlier thread. The arc is refreshed on a
 coalesced BACKGROUND worker triggered from the user-turn path, so it never
 touches the time-to-first-speech path; on any failure the previous summary is
-retained. Gated by config.CONVERSATION_ARC_ENABLED (the 'local' backend additionally requires local_llm availability).
+retained. Gated by config.CONVERSATION_ARC_ENABLED.
 The arc shares this module's session lifecycle: clear() wipes it.
 """
 
@@ -444,7 +443,7 @@ def _is_polar_or_tag_question(question: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # Conversation arc memory (Bet 1)
 #
-# A running, local-LLM-maintained summary of the live conversation. It is folded
+# A running, LLM-maintained summary of the live conversation. It is folded
 # into THIS module (rather than a parallel module) so the one place that already
 # tracks "what this conversation is about" also owns the richer memory and shares
 # its session lifecycle. The summary lives as module-level state — NOT on the
@@ -454,22 +453,19 @@ def _is_polar_or_tag_question(question: str) -> bool:
 # Flow: note_user_turn() -> _trigger_arc_refresh() marks dirty and ensures one
 # background worker is summarizing. The worker re-derives the summary FRESH from
 # the most recent window of the in-memory session transcript (memory/conversations.py)
-# via a single local_llm call, and stores the result under _arc_lock. The prompt
+# via a single gpt-4o-mini call, and stores the result under _arc_lock. The prompt
 # assembler reads the stored summary instantly via build_arc_directive(). Nothing
 # here ever runs on the turn/speech path, and every failure path retains the
 # previous summary.
 #
-# Backend (config.CONVERSATION_ARC_BACKEND): "openai" (default) summarizes with
-# gpt-4o-mini via the existing OpenAI client for a rich 5-field schema (Topics /
-# Shared / Mood / Used-up / Open threads); "local" uses the qwen2.5:1.5b
-# sidecar with a 3-field factual-only schema. The cloud call is fine here because
-# the refresh is off the speech path and Rex's replies already depend on OpenAI.
+# Backend: gpt-4o-mini via the existing OpenAI client, with a rich 5-field schema
+# (Topics / Shared / Mood / Used-up / Open threads). The cloud call is fine here
+# because the refresh is off the speech path and Rex's replies already depend on
+# OpenAI.
 #
-# Either backend summarizes FRESH from the transcript window — NOT an incremental
+# The summary is re-derived FRESH from the transcript window — NOT an incremental
 # rewrite. An earlier version fed the prior summary back and the local model echoed
-# it verbatim, freezing the arc on turn 1. The affective fields are local-unsafe
-# (the 1.5B called declined topics "landed" and reported Rex's mood as the user's),
-# hence the reduced local schema.
+# it verbatim, freezing the arc on turn 1.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _arc_lock = threading.Lock()
@@ -521,7 +517,7 @@ def _arc_enabled() -> bool:
     """Whether the arc may run RIGHT NOW.
 
     Fail-safe under a test runner: the refresh fires from deep inside
-    note_user_turn and (with the openai backend) would make a real cloud call with
+    note_user_turn and would make a real cloud call with
     the live API key in apikeys.py. So unless a test explicitly opts in
     (DJR3X_ARC_TEST_OPT_IN), the arc is inert under unittest/pytest. Unit tests that
     exercise the refresh mock `_arc_enabled` (or set the opt-in) directly.
@@ -532,43 +528,23 @@ def _arc_enabled() -> bool:
 
 
 def _arc_backend_available() -> bool:
-    """The real gate: arc configured on AND the chosen backend usable."""
+    """The real gate: arc configured on (the OpenAI backend is assumed usable)."""
     try:
         import config
         if not bool(getattr(config, "CONVERSATION_ARC_ENABLED", True)):
             return False
-        backend = str(getattr(config, "CONVERSATION_ARC_BACKEND", "openai")).lower()
-        if backend == "local":
-            from intelligence import local_llm
-            return bool(local_llm.enabled())
-        return True  # openai: assume usable; a failed call retains the prior summary
+        return True  # assume usable; a failed call retains the prior summary
     except Exception:
         return False
 
 
 def _arc_generate(prompt: str, *, max_tokens: int, timeout: float) -> str:
-    """Dispatch the summary call to the configured backend. Raises on failure so
-    the caller retains the previous summary."""
-    import config
-    backend = str(getattr(config, "CONVERSATION_ARC_BACKEND", "openai")).lower()
-    if backend == "local":
-        from intelligence import local_llm
-        return local_llm.generate(
-            prompt, system=_ARC_SYSTEM_PROMPT, temperature=0.0,
-            max_tokens=max_tokens, timeout_secs=timeout,
-        ).strip()
+    """Make the summary call (gpt-4o-mini). Raises on failure so the caller
+    retains the previous summary."""
     from intelligence import llm
     return llm.summarize_conversation_arc(
         prompt, system=_ARC_SYSTEM_PROMPT, max_tokens=max_tokens, timeout_secs=timeout,
     ).strip()
-
-
-def _arc_backend() -> str:
-    try:
-        import config
-        return str(getattr(config, "CONVERSATION_ARC_BACKEND", "openai")).lower()
-    except Exception:
-        return "openai"
 
 
 def arc_summary() -> str:
@@ -721,7 +697,7 @@ def _arc_refresh_core() -> bool:
     """Re-derive the running summary from the recent transcript window. Synchronous.
 
     Returns True iff a refresh ran and the summary was updated. Never raises — on
-    any failure (disabled, no new material, local LLM down/slow, empty/garbage
+    any failure (disabled, no new material, LLM down/slow, empty/garbage
     output) the previous summary is retained and this returns False.
     """
     global _arc_summary, _arc_cursor
@@ -755,16 +731,13 @@ def _arc_refresh_core() -> bool:
         max_tokens, timeout, window = 200, 8.0, 12
 
     recent = transcript[-window:] if window > 0 else transcript
-    # The cloud model handles the richer 5-field schema (mood, landed-vs-flopped);
-    # the local 1.5B sidecar only gets the 3 factual fields it can do reliably.
-    rich = _arc_backend() != "local"
-    prompt = _build_arc_prompt(_render_transcript_lines(recent), rich=rich)
+    prompt = _build_arc_prompt(_render_transcript_lines(recent))
 
     started = time.monotonic()
     try:
         updated = _arc_generate(prompt, max_tokens=max_tokens, timeout=timeout)
     except Exception as exc:
-        _log.debug("[arc] refresh skipped (%s backend unavailable): %s", _arc_backend(), exc)
+        _log.debug("[arc] refresh skipped (openai backend unavailable): %s", exc)
         return False
 
     if not _arc_output_ok(updated):
@@ -851,34 +824,26 @@ def _render_transcript_lines(lines: list[dict]) -> str:
     return "\n".join(out)
 
 
-def _build_arc_prompt(transcript_rendered: str, *, rich: bool = True) -> str:
+def _build_arc_prompt(transcript_rendered: str) -> str:
     # No prior summary is fed (that caused echo/freeze); the conversation comes
     # first, the rigid format last, and the prompt does NOT end with blank labels
     # (that turned it into a completion task and made the model echo the transcript).
-    count = "five" if rich else "three"
     instructions = (
         f"Conversation to summarize (oldest to newest):\n{transcript_rendered}\n\n"
-        f"Summarize the conversation so far as EXACTLY these {count} labelled lines "
+        "Summarize the conversation so far as EXACTLY these five labelled lines "
         "and nothing else — no preamble, no dialogue, no paragraph. Each line is the "
         "label then a few words. Name the real subjects, never the speakers. Use '-' "
         "if empty.\n"
     )
-    if rich:
-        # Cloud model — the full "feels alive" schema (mood, landed-vs-flopped).
-        return instructions + (
-            "Topics: <subjects discussed>\n"
-            "Shared: <DURABLE facts the user revealed about themselves — interests, "
-            "plans, work, life events, relationships; NOT transient surroundings like the "
-            "room/clutter/boxes, temperature, background noise, or weather>\n"
-            "Mood: <the user's current mood and energy>\n"
-            "Used up (do NOT reuse): <jokes, premises, roasts, or comedic angles Rex has "
-            "ALREADY used this conversation, plus anything that fell flat or they dodged — "
-            "all of it to AVOID next, not repeat>\n"
-            "Open threads: <specific things Rex could follow up on later>"
-        )
-    # Local 1.5B sidecar — three factual fields only (it can't judge affect).
+    # The full "feels alive" schema (mood, landed-vs-flopped).
     return instructions + (
         "Topics: <subjects discussed>\n"
-        "Shared: <facts the user revealed about themselves>\n"
-        "Open threads: <specific things Rex could follow up on>"
+        "Shared: <DURABLE facts the user revealed about themselves — interests, "
+        "plans, work, life events, relationships; NOT transient surroundings like the "
+        "room/clutter/boxes, temperature, background noise, or weather>\n"
+        "Mood: <the user's current mood and energy>\n"
+        "Used up (do NOT reuse): <jokes, premises, roasts, or comedic angles Rex has "
+        "ALREADY used this conversation, plus anything that fell flat or they dodged — "
+        "all of it to AVOID next, not repeat>\n"
+        "Open threads: <specific things Rex could follow up on later>"
     )

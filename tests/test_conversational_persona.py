@@ -44,13 +44,12 @@ class ConversationalPersonaTests(unittest.TestCase):
                 self.assert_no_roast_pressure(lines + llm._TIER_ROAST_STYLE[tier]
                                               + llm._relationship_tone_rule(person, 'JT'))
 
-    def test_both_contract_formats_preserve_optional_teasing(self):
+    def test_contract_preserves_optional_teasing(self):
         for tier in ('normal', 'sharp'):
-            frame = _frame(tier)
-            for prompt in (sf.build_directive(frame), sf.render_slim_contract(frame)):
-                self.assert_no_roast_pressure(prompt)
-                self.assertIn('ordinary answer needs no punchline' if tier == 'normal'
-                              else 'never requires a harsher joke', prompt)
+            prompt = sf.render_slim_contract(_frame(tier))
+            self.assert_no_roast_pressure(prompt)
+            self.assertIn('ordinary answer needs no punchline' if tier == 'normal'
+                          else 'never requires a harsher joke', prompt)
 
     def test_comedy_overlays_cannot_require_a_bit_on_every_turn(self):
         from intelligence import comedy_modes as comedy

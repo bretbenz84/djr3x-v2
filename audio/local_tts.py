@@ -118,21 +118,6 @@ def model_id() -> str:
     return str(config.LOCAL_TTS_MODEL_ID)
 
 
-def cache_identity() -> str:
-    # Separate models AND reference replacements; same line must not replay an
-    # older engine or a previous reference recording after a config change.
-    ref = rex_voice_ref()
-    identity = "missing"
-    if ref is not None:
-        p = Path(ref.wav_path)
-        try:
-            st = p.stat()
-            identity = f"{p}:{st.st_mtime_ns}:{st.st_size}:{ref.ref_text}"
-        except OSError:
-            identity = f"{p}:missing:{ref.ref_text}"
-    return f"{backend()}:{model_id()}:{identity}"
-
-
 def streaming_interval() -> float:
     name = "BREEZE_TTS_STREAMING_INTERVAL" if streams_clones() else "LOCAL_TTS_STREAMING_INTERVAL"
     return float(getattr(config, name, 0.25 if streams_clones() else 0.32))
@@ -450,7 +435,8 @@ def generate_stream(text: str, voice_ref: VoiceRef) -> Iterator[np.ndarray]:
 
 def synthesize(text: str, voice_ref: VoiceRef) -> tuple[Optional[np.ndarray], int]:
     """Buffered synthesis: concatenate the whole stream into one array. Used for
-    cache prefill. Returns (audio, sample_rate) or (None, sr) on empty/failure."""
+    the clone full-buffer path. Returns (audio, sample_rate) or (None, sr) on
+    empty/failure."""
     sr = sample_rate()
     chunks = list(generate_stream(text, voice_ref))
     if not chunks:
@@ -472,7 +458,7 @@ def synthesize(text: str, voice_ref: VoiceRef) -> tuple[Optional[np.ndarray], in
 #
 # Takes are never cached. A Take is a live one-shot object — the player pops it
 # and closes it when playback ends, so the same request always renders fresh
-# audio. (config.LOCAL_TTS_CACHE_ENABLED only ever covered Rex's OWN voice.)
+# audio.
 
 
 def _split_take(text: str) -> list[str]:

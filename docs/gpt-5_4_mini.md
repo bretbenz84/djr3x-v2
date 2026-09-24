@@ -39,7 +39,7 @@ surface area: **37 `chat.completions.create` call sites across 14 files**.
 |---|---|---|
 | Compatibility shim | `intelligence/llm_compat.py` | `prepare_chat_params()` (pure) + `create()`. Renames `max_tokens`→`max_completion_tokens`, injects `reasoning_effort`/`verbosity`, drops/keeps `temperature` for GPT-5 models; no-op for `gpt-4o-mini`. |
 | Config (OFF) | `config.py` | `LLM_CONVERSATION_MODEL` (=`LLM_MODEL`), `LLM_REASONING_EFFORT` (None), `LLM_VERBOSITY` (None), `LLM_GPT5_PASS_TEMPERATURE` (False). |
-| Wired conversation calls | `intelligence/llm.py` | 6 user-facing generators routed through the shim via `llm_compat.conversation_model()`: `warmup`, `stream_response` (main path), `scenery_change_remark`, `generate_curiosity_question`, `generate_onboarding_reaction`, `generate_expression_reaction`. |
+| Wired conversation calls | `intelligence/llm.py` | 5 user-facing generators routed through the shim via `llm_compat.conversation_model()`: `warmup`, `stream_response` (main path), `generate_curiosity_question`, `generate_onboarding_reaction`, `generate_expression_reaction`. |
 | Mock tests | `tests/test_llm_compat.py` | 17 tests locking the param-translation contract (no network). |
 | Live smoke test (retired) | `tools/gpt5_smoke_test.py` (deleted 2026-09-23; git history at `c00eed5`) | One real API call per shape; settled the temperature question on 2026-06-17. Not in CI. |
 | A/B runner (retired) | `tools/gpt5_ab_test.py` (deleted 2026-09-23; git history at `2d2989c`) | Ran a fixed corpus through both models (real pipeline), wrote a side-by-side. Not in CI. See "A/B results" below. |
@@ -250,7 +250,7 @@ own model config so you can flip them independently. **Test JSON + temperature o
 | Session summary / arc | `llm.py:generate_session_summary`, `_call_openai_summarizer` (`CONVERSATION_ARC_OPENAI_MODEL`) | background, can tolerate higher latency |
 | Vision | `vision/scene.py`, `vision/face.py` (×3), `features/games.py` | `image_url` + `detail`; keep on `VISION_MODEL` until tested |
 | Games / trivia | `features/games.py`, `features/trivia.py` | trivia.py has NO `max_tokens` today |
-| Lazy/optional | `onboarding.py:_maybe_rephrase`, `tell_me_about.py` (JSON), `evals/checkers.py` | off-by-default / eval-only |
+| Lazy/optional | `tell_me_about.py` (JSON), `evals/checkers.py` | off-by-default / eval-only |
 
 Each of these constructs its own `OpenAI(...)` client; pass that client to
 `llm_compat.create(...)`. The shim doesn't own a client — it just translates params.

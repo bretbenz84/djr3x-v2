@@ -1,18 +1,15 @@
 """
 DJ mode — music request resolution and audio playback.
 
-Call scan() at startup to index local MP3 files.
 Call handle_request() to resolve a natural-language request to a TrackInfo.
 Call play() to start playback in a background thread.
 
 Playback decodes audio via ffmpeg subprocess and streams raw PCM to sounddevice.
-This handles both local MP3 files and internet radio streams (PLS → stream URL)
-with a single code path.
+Sources are internet radio streams (PLS → stream URL).
 """
 
 import logging
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -23,10 +20,7 @@ from typing import Optional
 import numpy as np
 import requests
 import sounddevice as sd
-from mutagen.easyid3 import EasyID3
-from mutagen import MutagenError
 from rapidfuzz import fuzz
-from rapidfuzz import process as fuzz_process
 
 import config
 from audio import echo_cancel
@@ -36,17 +30,13 @@ from hardware import leds_head
 logger = logging.getLogger(__name__)
 
 TrackInfo = namedtuple("TrackInfo", ["source", "name", "url_or_path", "description"])
-# source: "local" | "radio"
+# source: "radio"
 
 # ── Module state ──────────────────────────────────────────────────────────────
-
-_index: list[dict] = []
-_index_lock = threading.Lock()
 
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
 _thread_lock = threading.Lock()
-_current_track: Optional[TrackInfo] = None
 _volume: float = 1.0
 _VOLUME_STEP = 0.1
 
@@ -74,105 +64,22 @@ def _body_beat(name: str) -> None:
     except Exception as exc:
         logger.debug("[dj] body beat %s skipped: %s", name, exc)
 
-# ── Music index ───────────────────────────────────────────────────────────────
-
-def scan() -> None:
-    """Scan config.MUSIC_DIR for MP3s and build the in-memory index. Call at startup."""
-    global _index
-    music_dir = config.MUSIC_DIR
-    if not os.path.isdir(music_dir):
-        logger.warning("[dj] Music directory not found: %s", music_dir)
-        return
-
-    found = []
-    for root, _, files in os.walk(music_dir):
-        for fname in files:
-            if not fname.lower().endswith(".mp3"):
-                continue
-            path = os.path.join(root, fname)
-            basename = os.path.splitext(fname)[0]
-            try:
-                tags = EasyID3(path)
-                title  = tags.get("title",  [basename])[0]
-                artist = tags.get("artist", [""])[0]
-                album  = tags.get("album",  [""])[0]
-                genre  = tags.get("genre",  [""])[0]
-            except MutagenError:
-                title = basename
-                artist = album = genre = ""
-            found.append({
-                "path":   path,
-                "title":  title,
-                "artist": artist,
-                "album":  album,
-                "genre":  genre,
-            })
-
-    with _index_lock:
-        _index = found
-    logger.info("[dj] Indexed %d local tracks from %s", len(found), music_dir)
-
-
 # ── Request resolution ────────────────────────────────────────────────────────
 
 def handle_request(request_text: str) -> Optional[TrackInfo]:
     """
-    Resolve a natural-language music request to a TrackInfo.
-
-    Strategies in order:
-      1. Title fuzzy match against local index
-      2. Artist fuzzy match against local index
-      3. Vibe match against radio station vibe tags and local genre tags
+    Resolve a natural-language music request to a TrackInfo by vibe-matching it
+    against the radio station vibe tags.
 
     Returns None if nothing scores above the confidence threshold.
     """
-    with _index_lock:
-        snapshot = list(_index)
-
     req = request_text.strip()
-
-    # 1. Title fuzzy match
-    if snapshot:
-        titles = [t["title"] for t in snapshot]
-        hit = fuzz_process.extractOne(req, titles, scorer=fuzz.WRatio, score_cutoff=60)
-        if hit:
-            _, _, idx = hit
-            track = snapshot[idx]
-            return TrackInfo(
-                source="local",
-                name=track["title"],
-                url_or_path=track["path"],
-                description=(
-                    f"{track['title']} by {track['artist']}"
-                    if track["artist"] else track["title"]
-                ),
-            )
-
-    # 2. Artist fuzzy match
-    if snapshot:
-        artist_names = [t["artist"] for t in snapshot if t["artist"]]
-        if artist_names:
-            hit = fuzz_process.extractOne(
-                req, artist_names, scorer=fuzz.WRatio, score_cutoff=60
-            )
-            if hit:
-                matched_artist = hit[0]
-                candidates = [t for t in snapshot if t["artist"] == matched_artist]
-                track = random.choice(candidates)
-                return TrackInfo(
-                    source="local",
-                    name=track["title"],
-                    url_or_path=track["path"],
-                    description=f"{track['title']} by {track['artist']}",
-                )
-
-    # 3. Vibe match
-    return _vibe_match(req, snapshot)
+    return _vibe_match(req)
 
 
-def _vibe_match(request_text: str, snapshot: list[dict]) -> Optional[TrackInfo]:
+def _vibe_match(request_text: str) -> Optional[TrackInfo]:
     """
-    Score every radio station vibe tag and local genre tag against the request.
+    Score every radio station vibe tag against the request.
     Returns the highest-scoring TrackInfo above the 50-point threshold, or None.
     """
     req = request_text.lower()
@@ -194,22 +101,6 @@ def _vibe_match(request_text: str, snapshot: list[dict]) -> Optional[TrackInfo]:
                         + ", ".join(station["vibes"][:3])
                     ),
                 )
-
-    for track in snapshot:
-        if not track["genre"]:
-            continue
-        score = fuzz.partial_ratio(req, track["genre"].lower())
-        if score > best_score:
-            best_score = score
-            best = TrackInfo(
-                source="local",
-                name=track["title"],
-                url_or_path=track["path"],
-                description=(
-                    f"{track['title']} by {track['artist']}"
-                    if track["artist"] else track["title"]
-                ),
-            )
 
     if best_score >= 50:
         return best
@@ -241,13 +132,12 @@ def _station_vibe_score(normalized_request: str, vibe: str) -> float:
 
 def play(track_info: TrackInfo) -> None:
     """Start playback of track_info in a background thread. Stops any current playback."""
-    global _thread, _current_track
+    global _thread
 
     stop(beat=False)
 
     _stop_event.clear()
     with _thread_lock:
-        _current_track = track_info
         _thread = threading.Thread(
             target=_playback_loop,
             args=(track_info,),
@@ -266,15 +156,12 @@ def play(track_info: TrackInfo) -> None:
 
 def stop(*, beat: bool = True) -> None:
     """Signal the playback thread to stop and wait for it to exit."""
-    global _current_track
     with _thread_lock:
         t = _thread
     was_playing = bool(t and t.is_alive() and not _stop_event.is_set())
     _stop_event.set()
     if t and t.is_alive():
         t.join(timeout=3.0)
-    with _thread_lock:
-        _current_track = None
     echo_cancel.set_playing(False)
     try:
         leds_head.speak_stop()
@@ -313,29 +200,11 @@ def volume_down(step: float = _VOLUME_STEP) -> float:
     return _volume
 
 
-def play_by_vibe(vibe: str) -> Optional[TrackInfo]:
-    """Resolve a vibe request and start playback when a match is found."""
-    track = handle_request(vibe)
-    if track is None:
-        logger.info("[dj] No match found for vibe request: %r", vibe)
-        return None
-    play(track)
-    return track
-
-
 def is_playing() -> bool:
     """Return True if the playback thread is running."""
     with _thread_lock:
         t = _thread
     return t is not None and t.is_alive() and not _stop_event.is_set()
-
-
-def now_playing() -> Optional[TrackInfo]:
-    """Return the currently playing TrackInfo, or None if not playing."""
-    if not is_playing():
-        return None
-    with _thread_lock:
-        return _current_track
 
 
 # ── Internal playback loop ────────────────────────────────────────────────────
@@ -366,14 +235,11 @@ def _playback_loop(track_info: TrackInfo) -> None:
     """
     echo_cancel.set_playing(True)
 
-    if track_info.source == "radio":
-        audio_url = _resolve_stream_url(track_info.url_or_path)
-        if not audio_url:
-            logger.error("[dj] Could not resolve stream URL from %s", track_info.url_or_path)
-            echo_cancel.set_playing(False)
-            return
-    else:
-        audio_url = track_info.url_or_path
+    audio_url = _resolve_stream_url(track_info.url_or_path)
+    if not audio_url:
+        logger.error("[dj] Could not resolve stream URL from %s", track_info.url_or_path)
+        echo_cancel.set_playing(False)
+        return
 
     cmd = [
         _ffmpeg_executable(),

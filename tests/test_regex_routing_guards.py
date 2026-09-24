@@ -445,22 +445,6 @@ class SystemModeWideningTest(unittest.TestCase):
         ):
             self.assertFalse(command_parser.is_sleep_request(text), text)
 
-    def test_wake_tolerates_filler(self):
-        # A MISSED wake is the expensive direction — he cannot be woken by voice
-        # at all until the exact phrase is said. A false wake just listens.
-        for text in ("Rex, wake up buddy", "wake up rex", "Hey Rex wake up",
-                     "wake up rex please", "Rex, wake up now"):
-            self.assertTrue(interaction._is_sleep_wake_transcript(text), text)
-
-    def test_wake_still_requires_rex_by_name(self):
-        # A bare "wake up" is ambient speech in a room he is asleep in. Pinned
-        # by test_sleep_wake_transcript_requires_explicit_rex_wake_phrase in
-        # tests/test_audio_and_conversation_gating.py — kept here so the two
-        # cannot drift.
-        for text in ("wake up", "hey rex", "wake me up rex", "don't wake up rex",
-                     "I need to wake up early tomorrow", "did you wake up ok"):
-            self.assertFalse(interaction._is_sleep_wake_transcript(text), text)
-
 
 class IdentityRenameGuardTest(unittest.TestCase):
     """"Call me crazy" durably renamed the speaker to Crazy."""

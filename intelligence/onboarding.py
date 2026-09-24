@@ -39,19 +39,6 @@ from memory import relationships as rel_memory
 
 _log = logging.getLogger(__name__)
 
-_client = None
-
-
-def _openai_client():
-    """Lazy OpenAI client for the (off-by-default) authored-question rephrase.
-    The depth follow-up itself goes through llm.generate_curiosity_question."""
-    global _client
-    if _client is None:
-        import apikeys
-        from openai import OpenAI
-        _client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
-    return _client
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Flags / eligibility
@@ -187,8 +174,6 @@ def _resolve_text(
         if not (last_answer or "").strip():
             return None
         return generate_followup(last_answer, person_id=person_id, prev_question=last_question)
-    if bool(getattr(config, "ONBOARDING_LLM_REPHRASE_ENABLED", False)):
-        return _maybe_rephrase(str(text))
     return str(text)
 
 
@@ -237,33 +222,6 @@ def generate_followup(
     # "How'd you get into going great?" — better to skip and let selection fall
     # through to an authored Tier-C question.
     return f"How'd you get into {topic}?" if _looks_like_topic(topic) else None
-
-
-def _maybe_rephrase(text: str) -> str:
-    """Optional cosmetic rephrase of an authored question in Rex's voice
-    (OpenAI, off by default). Falls back to the verbatim authored question."""
-    base = (text or "").strip()
-    if not base:
-        return base
-    try:
-        resp = _openai_client().chat.completions.create(
-            model=config.LLM_MODEL,
-            messages=[
-                {"role": "system",
-                 "content": "You are Rex, a witty droid. Output ONLY the rephrased question."},
-                {"role": "user",
-                 "content": f"Rephrase in a casual, witty droid voice, same meaning, "
-                            f"one question, max 16 words: \"{base}\""},
-            ],
-            temperature=0.5,
-            max_tokens=40,
-        )
-        rephrased = _first_question((resp.choices[0].message.content or ""))
-        if rephrased:
-            return rephrased
-    except Exception as exc:
-        _log.debug("[onboarding] rephrase failed, using verbatim: %s", exc)
-    return base
 
 
 def _first_question(text: str) -> str:

@@ -100,7 +100,6 @@ REQUIRED_DIRS = [
     "assets/audio/clips",
     "assets/audio/startup",
     "assets/audio/tts_cache",
-    "assets/music",
     "assets/trivia",
     "assets/memory",
 ]

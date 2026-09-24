@@ -31,7 +31,7 @@ Hard rules this module enforces:
 
 Latency: nothing here runs on the time-to-first-speech path. The banker and
 relevance judge run on the post-response background thread (local qwen2.5:1.5b
-by default — labelled-line output, never JSON, validated, fail-closed). The
+— labelled-line output, never JSON, validated, fail-closed). The
 reactive trigger is DB reads + regex + one probability roll.
 """
 
@@ -162,7 +162,7 @@ _relevance_stash: Optional[dict] = None     # {person_id, premise_id, score, tra
 def _under_test_runner() -> bool:
     """Inert under unittest/pytest unless explicitly opted in — the banker and
     relevance judge fire from inside the turn path's background thread and
-    would otherwise hit Ollama/OpenAI from unit tests (the arc/rex_pov idiom)."""
+    would otherwise hit Ollama from unit tests (the arc/rex_pov idiom)."""
     if os.environ.get("DJR3X_CALLBACK_TEST_OPT_IN"):
         return False
     if os.environ.get("PYTEST_CURRENT_TEST"):
@@ -368,18 +368,11 @@ def _record_fire(premise_id: int) -> None:
         _last_fired_transcript_len = now_len
 
 
-# ── Local/cloud generation plumbing ───────────────────────────────────────────
+# ── Local generation plumbing ─────────────────────────────────────────────────
 
 def _generate(prompt: str, *, system: str, max_tokens: int, timeout: float) -> str:
-    """Dispatch a short labelled-line generation to the configured banker
-    backend. Raises on failure so callers fall back cheaply (the arc's
-    dual-backend seam)."""
-    backend = str(getattr(config, "CALLBACK_BANK_BACKEND", "local")).lower()
-    if backend == "openai":
-        from intelligence import llm
-        return llm.summarize_conversation_arc(
-            prompt, system=system, max_tokens=max_tokens, timeout_secs=timeout
-        ).strip()
+    """Run a short labelled-line generation on the local sidecar. Raises on
+    failure so callers fall back cheaply."""
     from intelligence import local_llm
     return local_llm.generate(
         prompt, system=system, temperature=0.0,
@@ -390,9 +383,6 @@ def _generate(prompt: str, *, system: str, max_tokens: int, timeout: float) -> s
 def _llm_allowed() -> bool:
     if _under_test_runner():
         return False
-    backend = str(getattr(config, "CALLBACK_BANK_BACKEND", "local")).lower()
-    if backend == "openai":
-        return True
     try:
         from intelligence import local_llm
         return bool(local_llm.enabled())

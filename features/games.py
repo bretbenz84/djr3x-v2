@@ -2596,17 +2596,11 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
     _game_state.pop("last_clue", None)
     _game_state.pop("unclear_answers", None)
     daily = bool(clue.get("daily_double"))
-    if daily and bool(getattr(config, "JEOPARDY_DD_WAGER_ENABLED", True)):
+    if daily:
         return _jeopardy_begin_daily_double(clue, player)
 
     effective_value = int(clue.get("value", 0) or 0)
-    if daily:
-        # Legacy no-wager mode (JEOPARDY_DD_WAGER_ENABLED=False): flat double.
-        effective_value *= 2
-        _jeopardy_queue_clip("daily_double")
-        _body_beat("dramatic_visor_peek")
-    else:
-        _body_beat("thinking_tilt")
+    _body_beat("thinking_tilt")
 
     clue["effective_value"] = effective_value
     _game_state.update({
@@ -2619,9 +2613,8 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
     if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
         _game_state["pending_after_response_clip"] = "theme"
 
-    daily_line = "Daily Double. Automatic double. " if daily else ""
     return (
-        f"{daily_line}{_jeopardy_clue_text(clue)}",
+        _jeopardy_clue_text(clue),
         False,
     )
 

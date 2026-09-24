@@ -62,7 +62,8 @@
   capture and are contentless. (Moot now — games deferred — but recorded for accuracy.)
 - **⚠ "Flip `SCENERY_CHANGE_REMARK_ENABLED`" is a red herring.** That flag governs a
   boot-to-boot *caption* remark (`episodic_hooks.py:280`), unrelated to a live object diff.
-  Change detection must read `world_state.objects` vs `room_model` per idle tick.
+  Change detection must read `world_state.objects` vs `room_model` per idle tick. (The flag
+  and the caption remark were removed 2026-09-23, dead-code Stage 3.)
 - **⚠ E-1 Reunion already half-exists.** `consciousness._pick_absence_phase` (`:3894`,
   `LONG_ABSENCE_THRESHOLD_DAYS=60`) is live and swaps the greeting *text* today. Only the
   *staged* sequence + one-turn greeting lockout are missing → "upgrade," not "build."
@@ -143,7 +144,7 @@
   ANTAGONISM_TIER_CAPS_LIFT_WARMTH` (0.85) — a genuinely close, adult relationship (the creator bond is
   the exemplar); the lift is the LAST branch, so every upstream care/boundary `none`/`light` gate (sad,
   tender, boundary, roast-averse, minor→warmth 0.0, micro/brief) still wins. The cap-lift sharpens the
-  PROMPT (new `sharp` strings in `build_directive` + `_slim_roast_rule`, and a matching `sharp` tone line
+  PROMPT (new `sharp` strings in `build_directive` + `_slim_roast_rule` — the social_frame `build_directive` was deleted 2026-09-23, so only `_slim_roast_rule` remains — and a matching `sharp` tone line
   in `llm._relationship_tone_rule` on the same gate); it does NOT touch the safety net. Crucially, the
   harsh-word/cruelty governor was made UNCONDITIONAL — a tight `_CRUEL_ROAST_PAT` (name-calling/contempt,
   NOT vivid affectionate hyperbole like "dumpster fire") now scrubs at EVERY tier, so `sharp` (and the

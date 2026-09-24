@@ -1921,10 +1921,6 @@ def _apply_cli_runtime_flags(args: argparse.Namespace) -> None:
 
 
 def _load_dashboard_runner():
-    backend = str(getattr(config, "GUI_BACKEND", "pyside6") or "").strip().lower()
-    if backend != "pyside6":
-        logger.warning("GUI disabled: unsupported GUI_BACKEND=%r", backend)
-        return None
     try:
         from gui.dashboard import run_dashboard
         return run_dashboard
@@ -2157,9 +2153,9 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
         def _request_shutdown() -> None:
             state.set_state(State.SHUTDOWN)
 
-        # Sleep/wake block on speech, so run them off the Qt thread. Guarded so a
-        # stray click can't double-fire. These are the same entry points the spoken
-        # "go to sleep" command and the wake word use.
+        # Sleep blocks on speech, so run it off the Qt thread. Guarded so a stray
+        # click can't double-fire. This is the same entry point the spoken
+        # "go to sleep" command uses.
         def _request_sleep() -> None:
             if state.is_state(State.SLEEP):
                 return
@@ -2175,17 +2171,7 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
         def _request_wake() -> None:
             if not state.is_state(State.SLEEP):
                 return
-            if bool(getattr(config, "SLEEP_ONNX_ONLY_WAKE", True)):
-                logger.info("GUI wake ignored — SLEEP requires the wakeuprex ONNX model")
-                return
-
-            def _run() -> None:
-                try:
-                    interaction._wake_from_sleep()
-                except Exception as exc:
-                    logger.warning("GUI wake request failed: %s", exc)
-
-            threading.Thread(target=_run, daemon=True, name="gui-wake").start()
+            logger.info("GUI wake ignored — SLEEP requires the wakeuprex ONNX model")
 
         try:
             run_dashboard(

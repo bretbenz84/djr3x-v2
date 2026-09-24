@@ -370,6 +370,76 @@ behavior-neutral (only the unlogged `decision.reason` string changes).
 
 ### Stage 3 — Flag-off paths (MEDIUM: kill switches, most env-flippable) — ~1,400 prod lines
 
+> **Landed 2026-09-23** (on top of `9e868bd`; about 3,440 lines deleted, ~3,080 net: ~1,700
+> prod, ~1,140 test, ~235 config). Every bullet below landed except the items under Skipped, and
+> each symbol and config key was re-grepped repo-wide (prod, tools, evals, tests, `.env*`,
+> docs, `mock.patch` targets, `getattr` strings) before deletion.
+> - Software AEC: `audio/aec.py`, `tests/test_aec.py`, the `sd_guard` reference hook, the
+>   `wake_word` passthrough and the 10 `AEC_*` keys. The vacuous `test_aec_drain_release`
+>   source grep (skipped in Stage 1) is fixed: it now runs `inspect.getsource(interaction._loop)`.
+> - `interaction`: gap merge phase 1 (`gap_check_enabled` plumbing, merge retry loop), VAD
+>   barge-in + `_interrupt_ack`, the `_post_tts_flush_needed` state machine and the
+>   `stream.flush()` in `_apply_post_tts_handoff`, the SLEEP transcribed-wake fallback, slow-path
+>   ack, latency filler, the slim-contract else branch, and the `IDLE_LISTEN_DURING_DJ_PLAYBACK`
+>   / `MOTION_EAGER_ENDPOINT_DURING_GAMES` knobs. `_start_latency_filler_timer` is a stub that
+>   returns an already-set Event. `main.py` lost the GUI wake runner and the `GUI_BACKEND` check.
+>   `POST_QUESTION/POST_SPEECH_FLUSH_AUDIO_BUFFER` STAY: `speech_queue` and
+>   `echo_cancel.end_sequence(flush=...)` still read them. `SLEEP_ONNX_ONLY_WAKE` had no other
+>   reader and is gone.
+> - Local-TTS WAV cache: `is_cached`/`ensure_cached` keep a 1-line
+>   `if _use_local_backend(): return False` guard. Deleting the whole local branch would have let
+>   local mode fall through to the ElevenLabs cache lookup/API prefill, which is a behavior change.
+> - Slim contract: `social_frame.build_directive`, the llm `Target:` branch and its two globals.
+>   The `test_comedy_modes`, `test_conversation_revamp` and `test_conversational_persona` cases
+>   were RETARGETED to `render_slim_contract`, not deleted. Gating
+>   `test_topic_knowledge_question_gets_longer_budget` keeps its plan/classify assertions.
+> - Proactive flag-offs: onboarding rephrase, the scenery-change remark (with
+>   `llm.scenery_change_remark`), the startup profile question (its known failure
+>   `test_first_sight_sparse_profile_uses_basic_profile_question` is deleted with it) and the
+>   generic sound-event branch (`WORLD_SOUND_EVENT_REACTIONS_ENABLED`). The always-default
+>   `question_key=`/`question_depth=` kwargs are dropped at the consciousness call site.
+> - OpenAI lifeform scan: `detect_lifeforms`, both dead `_scan_loop` branches and
+>   `SCENE_CHANGE_MONITOR_{ENABLED,INTERVAL_SECS,ONLY_WITH_PEOPLE}` (also in `.env.example`).
+>   `SCENE_CHANGE_MONITOR_MAX_TOKENS` stays for the startle-species scan.
+> - Alternate backends: the callback banker's `openai` branch, the arc's `local` branch (with the
+>   `rich` parameter and `_arc_backend`), `SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC`, and the legacy
+>   no-wager Daily Double (`JEOPARDY_DD_WAGER_ENABLED`). `GUI_BACKEND`, `MOTION_EAGER_ENDPOINT_DURING_GAMES`
+>   and `IDLE_LISTEN_DURING_DJ_PLAYBACK` are gone too.
+> - DJ local library: `scan`, `_index`, local title/artist matching and playback, `play_by_vibe`,
+>   `now_playing`, `_current_track`, `MUSIC_DIR`, `mutagen` (requirements) and `assets/music`
+>   (setup_assets). The false "play local tracks" prompt sentence is fixed. `.gitignore` still
+>   ignores `assets/music/`, which is harmless.
+> - Radar orient: `_maybe_radar_orient`, its call, the `orient_*` state and 11
+>   `MOTION_RADAR_ORIENT_*` keys. `test_motion_agency` loses the module-wide `_ORIENT_ON`
+>   patcher and 14 cases (RadarOrientTest 10 + RadarOrientVisitedTest 4), and `test_wake_orient`
+>   loses 1. `MOTION_RADAR_ORIENT_VOICE_DEFER_SECS` is renamed
+>   `MOTION_IDLE_WANDER_VOICE_DEFER_SECS` (still 20.0; it only gates idle wander).
+> - Other tests deleted: gating sleep-wake ×3, VAD ×1, slow-path ack/filler ×6 and startup
+>   profile ×3 (incl. `StartupGreetingOpenerTest`); `test_regex_routing_guards` sleep-wake ×2;
+>   `test_gap_speech` ×20; `test_local_tts` cache ×5; `test_episodic_identity` scenery ×6;
+>   `test_scene_monitor` ×3; `test_conversation_arc` local-backend gate;
+>   `test_turn_planner_slim_contract::test_old_target_format_still_works`;
+>   `test_game_roster_identity::test_the_game_gate_is_switchable`;
+>   `test_sound_effects::test_drive_muting_can_be_turned_back_on`;
+>   `test_jeopardy_rounds::test_disabled_flag_restores_auto_double`. Patches of deleted keys
+>   were dropped from live tests (gating, `test_shared_device_guard`, `test_breeze_tts`,
+>   `test_sound_events`). Gating runs 394 tests with 4 failures, all of them in the `c00eed5`
+>   baseline.
+> - Docs: CONTEXT.md, rework.md, CLAUDE.md (known-failure list), `docs/{GUI,
+>   local_tts_backends, local_tts_impersonation_plan, lean_brain_restructuring_plan,
+>   motion_route_tool_plan, motion_system, respeaker_flex_xvf3800, gpt-5_4_mini,
+>   comedy_improvements, callback_humor_design}.md`. The README never mentioned `assets/music`.
+>
+> Skipped:
+> - The "4 unused `DJR3X_*_TEST_OPT_IN` env hooks". The plan does not name them, the tree has 7
+>   such hooks, and `docs/callback_humor_design.md` describes the ARC/CALLBACK ones as manual
+>   live-validation escape hatches rather than flag-off paths.
+> - Per D3 (governor unchanged): `speech_engine.generate_and_speak_presence` keeps its
+>   now-unused `question_key`/`question_depth` params, and the `world.scenery_change` purpose
+>   stays although nothing produces it.
+> - Dated docs are left for Stage 8: `docs/junecodereview.md` (`detect_lifeforms`,
+>   `CONVERSATION_ARC_BACKEND`) and the historical radar-orient field logs.
+
 Each is off by a constant or `_env_bool` default; none is a runtime fallback.
 
 - **Software AEC** (D7; `AEC_SOFTWARE_ENABLED=False`, measured ineffective): `audio/aec.py` (277),

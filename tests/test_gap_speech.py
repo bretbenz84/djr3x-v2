@@ -7,12 +7,7 @@ in that window ("...oh, and one more thing") lands clean in the 30s rolling
 buffer and used to be erased when the post-TTS handoff stamped the capture
 floor at playback end — the person read it as Rex ignoring them.
 
-Phase 1 (merge): at the moment the reply's first sentence exists — before any
-TTS is fetched or queued — the stream path scans the gap span and, if the
-person spoke, unwinds via _GapSpeechDetected so the call site captures their
-line and regenerates once with both lines.
-
-Phase 2 (catch-up): when the loop resumes listening, a one-shot scan sweeps
+Catch-up: when the loop resumes listening, a one-shot scan sweeps
 the whole blind span. A finished missed utterance is sliced from the buffer
 and dispatched through the normal turn pipeline; speech still in progress is
 handed to the live path as a recovered onset.
@@ -20,7 +15,6 @@ handed to the live path as a recovered onset.
 
 from __future__ import annotations
 
-import threading
 import unittest
 from unittest import mock
 
@@ -46,11 +40,8 @@ class GapConfigTests(unittest.TestCase):
     def test_knobs_exist(self):
         for name in (
             "GAP_SPEECH_RECOVERY_ENABLED",
-            "GAP_MERGE_ENABLED",
             "GAP_CATCHUP_ENABLED",
             "GAP_SPEECH_MIN_VOICED_SECS",
-            "GAP_MERGE_MIN_SPAN_SECS",
-            "GAP_MERGE_MAX_SPAN_SECS",
             "GAP_CATCHUP_MAX_SPAN_SECS",
             "GAP_SPEECH_JOIN_GAP_SECS",
             "GAP_SPEECH_SLICE_PAD_SECS",
@@ -169,216 +160,8 @@ class GapVoicedRunsTests(unittest.TestCase):
         self.assertEqual(I._gap_voiced_runs(np.zeros(0, dtype=np.float32), 0.0), [])
 
 
-class ReplyGapOnsetTests(unittest.TestCase):
-    """Phase-1 trigger: conservative, and never fooled by Rex's own audio."""
-
-    def setUp(self):
-        self.enterContext(mock.patch.object(config, "GAP_MERGE_ENABLED", True))
-        _reset_gap_state()
-        self.addCleanup(_reset_gap_state)
-        self.now = 2000.0
-        I._gap_watch_started_at = self.now - 3.0   # 3s generation gap
-
-    def _onset(self, *, runs, suppressed=False, busy=False, play_end=0.0,
-               now=None):
-        span_audio = np.zeros(SR * 3, dtype=np.float32)
-        with mock.patch.object(I.time, "monotonic", return_value=now or self.now), \
-             mock.patch.object(I.echo_cancel, "is_suppressed", return_value=suppressed), \
-             mock.patch.object(I.output_gate, "is_busy", return_value=busy), \
-             mock.patch.object(I.echo_cancel, "last_playback_ended_at",
-                               return_value=play_end), \
-             mock.patch.object(I.stream, "get_audio_chunk", return_value=span_audio), \
-             mock.patch.object(I, "_gap_voiced_runs", return_value=runs):
-            return I._reply_gap_speech_onset()
-
-    def test_gap_speech_is_detected(self):
-        onset = self._onset(runs=[(1998.0, 1999.1)])
-        self.assertAlmostEqual(onset, 1998.0, places=3)
-
-    def test_silence_is_none(self):
-        self.assertIsNone(self._onset(runs=[]))
-
-    def test_a_blip_below_the_voiced_minimum_is_ignored(self):
-        self.assertIsNone(self._onset(runs=[(1998.0, 1998.2)]))
-
-    def test_disarmed_is_none(self):
-        I._gap_watch_started_at = 0.0
-        self.assertIsNone(self._onset(runs=[(1998.0, 1999.1)]))
-
-    def test_audio_sounding_right_now_skips_the_check(self):
-        # A chirp/effect is playing — the buffer tail is not the user's voice.
-        self.assertIsNone(self._onset(runs=[(1998.0, 1999.1)], suppressed=True))
-        self.assertIsNone(self._onset(runs=[(1998.0, 1999.1)], busy=True))
-
-    def test_playback_inside_the_span_trims_the_scan(self):
-        # An ack finished at 1998.5; a "run" that VAD saw before it (the ack
-        # itself, at full volume on a no-AEC machine) must not trigger. The
-        # trimmed scan starts after the echo skip, and the span audio is
-        # requested from there.
-        requested = {}
-
-        def _chunk(secs):
-            requested["secs"] = secs
-            return np.zeros(int(secs * SR), dtype=np.float32)
-
-        with mock.patch.object(I.time, "monotonic", return_value=self.now), \
-             mock.patch.object(I.echo_cancel, "is_suppressed", return_value=False), \
-             mock.patch.object(I.output_gate, "is_busy", return_value=False), \
-             mock.patch.object(I.echo_cancel, "last_playback_ended_at",
-                               return_value=1998.5), \
-             mock.patch.object(I.stream, "get_audio_chunk", side_effect=_chunk), \
-             mock.patch.object(I, "_gap_voiced_runs", return_value=[]):
-            I._reply_gap_speech_onset()
-        skip = float(config.GAP_SPEECH_POST_PLAYBACK_SKIP_SECS)
-        self.assertAlmostEqual(requested["secs"], self.now - (1998.5 + skip), places=2)
-
-    def test_a_stale_overlong_gap_is_skipped(self):
-        I._gap_watch_started_at = self.now - 20.0
-        self.assertIsNone(self._onset(runs=[(1998.0, 1999.1)]))
-
-    def test_kill_switch(self):
-        with mock.patch.object(config, "GAP_SPEECH_RECOVERY_ENABLED", False):
-            self.assertIsNone(self._onset(runs=[(1998.0, 1999.1)]))
-        with mock.patch.object(config, "GAP_MERGE_ENABLED", False):
-            self.assertIsNone(self._onset(runs=[(1998.0, 1999.1)]))
-
-    def test_text_only_mode_is_inert(self):
-        with mock.patch.object(I, "_text_only_mode", True):
-            self.assertIsNone(self._onset(runs=[(1998.0, 1999.1)]))
-
-
-class MergeGapSpeechTests(unittest.TestCase):
-    """Phase-1 capture: waits out the person, transcribes, guards — and a dry
-    merge returns None so the caller regenerates rather than going silent."""
-
-    def setUp(self):
-        _reset_gap_state()
-        self.addCleanup(_reset_gap_state)
-        I._listen_capture_floor_at = 0.0
-        self.addCleanup(lambda: setattr(I, "_listen_capture_floor_at", 0.0))
-
-    def _merge(self, *, audio, transcript, non_speech=False, echo=False):
-        with mock.patch.object(I, "_accumulate_speech", return_value=audio), \
-             mock.patch.object(I.transcription, "transcribe",
-                               return_value=transcript), \
-             mock.patch.object(I, "_is_non_speech_vocalization",
-                               return_value=non_speech), \
-             mock.patch.object(I, "_looks_like_own_echo", return_value=echo), \
-             mock.patch.object(I.vad, "reset_state"):
-            return I._merge_gap_speech(1998.0, 1997.0)
-
-    def test_happy_path_returns_the_line(self):
-        got = self._merge(audio=np.ones(SR, dtype=np.float32),
-                          transcript="and also I got a new job")
-        self.assertEqual(got, "and also I got a new job")
-
-    def test_merge_raises_the_capture_floor_to_the_watermark(self):
-        # Preroll must not reach back past the already-consumed line-1 audio
-        # and re-swallow its tail into the merged transcript.
-        self._merge(audio=np.ones(SR, dtype=np.float32), transcript="more words")
-        self.assertGreaterEqual(I._listen_capture_floor_at, 1997.0)
-
-    def test_merge_rearms_the_watch(self):
-        self._merge(audio=np.ones(SR, dtype=np.float32), transcript="more words")
-        self.assertGreater(I._gap_watch_started_at, 0.0)
-
-    def test_empty_capture_is_a_dry_merge(self):
-        self.assertIsNone(self._merge(audio=None, transcript="x"))
-        self.assertIsNone(
-            self._merge(audio=np.zeros(0, dtype=np.float32), transcript="x"))
-
-    def test_empty_transcript_is_a_dry_merge(self):
-        self.assertIsNone(
-            self._merge(audio=np.ones(SR, dtype=np.float32), transcript="  "))
-
-    def test_non_speech_vocalization_is_a_dry_merge(self):
-        self.assertIsNone(self._merge(audio=np.ones(SR, dtype=np.float32),
-                                      transcript="hmm", non_speech=True))
-
-    def test_own_echo_is_a_dry_merge(self):
-        # Rex's residual transcribing his own just-drafted words must never
-        # become the "second line".
-        self.assertIsNone(self._merge(audio=np.ones(SR, dtype=np.float32),
-                                      transcript="something in my way", echo=True))
-
-
-class StreamGapCheckTests(unittest.TestCase):
-    """The streaming reply path unwinds via _GapSpeechDetected BEFORE anything
-    is spoken or queued — and the generic stream-error handler must re-raise it
-    rather than speaking the abandoned draft via the fallback."""
-
-    def _run_stream(self, *, gap_onset, gap_check_enabled, sentences):
-        enqueued = []
-
-        def _enqueue(text, *a, **k):
-            enqueued.append(text)
-            done = threading.Event()
-            done.set()
-            return done
-
-        done_evt = threading.Event()
-        done_evt.set()
-        filler = threading.Event()
-        with mock.patch.object(I, "_reply_token_stream",
-                               return_value=iter(sentences)), \
-             mock.patch.object(I, "_reply_gap_speech_onset",
-                               return_value=gap_onset), \
-             mock.patch.object(I, "_prepare_stream_sentence",
-                               side_effect=lambda s, f, c: s), \
-             mock.patch.object(I.speech_queue, "enqueue", side_effect=_enqueue), \
-             mock.patch.object(I.empathy, "get_delivery_overrides",
-                               return_value=None), \
-             mock.patch.object(I.conv_log, "log_rex_stream"), \
-             mock.patch.object(I.conv_log, "log_rex"), \
-             mock.patch.object(I.conv_log, "finish_rex_stream"), \
-             mock.patch.object(I, "_apply_post_tts_handoff"), \
-             mock.patch.object(config, "SELF_EMOTION_CLASSIFY_ENABLED", False), \
-             mock.patch.object(config, "POST_PUNCHLINE_BEAT_MS_MAX", 0), \
-             mock.patch.object(config, "LLM_STREAMING_MIN_SENTENCE_CHARS", 1):
-            text = I._stream_and_speak_sentences(
-                "line one", None, None, None, "", {"value": False}, None,
-                None, filler, two_chunk=False,
-                gap_check_enabled=gap_check_enabled,
-            )
-        return text, enqueued
-
-    def test_gap_speech_unwinds_before_anything_is_queued(self):
-        I._gap_watch_started_at = 500.0
-        self.addCleanup(_reset_gap_state)
-        with self.assertRaises(I._GapSpeechDetected):
-            self._run_stream(gap_onset=501.0, gap_check_enabled=True,
-                             sentences=["Hello there my friend. "])
-
-    def test_no_gap_speech_streams_normally(self):
-        text, enqueued = self._run_stream(
-            gap_onset=None, gap_check_enabled=True,
-            sentences=["Hello there my friend. "])
-        self.assertIn("Hello there my friend.", text)
-        self.assertEqual(len(enqueued), 1)
-
-    def test_disabled_check_never_scans(self):
-        with mock.patch.object(I, "_reply_gap_speech_onset") as scan:
-            text, enqueued = self._run_stream(
-                gap_onset=None, gap_check_enabled=False,
-                sentences=["Hello there my friend. "])
-            self.assertFalse(scan.called)
-        self.assertEqual(len(enqueued), 1)
-
-    def test_exception_carries_onset_and_watermark(self):
-        I._gap_watch_started_at = 500.0
-        self.addCleanup(_reset_gap_state)
-        try:
-            self._run_stream(gap_onset=501.0, gap_check_enabled=True,
-                             sentences=["Hello there my friend. "])
-        except I._GapSpeechDetected as gap:
-            self.assertAlmostEqual(gap.onset_at, 501.0)
-            self.assertAlmostEqual(gap.armed_at, 500.0)
-        else:
-            self.fail("expected _GapSpeechDetected")
-
-
 class CatchUpTests(unittest.TestCase):
-    """Phase-2: the one-shot blind-span sweep at loop resume."""
+    """The one-shot blind-span sweep at loop resume."""
 
     def setUp(self):
         self.enterContext(mock.patch.object(I, "_note_voice_bearing"))

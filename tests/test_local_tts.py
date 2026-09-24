@@ -1,12 +1,13 @@
 """
 Tests for the on-device Qwen3-TTS backend: engine helpers, tts.py backend
-dispatch, the automatic ElevenLabs->local fallback + circuit breaker, and the
-local cache path. mlx-audio and the audio device are mocked — no model loads and
-no real playback happen here.
+dispatch, and the automatic ElevenLabs->local fallback + circuit breaker.
+mlx-audio and the audio device are mocked — no model loads and no real playback
+happen here.
 """
 
 import unittest
 from contextlib import ExitStack
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
@@ -266,56 +267,26 @@ class LocalCacheTest(unittest.TestCase):
         self._p.stop()
         self._tmp.cleanup()
 
-    def test_local_key_differs_from_elevenlabs(self):
-        local = tts._local_cache_wav("hello")
-        eleven = tts._cache_path("hello", config.ELEVENLABS_VOICE_ID, config.TTS_MODEL_ID)
-        self.assertNotEqual(str(local), str(eleven.with_suffix(".wav")))
-
-    def test_is_cached_local_checks_local_wav(self):
+    def test_is_cached_false_in_local_mode(self):
+        stray = Path(self._tmp.name) / "stray.mp3"
+        stray.write_bytes(b"stub")   # even an existing cache file must be ignored
         with mock.patch.object(config, "LOCAL_TTS_MODE", True), \
-             mock.patch.object(config, "LOCAL_TTS_CACHE_ENABLED", True), \
-             mock.patch.object(local_tts, "is_available", return_value=True):
-            self.assertFalse(tts.is_cached("boot line"))
-            wav = tts._local_cache_wav("boot line")
-            wav.parent.mkdir(parents=True, exist_ok=True)
-            wav.write_bytes(b"stub")
-            self.assertTrue(tts.is_cached("boot line"))
-
-    def test_is_cached_false_when_cache_disabled(self):
-        with mock.patch.object(config, "LOCAL_TTS_MODE", True), \
-             mock.patch.object(config, "LOCAL_TTS_CACHE_ENABLED", False), \
-             mock.patch.object(local_tts, "is_available", return_value=True):
-            wav = tts._local_cache_wav("boot line")
-            wav.parent.mkdir(parents=True, exist_ok=True)
-            wav.write_bytes(b"stub")   # even a stray file must be ignored
+             mock.patch.object(local_tts, "is_available", return_value=True), \
+             mock.patch.object(tts, "_cache_path", return_value=stray):
             self.assertFalse(tts.is_cached("boot line"))
 
-    def test_ensure_cached_local_uses_engine_not_elevenlabs(self):
-        audio = np.full(2400, 0.2, dtype=np.float32)
+    def test_ensure_cached_noop_in_local_mode(self):
         with mock.patch.object(config, "LOCAL_TTS_MODE", True), \
-             mock.patch.object(config, "LOCAL_TTS_CACHE_ENABLED", True), \
              mock.patch.object(config, "NO_AUDIO_MODE", False, create=True), \
              mock.patch.object(config, "AUDIO_OUTPUT_SUPPRESSED", False, create=True), \
              mock.patch.object(local_tts, "is_available", return_value=True), \
-             mock.patch.object(local_tts, "rex_voice_ref", return_value=REX_REF), \
-             mock.patch.object(local_tts, "synthesize", return_value=(audio, 24000)), \
+             mock.patch.object(local_tts, "synthesize") as synth, \
              mock.patch.object(tts, "_fetch_from_api") as fetch:
-            ok = tts.ensure_cached("boot line")
-            self.assertTrue(tts._local_cache_wav("boot line").exists())
-        self.assertTrue(ok)
-        fetch.assert_not_called()
-
-    def test_ensure_cached_local_noop_when_disabled(self):
-        with mock.patch.object(config, "LOCAL_TTS_MODE", True), \
-             mock.patch.object(config, "LOCAL_TTS_CACHE_ENABLED", False), \
-             mock.patch.object(config, "NO_AUDIO_MODE", False, create=True), \
-             mock.patch.object(config, "AUDIO_OUTPUT_SUPPRESSED", False, create=True), \
-             mock.patch.object(local_tts, "is_available", return_value=True), \
-             mock.patch.object(local_tts, "synthesize") as synth:
             ok = tts.ensure_cached("boot line")
         self.assertFalse(ok)
         synth.assert_not_called()
-        self.assertFalse(tts._local_cache_wav("boot line").exists())
+        fetch.assert_not_called()
+        self.assertEqual(list(Path(self._tmp.name).iterdir()), [])
 
 
 class SpeakLocalPlaybackTest(unittest.TestCase):
@@ -334,20 +305,13 @@ class SpeakLocalPlaybackTest(unittest.TestCase):
         self._stack.close()
         self._tmp.cleanup()
 
-    def test_streams_and_caches_rex_voice(self):
-        with mock.patch.object(config, "LOCAL_TTS_CACHE_ENABLED", True), \
-             mock.patch.object(local_tts, "generate_stream", _fake_gen_factory()):
-            handled = tts._speak_local("hi rex", REX_REF, "neutral", log_text=False)
-        self.assertTrue(handled)
-        # Rex voice is cacheable (cache enabled) → a WAV take was written.
-        self.assertTrue(tts._local_cache_wav("hi rex").exists())
-
-    def test_cache_disabled_by_default_resynthesizes(self):
-        # Default (LOCAL_TTS_CACHE_ENABLED off): no WAV written, and a repeat line
+    def test_repeat_line_resynthesizes(self):
+        # Local takes are never cached: no WAV written, and a repeat line
         # re-synthesizes rather than replaying via _play.
         with mock.patch.object(local_tts, "generate_stream", _fake_gen_factory()):
-            tts._speak_local("fresh line", REX_REF, "neutral", log_text=False)
-        self.assertFalse(tts._local_cache_wav("fresh line").exists())
+            handled = tts._speak_local("fresh line", REX_REF, "neutral", log_text=False)
+        self.assertTrue(handled)
+        self.assertEqual(list(Path(self._tmp.name).iterdir()), [])
         with mock.patch.object(local_tts, "generate_stream", _fake_gen_factory()), \
              mock.patch.object(tts, "_play") as play:
             tts._speak_local("fresh line", REX_REF, "neutral", log_text=False)
@@ -363,16 +327,6 @@ class SpeakLocalPlaybackTest(unittest.TestCase):
             "i am carter", f"local:{IMPERSONATION_REF.label}", config.LOCAL_TTS_MODEL_ID
         ).with_suffix(".wav")
         self.assertFalse(imp_wav.exists())
-
-    def test_second_call_is_cache_hit(self):
-        with mock.patch.object(config, "LOCAL_TTS_CACHE_ENABLED", True), \
-             mock.patch.object(local_tts, "generate_stream", _fake_gen_factory()):
-            # First call streams + writes the WAV cache (no _play — streamed path).
-            tts._speak_local("cache me", REX_REF, "neutral", log_text=False)
-            # Second call finds the WAV and plays it through _play (the buffered path).
-            with mock.patch.object(tts, "_play") as play:
-                tts._speak_local("cache me", REX_REF, "neutral", log_text=False)
-            play.assert_called_once()
 
 
 if __name__ == "__main__":

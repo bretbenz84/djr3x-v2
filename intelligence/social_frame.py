@@ -427,59 +427,9 @@ def derive_signals(agenda_directive: str, purpose: str) -> dict:
     }
 
 
-def build_directive(frame: SocialFrame) -> str:
-    if frame.purpose == "identity":
-        question_rule = (
-            "Ask exactly one group identity question that gets the newcomer name(s) "
-            "and their connection to the known person or group."
-            if frame.allow_question
-            else "Do not ask a question unless identity safety requires it."
-        )
-    else:
-        question_rule = (
-            "You may ask one question only if it directly serves the primary purpose."
-            if frame.allow_question
-            else "Do not ask a question. No tag questions, no new prompt, no interview pivot."
-        )
-    engagement_rule = (
-        "If no question is allowed, do not go inert: offer a concrete opinion, "
-        "playful observation, or Rex-style banter beat when it fits the turn."
-    )
-    visual_rule = (
-        "What you actually SEE can help you engage: their outfit, their expression, "
-        "the dog underfoot — mention a detail only when relevant to the exchange. "
-        "A playful observation is optional. Only what's "
-        "genuinely there, though: never invent a prop or detail — a drink in their "
-        "hand, what they're wearing or holding — to set up a joke. Punch up, keep "
-        "it playful."
-        if frame.allow_visual_comment
-        else "Do not mention what you see, the camera, the room, their face, or their posture."
-    )
-    # Use the same conversational guidance in both contract formats.
-    roast_rule = _slim_roast_rule(frame)
-    return (
-        "Final response shape contract:\n"
-        "- Generate the reply in this shape now; the final cleanup layer should "
-        "not need to remove sentences.\n"
-        f"- Addressee: {frame.addressee}; purpose={frame.purpose}.\n"
-        "- Referents: if the room has multiple visible people, use names or "
-        "'you two' / 'you all' when the target is the group. Use he/she/they "
-        "only when the referent is unambiguous from the live cast and latest "
-        "turn; otherwise use a name or ask one tiny clarification if needed.\n"
-        f"- Hard shape: max_words={frame.max_words}; "
-        f"max_sentences={frame.max_sentences}.\n"
-        f"- Question permission: {question_rule}\n"
-        f"- Engagement permission: {engagement_rule}\n"
-        f"- Roast permission: {roast_rule}\n"
-        f"- Visual permission: {visual_rule}\n"
-        "- If these instructions conflict with personality style, obey this "
-        "social frame first."
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 1 / "Bet 2": the SLIM per-turn contract. The verbose build_directive above
-# (9 bullets) plus the agenda's stacked context prose plus the comedy block totaled
+# Phase 1 / "Bet 2": the SLIM per-turn contract. The retired verbose contract (9
+# bullets) plus the agenda's stacked context prose plus the comedy block totaled
 # ~40 pipe-joined segments / 700-980 words that contradicted the "choose ONE
 # purpose" preamble and buried the live turn. render_slim_contract emits ONE compact
 # contract (~130 words) from the SAME structured SocialFrame fields, so no per-turn

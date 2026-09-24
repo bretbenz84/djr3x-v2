@@ -272,9 +272,9 @@ off the speech path, latency-free. Honors the same gates: skipped when
 `suppress_memory_learning`, each candidate through `_extracted_memory_allowed`
 (forget-terms), transcript window already forget-filtered.
 
-Backend (`CALLBACK_BANK_BACKEND`): default **`local`** (qwen2.5:1.5b) — zero
-cost per the project's cost posture; `openai` available as an opt-in spend
-upgrade. The local call follows the proven shape: labelled-line output (never
+Backend: **local only** (qwen2.5:1.5b) — zero cost per the project's cost
+posture (the `CALLBACK_BANK_BACKEND` switch and its `openai` option were removed
+2026-09-23, dead-code Stage 3). The local call follows the proven shape: labelled-line output (never
 JSON), tiny budget (≈120 tokens, 2.5s timeout, background so latency is free),
 anti-echo/repetition validation, fail-closed (no bank on garbage). Finding
 candidates is a factual task (allowed for the 1.5B); the sensitivity *wall* is
@@ -469,7 +469,6 @@ discussed — that's the point); selection is score-ranked from the stored pool.
 # EPISODIC_MEMORY/EPISODIC_RECALL pattern) so the pool can build silently.
 CALLBACK_BANK_ENABLED  = _env_bool("CALLBACK_BANK_ENABLED", True)   # capture
 CALLBACK_HUMOR_ENABLED = _env_bool("CALLBACK_HUMOR_ENABLED", True)  # firing (A/B via env)
-CALLBACK_BANK_BACKEND = "local"          # "local" (free, default) | "openai" (opt-in spend)
 CALLBACK_BANK_MAX_PER_PERSON = 12
 CALLBACK_REUSE_COOLDOWN_DAYS = 7
 CALLBACK_USE_DECAY_HALFLIFE_USES = 3

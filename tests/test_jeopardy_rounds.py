@@ -157,13 +157,6 @@ class DailyDoubleWagerTest(unittest.TestCase):
             games._jeopardy_handle_wager("everything", None)
         self.assertEqual(games._game_state["current_clue"]["effective_value"], 1000)
 
-    def test_disabled_flag_restores_auto_double(self):
-        with mock.patch.object(config, "JEOPARDY_DD_WAGER_ENABLED", False, create=True):
-            resp, _done = self._select_dd()
-        self.assertEqual(games._game_state["phase"], "awaiting_answer")
-        self.assertEqual(games._game_state["current_clue"]["effective_value"], 800)
-        self.assertIn("Automatic double", resp)
-
 
 class PendingCategoryTest(unittest.TestCase):
     """Field 2026-08-25 18:50: "Pop culture for 300" was rejected, then the

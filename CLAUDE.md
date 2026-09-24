@@ -35,13 +35,16 @@ venv/bin/python -m unittest tests.test_zzz_servo_park
 These fail on a clean checkout of main, per-module, and are NOT caused by your
 change (tracked as their own fix-up task):
 
-- `tests/test_audio_and_conversation_gating.py` — 3 failures
+- `tests/test_audio_and_conversation_gating.py` — 2 failures
   (`test_direct_shutdown_clip_leaves_leds_off`,
-  `test_existing_common_name_prompt_logs_human_turn_before_returning`,
-  `test_first_sight_sparse_profile_uses_basic_profile_question` — the third
-  verified pre-existing against clean HEAD 2026-08-05, solo run too; the
+  `test_existing_common_name_prompt_logs_human_turn_before_returning`; the former
+  third, `test_first_sight_sparse_profile_uses_basic_profile_question`, was deleted
+  with the startup profile question in dead-code Stage 3, 2026-09-23; the
   furry-animal surprise-frame failure was fixed 2026-08-03 by the animal
-  presence-ledger rework — the old species cooldown was leaking between tests)
+  presence-ledger rework — the old species cooldown was leaking between tests).
+  As of 2026-09-23 two more also fail, both in the `c00eed5` baseline:
+  `test_preroll_baseline_when_aec_inactive` and
+  `test_startup_boot_tts_thread_speaks_after_configured_delay`
 - `tests/test_face_tracking.py` — FIXED 2026-08-07 (the 4 failures were test rot:
   assertions compared against the neck neutral 5472 while `_set_servo_positions`
   starts the head at 6000 — updated alongside the head-tilt anti-hunting work)
@@ -87,7 +90,9 @@ source files back to 333106b and re-running — they fail identically there:
   `test_falls_through_to_the_api_when_the_local_voice_is_missing`; speak() never
   reaches `_speak_streaming` on this machine — likely environmental)
 - `tests/test_conversation_revamp.py` — `test_one_word_passion_answer_drives_engaged_curiosity`
-  (slim contract lacks "ENGAGE-FIRST")
+  is PASSING again (green at `c00eed5`; since dead-code Stage 3 it asserts
+  ENGAGE-FIRST against `render_slim_contract`, which carries it). The module is
+  fully green, so treat a failure here as new.
 - `tests/test_field_2026_08_03.py` — `test_stored_bookkeeping_threads_filtered_at_read`
   (the camping-trip thread is filtered too — suspect date-rot in open_threads)
 

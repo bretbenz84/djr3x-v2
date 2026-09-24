@@ -87,8 +87,8 @@ A multi-lens review of the finished change found four real defects, all fixed he
 4. **The ack was blocking, and it added latency instead of hiding it.**
    `_speak_blocking` returns only after playback AND the 800–1500 ms
    post-punchline beat a priority-1 line draws, so time-to-wheels was 2.5–3.7 s
-   against a 1.2 s budget. It now rides `speech_queue.enqueue` (the
-   `_try_slow_path_ack` pattern) and plays OVER the call it covers.
+   against a 1.2 s budget. It now rides `speech_queue.enqueue` (the pattern
+   of the since-deleted slow-path ack) and plays OVER the call it covers.
 
 Plus two smaller ones: a one-step route dropped the `pace` the translator computed
 (only `motion_sequence._issue` was reading `rate`/`speed`, and a one-step plan goes

@@ -412,7 +412,9 @@ glance. What went wrong was mostly NOT the reflex:
    return the camera never confirmed. Fix: radar orient stands down for
    `MOTION_RADAR_ORIENT_VOICE_DEFER_SECS` (20 s) after any voice bearing
    (`motion_agency.note_voice_bearing`, called by the reflex and by every
-   transcribed segment).
+   transcribed segment). (Radar orient was deleted in dead-code Stage 3; the
+   knob survives as `MOTION_IDLE_WANDER_VOICE_DEFER_SECS`, which only gates idle
+   wander.)
 2. **DoA read through a turn.** 22:04:03 `+105° (11/11)` was a segment
    captured across a base turn; the ring rotates with the base and the motors
    are a source. Fix: the poller marks samples taken while `motion.state()` is
@@ -444,7 +446,7 @@ base-motion samples; poll rate 10 Hz; `WAKE_ORIENT_MIN_SAMPLES` 6 → 4;
 "facing" is judged against the HEAD axis (voice + neck yaw), so a caller 9°
 off the body while the head is parked elsewhere still gets a glance;
 `MOTION_RADAR_ORIENT_ENABLED = False` (the ring keeps its role inside
-come-here); the conversation log gets a `WAKE  | Hey rex — heard at ±N° (k/n)
+come-here; radar orient was later deleted in dead-code Stage 3); the conversation log gets a `WAKE  | Hey rex — heard at ±N° (k/n)
 → outcome` line per fire.
 
 ### "Over here" (shipped 2026-09-02)
@@ -478,7 +480,7 @@ gyro-closed turn was accurate, the compass over-read). The miss: the coarse
 sways and meander legs. Fixes: rotation is now judged from the base's gyro
 yaw step per poll (`FLEX_DOA_MOTION_YAW_STEP_DEG` 1°/poll ≈ 10°/s), settle
 0.4 s; a heard voice drops any in-flight wander and blocks a new one for
-`MOTION_RADAR_ORIENT_VOICE_DEFER_SECS` (20 s).
+`MOTION_IDLE_WANDER_VOICE_DEFER_SECS` (20 s).
 
 ### The chip holds the last talker's direction (fix after run 3)
 

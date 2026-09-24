@@ -63,7 +63,7 @@ class SummaryHygieneTest(unittest.TestCase):
         self.assertIn("boxes", src.lower())
 
     def test_arc_rich_schema_shared_excludes_surroundings(self):
-        rich = topic_thread._build_arc_prompt("User: hi", rich=True)
+        rich = topic_thread._build_arc_prompt("User: hi")
         # The Shared field now says DURABLE facts, not transient surroundings.
         self.assertIn("DURABLE", rich)
         self.assertIn("boxes", rich.lower())

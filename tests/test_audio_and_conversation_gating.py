@@ -1624,75 +1624,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             wake_word._loaded_models = old_loaded
 
-    def test_sleep_wake_transcript_requires_explicit_rex_wake_phrase(self):
-        from intelligence import interaction
-
-        for text in [
-            "wake up rex",
-            "wake up, Rex.",
-            "please wake up DJ Rex",
-            "R3X wake up",
-            "wakeuprex",
-        ]:
-            with self.subTest(text=text):
-                self.assertTrue(interaction._is_sleep_wake_transcript(text))
-
-        for text in [
-            "wake up",
-            "hey rex",
-            "wake me up rex",
-            "don't wake up rex",
-            "I should wake up Rex later",
-        ]:
-            with self.subTest(text=text):
-                self.assertFalse(interaction._is_sleep_wake_transcript(text))
-
-    def test_sleep_transcription_fallback_wakes_on_phrase(self):
-        import numpy as np
-        from intelligence import interaction
-
-        previous_last = interaction._last_speech_at
-        try:
-            with (
-                mock.patch.object(
-                    interaction.transcription,
-                    "transcribe",
-                    return_value="wake up rex",
-                ),
-                mock.patch.object(interaction, "_wake_from_sleep", return_value="awake") as wake,
-                mock.patch.object(interaction.time, "monotonic", return_value=123.0),
-            ):
-                self.assertTrue(
-                    interaction._wake_from_sleep_if_transcribed(
-                        np.ones(1600, dtype=np.float32)
-                    )
-                )
-
-            wake.assert_called_once()
-            self.assertEqual(interaction._last_speech_at, 123.0)
-        finally:
-            interaction._last_speech_at = previous_last
-
-    def test_sleep_transcription_fallback_ignores_non_wake_phrase(self):
-        import numpy as np
-        from intelligence import interaction
-
-        with (
-            mock.patch.object(
-                interaction.transcription,
-                "transcribe",
-                return_value="thanks for watching",
-            ),
-            mock.patch.object(interaction, "_wake_from_sleep") as wake,
-        ):
-            self.assertFalse(
-                interaction._wake_from_sleep_if_transcribed(
-                    np.ones(1600, dtype=np.float32)
-                )
-            )
-
-        wake.assert_not_called()
-
     def test_wake_word_recognition_gesture_filters_and_cools_down(self):
         from intelligence import interaction
         from sequences import animations
@@ -4346,13 +4277,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction.world_state.update("people", old_people)
 
-    def test_vad_barge_in_is_disabled_by_default(self):
-        import config
-        from intelligence import interaction
-
-        self.assertFalse(config.VAD_BARGE_IN_ENABLED)
-        self.assertFalse(interaction._vad_barge_in_enabled())
-
 
 class TurnCompletionTest(unittest.TestCase):
     def tearDown(self):
@@ -4455,187 +4379,6 @@ class TurnCompletionTest(unittest.TestCase):
 
 
 class ConversationGatingTest(unittest.TestCase):
-    def test_latency_fillers_are_in_character_not_human_disfluencies(self):
-        import config
-
-        slow_ack_lines = []
-        for value in config.SLOW_PATH_ACK_LINES.values():
-            slow_ack_lines.extend(value)
-        joined = " ".join(config.LATENCY_FILLER_LINES + slow_ack_lines).lower()
-
-        self.assertNotRegex(joined, r"\b(?:um+|uh+|hmm+)\b")
-        self.assertTrue(
-            any(
-                phrase in joined
-                for phrase in (
-                    "one sec",
-                    "processing",
-                    "recalibrating",
-                    "memory banks",
-                    "one second",
-                    "let me check",
-                )
-            )
-        )
-
-    def test_slow_path_ack_requires_cached_line_and_marks_ttfs(self):
-        from intelligence import interaction
-
-        class Done:
-            pass
-
-        trace = interaction._new_character_loop_trace(
-            "What do you see?",
-            from_idle_activation=False,
-            turn_start=10.0,
-            raw_best_id=None,
-            raw_best_name=None,
-            speaker_score=0.0,
-        )
-        trace.transcript_ready_at = 10.25
-
-        def fake_enqueue(*args, **kwargs):
-            callback = kwargs.get("on_start")
-            if callback is not None:
-                callback()
-            return Done()
-
-        token = interaction._current_character_loop_trace.set(trace)
-        previous_ack = interaction._last_slow_path_ack
-        try:
-            interaction._last_slow_path_ack = None
-            with (
-                mock.patch("config.SLOW_PATH_ACK_ENABLED", True),
-                mock.patch("audio.tts.is_cached", return_value=True),
-                mock.patch.object(interaction.random, "choice", side_effect=lambda items: items[0]),
-                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
-                mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
-                mock.patch.object(interaction.speech_queue, "enqueue", side_effect=fake_enqueue) as enqueue,
-                mock.patch.object(interaction.time, "monotonic", side_effect=[10.5, 10.75]),
-                mock.patch.object(interaction._log, "info"),
-            ):
-                self.assertTrue(interaction._try_slow_path_ack("vision"))
-        finally:
-            interaction._last_slow_path_ack = previous_ack
-            interaction._current_character_loop_trace.reset(token)
-
-        enqueue.assert_called_once()
-        self.assertEqual(enqueue.call_args.args[:2], ("Let me check.", "neutral"))
-        self.assertEqual(enqueue.call_args.kwargs["priority"], 1)
-        self.assertEqual(enqueue.call_args.kwargs["tag"], "slow_path_ack")
-        self.assertEqual(trace.first_response_queued_at, 10.5)
-        self.assertEqual(trace.first_response_audio_started_at, 10.75)
-        self.assertEqual(trace.first_response_preview, "Let me check.")
-
-    def test_slow_path_ack_skips_uncached_line(self):
-        from intelligence import interaction
-
-        trace = interaction._new_character_loop_trace(
-            "What do you remember about me?",
-            from_idle_activation=False,
-            turn_start=10.0,
-            raw_best_id=None,
-            raw_best_name=None,
-            speaker_score=0.0,
-        )
-        trace.transcript_ready_at = 10.25
-        token = interaction._current_character_loop_trace.set(trace)
-        try:
-            with (
-                mock.patch("config.SLOW_PATH_ACK_ENABLED", True),
-                mock.patch("audio.tts.is_cached", return_value=False),
-                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
-                mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
-                mock.patch.object(interaction.speech_queue, "enqueue") as enqueue,
-            ):
-                self.assertFalse(interaction._try_slow_path_ack("memory"))
-        finally:
-            interaction._current_character_loop_trace.reset(token)
-
-        enqueue.assert_not_called()
-        self.assertIsNone(trace.first_response_queued_at)
-
-    def test_slow_path_ack_skips_noaudio_text_mode_by_default(self):
-        from intelligence import interaction
-
-        trace = interaction._new_character_loop_trace(
-            "Tell me something.",
-            from_idle_activation=False,
-            turn_start=10.0,
-            raw_best_id=None,
-            raw_best_name=None,
-            speaker_score=0.0,
-        )
-        trace.transcript_ready_at = 10.25
-        token = interaction._current_character_loop_trace.set(trace)
-        previous_ack = interaction._last_slow_path_ack
-        try:
-            interaction._last_slow_path_ack = None
-            with (
-                mock.patch("config.SLOW_PATH_ACK_ENABLED", True),
-                mock.patch("config.NO_AUDIO_MODE", True),
-                mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
-                mock.patch("config.SLOW_PATH_ACK_IN_TEXT_ONLY", False),
-                mock.patch("audio.tts.is_cached", return_value=False) as is_cached,
-                mock.patch.object(interaction.random, "choice", side_effect=lambda items: items[0]),
-                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
-                mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
-                mock.patch.object(interaction.speech_queue, "enqueue") as enqueue,
-                mock.patch.object(interaction.time, "monotonic", return_value=10.5),
-                mock.patch.object(interaction._log, "info"),
-            ):
-                self.assertFalse(interaction._try_slow_path_ack("general"))
-        finally:
-            interaction._last_slow_path_ack = previous_ack
-            interaction._current_character_loop_trace.reset(token)
-
-        is_cached.assert_not_called()
-        enqueue.assert_not_called()
-
-    def test_slow_path_ack_can_be_enabled_in_noaudio_without_tts_cache(self):
-        from intelligence import interaction
-
-        trace = interaction._new_character_loop_trace(
-            "Tell me something.",
-            from_idle_activation=False,
-            turn_start=10.0,
-            raw_best_id=None,
-            raw_best_name=None,
-            speaker_score=0.0,
-        )
-        trace.transcript_ready_at = 10.25
-        token = interaction._current_character_loop_trace.set(trace)
-        previous_ack = interaction._last_slow_path_ack
-        try:
-            interaction._last_slow_path_ack = None
-            with (
-                mock.patch("config.SLOW_PATH_ACK_ENABLED", True),
-                mock.patch("config.NO_AUDIO_MODE", True),
-                mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
-                mock.patch("config.SLOW_PATH_ACK_IN_TEXT_ONLY", True),
-                mock.patch("audio.tts.is_cached", return_value=False) as is_cached,
-                mock.patch.object(interaction.random, "choice", side_effect=lambda items: items[0]),
-                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
-                mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
-                mock.patch.object(interaction.speech_queue, "enqueue") as enqueue,
-                mock.patch.object(interaction.time, "monotonic", return_value=10.5),
-                mock.patch.object(interaction._log, "info"),
-            ):
-                # Needs >= SLOW_PATH_ACK_GENERAL_MIN_WORDS (9) words to clear the
-                # word-count gate added in commit b749c82; this exercises the
-                # text-only/no-cache path the test actually targets.
-                self.assertTrue(interaction._try_slow_path_ack(
-                    "general",
-                    text="Tell me a long story about the asteroid field incident please",
-                ))
-        finally:
-            interaction._last_slow_path_ack = previous_ack
-            interaction._current_character_loop_trace.reset(token)
-
-        is_cached.assert_not_called()
-        enqueue.assert_called_once()
-        self.assertEqual(enqueue.call_args.args[:2], ("One sec.", "neutral"))
-
     def test_startup_solo_greeting_prompt_names_person_and_avoids_they_them(self):
         from intelligence import consciousness
 
@@ -4829,7 +4572,6 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_pick_absence_phase", return_value=None),
                 # Priority 3.5 same-day "you again" reads the live people DB; neutralize it.
                 mock.patch.object(consciousness, "_same_day_return_count", return_value=0),
-                mock.patch.object(consciousness, "_pick_startup_profile_question", return_value=None),
                 mock.patch.object(consciousness, "_build_first_sight_mood_prompt", return_value=None),
                 mock.patch.object(
                     consciousness,
@@ -4848,92 +4590,6 @@ class ConversationGatingTest(unittest.TestCase):
             self.assertNotIn(1, consciousness._first_sight_seen_at)
             self.assertIn(1, consciousness._visible_people)
             self.assertEqual(generate.call_args.kwargs["startup_greeting_name"], "Bret")
-        finally:
-            consciousness._visible_people.clear()
-            consciousness._visible_people.update(old_visible)
-            consciousness._last_seen.clear()
-            consciousness._last_seen.update(old_last_seen)
-            consciousness._first_sight_seen_at.clear()
-            consciousness._first_sight_seen_at.update(old_first_seen)
-            consciousness._greeted_this_session.clear()
-            consciousness._greeted_this_session.update(old_greeted)
-
-    def test_first_sight_sparse_profile_uses_basic_profile_question(self):
-        from intelligence import consciousness
-
-        old_visible = set(consciousness._visible_people)
-        old_last_seen = dict(consciousness._last_seen)
-        old_first_seen = dict(consciousness._first_sight_seen_at)
-        old_greeted = set(consciousness._greeted_this_session)
-        try:
-            consciousness._visible_people.clear()
-            consciousness._last_seen.clear()
-            consciousness._first_sight_seen_at.clear()
-            consciousness._first_sight_seen_at[1] = 100.0
-            consciousness._greeted_this_session.clear()
-            snapshot = {
-                "people": [
-                    {"person_db_id": 1, "face_id": "Bret Benziger"},
-                ],
-                "crowd": {"count": 1},
-            }
-            profile = mock.Mock(
-                suppress_proactive=False,
-                interaction_busy=False,
-                user_mid_sentence=False,
-                likely_still_present=False,
-                apparent_departure=False,
-            )
-            question = {
-                "key": "hometown",
-                "text": "So where are you from?",
-                "depth": 1,
-            }
-
-            with (
-                mock.patch.object(consciousness.time, "monotonic", return_value=105.0),
-                mock.patch.object(consciousness.config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 0.0),
-                mock.patch.object(consciousness, "_hold_startup_individual_greeting", return_value=False),
-                mock.patch.object(consciousness, "_should_fire_presence", return_value=True),
-                mock.patch.object(consciousness, "_pick_due_emotional_checkin", return_value=None),
-                mock.patch.object(consciousness, "_pick_birthday_window", return_value=None),
-                mock.patch.object(consciousness, "_pick_due_celebration_checkin", return_value=None),
-                mock.patch.object(consciousness, "_pick_milestone", return_value=None),
-                mock.patch.object(consciousness, "_pick_anticipated_event", return_value=None),
-                mock.patch.object(consciousness, "_pick_absence_phase", return_value=None),
-                # Priority 3.5 same-day "you again" reads the live people DB; neutralize it.
-                mock.patch.object(consciousness, "_same_day_return_count", return_value=0),
-                # Isolate from real DB state: a passed pending follow-up (priority
-                # 2.5) reads memory.events directly and would otherwise outrank the
-                # first-sight profile question this test is asserting.
-                mock.patch("memory.events.get_pending_followups", return_value=[]),
-                # The interest cold-open tier sits just above the profile question; this
-                # test asserts the profile-question fallback, so neutralize it like the
-                # other higher tiers above.
-                mock.patch.object(consciousness, "_pick_cold_open_callback", return_value=None),
-                # The profile question is for people Rex is still getting to know; the new
-                # warm-greeting default outranks it for friends/creator. Force the
-                # not-yet-a-friend path so this test still exercises the question fallback.
-                mock.patch.object(consciousness, "_greeting_profile",
-                                  return_value=("You know them a little.", False)),
-                mock.patch.object(consciousness, "_pick_startup_profile_question", return_value=question),
-                mock.patch.object(
-                    consciousness,
-                    "_generate_and_speak_presence",
-                    return_value=True,
-                ) as generate,
-            ):
-                consciousness._step_presence_tracking(snapshot, profile)
-
-            prompt = generate.call_args.args[0]
-            self.assertIn("So where are you from?", prompt)
-            self.assertIn("early getting-to-know-you curiosity", prompt)
-            self.assertEqual(generate.call_args.kwargs["question_key"], "hometown")
-            self.assertEqual(generate.call_args.kwargs["question_depth"], 1)
-            self.assertEqual(
-                generate.call_args.kwargs["label"],
-                "first-sight profile question for Bret Benziger",
-            )
         finally:
             consciousness._visible_people.clear()
             consciousness._visible_people.update(old_visible)
@@ -5802,17 +5458,13 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("topic interest", plan.reason)
 
     def test_topic_knowledge_question_gets_longer_budget(self):
-        from intelligence import llm, response_length
+        from intelligence import response_length
 
-        directive = response_length.build_directive(
-            "What do you know about Star Trek?",
-        )
         plan = response_length.classify("What do you know about Star Trek?")
 
         self.assertEqual(plan.target, "long")
         self.assertGreaterEqual(plan.max_words, 100)
         self.assertIn("general knowledge", plan.instruction)
-        self.assertGreaterEqual(llm._max_tokens_for_agenda(directive), 200)
 
     def test_social_frame_does_not_shorten_allowed_interest_followup_by_default(self):
         from intelligence import social_frame
@@ -8331,7 +7983,6 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         target = memory_query.MemoryTarget(mode="named", name="R2D2", detail="no_person_match")
         with mock.patch.object(memory_query, "resolve_target", return_value=target), \
              mock.patch.object(interaction, "_speak_blocking") as speak, \
-             mock.patch.object(interaction, "_try_slow_path_ack"), \
              mock.patch.object(interaction.llm, "get_response") as llm_call:
             result = interaction._handle_classified_intent(
                 "query_memory", "Tell me about your friend R2D2", 1
@@ -8350,7 +8001,6 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         )
         with mock.patch.object(memory_query, "resolve_target", return_value=target), \
              mock.patch.object(interaction, "_speak_blocking"), \
-             mock.patch.object(interaction, "_try_slow_path_ack"), \
              mock.patch.object(interaction.llm, "get_response", return_value="No brother on file."):
             result = interaction._handle_classified_intent(
                 "query_memory", "Tell me about my brother", 1
@@ -8655,7 +8305,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             }
         ]
         with mock.patch.object(config, "RADIO_STATIONS", stations):
-            self.assertIsNone(dj._vibe_match("classical music", []))
+            self.assertIsNone(dj._vibe_match("classical music"))
 
     def test_dj_vibe_match_still_allows_exact_classic_rock(self):
         import config
@@ -8669,7 +8319,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             }
         ]
         with mock.patch.object(config, "RADIO_STATIONS", stations):
-            match = dj._vibe_match("classic rock", [])
+            match = dj._vibe_match("classic rock")
 
         self.assertIsNotNone(match)
         self.assertEqual(match.name, "Left Coast 70s")
@@ -8712,7 +8362,6 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
                 mock.patch.object(consciousness, "_generate_and_speak") as speak,
-                mock.patch("config.WORLD_SOUND_EVENT_REACTIONS_ENABLED", False),
             ):
                 consciousness._step_proactive_reactions(curr, profile)
         finally:
@@ -8763,7 +8412,6 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
                 mock.patch.object(consciousness, "_generate_and_speak", return_value=True) as speak,
                 mock.patch("sequences.animations.play_body_beat") as body_beat,
-                mock.patch("config.WORLD_SOUND_EVENT_REACTIONS_ENABLED", False),
                 mock.patch("config.WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED", True),
                 mock.patch("config.STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS", 0.0),
             ):
@@ -9758,37 +9406,6 @@ class PostResponseMemoryExtractionTest(unittest.TestCase):
             finally:
                 interaction._stop_event.clear()
 
-    def test_general_slow_path_ack_skips_short_turns_and_reply_frames(self):
-        from intelligence import dialogue_act, interaction
-
-        act = dialogue_act.DialogueActDecision(
-            "answer_to_rex",
-            0.90,
-            "reply to last Rex turn",
-            skip_action_router=True,
-        )
-
-        self.assertFalse(interaction._slow_path_ack_allowed_for_turn("general", "cataracts"))
-        self.assertFalse(
-            interaction._slow_path_ack_allowed_for_turn(
-                "general",
-                "I need to turn over where?",
-            )
-        )
-        self.assertFalse(
-            interaction._slow_path_ack_allowed_for_turn(
-                "general",
-                "this is a longer reply but it belongs to Rex's pending question",
-                act,
-            )
-        )
-        self.assertTrue(
-            interaction._slow_path_ack_allowed_for_turn(
-                "general",
-                "this is a longer conversational thought that might need an actual answer",
-            )
-        )
-
     def test_proactive_unknown_identity_prompt_does_not_fire_while_active(self):
         from intelligence import consciousness
         import state as state_module
@@ -10034,43 +9651,6 @@ class WakeWordDjBargeInTest(unittest.TestCase):
             sd.play, sd.stop, sd_guard._installed = real_play, real_stop, installed_before
 
 
-class StartupGreetingOpenerTest(unittest.TestCase):
-    def test_startup_profile_question_disabled_by_default(self):
-        from intelligence import consciousness
-
-        # Even with a sparse profile that would otherwise yield a question, the
-        # cold open must stay casual — no profile question.
-        with (
-            mock.patch.object(consciousness.config, "STARTUP_PROFILE_QUESTION_ENABLED", False),
-            mock.patch.object(consciousness.profile_questions, "profile_fact_count", return_value=0),
-            mock.patch.object(
-                consciousness.profile_questions,
-                "next_profile_question",
-                return_value={"key": "favorite_music", "text": "What kind of music are you into?", "depth": 1},
-            ) as next_q,
-        ):
-            self.assertIsNone(consciousness._pick_startup_profile_question(1))
-            next_q.assert_not_called()
-
-    def test_startup_profile_question_returns_question_when_enabled(self):
-        from intelligence import consciousness
-        from intelligence import question_budget
-
-        question = {"key": "hometown", "text": "So where are you from?", "depth": 1}
-        with (
-            mock.patch.object(consciousness.config, "STARTUP_PROFILE_QUESTION_ENABLED", True),
-            mock.patch.object(consciousness.config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True),
-            mock.patch.object(consciousness.profile_questions, "profile_fact_count", return_value=0),
-            mock.patch.object(question_budget, "can_ask", return_value=True),
-            mock.patch.object(
-                consciousness.profile_questions,
-                "next_profile_question",
-                return_value=question,
-            ),
-        ):
-            self.assertEqual(consciousness._pick_startup_profile_question(1), question)
-
-
 class HardwareAecBoundaryTest(unittest.TestCase):
     """When the ReSpeaker Lite hardware AEC is active, the post-TTS deaf window is
     shrunk so a human reply landing as Rex finishes is still captured. On any
@@ -10213,7 +9793,6 @@ class PostQuestionHandoffStickinessTest(unittest.TestCase):
         with mock.patch.object(interaction.config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False):
             flush = self._apply("What's his name?")
         flush.assert_not_called()
-        self.assertFalse(interaction._post_tts_flush_needed)
 
     def test_trailing_statement_after_question_stays_responsive(self):
         from intelligence import interaction
@@ -10228,7 +9807,6 @@ class PostQuestionHandoffStickinessTest(unittest.TestCase):
         # The trailing statement must NOT flush the buffer (would delete the
         # human's immediate answer to the question).
         flush.assert_not_called()
-        self.assertFalse(interaction._post_tts_flush_needed)
         self.assertLessEqual(
             interaction._listen_resume_at - interaction._last_speech_at, 0.12 + 1e-6
         )
@@ -10243,7 +9821,6 @@ class PostQuestionHandoffStickinessTest(unittest.TestCase):
         with mock.patch.object(interaction.config, "POST_QUESTION_HANDOFF_STICKY_SECS", 1.5):
             flush = self._apply("Toys are the modern navigational console.")
         flush.assert_not_called()
-        self.assertFalse(interaction._post_tts_flush_needed)
         self.assertAlmostEqual(
             interaction._listen_resume_at - interaction._last_speech_at,
             float(config.POST_SPEECH_LISTEN_DELAY_SECS),
@@ -10728,7 +10305,6 @@ class PostQuestionRetroScanTest(unittest.TestCase):
             interaction._post_question_retro_scan_at,
             interaction._listen_resume_at,
             interaction._listen_capture_floor_at,
-            interaction._post_tts_flush_needed,
             interaction._last_fast_handoff_at,
         )
         interaction._post_question_retro_scan_at = 0.0
@@ -10740,8 +10316,7 @@ class PostQuestionRetroScanTest(unittest.TestCase):
     def tearDown(self):
         i = self.interaction
         (i._post_question_retro_scan_at, i._listen_resume_at,
-         i._listen_capture_floor_at, i._post_tts_flush_needed,
-         i._last_fast_handoff_at) = self._saved
+         i._listen_capture_floor_at, i._last_fast_handoff_at) = self._saved
 
     def _apply_handoff(self, text):
         with mock.patch.object(self.interaction.stream, "flush"), \

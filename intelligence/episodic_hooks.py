@@ -229,10 +229,6 @@ def startup_image(frame) -> None:
             caption = _scene.quick_caption(frame, known_people=known)
             if caption:
                 from memory import episodes
-                # Before recording THIS run's snapshot, compare it to the PREVIOUS run's
-                # so Rex can remark on a change of scenery (a different room, outdoors, a
-                # new place). Queued for consciousness to speak; no-op if unchanged.
-                _maybe_queue_scenery_remark(caption)
                 # Keep only a notable or person-present startup scene — otherwise it's
                 # generic boilerplate ("a tidy room with white walls") that repeats every
                 # boot and drags down recall quality.
@@ -255,11 +251,6 @@ def startup_image(frame) -> None:
             _log.debug("startup image caption failed: %s", exc)
 
     threading.Thread(target=_work, daemon=True, name="startup-image-caption").start()
-
-
-# Set by the startup-image worker when this run's scene differs from the previous run's;
-# consciousness pops it via take_scenery_remark() and speaks it once.
-_pending_scenery_remark = None
 
 
 def _previous_startup_caption() -> str:
@@ -291,32 +282,6 @@ def _previous_startup_caption() -> str:
     except Exception as exc:
         _log.debug("previous startup caption lookup failed: %s", exc)
         return ""
-
-
-def _maybe_queue_scenery_remark(current_caption: str) -> None:
-    global _pending_scenery_remark
-    if not bool(getattr(config, "SCENERY_CHANGE_REMARK_ENABLED", True)):
-        return
-    prev = _previous_startup_caption()
-    if not prev:
-        return  # first run (or no prior snapshot) — nothing to compare against
-    try:
-        from intelligence import llm
-        remark = llm.scenery_change_remark(prev, current_caption)
-    except Exception as exc:
-        _log.debug("scenery_change_remark failed: %s", exc)
-        return
-    if remark:
-        _pending_scenery_remark = remark
-        _log.info("episodic: scenery-change remark queued: %r", remark)
-
-
-def take_scenery_remark():
-    """Pop the queued scenery-change remark (consciousness speaks it once), or None."""
-    global _pending_scenery_remark
-    remark = _pending_scenery_remark
-    _pending_scenery_remark = None
-    return remark
 
 
 def visit_departure(person_id, name, arrival_secs, departure_secs) -> None:

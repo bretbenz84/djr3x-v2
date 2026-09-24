@@ -70,7 +70,7 @@ below is about the next gear.
 - `intelligence/social_frame.py` — the FINAL governor. `build_frame()` → `SocialFrame`
   (purpose, max_words, allow_question, allow_roast, allow_visual). `govern_response()`
   (strip disallowed questions/visual/roast, `_salvage_pure_question`, `_is_near_repeat`
-  dedup, `_fallback`). `build_directive()` renders the "Final response shape contract".
+  dedup, `_fallback`). `render_slim_contract()` renders the per-turn contract.
   **`_purpose_from()` and `_explicit_followup_allowed()`/`_EXPLICIT_FOLLOWUP_PAT`/
   `_ASK_ALLOWED_PAT` regex-parse the agenda's own string output — this is the fragility.**
   `_roast_level()`.
@@ -84,8 +84,8 @@ below is about the next gear.
 - `intelligence/user_energy.py` — quiet/banter/depth/engagement classification (`_classify`).
 - `intelligence/question_budget.py` — question rationing (`can_ask`, `build_directive`;
   config `QUESTION_BUDGET_*`).
-- `intelligence/response_length.py` — per-turn length budget (`classify`); token budget map
-  `_RESPONSE_LENGTH_TOKEN_BUDGET` lives in `llm.py` (`_max_tokens_for_agenda`).
+- `intelligence/response_length.py` — per-turn length budget (`classify`);
+  `llm._max_tokens_for_agenda` derives the token budget from the contract's `max_words=N`.
 - `intelligence/comedy_modes.py` — comedy stance + anti-repeat. `select_mode`,
   `build_directive`, `polish_response`/`polish_stream_sentence`, `strip_banned_opener`,
   `note_spoken_line`/`last_spoken_line` (full last line), `_RECENT_MODES/PREMISES/OPENERS`.
@@ -165,7 +165,8 @@ conversation + a structured spine**, leaning on the LLM for fuzzy judgments.
 > (§6b, after "Session so far"). **Backend is configurable** (`config.CONVERSATION_ARC_BACKEND`):
 > `gpt-4o-mini` by default (rich schema; the local `qwen2.5:1.5b` froze/looped and
 > couldn't judge affect — validated both live), or `"local"` for the 3-field sidecar
-> version. Off-path + cloud-already-required → no latency/dependency cost. Purely
+> version (`CONVERSATION_ARC_BACKEND` and the 3-field local variant were removed in
+> dead-code Stage 3, 2026-09-23; the arc is OpenAI-only). Off-path + cloud-already-required → no latency/dependency cost. Purely
 > additive — no anti-repetition hacks deleted yet. Tests: `tests/test_conversation_arc.py`
 > (note the test-runner safety gate — the suite has a live OpenAI key). See the
 > "Conversation arc memory (Bet 1)" do-not-regress entry in `CONTEXT.md` for the full
@@ -323,8 +324,8 @@ One small structured `qwen2.5:1.5b` call per turn returning
   to "he heard me while talking"): transcribe during playback on the un-attenuated rolling
   buffer, fuzzy-diff the transcript against the known in-flight TTS text (`audio/tts.py` /
   speech_queue knows what's playing), strip Rex's words, keep the residual = the user. Robust
-  to clock drift/reverb (the things that killed the acoustic AEC in `audio/aec.py`, now
-  disabled). Bias HARD toward keeping (asymmetric thresholds + speaker-ID on the residual) so
+  to clock drift/reverb (the things that killed the acoustic AEC in the former
+  `audio/aec.py`, since deleted). Bias HARD toward keeping (asymmetric thresholds + speaker-ID on the residual) so
   a user echoing Rex isn't falsely dropped. Touch: `audio/barge_guard.py`,
   `audio/transcription.py`, the wake/VAD path. NOT a full fix for deep talk-over (acoustic
   masking → needs the ReSpeaker hardware-AEC firmware path noted in CONTEXT.md).

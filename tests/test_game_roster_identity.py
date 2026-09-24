@@ -201,18 +201,6 @@ class EagerProbeDuringGamesTest(unittest.TestCase):
             games._active_game = "jeopardy"
             self.assertFalse(interaction._eager_motion_endpoint_enabled())
 
-    def test_the_game_gate_is_switchable(self):
-        with mock.patch.object(interaction.motion_controller, "available",
-                               return_value=True), \
-             mock.patch.object(interaction.config, "MOTION_EAGER_ENDPOINT_REQUIRE_AEC",
-                               False, create=True), \
-             mock.patch.object(interaction.config, "MOTION_EAGER_ENDPOINT_DURING_GAMES",
-                               True, create=True), \
-             mock.patch.object(interaction.motion_controller, "is_moving",
-                               return_value=False):
-            games._active_game = "jeopardy"
-            self.assertTrue(interaction._eager_motion_endpoint_enabled())
-
 
 class RosterNameSanityTest(unittest.TestCase):
     """A swear in the roster reply is not a contestant.

@@ -70,10 +70,6 @@ class TokenBudgetTest(unittest.TestCase):
         c = sf.render_slim_contract(_frame(max_words=36), "")
         self.assertEqual(llm._max_tokens_for_agenda(c), int(36 * 1.7))
 
-    def test_old_target_format_still_works(self):
-        self.assertEqual(
-            llm._max_tokens_for_agenda("Response length control:\n- Target: short"), 70)
-
     def test_empty_falls_back_to_default(self):
         self.assertEqual(llm._max_tokens_for_agenda(""), 150)
 

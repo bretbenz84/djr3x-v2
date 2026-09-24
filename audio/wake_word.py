@@ -314,13 +314,6 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
             active = _SHUTDOWN_MODELS & active
 
         mic = audio[-_CHUNK_SAMPLES:]
-        # Optional software echo suppression (off by default — see audio/aec.py and
-        # config.AEC_SOFTWARE_ENABLED; ineffective in-room, kept for experimentation).
-        try:
-            from audio import aec
-            mic = aec.process(mic)
-        except Exception as exc:
-            _log.debug("[wake_word] aec passthrough: %s", exc)
 
         chunk = _to_oww_input(mic)
 

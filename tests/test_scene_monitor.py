@@ -19,40 +19,21 @@ class SceneMonitorTests(unittest.TestCase):
         world_state.update("people", self.old_people)
         world_state.update("environment", self.old_environment)
 
-    def test_detect_lifeforms_updates_people_and_furry_animals(self):
+    def test_startle_scan_ignores_low_confidence_animals(self):
         from vision import scene
         from world_state import world_state
 
+        world_state.update("animals", [])
         raw = (
-            '{"people_count": 1, "animals": ['
-            '{"species": "dog", "position": "lower right", '
-            '"furred": true, "confidence": "high"}]}'
+            '{"animals": ['
+            '{"species": "snake", "position": "background", '
+            '"furred": false, "confidence": "low"}]}'
         )
 
         with mock.patch.object(scene, "_call_gpt4o", return_value=raw):
-            result = scene.detect_lifeforms(object())
+            added = scene._scan_for_startle_species(object())
 
-        self.assertEqual(result["people_count"], 1)
-        self.assertEqual(world_state.get("crowd")["count"], 1)
-        animals = world_state.get("animals")
-        self.assertEqual(len(animals), 1)
-        self.assertEqual(animals[0]["species"], "dog")
-        self.assertTrue(animals[0]["furred"])
-
-    def test_detect_lifeforms_ignores_low_confidence_animals(self):
-        from vision import scene
-        from world_state import world_state
-
-        raw = (
-            '{"people_count": 1, "animals": ['
-            '{"species": "cat", "position": "background", '
-            '"furred": true, "confidence": "low"}]}'
-        )
-
-        with mock.patch.object(scene, "_call_gpt4o", return_value=raw):
-            result = scene.detect_lifeforms(object())
-
-        self.assertEqual(result["animals"], [])
+        self.assertEqual(added, [])
         self.assertEqual(world_state.get("animals"), [])
 
     def test_local_animal_detection_updates_world_state_without_openai(self):
@@ -118,25 +99,6 @@ class SceneMonitorTests(unittest.TestCase):
         self.assertEqual(result["crowd_density"], "sparse")
         self.assertEqual(result["local_people_count"], 2)
         self.assertEqual(world_state.get("crowd")["count"], 2)
-
-    def test_lifeform_scan_preserves_recent_local_animals_when_cloud_misses(self):
-        import time
-        from vision import scene
-        from world_state import world_state
-
-        existing = [{
-            "id": "animal_1",
-            "species": "dog",
-            "position": "foreground",
-            "last_seen": time.time(),
-        }]
-        world_state.update("animals", existing)
-
-        with mock.patch.object(scene, "_call_gpt4o", return_value='{"people_count":0,"animals":[]}'):
-            result = scene.detect_lifeforms(object())
-
-        self.assertEqual(result["animals"], existing)
-        self.assertEqual(world_state.get("animals"), existing)
 
     def test_locate_people_reads_presence_and_vertical(self):
         from vision import scene

@@ -24,13 +24,12 @@ class BreezeTest(unittest.TestCase):
         self.enterContext(mock.patch('utils.conv_log.claim_rex_line'))
         self.addCleanup(local_tts.discard_takes)
 
-    def test_engine_selection_and_separate_cache(self):
+    def test_engine_selection_and_separate_model(self):
         self.assertEqual(local_tts.model_id(), 'mlx-community/Breeze-TTS-2-mlx-8bit')
         self.assertEqual(local_tts._model_dir().name, '8bit')
-        breeze = local_tts.cache_identity()
         with mock.patch.object(config, 'LOCAL_TTS_BACKEND', 'qwen'):
             self.assertIn('qwen_tts', str(local_tts._model_dir()))
-            self.assertNotEqual(breeze, local_tts.cache_identity())
+            self.assertNotEqual(local_tts.model_id(), 'mlx-community/Breeze-TTS-2-mlx-8bit')
             self.assertFalse(local_tts.streams_clones())
         with mock.patch.object(config, 'LOCAL_TTS_BACKEND', 'bogus'):
             self.assertIn('Unknown LOCAL_TTS_BACKEND', local_tts.unavailable_reason())
@@ -253,7 +252,6 @@ class BreezeTest(unittest.TestCase):
                     def close(self): pass
                 stack.enter_context(mock.patch.object(local_tts, 'generate_stream', side_effect=generate))
                 stack.enter_context(mock.patch('sounddevice.OutputStream', Stream))
-                stack.enter_context(mock.patch.object(config, 'LOCAL_TTS_CACHE_ENABLED', False))
                 stack.enter_context(mock.patch.object(echo_cancel, 'was_canceled', return_value=False))
                 stack.enter_context(mock.patch.object(tts.delivery, 'allowed', return_value=True))
                 stack.enter_context(mock.patch.object(tts.delivery, 'started'))
@@ -310,7 +308,6 @@ class BreezeTest(unittest.TestCase):
                     def close(self): pass
                 stack.enter_context(mock.patch.object(local_tts, 'generate_stream', side_effect=generate))
                 stack.enter_context(mock.patch('sounddevice.OutputStream', Stream))
-                stack.enter_context(mock.patch.object(config, 'LOCAL_TTS_CACHE_ENABLED', False))
                 stack.enter_context(mock.patch.object(echo_cancel, 'was_canceled', return_value=False))
                 stack.enter_context(mock.patch.object(tts.delivery, 'allowed', return_value=True))
                 stack.enter_context(mock.patch.object(tts.delivery, 'started'))

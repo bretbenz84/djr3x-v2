@@ -96,8 +96,9 @@ claim that every live acceptance gate in the plan has passed.
   synthesis and at the sinks; interrupted provider streams are closed.
   This is sentence-level truth, not word-level alignment of partial audio.
 - Owner behavior decision: **finish the pending reply, then handle new speech**
-  when someone speaks while Rex is thinking. `GAP_MERGE_ENABLED=False` is the
-  default; explicit playback barge-in remains. `turn_coordinator.pending` retains
+  when someone speaks while Rex is thinking. The pre-voice gap merge
+  (`GAP_MERGE_ENABLED`) was deleted in dead-code Stage 3 (2026-09-23); explicit
+  playback barge-in remains. `turn_coordinator.pending` retains
   up to four later completed captures from the recovery scan in order, with a
   60-second/session expiry and original capture times. Queued speech cannot answer
   dialogue frames created after its capture; Lean receives that ordering note.

@@ -110,10 +110,9 @@ performance checks the delivery receipt before its success outro/episode.
 | `BREEZE_TTS_DURATION_SLACK` | `2.0` | Additional word-count-based duration cap |
 
 Generation uses `cfg_scale=1.0` to avoid doubling inference work. No voice-direction
-prompt is added by this migration. Optional synthesized-output caching remains
-off by default; cache identities distinguish engine/model/reference so a switch
-cannot replay an older voice. Impersonation output is never cached. Reference
-prefix caching caches conditioning only, not speech output.
+prompt is added by this migration. Synthesized local speech (Rex or
+impersonation) is never cached. Reference prefix caching caches conditioning
+only, not speech output.
 
 Ordinary streamed speech can still underrun on a busy or thermally constrained
 Mac. Increasing `BREEZE_TTS_PREROLL_SEC` or the host buffer trades start latency
@@ -137,7 +136,7 @@ They verify every sample survives repeated reported underruns, including a
 distinctive ending, plus cancellation during preparation, partial-generation
 failure, preparation timeout and unsuccessful delivery. Existing checks cover
 full-queue cancellation, parked-take replacement, backend selection, offline/API
-fallback, cache separation and incomplete assets. Legacy Qwen fixtures select
+fallback, model separation and incomplete assets. Legacy Qwen fixtures select
 Qwen explicitly.
 
 Offline synthesis benchmark, writing WAV/JSON files without audio playback:

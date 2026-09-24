@@ -118,8 +118,7 @@ class MicSkipTelemetryTests(unittest.TestCase):
 
     def test_both_skip_reasons_are_instrumented(self):
         import inspect
-        src = inspect.getsource(I._run_interaction_loop) \
-            if hasattr(I, "_run_interaction_loop") else inspect.getsource(I)
+        src = inspect.getsource(I._loop)
         self.assertIn('_capture_outcome("mic_skip_listen_resume")', src)
         self.assertIn('mic_skip_output_busy_sfx', src)
         self.assertIn('mic_skip_rex_speaking', src)

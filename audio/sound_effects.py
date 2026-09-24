@@ -233,9 +233,7 @@ def _suppresses_mic(family: str) -> bool:
     were simply ignored... the move sound effects and motor whine are cutting me
     off from being heard." He was deafened by his own sound effect.
     """
-    if family in ("motion", "servo", "headlift"):
-        return bool(getattr(config, "SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC", False))
-    return True
+    return family not in ("motion", "servo", "headlift")
 
 
 def _cooldown(family: str) -> float:

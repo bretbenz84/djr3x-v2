@@ -197,8 +197,7 @@ class FieldFixes20260902Test(unittest.TestCase):
 
     def setUp(self):
         flex_doa._reset_for_tests()
-        MA._state.update(voice_bearing_at=0.0, wake_orient_at=0.0, orient_hits=0,
-                         orient_last_at=0.0, orient_visited=[], last_turn_at=0.0,
+        MA._state.update(voice_bearing_at=0.0, wake_orient_at=0.0, last_turn_at=0.0,
                          last_approach_at=0.0, last_flinch_at=0.0, hold_at=None,
                          traction_fails=0, no_traction_until=0.0)
 
@@ -221,35 +220,6 @@ class FieldFixes20260902Test(unittest.TestCase):
              mock.patch("intelligence.consciousness.hold_directed_gaze"):
             self.assertEqual(MA.orient_to_voice(-65.0, share=0.57, samples=2), "thin")
             turn.assert_not_called()
-
-    def test_radar_orient_stands_down_while_a_voice_bearing_is_fresh(self):
-        from tests.test_motion_agency import _profile
-        body = {"bearing_deg": 120.0, "range_m": 1.5, "confidence": 0.9, "hits": 5, "frames": 8}
-        patches = [
-            mock.patch.object(MA.motion_controller, "available", return_value=True),
-            mock.patch.object(MA.motion, "state", return_value="idle"),
-            mock.patch.object(MA.motion_controller, "turn", return_value=7),
-            mock.patch("intelligence.battery_awareness.battery_critical", return_value=False),
-            mock.patch("sequences.animations.travel_glance_pose"),
-            mock.patch("intelligence.consciousness.hold_directed_gaze"),
-            mock.patch.object(MA, "_radar_bodies", return_value=([body], True)),
-            mock.patch.object(config, "MOTION_RADAR_ORIENT_VOICE_DEFER_SECS", 20.0, create=True),
-            mock.patch.object(config, "MOTION_RADAR_ORIENT_ENABLED", True, create=True),
-        ]
-        started = [p.start() for p in patches]
-        turn = started[2]
-        try:
-            MA.note_voice_bearing(-10.0)
-            for _ in range(4):
-                MA.step({"people": []}, _profile())
-            turn.assert_not_called()
-            MA._state["voice_bearing_at"] = time.monotonic() - 60.0     # stale — radar may act again
-            for _ in range(4):
-                MA.step({"people": []}, _profile())
-            turn.assert_called()
-        finally:
-            for p in patches:
-                p.stop()
 
     def test_samples_during_rex_playback_are_ignored(self):
         now = time.monotonic()

@@ -254,7 +254,7 @@ class EngageFirstOnSincereSharesTest(unittest.TestCase):
             allow_visual_comment=True,
             reason="test",
         )
-        return social_frame.build_directive(frame)
+        return social_frame.render_slim_contract(frame)
 
     def test_interest_turn_is_engage_first(self):
         directive = self._directive("interest")
@@ -507,7 +507,7 @@ class AstrophotographyTurnEndToEndTest(unittest.TestCase):
                 answered_question=answered,
                 agenda_directive=directive,
             )
-            contract = social_frame.build_directive(frame)
+            contract = social_frame.render_slim_contract(frame)
             plan = response_length.classify("astrophotography", answered_question=answered)
 
         self.assertEqual(profile["engagement"], "engaged")        # C: not "quiet"

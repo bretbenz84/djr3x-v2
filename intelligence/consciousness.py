@@ -3247,40 +3247,6 @@ def _animal_remark_covered_by_report(pending: dict, now: float) -> bool:
     return staged_at <= reported_at + grace
 
 
-# Scenery-change remark: a one-line "did we move?" when this run's startup scene differs
-# from the last run's. episodic_hooks computes the remark (off the tick, after captioning);
-# this speaks it once when Rex can.
-_scenery_remark_pending = None
-
-
-def _step_scenery_change() -> None:
-    """Speak the queued change-of-scenery remark once, if there is one and Rex can talk."""
-    global _scenery_remark_pending
-    if _scenery_remark_pending is None:
-        try:
-            taken = episodic_hooks.take_scenery_remark()
-        except Exception:
-            taken = None
-        if not taken:
-            return
-        _scenery_remark_pending = taken
-    remark = _scenery_remark_pending
-
-    def _on_spoke(remark=remark) -> None:
-        global _scenery_remark_pending
-        _scenery_remark_pending = None
-        _log.info("consciousness: scenery-change remark spoken: %r", remark)
-
-    _speak_async(
-        remark,
-        "curious",
-        purpose="world.scenery_change",
-        label="scenery change",
-        on_spoke=_on_spoke,
-        force_salient=True,
-    )
-
-
 def _visible_face_people(snapshot: dict) -> list[dict]:
     people = snapshot.get("people") if isinstance(snapshot, dict) else []
     if not isinstance(people, list):
@@ -6909,47 +6875,6 @@ def _pick_first_sight_disposition_greeting(
     return label, line
 
 
-def _pick_startup_profile_question(person_id: Optional[int]) -> Optional[dict]:
-    """Pick a basic profile question for known people Rex barely knows."""
-    if not isinstance(person_id, int):
-        return None
-    # A profile question is an awkward cold open. Let the first-sight greeting
-    # stay casual ("what's up?") and ask profile questions once the conversation
-    # is actually rolling instead.
-    if not bool(getattr(config, "STARTUP_PROFILE_QUESTION_ENABLED", False)):
-        return None
-    if not bool(getattr(config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True)):
-        return None
-    max_facts = int(getattr(config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4) or 4)
-    if profile_questions.profile_fact_count(person_id) > max_facts:
-        return None
-    try:
-        from intelligence import question_budget
-        if not question_budget.can_ask("startup_profile_question"):
-            return None
-    except Exception:
-        pass
-    return profile_questions.next_profile_question(person_id)
-
-
-def _build_startup_profile_question_prompt(
-    first_name: str,
-    context_sentence: str,
-    question_text: str,
-) -> str:
-    return (
-        f"{context_sentence} "
-        f"Greet {first_name} in-character by name, then ask this exact basic "
-        f"profile question: {question_text!r}. "
-        "This is early getting-to-know-you curiosity, so keep it light and "
-        "non-intimate. Do not ask about fears, regrets, grief, values, or life "
-        "meaning. Use two short sentences max. The final sentence must preserve "
-        "the question wording and end in a question mark. "
-        f"This is a solo greeting: use '{first_name}' or 'you'; do not call this "
-        "one visible person 'they' or 'them'."
-    )
-
-
 def _build_emotional_checkin_prompt(
     first_name: str,
     event: dict,
@@ -7290,7 +7215,6 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
             startle_allowed = bool(
                 getattr(config, "WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED", True)
             )
-            generic_allowed = bool(getattr(config, "WORLD_SOUND_EVENT_REACTIONS_ENABLED", False))
             cooldown = float(getattr(config, "STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS", 20.0))
             # Classifier families with an in-character reaction prompt (doorbell,
             # dog_bark, alarm, …). Startle families keep the startle path below.
@@ -7322,13 +7246,6 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     emotion,
                     label=f"sound event: {curr_sound}",
                     metadata={"notable_sound_event": curr_sound},
-                )
-            elif generic_allowed:
-                _add_trigger(
-                    f"You just registered a notable sound event: '{curr_sound}'. "
-                    "One punchy in-character line reacting to it.",
-                    "curious",
-                    label="sound event reaction",
                 )
 
         # Notable calendar date (once per session per date)
@@ -10293,7 +10210,6 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 followup_event_name: str = ""
                 anticipated_to_mark: Optional[tuple[Optional[int], object]] = None
                 milestone_to_mark: Optional[int] = None
-                profile_question_to_record: Optional[dict] = None
                 disposition_to_mark: Optional[int] = None
 
                 # Birthday window, computed up front. On the ACTUAL day (T-0) the
@@ -10612,7 +10528,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
                 # Priority 4.5 — default warm greeting for known friends/creator: a plain
                 # "how are you?", scaled by relationship. This takes priority over the
-                # disposition roast / interest cold-open / profile question below, which
+                # disposition roast / interest cold-open below, which
                 # are reserved for people Rex is still getting to know (acquaintances) —
                 # per Bret's feedback that a greeting should just be a friendly hello, not
                 # a themed hook or a roast.
@@ -10661,8 +10577,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         person_name, _allow_familiarity,
                     )
 
-                # Fallback — profile-building greeting for sparse known people,
-                # then generic greeting.
+                # Fallback — disposition / interest cold-open greetings, then generic
+                # greeting.
                 if prompt is None:
                     disposition_greeting = _pick_first_sight_disposition_greeting(
                         person_db_id,
@@ -10683,7 +10599,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
                 # Interest/fact cold-open — lead with something Rex already KNOWS they
                 # care about (ranked across interests+facts by the same lead-score as
-                # celebrations) before falling to a generic profile question.
+                # celebrations) before falling to a generic greeting.
                 if prompt is None:
                     callback = _pick_cold_open_callback(person_db_id)
                     if callback is not None:
@@ -10713,44 +10629,24 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 _log.debug("cold-open interest cooldown mark failed: %s", exc)
 
                 if prompt is None:
-                    profile_question = _pick_startup_profile_question(person_db_id)
-                    if profile_question:
-                        question_text = str(profile_question.get("text") or "").strip()
-                    else:
-                        question_text = ""
-                    if question_text:
-                        profile_question_to_record = profile_question
-                        prompt = _build_startup_profile_question_prompt(
-                            first_name,
-                            context_sentence,
-                            question_text,
-                        )
-                        label = f"first-sight profile question for {person_name}"
-                        emotion = "curious"
+                    mood_prompt = _build_first_sight_mood_prompt(
+                        first_name,
+                        context_sentence,
+                        _get_first_sight_mood(person_db_id),
+                    )
+                    if mood_prompt:
+                        prompt, emotion = mood_prompt
+                        label = f"first-sight mood greeting for {person_name}"
                         _log.info(
-                            "consciousness: startup profile question for %s key=%s",
+                            "consciousness: startup mood greeting for %s",
                             person_name,
-                            profile_question.get("key"),
                         )
                     else:
-                        mood_prompt = _build_first_sight_mood_prompt(
+                        prompt = _build_startup_solo_greeting_prompt(
                             first_name,
                             context_sentence,
-                            _get_first_sight_mood(person_db_id),
                         )
-                        if mood_prompt:
-                            prompt, emotion = mood_prompt
-                            label = f"first-sight mood greeting for {person_name}"
-                            _log.info(
-                                "consciousness: startup mood greeting for %s",
-                                person_name,
-                            )
-                        else:
-                            prompt = _build_startup_solo_greeting_prompt(
-                                first_name,
-                                context_sentence,
-                            )
-                            _log.info("consciousness: startup greeting for %s", person_name)
+                        _log.info("consciousness: startup greeting for %s", person_name)
 
                 # Whichever branch won, if Rex already asked this person how they're
                 # doing recently, the greeting must not ask again. Applied HERE rather
@@ -10802,17 +10698,6 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         else "presence_reaction"
                     ),
                     startup_greeting_name=first_name,
-                    question_key=(
-                        str(profile_question_to_record.get("key"))
-                        if profile_question_to_record
-                        and profile_question_to_record.get("key")
-                        else None
-                    ),
-                    question_depth=(
-                        int(profile_question_to_record.get("depth", 1))
-                        if profile_question_to_record
-                        else 1
-                    ),
                     direct_text=direct_text,
                     on_spoke=_followup_spoken if followup_to_remove else None,
                 )
@@ -14767,10 +14652,6 @@ def _loop() -> None:
             # Episodic memory: log a scene observation when the room materially changes
             # (deduped). Capture only; nothing reads it back yet.
             episodic_hooks.scene_changed(snapshot)
-
-            # Change-of-scenery remark: if this run's startup scene differs from the last
-            # run's (different room / outdoors / new place), say so once.
-            _step_scenery_change()
 
             # 5c. Celebrity overrides. These own the first conversational beat
             # before ordinary greetings or ambient remarks.

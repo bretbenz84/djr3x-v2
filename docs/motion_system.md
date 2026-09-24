@@ -371,17 +371,16 @@ being a reflex, may fire mid-sentence (`MOTION_FLINCH_ALLOW_MID_SENTENCE`).
 
 `intelligence/motion_agency.py` gained four sibling behaviors alongside
 flinch/realign/approach — all decision-layer only, all through the ToF-gated
-closed-loop verbs, each behind its own kill switch (config clusters named):
+closed-loop verbs, each behind its own kill switch (config clusters named). The
+fourth, RADAR ORIENT (face a persistent ring body when nobody is on camera), was
+off after the 2026-09-02 field spins and was deleted in dead-code Stage 3
+(2026-09-23); the three that remain:
 
 - **IDLE WANDER** (`MOTION_IDLE_WANDER_*`) — occasional paired weight-shift
   maneuvers (slight turn+inverse, or short fore/aft shuffle+inverse; zero net
   pose drift). Clearance-gated per axis (fails closed on unknown sensors),
   roominess-scaled, silenced by no-drive rooms, user holds, mid-sentence, and
   the traction stand-down; an aborted wander turn feeds the traction detector.
-- **RADAR ORIENT** (`MOTION_RADAR_ORIENT_*`) — nobody on camera but the LD2450
-  ring shows a persistent body → neck glance within ~40°, base turn beyond it.
-  (Ring targets are seam-deduped host-side: `hardware/radar.py::_seam_merge`,
-  `RADAR_SEAM_MERGE_*`.)
 - **EDGE-IN** (`MOTION_EDGE_IN_*`) — mid-conversation at social distance, one
   short slow step closer (front-ToF-checked, keeps 1 m clearance, minutes-long
   cooldown).
@@ -395,7 +394,9 @@ gaze holds the travel heading while the firmware assist arcs around obstacles,
 and the camera dips slightly (`MOTION_COME_DRIVE_PITCH`) to see floor clutter.
 Speed variability: `cmd:come` accepts an optional `speed` (protocol §5.5),
 spontaneous approaches saunter (`MOTION_APPROACH_SPEED_JITTER*`), and
-exploration legs jitter per leg (`EXPLORE_LEG_SPEED_JITTER_*`).
+exploration legs jitter per leg (`EXPLORE_LEG_SPEED_JITTER_*`). The LD2450 ring
+targets the come-here search reads are seam-deduped host-side
+(`hardware/radar.py::_seam_merge`, `RADAR_SEAM_MERGE_*`).
 
 ## 11. Manual control & Bluetooth gamepad override
 

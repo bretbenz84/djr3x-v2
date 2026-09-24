@@ -387,7 +387,8 @@ prepared off the prompt path, with a shared prompt deadline and optional-work
 admission that yields to ASR/local TTS.
 
 Owner preference: finish the reply already being prepared, then respond to the
-next utterance. `GAP_MERGE_ENABLED` now defaults OFF. A bounded pending-capture
+next utterance. The pre-voice gap merge (`GAP_MERGE_ENABLED`) was deleted in
+dead-code Stage 3 (2026-09-23). A bounded pending-capture
 adapter retains later finished gap utterances; this is not yet a concurrent
 capture-loop replacement. Original capture times prevent a queued utterance from
 answering a question Rex asked afterward. Existing playback barge-in remains.
@@ -441,7 +442,7 @@ ladder (first survivor only). Tests: `tests/test_lean_impulse_menu.py`.
 **Stale proactive lines never play; cut replies report what was said (phase 5 first
 slice, 2026-09-04).** `audio/speech_queue.py` has speech GENERATIONS: `generation()`
 / `invalidate_pending(reason)`. `_begin_user_turn` and every barge-in site
-(`wake_word_barge`, `vad_barge`, `game_barge`, `shutdown_wake_word`) bump it;
+(`wake_word_barge`, `game_barge`, `shutdown_wake_word`) bump it;
 `_speak_proactive` stamps its line with the generation current at decision time and
 the worker drops any stamped item whose generation is no longer current — at enqueue
 or at POP — so a lull line decided before you spoke cannot play after you did, even
@@ -555,10 +556,10 @@ API timeout per sentence; the hold expires and the next line re-probes ElevenLab
 success clears it early). Both streamed paths share one playback-parity implementation
 (`_begin_speech`/`_drive_mouth_chunk`/`_end_speech`: output gate, AEC, mouth LEDs,
 servo speech motion, barge-in). Local synthesis is tag-free (Qwen would read `[audio
-tags]` aloud) and, for Rex's own voice, cached as WAV under a backend-distinct key
-only when `LOCAL_TTS_CACHE_ENABLED` is on — **off by default** so `--local-tts`
-testing always hears freshly synthesized audio (the ElevenLabs cache is separate and
-unaffected); impersonation takes are never cached. `speech_queue.enqueue(..., voice_ref=...)` threads
+tags]` aloud) and never cached (the ElevenLabs cache is separate); in local mode
+`is_cached()` reports not-cached and `ensure_cached()` is a no-op. The optional local
+WAV cache (`LOCAL_TTS_CACHE_ENABLED`) was deleted in dead-code Stage 3 (2026-09-23).
+`speech_queue.enqueue(..., voice_ref=...)` threads
 the cloned voice to the worker's `tts.speak()` call.
 
 **Breeze migration (2026-09-09).** `LOCAL_TTS_BACKEND="breeze"` selects the
@@ -672,7 +673,7 @@ three extra blocks, all offsets in ms from the segment handler's entry:
 - `context`: `context_chars` / `context_messages` of the prompt actually sent,
   `text_input`, `endpoint_silence_secs` (subtract from the segment start to
   approximate the last voiced sample).
-- `cancel_reason`: `wake_word_barge`, `vad_barge`, `game_barge`, `shutdown_wake_word`.
+- `cancel_reason`: `wake_word_barge`, `game_barge`, `shutdown_wake_word`.
 
 Background threads find the turn through a single-active-turn fallback (they do
 not inherit the contextvar), so overlapping turns would mis-attribute counts —
@@ -687,7 +688,7 @@ next phase-0 item. Tests: `tests/test_turn_trace.py`.
 Recent latency architecture:
 
 - `audio.speaker_id.preload()` runs at startup when `config.SPEAKER_ID_PRELOAD_ON_STARTUP` is true, removing first-turn encoder load cost (ECAPA ~1.3s, Resemblyzer ~0.6s).
-- Slow-path acknowledgments (short "One sec." receipts for known-slow `general`/`memory`/`vision` paths) and the delayed latency filler (in-character "One sec, thinking." lines) are now **disabled by default** — `config.SLOW_PATH_ACK_ENABLED = False` and `config.LATENCY_FILLER_ENABLED = False`. They felt out of place, and the streaming answer path now gets Rex's real first sentence out fast, so the latency cover is unnecessary. The machinery and tunables (`SLOW_PATH_ACK_LINES`, `SLOW_PATH_ACK_EXPECTED_SECS`, `LATENCY_FILLER_LINES`, `SLOW_PATH_ACK_IN_TEXT_ONLY`) remain; flip either flag back to True to restore. The slow-path-ack tests enable the flag explicitly to keep covering the firing logic.
+- Slow-path acknowledgments (short "One sec." receipts for known-slow `general`/`memory`/`vision` paths) and the delayed latency filler (in-character "One sec, thinking." lines) are **deleted** (dead-code Stage 3, 2026-09-23; they had been off since they felt out of place). The streaming answer path gets Rex's real first sentence out fast, so the latency cover is unnecessary. `interaction._start_latency_filler_timer` survives only as a stub that returns an already-set Event, because the streaming reply path still threads that event through.
 - End-of-speech wait `config.SILENCE_TIMEOUT_SECS = 0.65`: how long of sustained silence after the user stops before transcription begins. This is the largest "I stopped talking, why is Rex waiting?" knob. History: 0.6 → 0.85 (2026-07, owner was getting cut off mid-thought) → **0.65** (2026-08-02 latency batch: with every other stage tuned, the hold was the single largest fixed cost left). If mid-sentence cutoffs return, **0.85 is the known-good fallback** and the turn-completion repair prompt is the backstop. Explicit motion commands bypass this entirely via eager endpointing (see the 2026-08-02 latency batch).
 
 When assessing responsiveness, prefer TTFS/audio-start timings over total turn duration. Total duration includes how long Rex speaks.
@@ -963,8 +964,7 @@ False to fully disable the burst.
   answer via `llm.generate_curiosity_question` (the main OpenAI model
   `config.LLM_MODEL` — same brain as the rest of the conversation, with built-in
   grief/heavy-topic restraint; a validated "how'd you get into X?" template
-  covers the offline/disabled case); the rest are authored. Optional
-  `ONBOARDING_LLM_REPHRASE_ENABLED` re-voices authored questions (also OpenAI).
+  covers the offline/disabled case); the rest are authored.
 - **Budget:** rides the `newcomer_baseline` urgent bypass in
   `intelligence/question_budget._URGENT_KINDS`, so it is never blocked by the
   global cap; bounded instead by its own `ONBOARDING_MIN/MAX_QUESTIONS` (3/5 —
@@ -991,7 +991,7 @@ Config: `ONBOARDING_ENABLED`, `ONBOARDING_MIN/MAX_QUESTIONS`,
 `ONBOARDING_MAX_VISITS`, `ONBOARDING_FACT_FLOOR`, `ONBOARDING_KICKOFF_SECS`,
 `ONBOARDING_INACTIVITY_TIMEOUT_SECS`, `ONBOARDING_STEP_TTL_SECS`,
 `ONBOARDING_SOFT_DISENGAGE_LIMIT`, `ONBOARDING_REVEAL_EVERY`,
-`ONBOARDING_LLM_FOLLOWUP_ENABLED`, `ONBOARDING_LLM_REPHRASE_ENABLED`,
+`ONBOARDING_LLM_FOLLOWUP_ENABLED`,
 `ONBOARDING_QUESTION_POOL`, `ONBOARDING_REVEAL_LINES`, `ONBOARDING_CLOSERS`,
 `ONBOARDING_BACKOFF_LINES`, `COMEDY_LINE_BANKS["onboarding_retort_*"]`.
 Tests: `tests/test_onboarding.py`.
@@ -1274,7 +1274,7 @@ venv/bin/python main.py
 - Speaker-ID encoder preload at startup.
 - Exact TTFS logging.
 - `[character_loop]` per-turn telemetry.
-- Slow-path acknowledgments (general/memory/vision) and the latency filler exist but are now **disabled by default** (`SLOW_PATH_ACK_ENABLED` / `LATENCY_FILLER_ENABLED` = False) — see the Latency And Telemetry section.
+- Slow-path acknowledgments (general/memory/vision) and the latency filler are deleted (dead-code Stage 3) — see the Latency And Telemetry section.
 - The action-router demotion rails (status updates vs event cancellations, pronoun-only introductions, named-day explanations vs date queries, relationship-score questions vs game answers) were deleted in dead-code Stage 2 (2026-09-23): they only ever filtered the retired LLM router. The live equivalents are in `intent_classifier._deterministic_label`: named-day questions and "Me and you" return `general`, and friendship/relationship-score questions return `query_memory`. The router rail that remains is `identity.name_correction` → `event.cancel` for plan/status retractions.
 - Dialogue-act frame gate (`intelligence/dialogue_act.py`) protects normal replies to Rex's last turn before routers can claim them.
 - Central turn-policy gates in `interaction.py` now require legacy command-parser and deterministic intent claims to pass dialogue context plus action-shaped evidence.
@@ -1406,7 +1406,7 @@ venv/bin/python main.py
 - **Voice-primary identity** (`VOICE_PRIMARY_IDENTITY_ENABLED`, default on): WHO is speaking is decided by the VOICE, not the visible face — see the "Identity And Multiple Speakers" section. A *confident* voice match (≥`SPEAKER_ID_CONFIDENT_THRESHOLD` 0.70) wins regardless of who's on camera, but an *accepted-but-not-confident* match (0.45–0.70) pointing at someone OTHER than the single visible known face does NOT override that face — the present known person anchors identity (`voice_weak_face_wins`), since a sub-confident score is exactly where an absent/poor print lands a voice on its nearest neighbor (the Bret→Wade failure); the off-camera voice is kept only if the active-speaker latch names a *different* on-camera talker. A weak/absent match lets the visible face only CORROBORATE (when `raw_best_id == that person`) and otherwise resolves off-screen/unknown; voiceprint auto-refresh is gated on `raw_best_id == person_id` so a different voice can't pollute a print. The old "single visible face wins regardless of voice" rule is retained only behind the flag (`_single_visible_face_voice_override`). Decision logic is the pure, unit-tested `_voice_primary_face_decision`; `tests/test_voice_primary_identity.py`. (Earlier note, now superseded: "sub-0.75 floors require raw_best_id == person, so a 2nd speaker in a 1:1 is treated as off-camera" — the corroboration rule generalizes this to all frames.)
 - Bug fixes to keep: `SCENE_MUSIC_BAND_ENERGY_MIN=2e-6` (was a typo making music always "detected"); dead `GUI_SHOW_FPS` removed; `social_frame` optional-lookup excepts log at debug.
 - Event follow-up resolution: a reply that an event never happened (`interaction._followup_event_did_not_happen`) resolves a pending follow-up instead of re-asking (kills the "how was the concert?" loop).
-- The "one sec" fillers (slow-path ack + latency filler) are disabled by default and `SILENCE_TIMEOUT_SECS=0.65` — see Latency And Telemetry. Don't re-enable without reason.
+- The "one sec" fillers (slow-path ack + latency filler) are deleted and `SILENCE_TIMEOUT_SECS=0.65` — see Latency And Telemetry. Don't bring them back without reason.
 - The local `assets/memory/people.db` is disposable dev/test data — wipe freely (see Memory Model).
 - Upstream merge (~`ffa068e`, authored separately): per-person greetings/intros (`intelligence/person_specials.py`), delayed last-name prompts, sleep wake-word fallback, turn-completion for embedded answers.
 - Comedy-forward balance (current intent): Rex leads with a comedic/curious beat, not an every-turn polite interview that opens "Ah," and ends with a profile question. Keep the profile-building machinery, not the interview cadence.
@@ -1449,7 +1449,7 @@ venv/bin/python main.py
 - Randomized two-axis room scan: the startup face-search/speaker-gaze no longer cycles a fixed single-axis pose list every boot.
 - Startup dead-space fix: the boot line + a head scan kick off BEFORE the heavy preloads (`main._run_controller_startup`) instead of after, so the head isn't frozen+silent during load.
 - Whisper repetition-filter false-positive fix: `audio.transcription._is_hallucination` no longer discards natural repetition ("I like Beethoven, I like Bach…").
-- Software AEC (`audio/aec.py`) is DISABLED by default (only ~5 dB in-room; ineffective). Hardware AEC (ReSpeaker Lite XU316 on-chip) is the real fix for hearing a wake word over Rex's own speech.
+- Software AEC (`audio/aec.py`) was measured ineffective (only ~5 dB in-room) and was deleted in dead-code Stage 3 (2026-09-23). Hardware AEC (ReSpeaker Lite XU316 on-chip) is the real fix for hearing a wake word over Rex's own speech.
 - Wake-word multi-fire + head-thrash fixes: debounce repeated openWakeWord frames from one phrase; calmer head motion.
 - Startup vision false-negative → duplicate chime → starved greeting: one root cause fixed (don't regress).
 - Empty/blank transcript drops back to IDLE instead of camping in ACTIVE (a false VAD trigger / fully-filtered audio).
@@ -1459,7 +1459,7 @@ venv/bin/python main.py
 - Turn-taking + routing + dialogue revamp (round 2): don't interrupt unfinished thoughts, don't misroute/over-roast (`tests/test_conversation_revamp.py`).
 - Repeat / hallucination / truncation / joke-replay fixes (round 3): `tests/test_conversation_revamp.py` + `test_performance_output.py`.
 - Subject pivot: steering can CHANGE the channel when a topic isn't landing, not only deepen it (`intelligence/conversation_steering.py`; `tests/test_conversation_revamp.py::SubjectPivotTest`).
-- Conversation arc memory (Bet 1): a running summary of the live conversation + callbacks fed into the system prompt (`intelligence/topic_thread.py`; `tests/test_conversation_arc.py`). Runs off the speech path; the default backend is OpenAI `gpt-4o-mini` (`CONVERSATION_ARC_BACKEND="openai"`) — set `CONVERSATION_ARC_BACKEND="local"` to use the Ollama sidecar instead.
+- Conversation arc memory (Bet 1): a running summary of the live conversation + callbacks fed into the system prompt (`intelligence/topic_thread.py`; `tests/test_conversation_arc.py`). Runs off the speech path; the backend is OpenAI `gpt-4o-mini` (the local-sidecar backend was removed).
 - TurnPlan (Bet 2): typed `conversation_agenda`→`social_frame` handoff replaces prose-directive regex re-parsing (`tests/test_turn_plan.py`).
 - Relationship-tone tracking: warmth/edge tracks the RELATIONSHIP, not per-turn (`llm._relationship_tone_rule` over `warmth/antagonism/trust_score`; `tests/test_relationship_tone.py`).
 - Offline conversational-quality replay harness (no robot): replays scenarios through the deterministic stack (`tests/test_conversation_replay.py` + `tests/fixtures/conversation_replays.json`).
@@ -1495,7 +1495,7 @@ venv/bin/python main.py
 - Compliment detection coverage (`config.COMPLIMENT_KEYWORDS/PHRASES`): broadened so everyday compliments ("nice robot", "good boy", "you're sweet/cool") fire the layer-1 proud beat BEFORE the reply (when the arm servos are free). Phrases, not bare words, to avoid false positives.
 - Idle "mind of his own" head wander (`consciousness._idle_wander`/`_step_idle_head_wander`/`_drive_idle_head_wander`, `IDLE_HEAD_WANDER_*`; `tests/test_idle_head_wander.py`): when the conversation lulls with a face locked, look around the room then return gaze and maybe re-greet. The face-loop drives it ABOVE the frame/listening early-returns (self-aborts on speech/listening/resumed talk); a 1Hz backstop ends any stalled wander — `active` can never get stuck.
 - Bored environmental snark (`intelligence/idle_behaviors.do_bored_environment_snark`, `BORED_ENV_SNARK_*`; `tests/test_bored_env_snark.py`): an idle riff on the ROOM via `vision.scene.describe_scene_detailed` — complaint / faux-clueless object question / clutter jab / art opinion / take-me-somewhere — grounded in real objects (never invents props), hard-cooldowned.
-- Empty-room arc (`consciousness._step_boredom_escalation`): when `BOREDOM_ENABLED`, one owner replaces the old random empty-room micro-behaviors and advances through four paced phases: a fresh camera-grounded look/comment after `EMPTY_ROOM_OBSERVATION_ONSET_SECS`; bored grumbles after `BOREDOM_ONSET_SECS`; "someone left me activated" snark after `BOREDOM_LEFT_ON_PHASE_FRACTION` of the remaining window; then a resignation line and SLEEP after `BOREDOM_SLEEP_AFTER_SECS` of boredom. Any visible person or human engagement resets it. All phases use the Lean-exempt `boredom` purpose. In SLEEP, only the dedicated `wakeuprex` ONNX model returns Rex to interaction; general wake models, Whisper fallback, GUI wake, and text input do not (the `shut_down` ONNX kill-switch may still shut the process down).
+- Empty-room arc (`consciousness._step_boredom_escalation`): when `BOREDOM_ENABLED`, one owner replaces the old random empty-room micro-behaviors and advances through four paced phases: a fresh camera-grounded look/comment after `EMPTY_ROOM_OBSERVATION_ONSET_SECS`; bored grumbles after `BOREDOM_ONSET_SECS`; "someone left me activated" snark after `BOREDOM_LEFT_ON_PHASE_FRACTION` of the remaining window; then a resignation line and SLEEP after `BOREDOM_SLEEP_AFTER_SECS` of boredom. Any visible person or human engagement resets it. All phases use the Lean-exempt `boredom` purpose. In SLEEP, only the dedicated `wakeuprex` ONNX model returns Rex to interaction; general wake models, transcribed speech, GUI wake, and text input do not (the transcribed-wake fallback was deleted in dead-code Stage 3; the `shut_down` ONNX kill-switch may still shut the process down).
 - Wave back (`consciousness._step_wave_reaction`, `WAVE_BACK_*`; `tests/test_wave_back.py`): pose detection runs in `vision.pose`'s OWN background loop (`vision.pose._loop`, a `pose-detection` daemon thread at `POSE_ANALYSIS_INTERVAL_SECS`=0.2s), classifying `gesture` onto `world_state.people` — NOT driven by `_step_body_social_analysis`. This reaction step (dispatched right before `_step_smile_reaction`) watches for a visible person's `gesture=="waving"`, LATCHES it, and returns the wave via `animations.wave_back_gesture(half_period=…)` — the half-period MIRRORS the user's measured wave speed (`vision.pose.recent_wave_speed`) — plus one short warm line (`WAVE_BACK_LINES`/`_NO_NAME`, `_speak_async(purpose="wave_back")`). FIRE-WHEN-FREE: if the speech gates are blocked the latch is HELD and retried so the greeting isn't lost. Repeat waves drive an ESCALATING comedy bit (`_wave_escalation`, per person: warm greeting → progressively terser → a joke about the repetition → eventually just ignore it). Debounced per person (`WAVE_BACK_PER_PERSON_COOLDOWN_SECS`=6s) + globally (`WAVE_BACK_MIN_GAP_SECS`=4s); gated by `_can_proactive_speak` (DJ/game/awaiting-reply/give-space) + `suppress_proactive`. Needs MediaPipe pose installed to SEE the wave (graceful no-op otherwise). NOTE: the gesture-DETECTION heuristic is still single-frame (hand at face/shoulder height, arm extended laterally — a held-up hand, not the back-and-forth motion); multi-frame motion is used ONLY to mirror the wave SPEED. The cooldown absorbs the occasional false positive.
 - Multi-person vision (`POSE_MAX_PEOPLE`=3): MediaPipe Pose tracks up to N bodies (was 1).
   `vision.pose.detect_pose` extracts ALL poses and `_update_world_state` binds each pose to
@@ -1585,7 +1585,7 @@ venv/bin/python main.py
   loop's first live mic read there are ~0.3-0.7s (echo-cancel tail + listen-resume delay +
   the synchronous turn unwind) during which NO mic audio is examined — the loop only ever
   VADs the latest 32ms chunk, and while `speech_queue.is_speaking()` it skips chunks
-  entirely (`VAD_BARGE_IN_ENABLED=False`). A clipped one-word answer ("no") spoken in that
+  entirely (there is no VAD barge-in). A clipped one-word answer ("no") spoken in that
   dead window lands in the rolling buffer but never triggers live VAD, so it was silently
   lost (live-logged during 20 Questions; normal conversation never showed it because longer
   replies still reach live VAD and the preroll-to-capture-floor recovery grabs their front).
@@ -2486,8 +2486,7 @@ channel was not Rex speaking — it was his own **decorative sound effects**.
   loop keep reading when the only gate holder is a non-muting effect. Speech-family
   chirps are voice-like and still mute; `speech_queue.is_speaking()` still always wins;
   the helper fails CLOSED to the old skip on any error.
-  `SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC=True` restores the old deafening behavior for the
-  whole class. This makes capture CONSISTENT with an already-shipped decision rather
+  This makes capture CONSISTENT with an already-shipped decision rather
   than making a new one — the tradeoff (a whir now reaches VAD unfiltered, since these
   families deliberately don't set `echo_cancel.set_playing`) is the same one accepted in
   July, and wants a live listen to confirm no junk segments appear.
@@ -2809,7 +2808,8 @@ surfaced five distinct failures; each is fixed at its own layer:
   turned +45° under a parked neck. New gate in `_step_inner` holds ALL social
   lanes while `features.games.is_active()` (`MOTION_HOLD_DURING_GAMES`); the
   flinch reflex and explicit come-here still run. Tests:
-  `tests/test_motion_agency.py::GameHoldTest`.
+  `tests/test_motion_agency.py::GameHoldTest`. (Radar orient itself was deleted
+  in dead-code Stage 3, 2026-09-23.)
 - **"COMBINED STATE ABBREV." read as "abreev".** `jeopardy.speak_category`
   expands a conservative map of unambiguous dataset abbreviations
   (ABBREV./MISC./GOVT./NATL./…) and drops the trailing period — SPEECH ONLY:
@@ -2902,13 +2902,12 @@ surfaced five distinct failures; each is fixed at its own layer:
   `JEOPARDY_SCOREBOARD_EVERY` (4) scoring events; counter resets per round;
   round transitions / finish / "what's the score?" always full. One 22s
   response in the log was mostly scoreboard.
-  (3) *Daily Double wagers* (`JEOPARDY_DD_WAGER_ENABLED`): a DD square goes to
+  (3) *Daily Double wagers*: a DD square goes to
   phase `awaiting_wager` — sting, "you're at $X, wager $5 to $MAX" (max =
   max(score, 1000×round)); `jeopardy.parse_wager` handles digits, number
   words ("fifteen hundred", "a thousand"), "everything"/"true daily double",
   "minimum"; out-of-range re-asks with the rails; then the clue reads for the
   wager. NO rebound on a DD (show rules — gated at all three rebound sites).
-  False restores flat auto-double.
   (4) *Final Jeopardy* (`JEOPARDY_FINAL_ENABLED`): auto after Double Jeopardy
   completes, or by voice. `jeopardy.load_final_clues()` — the ~364 real
   round-3 clues the loader used to filter out. Phases `final_wager` (lowest
@@ -2991,23 +2990,13 @@ surfaced five distinct failures; each is fixed at its own layer:
   route → LLM stream → `_await_streamed_speech` through full playback), live
   VAD never runs, and the post-TTS handoff then stamped the capture floor at
   playback end, walling the buffered words off forever. The mic itself never
-  stopped recording (30s rolling buffer) — nothing ever *looked*. Two
-  recoveries, both off the (already-blocked) reply path so a silent gap costs
-  ~one batched Silero pass (~tens of ms) per streamed reply:
-  **Phase 1 — pre-voice merge** (`_reply_gap_speech_onset` /
-  `_GapSpeechDetected` / `_merge_gap_speech`): at the first streamed sentence
-  — before any TTS is fetched or queued — scan the gap span
-  (`_gap_watch_started_at`, armed at each mic turn's capture end); if the
-  person spoke, unwind out of the stream (same shape as ToolCallRequested;
-  the generic stream-error catch explicitly re-raises it), wait out their
-  line like a normal turn, transcribe, guard (non-speech vocalization,
-  own-echo, empty), log it as its own human turn, and regenerate ONCE — the
-  lean call gets the new line as the current turn with line 1 in the
-  transcript; the merged `text` feeds memory/audit. A dry merge (false
-  trigger/unusable audio) regenerates the original unchanged: latency, never
-  silence. The person's clock restarts when THEY stop talking, so the redo
-  reads as listening, not lag.
-  **Phase 2 — post-reply catch-up** (`_maybe_catch_up_gap_speech`, run at
+  stopped recording (30s rolling buffer) — nothing ever *looked*. The
+  recovery runs off the (already-blocked) reply path. (A pre-voice "phase 1"
+  merge that abandoned the drafted reply and regenerated was off by owner
+  decision — finish the pending reply first — and was deleted in dead-code
+  Stage 3, 2026-09-23.)
+  **Post-reply catch-up** (`_maybe_catch_up_gap_speech`, armed from
+  `_gap_watch_started_at` at each mic turn's capture end, run at
   loop resume where the post-question retro scan lives; that scan wins and
   consumes the watch when both are armed): one-shot sweep of the whole blind
   span. Playback geometry from `_gap_first_audio_at` (stamped by the queue's
@@ -3025,13 +3014,12 @@ surfaced five distinct failures; each is fixed at its own layer:
   a game-barge-style one-shot floor override, so capture reaches behind the
   playback-end floor); if the freshest speech hasn't cleared the voiced bar
   yet, everything stale is dropped and live VAD takes the floor. Watch is
-  disarmed on interrupt-flush, sleep, start/stop; a `stream.flush()` mid-span
+  disarmed on sleep, start/stop; a `stream.flush()` mid-span
   degrades to "recovers less", never to wrong audio (time-mapping anchors on
   the returned array length). Kill switches: `GAP_SPEECH_RECOVERY_ENABLED`
-  (master), `GAP_MERGE_ENABLED`, `GAP_CATCHUP_ENABLED`; knobs `GAP_SPEECH_*`
-  / `GAP_MERGE_*` / `GAP_CATCHUP_*`. Telemetry: `[gap_speech]` lines +
-  `gap_merge_*` / `gap_catchup_*` in the `[capture]` session summary. Tests:
-  `tests/test_gap_speech.py` (48).
+  (master), `GAP_CATCHUP_ENABLED`; knobs `GAP_SPEECH_*` / `GAP_CATCHUP_*`.
+  Telemetry: `[gap_speech]` lines + `gap_catchup_*` in the `[capture]` session
+  summary. Tests: `tests/test_gap_speech.py`.
 
 ## Likely Future Work
 
@@ -3048,7 +3036,6 @@ surfaced five distinct failures; each is fixed at its own layer:
   router was deleted 2026-09-23 (Phase 4b). Still open: merge the per-action schemas
   in `tool_router._TOOL_DEFS` into `ActionSpec` itself.
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.
-- Decide whether the streaming answer path is sufficient latency cover on its own, or whether to re-enable (and tune) the slow-path ack / latency filler for the slowest paths.
 - Deeper conversation steering: detect a topic shift semantically (not just explicit "I like / I'm building X") and update/expire the active interest accordingly; today a new subject the user is clearly engaged in but doesn't name in an interest form is not picked up.
 - Add directional audio support for stereo ReSpeaker Lite input.
 - Improve group turn triage for crosstalk and ambiguous addressees.

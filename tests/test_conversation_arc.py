@@ -2,15 +2,13 @@
 Tests for Bet 1 arc-memory: a running summary of the live conversation, folded
 into intelligence/topic_thread.py and fed back into the system prompt.
 
-The summary backend is configurable (config.CONVERSATION_ARC_BACKEND): "openai"
-(gpt-4o-mini, default, rich 5-field schema) or "local" (qwen2.5:1.5b sidecar,
-3-field factual schema). These tests are backend-agnostic — they mock the dispatch
-seam `_arc_generate` (and `_arc_enabled`) so NO real Ollama/OpenAI call is ever
-made (the suite runs with a live OpenAI key, so this matters).
+The summary backend is OpenAI gpt-4o-mini (rich 5-field schema). These tests mock
+the dispatch seam `_arc_generate` (and `_arc_enabled`) so NO real OpenAI call is
+ever made (the suite runs with a live OpenAI key, so this matters).
 
 Covers: fresh-window fold/update, the callback+anti-repeat directive text,
 retain-on-error, empty/echo/runaway-loop rejection, markdown/dedup sanitize,
-speaker→role normalization, rich-vs-local schema, the test-runner safety gate,
+speaker→role normalization, the rich schema, the test-runner safety gate,
 backend-availability gating, cursor bookkeeping, clear(), snapshot() back-compat,
 the real background-thread trigger, and the OpenAI helper.
 """
@@ -130,7 +128,7 @@ class ArcRefreshTest(_ArcTestBase):
         from intelligence import topic_thread as tt
         self._run_refresh(_transcript(("Bret", "first")), returns="Topics: seeded")
         self.assertEqual(tt.arc_summary(), "Topics: seeded")
-        # The backend (Ollama or OpenAI) falls over — old summary must survive, no raise.
+        # The backend (OpenAI) falls over — old summary must survive, no raise.
         ran, _ = self._run_refresh(
             _transcript(("Bret", "first"), ("Rex", "x"), ("Bret", "second")),
             raises=RuntimeError("backend down"),
@@ -229,14 +227,12 @@ class ArcSchemaAndRenderTest(_ArcTestBase):
         self.assertIn("User: hm", rendered)
         self.assertNotIn("Bret", rendered)
 
-    def test_rich_schema_has_mood_local_schema_does_not(self):
+    def test_rich_schema_has_mood(self):
         from intelligence import topic_thread as tt
-        rich = tt._build_arc_prompt("User: hi", rich=True)
-        local = tt._build_arc_prompt("User: hi", rich=False)
+        rich = tt._build_arc_prompt("User: hi")
         self.assertIn("Mood:", rich)
         self.assertIn("Used up", rich)              # the spent-bits / don't-reuse field
-        self.assertNotIn("Mood:", local)
-        self.assertIn("Topics:", local)
+        self.assertIn("Topics:", rich)
 
 
 class ArcGateTest(_ArcTestBase):
@@ -255,15 +251,6 @@ class ArcGateTest(_ArcTestBase):
     def test_openai_backend_available_by_default(self):
         from intelligence import topic_thread as tt
         self.assertTrue(tt._arc_backend_available())
-
-    def test_local_backend_requires_local_llm(self):
-        import config
-        from intelligence import topic_thread as tt
-        with mock.patch.object(config, "CONVERSATION_ARC_BACKEND", "local"):
-            with mock.patch("intelligence.local_llm.enabled", return_value=False):
-                self.assertFalse(tt._arc_backend_available())
-            with mock.patch("intelligence.local_llm.enabled", return_value=True):
-                self.assertTrue(tt._arc_backend_available())
 
     def test_flag_off_hides_an_existing_summary(self):
         import config

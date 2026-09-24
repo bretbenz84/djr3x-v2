@@ -84,20 +84,6 @@ def install() -> bool:
                     result = _orig_play(*args, **kwargs)
                 finally:
                     _local.in_play = False
-            # Feed exactly what we just started playing to the (optional) software
-            # echo canceller as its reference. Skipped entirely unless AEC is enabled
-            # (it ships off), so there's zero per-clip overhead in the normal path.
-            # Outside the io lock; failures never affect playback.
-            try:
-                import config as _config
-                if getattr(_config, "AEC_SOFTWARE_ENABLED", False):
-                    data = args[0] if args else kwargs.get("data")
-                    sr = args[1] if len(args) > 1 else kwargs.get("samplerate")
-                    if data is not None and sr:
-                        from audio import aec
-                        aec.push_reference(data, int(sr))
-            except Exception:
-                pass
             return result
 
         def _guarded_stop(*args, **kwargs):

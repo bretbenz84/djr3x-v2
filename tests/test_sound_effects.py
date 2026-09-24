@@ -225,16 +225,6 @@ class SoundEffectsTest(unittest.TestCase):
             sfx._play_path(path, "curious", mode="gated")
         self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
 
-    def test_drive_muting_can_be_turned_back_on(self):
-        from audio import echo_cancel
-        path = sfx._resolve_stem("motion_whir")
-        with mock.patch.object(config, "SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC", True, create=True), \
-                mock.patch.object(sfx, "_decode",
-                                  return_value=(np.zeros(4800, np.float32), 48000)), \
-                mock.patch.object(echo_cancel, "set_playing") as set_playing:
-            sfx._play_path(path, "motion_move", mode="gated")
-        self.assertEqual([c.args[0] for c in set_playing.call_args_list], [True, False])
-
     # ── field 2026-08-06: a servo whir ate the answer to Rex's own question ──
     def test_gated_whir_does_not_claim_to_mute_the_mic(self):
         """_suppresses_mic exempts machinery whirs, but the capture loop skipped the

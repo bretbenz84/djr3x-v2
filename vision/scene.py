@@ -678,79 +678,12 @@ def detect_objects_local(frame) -> list[dict]:
     return objects
 
 
-def detect_lifeforms(frame) -> dict:
-    """
-    Low-token visual change scan for people count and animal arrivals.
-
-    This is cheaper and more frequent than analyze_environment(). It updates
-    world_state.crowd and world_state.animals, then returns the normalized result.
-    """
-    fallback = {
-        "people_count": int((world_state.get("crowd") or {}).get("count", 0) or 0),
-        "animals": world_state.get("animals") or [],
-    }
-    if frame is None:
-        return fallback
-
-    prompt = (
-        "Do a low-cost visual change scan for a social robot. "
-        "Return a JSON object with exactly these keys:\n"
-        '  "people_count": integer number of clearly visible people, capped at 5,\n'
-        '  "animals": array of visible real animals, not toys/logos/screens. '
-        "Each animal object must have exactly: "
-        '"species" (common name), "position" (brief location), '
-        '"furred" (true if it appears furry/hairy), and '
-        '"confidence" ("low", "medium", or "high").\n'
-        "Only include animals you can actually see; if no animal is visible use []. "
-        "Return ONLY the JSON object — no preamble, no explanation, no markdown fences."
-    )
-
-    raw = _call_gpt4o(
-        frame,
-        prompt,
-        "animal_detection",
-        max_tokens=int(getattr(config, "SCENE_CHANGE_MONITOR_MAX_TOKENS", 260) or 260),
-    )
-    if raw is None:
-        return fallback
-
-    data = _parse_json(raw)
-    if not isinstance(data, dict):
-        _log.error("detect_lifeforms: expected dict, got: %.120s", raw)
-        return fallback
-
-    try:
-        people_count = min(max(int(data.get("people_count", 0)), 0), 5)
-    except (TypeError, ValueError):
-        people_count = fallback["people_count"]
-    crowd = _update_crowd_count(people_count)
-
-    animals = _animal_records_from_response(data.get("animals") or [])
-    if not animals:
-        animals = _recent_animals()
-    world_state.update("animals", animals)
-
-    if animals:
-        _log.info(
-            "detect_lifeforms: people=%d animals=%s",
-            people_count,
-            [a["species"] for a in animals],
-        )
-    else:
-        _log.debug("detect_lifeforms: people=%d animals=0", people_count)
-    return {
-        "people_count": people_count,
-        "count_label": crowd.get("count_label"),
-        "animals": animals,
-    }
-
-
 def _scan_for_startle_species(frame) -> list[dict]:
     """Low-frequency OpenAI scan for STARTLE species (snakes/spiders/wasps/...) that the
     local MediaPipe detector can't see (it only knows bird/cat/dog/horse). ADDITIVE: merges
     any startle-species sighting into world_state.animals (dedup by species+position)
-    WITHOUT clobbering locally-detected animals or touching the crowd count — unlike
-    detect_lifeforms, which overwrites both. Returns the newly-added records (#29)."""
+    WITHOUT clobbering locally-detected animals or touching the crowd count. Returns the
+    newly-added records (#29)."""
     if frame is None:
         return []
     startle = {
@@ -1284,14 +1217,12 @@ def start_periodic_scan(interval_secs: float) -> None:
         name="scene-scan",
     )
     _scan_thread.start()
-    monitor_interval = float(getattr(config, "SCENE_CHANGE_MONITOR_INTERVAL_SECS", 20.0) or 20.0)
     local_animal_interval = float(
         getattr(config, "LOCAL_ANIMAL_DETECTION_INTERVAL_SECS", 2.0) or 2.0
     )
     _log.info(
-        "Periodic scene scan started (interval=%.0fs, change_monitor=%.0fs, local_animals=%.1fs)",
+        "Periodic scene scan started (interval=%.0fs, local_animals=%.1fs)",
         interval_secs,
-        monitor_interval if getattr(config, "SCENE_CHANGE_MONITOR_ENABLED", True) else 0.0,
         local_animal_interval if getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True) else 0.0,
     )
 
@@ -1315,7 +1246,6 @@ def _scan_loop(interval_secs: float) -> None:
     from vision import camera
 
     last_scan_time   = 0.0   # 0.0 ensures the first iteration fires immediately
-    last_monitor_time = 0.0
     last_local_animal_time = 0.0
     last_local_object_time = 0.0   # local COCO object stream → world_state.objects
     last_startle_time = 0.0   # periodic startle-species scan (gap-fill when local is on)
@@ -1324,10 +1254,6 @@ def _scan_loop(interval_secs: float) -> None:
     while not _stop_event.is_set():
         now           = time.monotonic()
         current_crowd = world_state.get("crowd").get("count", 0)
-        monitor_interval = max(
-            5.0,
-            float(getattr(config, "SCENE_CHANGE_MONITOR_INTERVAL_SECS", 20.0) or 20.0),
-        )
         local_animal_interval = max(
             0.5,
             float(getattr(config, "LOCAL_ANIMAL_DETECTION_INTERVAL_SECS", 2.0) or 2.0),
@@ -1342,7 +1268,6 @@ def _scan_loop(interval_secs: float) -> None:
             float(getattr(config, "STARTLE_DETECTION_INTERVAL_SECS", 60.0) or 60.0),
         )
         time_elapsed = (now - last_scan_time) >= interval_secs
-        monitor_elapsed = (now - last_monitor_time) >= monitor_interval
         local_animal_elapsed = (now - last_local_animal_time) >= local_animal_interval
         local_object_elapsed = (now - last_local_object_time) >= local_object_interval
         startle_elapsed = (now - last_startle_time) >= startle_interval
@@ -1413,34 +1338,11 @@ def _scan_loop(interval_secs: float) -> None:
             frame = camera.get_frame()
             if frame is not None:
                 analyze_environment(frame)
-                if (
-                    getattr(config, "ANIMAL_DETECTION_ENABLED", True)
-                    and not getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)
-                ):
-                    detect_lifeforms(frame)
-                    last_monitor_time = now
             else:
                 _log.debug("_scan_loop: no frame available — skipping scan")
 
             last_scan_time   = now
             last_crowd_count = world_state.get("crowd").get("count", current_crowd)
-        elif (
-            getattr(config, "SCENE_CHANGE_MONITOR_ENABLED", True)
-            and getattr(config, "ANIMAL_DETECTION_ENABLED", True)
-            and not getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)
-            and monitor_elapsed
-            and (
-                not bool(getattr(config, "SCENE_CHANGE_MONITOR_ONLY_WITH_PEOPLE", True))
-                or _world_state_has_visible_people()
-            )
-        ):
-            frame = camera.get_frame()
-            if frame is not None:
-                detect_lifeforms(frame)
-                last_monitor_time = now
-                last_crowd_count = world_state.get("crowd").get("count", current_crowd)
-            else:
-                _log.debug("_scan_loop: no frame available — skipping change monitor")
 
         _stop_event.wait(1.0)
 

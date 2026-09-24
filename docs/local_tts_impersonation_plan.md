@@ -161,6 +161,10 @@ battle-tested code.
 
 ### Caching
 
+> Local WAV cache removed in dead-code Stage 3 (2026-09-23): local speech is never
+> cached, `is_cached()` reports not-cached and `ensure_cached()` is a no-op in local
+> mode. The bullets below are the historical design.
+
 - Rex-voice local takes: cache as WAV via the existing `_cache_path` machinery,
   with backend-distinct key inputs: `voice_id=f"local:{voice_label}"`,
   `model_id=config.LOCAL_TTS_MODEL_ID`, no settings/seed/prev tokens. Cache hits

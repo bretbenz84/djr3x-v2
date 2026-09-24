@@ -29,21 +29,16 @@ _WANDER_OFF = mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", False,
                                 create=True)
 _STARTUP_OFF = mock.patch.object(config, "MOTION_STARTUP_APPROACH_ENABLED", False,
                                  create=True)
-# Radar orient is OFF by default since 2026-09-02 (the voice bearing took its
-# job); the fixtures that exercise it opt in for the module.
-_ORIENT_ON = mock.patch.object(config, "MOTION_RADAR_ORIENT_ENABLED", True, create=True)
 
 
 def setUpModule():
     _WANDER_OFF.start()
     _STARTUP_OFF.start()
-    _ORIENT_ON.start()
 
 
 def tearDownModule():
     _WANDER_OFF.stop()
     _STARTUP_OFF.stop()
-    _ORIENT_ON.stop()
 
 
 def _snapshot(distance_zone="social", slot="person_1", visible=True, face_box=(860, 400, 200, 200),
@@ -2067,109 +2062,6 @@ class RadarFirstComeTest(unittest.TestCase):
         self.assertFalse(MA.requested_come_active())
 
 
-class RadarOrientTest(unittest.TestCase):
-    """ORIENT (owner spec 2026-08-19): face a persistent radar body when the
-    camera has nobody — neck glance within reach, base turn beyond it."""
-
-    BODY_FAR = {"bearing_deg": 120.0, "range_m": 2.5, "confidence": 0.6,
-                "hits": 5, "frames": 8}
-    BODY_NECK = {"bearing_deg": 30.0, "range_m": 2.0, "confidence": 0.6,
-                 "hits": 5, "frames": 8}
-
-    def setUp(self):
-        MA.cancel_requested_come("test reset")
-        MA._state.update(neck_hits=0, far_hits=0, orient_hits=0, last_turn_at=0.0,
-                         last_approach_at=0.0, last_flinch_at=0.0,
-                         orient_last_at=0.0, orient_visited=[], user_motion_at=0.0,
-                         realign_pending_seq=None, traction_fails=0,
-                         no_traction_until=0.0, hold_at=None)
-        self._patches = [
-            mock.patch.object(MA.motion_controller, "available", return_value=True),
-            mock.patch.object(MA.motion, "state", return_value="idle"),
-            mock.patch.object(MA.motion_controller, "turn", return_value=7),
-            mock.patch("intelligence.battery_awareness.battery_critical",
-                       return_value=False),
-            mock.patch("sequences.animations.travel_glance_pose"),
-            mock.patch("intelligence.consciousness.hold_directed_gaze"),
-            mock.patch("hardware.servos.speech_motion_active", return_value=False),
-            mock.patch("hardware.servos.listening_motion_active", return_value=False),
-            mock.patch.object(MA, "_wander_owns_neck", return_value=False),
-        ]
-        (self.available, self.state, self.turn, self.battery, self.glance,
-         self.hold, _, _, _) = [p.start() for p in self._patches]
-
-    def tearDown(self):
-        MA.cancel_requested_come("test cleanup")
-        for p in self._patches:
-            p.stop()
-
-    def _tick(self, n=1, bodies=None, snapshot=None):
-        with mock.patch.object(MA, "_radar_bodies",
-                               return_value=(list(bodies or []), True)):
-            for _ in range(n):
-                MA.step(snapshot if snapshot is not None else {"people": []},
-                        _profile())
-
-    def test_persistent_body_beyond_neck_turns_the_base(self):
-        self._tick(3, bodies=[self.BODY_FAR])
-        self.turn.assert_called_once()
-        self.assertAlmostEqual(self.turn.call_args[0][0],
-                               config.MOTION_FACE_TURN_MAX_DEG)  # clamped
-
-    def test_body_within_neck_reach_glances_instead(self):
-        self._tick(3, bodies=[self.BODY_NECK])
-        self.turn.assert_not_called()
-        self.glance.assert_called_once()
-        self.assertEqual(self.glance.call_args[0][0], "left")   # radar + = left
-        self.hold.assert_called_once()
-
-    def test_two_ticks_do_not_act(self):
-        self._tick(2, bodies=[self.BODY_FAR])
-        self.turn.assert_not_called()
-        self.glance.assert_not_called()
-
-    def test_visible_face_suppresses_orient(self):
-        snap = {"people": [{"id": "person_1", "face_visible": True}]}
-        self._tick(3, bodies=[self.BODY_FAR], snapshot=snap)
-        self.turn.assert_not_called()
-        self.glance.assert_not_called()
-
-    def test_cooldown_blocks_back_to_back_orients(self):
-        self._tick(3, bodies=[self.BODY_FAR])
-        self.turn.assert_called_once()
-        self._tick(3, bodies=[self.BODY_FAR])
-        self.turn.assert_called_once()   # still just the one
-
-    def test_already_facing_does_nothing(self):
-        self._tick(3, bodies=[dict(self.BODY_FAR, bearing_deg=10.0)])
-        self.turn.assert_not_called()
-        self.glance.assert_not_called()
-
-    def test_low_confidence_body_is_ignored(self):
-        self._tick(3, bodies=[dict(self.BODY_FAR, confidence=0.2)])
-        self.turn.assert_not_called()
-
-    def test_no_drive_room_blocks_orient(self):
-        with mock.patch.object(MA, "no_drive_room", return_value=("den", "carpet")):
-            self._tick(3, bodies=[self.BODY_FAR])
-        self.turn.assert_not_called()
-        self.glance.assert_not_called()
-
-    def test_kill_switch(self):
-        with mock.patch.object(config, "MOTION_RADAR_ORIENT_ENABLED", False,
-                               create=True):
-            self._tick(3, bodies=[self.BODY_FAR])
-        self.turn.assert_not_called()
-
-    def test_traction_standdown_blocks_the_base_turn_not_the_glance(self):
-        MA._state["no_traction_until"] = time.monotonic() + 60.0
-        self._tick(3, bodies=[self.BODY_FAR])
-        self.turn.assert_not_called()
-        MA._state.update(orient_hits=0, orient_last_at=0.0)
-        self._tick(3, bodies=[self.BODY_NECK])
-        self.glance.assert_called_once()   # the neck is not a drive
-
-
 class ComeDriveGazeTest(unittest.TestCase):
     """Approach drive gaze (owner spec 2026-08-19): the neck counter-pans the
     base's yaw deviation so the gaze holds the travel heading while the firmware
@@ -2297,9 +2189,8 @@ class IdleWanderTest(unittest.TestCase):
 
     def setUp(self):
         MA.cancel_requested_come("test reset")
-        MA._state.update(neck_hits=0, far_hits=0, orient_hits=0, last_turn_at=0.0,
+        MA._state.update(neck_hits=0, far_hits=0, last_turn_at=0.0,
                          last_approach_at=0.0, last_flinch_at=0.0,
-                         orient_last_at=0.0, orient_visited=[],
                          wander_pending=None, wander_next_at=0.0,
                          user_motion_at=0.0, realign_pending_seq=None,
                          traction_fails=0, no_traction_until=0.0, hold_at=None)
@@ -2454,7 +2345,7 @@ class EdgeInTest(unittest.TestCase):
     def setUp(self):
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
-                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         wander_pending=None, wander_next_at=0.0,
                          last_turn_at=0.0, last_approach_at=0.0, last_flinch_at=0.0,
                          user_motion_at=0.0, realign_pending_seq=None,
                          traction_fails=0, no_traction_until=0.0, hold_at=None)
@@ -2540,7 +2431,7 @@ class ObjectStepTest(unittest.TestCase):
     def setUp(self):
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
-                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         wander_pending=None, wander_next_at=0.0,
                          object_step=None, object_step_at=0.0,
                          last_turn_at=0.0, last_approach_at=0.0, last_flinch_at=0.0,
                          user_motion_at=0.0, realign_pending_seq=None,
@@ -2630,7 +2521,7 @@ class StartupApproachTest(unittest.TestCase):
         MA._state['startup_face_seen_at'] = None
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
-                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         wander_pending=None, wander_next_at=0.0,
                          object_step=None, object_step_at=0.0,
                          first_step_at=0.0, startup_approach_done=False,
                          startup_hits=0,
@@ -2777,7 +2668,7 @@ class WanderDuringConversationTest(unittest.TestCase):
     def test_wander_reachable_with_person_tracked_and_proactive_suppressed(self):
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
-                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         wander_pending=None, wander_next_at=0.0,
                          object_step=None, object_step_at=0.0,
                          first_step_at=0.0, startup_approach_done=True,
                          startup_hits=0, last_turn_at=0.0, last_approach_at=0.0,
@@ -2816,7 +2707,7 @@ class GameHoldTest(unittest.TestCase):
     def _state(self):
         MA.cancel_requested_come("test reset")
         MA._state.update(neck_hits=0, far_hits=0, edge_hits=0, edge_last_at=0.0,
-                         orient_hits=0, wander_pending=None, wander_next_at=0.0,
+                         wander_pending=None, wander_next_at=0.0,
                          object_step=None, object_step_at=0.0,
                          first_step_at=0.0, startup_approach_done=True,
                          startup_hits=0, last_turn_at=0.0, last_approach_at=0.0,
@@ -2824,8 +2715,7 @@ class GameHoldTest(unittest.TestCase):
                          realign_pending_seq=None, traction_fails=0,
                          no_traction_until=0.0, hold_at=None)
 
-    def _step(self, game_active: bool, wander: mock.MagicMock,
-              orient: mock.MagicMock) -> None:
+    def _step(self, game_active: bool, wander: mock.MagicMock) -> None:
         ws = mock.patch(
             "world_state.world_state.get",
             side_effect=lambda key: (
@@ -2841,34 +2731,29 @@ class GameHoldTest(unittest.TestCase):
                 mock.patch("features.games.is_active", return_value=game_active), \
                 mock.patch.object(config, "MOTION_IDLE_WANDER_ENABLED", True,
                                   create=True), \
-                mock.patch.object(MA, "_maybe_idle_wander", wander), \
-                mock.patch.object(MA, "_maybe_radar_orient", orient), ws:
+                mock.patch.object(MA, "_maybe_idle_wander", wander), ws:
             MA.step(_snapshot(visible=False), _profile())
         MA.cancel_requested_come("test cleanup")
 
     def test_active_game_holds_the_social_lanes(self):
         self._state()
         wander = mock.MagicMock(return_value=False)
-        orient = mock.MagicMock(return_value=False)
-        self._step(True, wander, orient)
+        self._step(True, wander)
         wander.assert_not_called()
-        orient.assert_not_called()
 
     def test_no_game_leaves_the_lanes_live(self):
         self._state()
         wander = mock.MagicMock(return_value=False)
-        orient = mock.MagicMock(return_value=False)
-        self._step(False, wander, orient)
-        orient.assert_called_once()
+        self._step(False, wander)
+        wander.assert_called_once()
 
     def test_kill_switch_restores_motion_during_games(self):
         self._state()
         wander = mock.MagicMock(return_value=False)
-        orient = mock.MagicMock(return_value=False)
         with mock.patch.object(config, "MOTION_HOLD_DURING_GAMES", False,
                                create=True):
-            self._step(True, wander, orient)
-        orient.assert_called_once()
+            self._step(True, wander)
+        wander.assert_called_once()
 
 
 class ComfortRealignTest(unittest.TestCase):
@@ -3013,54 +2898,3 @@ class MeanderChainTest(IdleWanderTest.__bases__[0]):
         self.assertIsNone(MA._state["wander_pending"])
         self.assertEqual(MA._state["traction_fails"], 1)
         self.move.assert_not_called()
-
-
-class RadarOrientVisitedTest(unittest.TestCase):
-    """Field 2026-08-19 22:49-50: three +60° chases of the same rear radar
-    return in three minutes, each spinning him away from where the owner sat.
-    A bearing he turned toward and found nobody at is spent for the TTL."""
-
-    setUp = RadarOrientTest.setUp
-    tearDown = RadarOrientTest.tearDown
-    _tick = RadarOrientTest._tick
-    BODY_FAR = RadarOrientTest.BODY_FAR
-
-    def test_one_look_per_bearing(self):
-        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.0):
-            self._tick(3, bodies=[self.BODY_FAR])
-            self.turn.assert_called_once()
-            # Clear the cooldown + quiet window: the ONLY thing left standing
-            # between him and a re-chase is the visited memory.
-            MA._state.update(orient_last_at=0.0, last_turn_at=0.0, orient_hits=0)
-            self._tick(3, bodies=[self.BODY_FAR])
-        self.turn.assert_called_once()   # ghost does not get a second lap
-
-    def test_visited_expires_after_the_ttl(self):
-        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.0):
-            self._tick(3, bodies=[self.BODY_FAR])
-            self.turn.assert_called_once()
-            MA._state.update(orient_last_at=0.0, last_turn_at=0.0, orient_hits=0)
-            MA._state["orient_visited"] = [
-                (w, t - (config.MOTION_RADAR_ORIENT_VISITED_TTL_SECS + 5.0))
-                for (w, t) in MA._state["orient_visited"]
-            ]
-            self._tick(3, bodies=[self.BODY_FAR])
-        self.assertEqual(self.turn.call_count, 2)
-
-    def test_a_body_on_a_fresh_bearing_still_gets_its_look(self):
-        other = dict(self.BODY_FAR, bearing_deg=-120.0)
-        with mock.patch.object(MA, "_base_yaw_deg", return_value=0.0):
-            self._tick(3, bodies=[self.BODY_FAR])
-            MA._state.update(orient_last_at=0.0, last_turn_at=0.0, orient_hits=0)
-            self._tick(3, bodies=[dict(self.BODY_FAR), other])
-        self.assertEqual(self.turn.call_count, 2)
-        self.assertLess(self.turn.call_args[0][0], 0.0)   # turned toward the NEW one
-
-    def test_no_imu_keeps_the_old_behavior(self):
-        # Without a yaw reference there is no world frame to remember — orient
-        # falls back to cooldown-only pacing rather than mis-filing bearings.
-        with mock.patch.object(MA, "_base_yaw_deg", return_value=None):
-            self._tick(3, bodies=[self.BODY_FAR])
-            MA._state.update(orient_last_at=0.0, last_turn_at=0.0, orient_hits=0)
-            self._tick(3, bodies=[self.BODY_FAR])
-        self.assertEqual(self.turn.call_count, 2)

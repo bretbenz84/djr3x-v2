@@ -85,7 +85,7 @@ class RoastForwardDirectiveTests(unittest.TestCase):
 
     def test_normal_conversation_allows_optional_personal_teasing(self):
         from intelligence import social_frame
-        directive = social_frame.build_directive(self._frame(allow_roast="normal"))
+        directive = social_frame.render_slim_contract(self._frame(allow_roast="normal"))
         self.assertIn("respond to their meaning first", directive)
         self.assertIn("ordinary answer needs no punchline", directive)
         self.assertNotIn("ROAST-LEAN", directive)
@@ -93,18 +93,18 @@ class RoastForwardDirectiveTests(unittest.TestCase):
     def test_tender_roast_levels_stay_gentle(self):
         from intelligence import social_frame
 
-        none_directive = social_frame.build_directive(self._frame(allow_roast="none"))
+        none_directive = social_frame.render_slim_contract(self._frame(allow_roast="none"))
         self.assertIn("no roasts", none_directive.lower())
-        light_directive = social_frame.build_directive(self._frame(allow_roast="light"))
+        light_directive = social_frame.render_slim_contract(self._frame(allow_roast="light"))
         self.assertIn("light, optional tease", light_directive)
 
     def test_visual_directive_invites_grounded_engagement(self):
         from intelligence import social_frame
 
-        directive = social_frame.build_directive(
+        directive = social_frame.render_slim_contract(
             self._frame(allow_visual_comment=True)
         )
-        self.assertIn("What you actually SEE", directive)
+        self.assertIn("GENUINELY see", directive)
         # Must reinforce the no-invented-props guardrail right where the
         # temptation is introduced (Rex kept inventing a "drink in their hand").
         self.assertIn("never invent", directive)

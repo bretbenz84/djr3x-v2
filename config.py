@@ -118,7 +118,6 @@ CONVERSATION_LOG_DEBUG_MAX_LINES = 120
 # --gui or -gui. If requested but PySide6 or a usable display is unavailable,
 # main.py logs a warning and continues headless.
 GUI_ENABLED = False
-GUI_BACKEND = "pyside6"
 GUI_WINDOW_TITLE = "DJ-R3X Control Dashboard"
 GUI_FPS = 20
 GUI_CAMERA_PREVIEW_ENABLED = True
@@ -228,7 +227,7 @@ VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 
 # ── GPT-5-class conversation model (LIVE — see docs/gpt-5_4_mini.md) ──
 # The model for Rex's USER-FACING in-character generation (the streaming reply + the
-# short curiosity/onboarding/expression/scenery generators). The classifiers/routers/
+# short curiosity/onboarding/expression generators). The classifiers/routers/
 # JSON/vision calls keep using LLM_MODEL (gpt-4o-mini) — hybrid rollout. Routed through
 # intelligence/llm_compat, which translates the GPT-5 param differences in ONE place.
 # Flipped to gpt-5.4-mini 2026-06-17 after the smoke test + A/B (clear win on wit/persona).
@@ -518,25 +517,15 @@ OLLAMA_STARTUP_TIMEOUT_SECS = 30.0
 # ── Conversation arc memory (Bet 1) ──────────────────────────────────────────
 # A short running summary of the CURRENT conversation — topics covered, what
 # landed vs flopped, the person's mood, and open threads — maintained by a cheap
-# local-LLM (Ollama) call and fed back into the system prompt. It lets Rex see
+# OpenAI gpt-4o-mini call and fed back into the system prompt. It lets Rex see
 # what he already asked/roasted (so he stops repeating himself) and call back to
 # an earlier thread ("did you fix the droid's eyes?"). It lives inside
 # intelligence/topic_thread.py and is refreshed on a coalesced BACKGROUND worker
 # triggered from the user-turn path, so it never touches the time-to-first-speech
-# path. Inert when this flag is off or when the local LLM is unavailable (the
-# previous summary is simply retained). Kill switch: set False to disable.
+# path. Inert when this flag is off; a failed refresh call simply retains the
+# previous summary. Kill switch: set False to disable.
 CONVERSATION_ARC_ENABLED = True
-# Which model maintains the arc summary:
-#   "openai" (default) — gpt-4o-mini via the existing OpenAI client. Better quality
-#       and a richer schema (mood, what landed vs flopped). The refresh is OFF the
-#       speech path (background thread), so the cloud round-trip never delays Rex's
-#       reply, and the cost is ~$0.0002/turn. Rex's replies already require OpenAI,
-#       so this adds no new hard dependency.
-#   "local" — the qwen2.5:1.5b Ollama sidecar (no cloud call). Falls back to a
-#       3-field factual-only schema because the small model can't reliably judge
-#       mood / landed-vs-flopped (it froze and looped in testing — see CONTEXT.md).
-CONVERSATION_ARC_BACKEND = "openai"
-# OpenAI model used when backend="openai" (defaults to the main chat model).
+# OpenAI model for the arc summary (defaults to the main chat model).
 CONVERSATION_ARC_OPENAI_MODEL = "gpt-4o-mini"
 # max_tokens for the summary (five short labelled lines).
 CONVERSATION_ARC_MAX_TOKENS = 200
@@ -1338,7 +1327,6 @@ FACIAL_DISPOSITION_FIRST_SIGHT_COOLDOWN_DAYS = _env_float(
     max_value=365.0,
 )
 
-MUSIC_DIR          = "assets/music"
 TTS_CACHE_DIR      = "assets/audio/tts_cache"
 AUDIO_CLIPS_DIR    = "assets/audio/clips"
 JEOPARDY_CLUES_FILE = "assets/jeopardy/clues.tsv"
@@ -1377,7 +1365,7 @@ EPISODIC_STARTUP_IMAGE_ENABLED = True
 # (then it's attributed to them by face match — part of Rex's history WITH that person)
 # OR the scene materially changed from the last one. Without this, Rex's diary fills with
 # near-identical anonymous "a tidy room with white walls" boilerplate every boot, which
-# drags down retrieval quality. The spoken scenery-change remark is unaffected.
+# drags down retrieval quality.
 SCENE_CAPTURE_REQUIRE_PERSON_OR_CHANGE = True
 # Token-overlap (Jaccard) at/above which two scene captions count as "the same scene"
 # (so an unattended, unchanged room scan is dropped). 0..1; higher = stricter dedup.
@@ -1658,9 +1646,6 @@ EPISODIC_RECALL_SCENE_RETENTION = 40
 # EPISODIC_RECALL_ENABLED pattern) so the pool can build silently for A/B runs.
 CALLBACK_BANK_ENABLED = _env_bool("CALLBACK_BANK_ENABLED", True)    # capture → DB writes
 CALLBACK_HUMOR_ENABLED = _env_bool("CALLBACK_HUMOR_ENABLED", True)  # firing → callbacks speak
-# Banker backend: "local" = qwen2.5:1.5b sidecar (free, default); "openai" = a
-# gpt-4o-mini call per turn (better recall — explicit opt-in spend).
-CALLBACK_BANK_BACKEND = "local"
 # Active 'safe' premises kept per person; beyond this the least-used/oldest are
 # retired (roast material is a small curated pool, not an archive).
 CALLBACK_BANK_MAX_PER_PERSON = 12
@@ -1883,13 +1868,6 @@ LOCAL_TTS_FRONT_PAD_MS = 150           # silence pad written at stream start (an
 # Run one tiny throwaway generation right after the model loads, so the FIRST real
 # line doesn't pay one-time Metal kernel compilation (~4-5s observed cold).
 LOCAL_TTS_WARMUP_ON_LOAD = True
-# Cache Rex's on-device takes as WAV so a repeated line replays instantly instead
-# of re-synthesizing. OFF by default: local synthesis is fast (no network round-
-# trip), and hearing FRESH audio every line is what you want while testing
-# --local-tts. Turn on for a production local-only deployment where reusing boot/
-# stock lines across launches matters. (The ElevenLabs cache is separate and
-# unaffected; impersonation takes are never cached regardless.)
-LOCAL_TTS_CACHE_ENABLED = _env_bool("LOCAL_TTS_CACHE_ENABLED", False)
 
 # Automatic ElevenLabs -> local fallback. Works even without --local-tts, as long
 # as the model weights are installed; if they aren't, behavior is unchanged from
@@ -2262,22 +2240,6 @@ WAKE_WORD_RECOGNITION_WAVE_COUNT = 3
 WAKE_WORD_RECOGNITION_WAVE_STEP_QUS = 320
 WAKE_WORD_RECOGNITION_WAVE_STEP_DELAY_SECS = 0.010
 WAKE_WORD_RECOGNITION_WAVE_HOLD_SECS = 0.045
-
-# Short in-character lines Rex delivers after a wake word fires mid-speech
-INTERRUPT_ACKNOWLEDGMENTS = [
-    "yeah?",
-    "what?",
-    "go ahead.",
-    "I'm listening.",
-    "...yes?",
-    "recalibrating.",
-    "you have my attention. Briefly.",
-]
-
-# Plain VAD barge-in while Rex is speaking is noisy with the current simple
-# playback-suppression AEC: Rex can hear his own tail and "interrupt" himself.
-# Wake words remain the intentional mid-speech interruption path.
-VAD_BARGE_IN_ENABLED = False
 
 # ── Proactive-speech "yield the floor" guard ─────────────────────────────────
 # Rex chooses to say some lines on his own (idle banter, idle follow-ups,
@@ -4380,32 +4342,6 @@ AEC_SEQUENCE_IDLE_RELEASE_SECS = _env_float(
 # still crashes on a given machine; lower toward 0 if the ack feels laggy.
 AUDIO_PLAYBACK_STOP_SETTLE_SECS = 0.05
 
-# ── Software acoustic echo suppression (audio/aec.py) ────────────────────────
-# Rex's own playback masks a spoken wake word in the mic. The ReSpeaker Lite's
-# hardware AEC isn't reachable in the robot's wiring, so we cancel in software:
-# capture exactly what Rex plays (the digital reference), align it to the mic by
-# cross-correlation (tracks clock drift between output device and mic), and
-# spectrally subtract his voice so a wake word can get through while he talks.
-# Engages ONLY while Rex is playing; pure passthrough otherwise, so it can't hurt
-# normal wake detection. These need tuning on real hardware — watch the periodic
-# [aec] ERLE log and the [wake_diag] near-miss scores.
-# DISABLED: in the real room this only cancelled ~5 dB (clock drift between the
-# output device and the ReSpeaker mic + reverb defeat host-side cancellation), far
-# short of the ~30 dB needed to unmask a wake word — and worse, its distorted
-# residual made Rex's own voice score HIGHER on the wake model, so he self-triggered
-# and interrupted himself. Left wired but off; true barge-in needs hardware AEC (the
-# ReSpeaker Lite's onboard XU316 AEC). Flip True only to experiment.
-AEC_SOFTWARE_ENABLED = False
-AEC_OVERSUBTRACTION = _env_float("AEC_OVERSUBTRACTION", 1.6, min_value=1.0, max_value=4.0)
-AEC_SPECTRAL_FLOOR = _env_float("AEC_SPECTRAL_FLOOR", 0.10, min_value=0.0, max_value=1.0)
-AEC_MAX_DELAY_SECS = _env_float("AEC_MAX_DELAY_SECS", 0.4, min_value=0.05, max_value=2.0)
-AEC_DELAY_REFINE_INTERVAL_SECS = _env_float("AEC_DELAY_REFINE_INTERVAL_SECS", 0.25, min_value=0.05, max_value=5.0)
-AEC_GAIN_EMA = _env_float("AEC_GAIN_EMA", 0.15, min_value=0.01, max_value=1.0)
-AEC_DOUBLETALK_RATIO = _env_float("AEC_DOUBLETALK_RATIO", 2.5, min_value=1.0, max_value=10.0)
-AEC_REF_ACTIVE_RMS = _env_float("AEC_REF_ACTIVE_RMS", 0.0015, min_value=0.0, max_value=1.0)
-AEC_REF_BUFFER_SECS = _env_float("AEC_REF_BUFFER_SECS", 6.0, min_value=1.0, max_value=30.0)
-AEC_DIAG_INTERVAL_SECS = _env_float("AEC_DIAG_INTERVAL_SECS", 2.0, min_value=0.0, max_value=30.0)
-
 # Direct questions need a responsive handoff. Keep only a short post-playback
 # attenuation tail; the capture floor below handles Rex's final-word bleed.
 POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.12
@@ -5005,16 +4941,6 @@ TONE_REPAIR_NO_ROAST_SECS = 180.0
 # recalibration line back ("We'll get there — recalibrating. <your words>."). Kill switch.
 REPAIR_RESTATEMENT_AS_REPLY_ENABLED = True
 
-# Phase 1 / "Bet 2": ship the LLM ONE compact per-turn contract (~130 words) built
-# from the structured SocialFrame, instead of the ~40-segment block that pipe-joined
-# a dozen governors' prose and contradicted its own "choose ONE purpose" preamble.
-# The structured governors (build_turn_plan, build_frame, comedy_modes.select_mode)
-# still run on the rich directive — only the LLM-facing string shrinks — and
-# govern_response stays the post-generation safety net. Static guardrails (character,
-# never-invent-a-prop, opener variety, pronoun/cast rules) live once in the persona.
-# Flip to False for byte-for-byte the old stacked contract (instant rollback).
-TURN_PLANNER_SLIM_CONTRACT = True
-
 # Let Rex use what he SEES (outfit, expression, the drink, the messy room) as
 # roast material on normal upbeat turns, not only when the human says "look at
 # this". The social-frame directive still scopes it to "when it fits," and the
@@ -5224,13 +5150,6 @@ MOTION_EAGER_ENDPOINT_SILENCE_SECS = 0.35
 MOTION_EAGER_ENDPOINT_REUSE_TRANSCRIPT = _env_bool("MOTION_EAGER_ENDPOINT_REUSE_TRANSCRIPT", True)
 MOTION_EAGER_ENDPOINT_REUSE_WAIT_SECS = 3.0
 MOTION_EAGER_ENDPOINT_REQUIRE_AEC = True
-# Off during parlor games: an answer, a board pick or a wager is never a drive
-# command, so every probe is a wasted full Qwen decode — and it takes MLX_LOCK
-# ahead of the turn's real transcription. Field 2026-08-26: ~65 probe decodes
-# across one Jeopardy run, ZERO matches, and turn decodes serialized behind
-# them for up to 8 s. (MOTION_HOLD_DURING_GAMES already parks the base, so the
-# "stop" safety path this probe accelerates is not in play.)
-MOTION_EAGER_ENDPOINT_DURING_GAMES = False
 
 # Minimum seconds of accumulated audio before silence can end a recording.
 # Prevents single-word transcriptions when the person is still talking.
@@ -5364,19 +5283,10 @@ POST_QUESTION_RETRO_SCAN_MIN_VOICED_FRAMES = 3  # ~96ms of voiced audio required
 # VAD is dead from the person's last word until well after Rex's reply ends. A
 # second line spoken in that window ("...oh, and one more thing") lands in the
 # 30s rolling buffer, clean, and was then made permanently unreachable when the
-# post-TTS handoff stamped the capture floor at playback end. Two recoveries:
+# post-TTS handoff stamped the capture floor at playback end. Owner decision:
+# finish the pending reply, then handle the new utterance.
 #
-# GAP MERGE (phase 1): at the moment the reply's FIRST sentence exists — before
-# any TTS is fetched or queued — scan the buffered span since the turn's capture
-# ended. If the person spoke, abandon the drafted reply, wait out their line
-# like a normal turn, transcribe it, and regenerate ONCE with both lines as the
-# turn. Perceived latency is fine: the person's clock restarts when THEY stop
-# talking, and a robot that waits because you kept talking reads as listening.
-# Cost only when triggered (one extra lean call; the abandoned reply never
-# reached ElevenLabs). The scan itself is one batched Silero pass over ~2-5s of
-# audio (~tens of ms) — the only cost paid on every streamed reply.
-#
-# GAP CATCH-UP (phase 2): when the loop resumes listening after the reply, run a
+# GAP CATCH-UP: when the loop resumes listening after the reply, run a
 # ONE-SHOT scan over the whole span it was blind for. The pre-playback thinking
 # gap is clean audio on every machine; the during-playback span is scannable
 # ONLY with hardware AEC (dev Macs hold Rex at full volume there — physics, not
@@ -5387,21 +5297,12 @@ POST_QUESTION_RETRO_SCAN_MIN_VOICED_FRAMES = 3  # ~96ms of voiced audio required
 # progress at scan time is handed to the live loop as a recovered onset instead
 # (single capture, no double-dispatch).
 GAP_SPEECH_RECOVERY_ENABLED = _env_bool("GAP_SPEECH_RECOVERY_ENABLED", True)
-GAP_MERGE_ENABLED = False            # owner: finish pending reply, then handle the new utterance
-GAP_CATCHUP_ENABLED = True           # phase 2: post-reply catch-up scan
+GAP_CATCHUP_ENABLED = True           # post-reply catch-up scan
 CONTINUOUS_REPLY_CAPTURE_ENABLED = True  # bounded input producer during reply; recovery owns seams
 # Minimum total voiced audio in a scanned span to count as the person speaking.
-# Below this, breaths / chair creaks / TV blips stay ignored. A phase-1 false
-# positive is the expensive miss (it abandons a drafted reply and regenerates,
-# ~2-4s), so this errs conservative rather than hair-trigger.
+# Below this, breaths / chair creaks / TV blips stay ignored.
 GAP_SPEECH_MIN_VOICED_SECS = 0.35
-# Phase-1 scan sanity bounds. A span shorter than the min can't hold a real
-# second line; longer than the max means something unusual held the reply path
-# (web search, wedged API) and the buffer story is too stale to trust — skip the
-# check and let phase 2 sort it out.
-GAP_MERGE_MIN_SPAN_SECS = 0.40
-GAP_MERGE_MAX_SPAN_SECS = 12.0
-# Phase-2 scan span cap — must stay under AUDIO_BUFFER_SECONDS (30) or the span
+# Catch-up scan span cap — must stay under AUDIO_BUFFER_SECONDS (30) or the span
 # start has already scrolled out of the rolling buffer.
 GAP_CATCHUP_MAX_SPAN_SECS = 25.0
 # Voiced runs separated by less than this are ONE utterance (a breath pause, not
@@ -5411,7 +5312,7 @@ GAP_SPEECH_JOIN_GAP_SECS = 1.2
 GAP_SPEECH_SLICE_PAD_SECS = 0.25
 # After ANY playback ended inside a scan span (ack chirp, sound effect), exclude
 # this much extra for room-echo decay before trusting VAD hits (no-AEC machines
-# additionally exclude the playback span itself — see the phase helpers).
+# additionally exclude the playback span itself — see _gap_catchup_candidates).
 GAP_SPEECH_POST_PLAYBACK_SKIP_SECS = 0.25
 # During-playback (hardware AEC only) catch-up bars. Rex's own −17 dB residual
 # can cross the VAD and even transcribe verbatim (field 2026-07-23), so a hit
@@ -5603,19 +5504,9 @@ LOW_MEMORY_IDLE_QUESTION_SECS = 10.0
 LOW_MEMORY_PROFILE_MAX_FACTS = 12
 LOW_MEMORY_IDLE_QUESTION_PREFIX = "I want to get to know you better, {name}. {question}"
 
-# Cold opens should feel like a person, not an intake form: when Rex first sees
-# someone on startup, lead with a casual "what's up / how are you?" greeting
-# (FIRST_GREETING_STEERING_PHRASES / mood check-in) rather than a profile
-# question like "What kind of music are you into?". Profile-building still
-# happens once the conversation is rolling (REACTIVE_FRIENDSHIP_QUESTIONS_ENABLED)
-# and during lulls (LOW_MEMORY_IDLE_QUESTION_ENABLED). Flip to True to let the
-# first-sight greeting itself carry a profile question again.
-STARTUP_PROFILE_QUESTION_ENABLED = False
-
 # While DJ/radio playback is active, do not treat the station audio as human
 # speech and do not let proactive conversation prompts speak over the music.
 DJ_SUPPRESS_CONVERSATION_DURING_PLAYBACK = True
-IDLE_LISTEN_DURING_DJ_PLAYBACK = False
 # While conversation is suppressed by playback, keep a NARROW ear open for music
 # control: VAD + transcription still run (hardware AEC required — the ReSpeaker
 # cancels its own playback from the mic), but ONLY stop/skip/volume/shutdown
@@ -5701,15 +5592,12 @@ ONBOARDING_STEP_TTL_SECS = 240.0           # deep fallback: flow hard-expires th
 ONBOARDING_SOFT_DISENGAGE_LIMIT = 2        # lukewarm answers in a row (past MIN) -> wind down
 ONBOARDING_REVEAL_EVERY = 2                # inject a Rex self-reveal ~every N questions (0 = off); 2 lands ≥1 reveal even in a 3-question burst (since_reveal inits at 0)
 
-# Use the LLM to (a) generate the Tier-C depth follow-up against the live answer
-# and (b) lightly rephrase authored questions in Rex's voice. Both run on the
-# main OpenAI model (config.LLM_MODEL, gpt-4o-mini) — the follow-up is a
+# Use the LLM to generate the Tier-C depth follow-up against the live answer. It
+# runs on the main OpenAI model (config.LLM_MODEL, gpt-4o-mini) — the follow-up is a
 # quality-critical, in-character generation, so it uses the same brain as the
 # rest of the conversation (not the local qwen classifier sidecar). A validated
-# templated fallback covers the LLM-disabled / offline case. Generation is the
-# point of the follow-up; rephrasing is cosmetic and off by default.
+# templated fallback covers the LLM-disabled / offline case.
 ONBOARDING_LLM_FOLLOWUP_ENABLED = True
-ONBOARDING_LLM_REPHRASE_ENABLED = False
 # Answer-aware reaction: each answer gets a SHORT, genuine, content-reflecting beat
 # (llm.generate_onboarding_reaction) in place of the old flat sentiment-bank retort —
 # so "I created you" earns real surprise, not "Filed away." Off => the authored bank
@@ -5808,8 +5696,6 @@ WAKE_FROM_SLEEP_ACKNOWLEDGMENTS = [
 # Sleep is intentionally ONNX-only: ordinary speech, general Rex wake models,
 # GUI/text input, and Whisper transcription cannot wake him. This makes SLEEP a
 # real low-attention state with one explicit acoustic exit.
-SLEEP_ONNX_ONLY_WAKE = True
-SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSCIOUSNESS LOOP
@@ -6266,20 +6152,7 @@ ROOM_LAUGHTER_REACTION_LINES = [
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 
-# Lightweight OpenAI low-detail scan for changes that matter socially. This is
-# off by default now that live pet detection is local; enable it if you want
-# periodic GPT-4o people/animal scene checks in addition to the local detector.
-SCENE_CHANGE_MONITOR_ENABLED = _env_bool("SCENE_CHANGE_MONITOR_ENABLED", False)
-SCENE_CHANGE_MONITOR_INTERVAL_SECS = _env_float(
-    "SCENE_CHANGE_MONITOR_INTERVAL_SECS",
-    20.0,
-    min_value=5.0,
-    max_value=300.0,
-)
-SCENE_CHANGE_MONITOR_ONLY_WITH_PEOPLE = _env_bool(
-    "SCENE_CHANGE_MONITOR_ONLY_WITH_PEOPLE",
-    True,
-)
+# Token cap for the periodic OpenAI startle-species scan (vision/scene.py).
 SCENE_CHANGE_MONITOR_MAX_TOKENS = _env_int(
     "SCENE_CHANGE_MONITOR_MAX_TOKENS",
     260,
@@ -6633,7 +6506,8 @@ ROOM_CHANGE_REMARK_LINES = [
 ]
 
 # Animal detection runs alongside periodic scene scans. OpenAI animal detection
-# remains available for explicit scene queries and as an optional fallback.
+# remains only in the periodic startle-species scan (runs alongside the local
+# detector) and explicit scene queries.
 ANIMAL_DETECTION_ENABLED = True
 ANIMAL_PENDING_REACTION_TTL_SECS = 90
 
@@ -7705,61 +7579,6 @@ TREND_GREETING_HOOK_ENABLED = _env_bool("TREND_GREETING_HOOK_ENABLED", True)
 TREND_FREQUENT_SESSIONS_7D = _env_int("TREND_FREQUENT_SESSIONS_7D", 4, min_value=2, max_value=50)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LATENCY FILLER — Thinking Out Loud
-# Lines Rex says while waiting for LLM or TTS responses. Never repeats back-to-back.
-# ─────────────────────────────────────────────────────────────────────────────
-
-LATENCY_FILLER_LINES = [
-    "One sec, thinking.",
-    "Hang on, processing.",
-    "Running that thought through hyperspace.",
-    "Stand by, recalibrating the answer.",
-    "Processing. Try not to look impressed.",
-    "One sec, consulting the memory banks.",
-]
-
-# Filler ("One sec, thinking.") should only cover real latency. Disabled along
-# with the slow-path ack below: the "one sec" filler felt out of place, and the
-# streaming answer path now gets Rex's real first sentence out fast. True = back.
-LATENCY_FILLER_ENABLED = False
-LATENCY_FILLER_DELAY_SECS = 0.9
-LATENCY_FILLER_REQUIRE_CACHE = True
-
-# Instant acknowledgments ("One sec.") for paths we already expect to be slow.
-# Disabled: the canned receipt felt out of place, and streaming now gets Rex's
-# real first sentence out fast enough that the cover is unnecessary. True = back.
-SLOW_PATH_ACK_ENABLED = False
-SLOW_PATH_ACK_REQUIRE_CACHE = True
-# In text-only/noaudio mode, filler lines become visible chat clutter instead of
-# useful spoken latency cover. Leave this off unless you explicitly want GUI
-# filler messages.
-SLOW_PATH_ACK_IN_TEXT_ONLY = False
-SLOW_PATH_ACK_MIN_EXPECTED_SECS = 1.5
-SLOW_PATH_ACK_GENERAL_MIN_WORDS = 9
-SLOW_PATH_ACK_GENERAL_ALLOW_SIMPLE_QUESTIONS = False
-SLOW_PATH_ACK_EXPECTED_SECS = {
-    "vision": 2.5,
-    "memory": 2.0,
-    "general": 1.8,
-}
-SLOW_PATH_ACK_LINES = {
-    "vision": [
-        "Let me check.",
-        "looking.",
-    ],
-    "memory": [
-        "I've got that.",
-        "Checking the memory banks.",
-        "Let me remember.",
-    ],
-    "general": [
-        "One sec.",
-        "Hang on.",
-        "I'm thinking",
-    ],
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # WEB SEARCH — current-info lookups via OpenAI's hosted web_search tool
 # ─────────────────────────────────────────────────────────────────────────────
 # When a question needs CURRENT / real-time info, Rex answers it through the OpenAI
@@ -8446,18 +8265,6 @@ PLAY_SHUTDOWN_AUDIO = True
 # should cover the load, not follow it. Keep the delay small: it's now just the
 # beat between the startup clip ending and this line starting, not dead space in
 # front of all the loading.
-# When Rex powers up, compare what he sees now to the previous run's startup snapshot
-# and, if it's a clearly DIFFERENT place (new room, indoors↔outdoors, new venue), have
-# him remark on the change of scenery. One cheap text LLM call per run (piggybacks on
-# the startup image caption); no-op on the very first run / when nothing changed.
-#
-# OFF by default: comparing two short image *captions* is too noisy — run-to-run wording
-# drift (lighting/clutter/angle) made Rex announce a "new room" when the room hadn't
-# changed (2026-06-14: "swapped the disco for a cozy nap zone" in the same room). Bret
-# prefers a greeting over room commentary, and the greeting should own the startup line.
-# Re-enable only with a more reliable detector (e.g. an image-embedding fingerprint).
-SCENERY_CHANGE_REMARK_ENABLED = False
-
 PLAY_STARTUP_BOOT_TTS = True
 # Star Tours-style "still getting ready" filler lines spoken over the boot
 # preloads. main.py cycles through these, avoiding repeats between launches (see
@@ -8688,9 +8495,9 @@ PLAY_LISTENING_CHIME = True
 
 # Audio-scene laughter/applause detection is useful as context, but it is too
 # easy for startup playback, room noise, or ASR artifacts to trigger an
-# unsolicited "ah, laughter" line. Keep direct sound-event banter disabled by
-# default; the data still remains in world_state for prompts.
-WORLD_SOUND_EVENT_REACTIONS_ENABLED = False
+# unsolicited "ah, laughter" line, so sound events get a direct line only for a
+# startle (below) or a notable family in SOUND_EVENT_REACTION_PROMPTS; the data
+# still remains in world_state for prompts.
 WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED = True
 STARTLE_SOUND_EVENTS = {"scream", "sudden_loud_sound", "crash", "glass_break", "bang"}
 STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS = 20
@@ -9053,8 +8860,7 @@ JEOPARDY_DAILY_DOUBLE_MAX_SECS = 6.0
 # before hearing the clue — min JEOPARDY_DD_MIN_WAGER, max = the larger of
 # their score and the round's top value ($1000 R1 / $2000 R2), "everything" /
 # "true daily double" goes all in. No rebound — a DD belongs to its picker
-# (show rules). False restores the old flat auto-double.
-JEOPARDY_DD_WAGER_ENABLED = True
+# (show rules).
 JEOPARDY_DD_MIN_WAGER = 5
 # Final Jeopardy (owner ask 2026-08-25): after Double Jeopardy completes (or on
 # "final jeopardy" by voice), the category is announced, wagers are collected
@@ -9107,7 +8913,7 @@ JEOPARDY_TIMEOUT_MAX_DEFER_SECS = 10.0
 # always restart at the interrupt regardless of this flag.
 GAME_BARGE_KEEP_ONSET_ENABLED = True
 # Hold the drive base still while a parlor game is active: the social motion
-# lanes (radar orient, comfort realign, idle wander) read seated-and-quiet
+# lanes (comfort realign, idle wander) read seated-and-quiet
 # players as a reason to go looking, and turned Rex away from the Jeopardy
 # board mid-round (field 2026-08-25). Flinch and explicit come-here still run.
 MOTION_HOLD_DURING_GAMES = True
@@ -9548,34 +9354,6 @@ MOTION_COME_VOICE_MIN_SHARE = 0.4          # ignore a bearing whose dominant clu
 MOTION_COME_VOICE_FACE_MATCH_DEG = 25.0    # maximum camera/microphone bearing disagreement
 MOTION_COME_VOICE_FACE_MARGIN_DEG = 10.0   # minimum lead over another visible face
 
-# ── Radar orient (owner spec 2026-08-19) ────────────────────────────────────────
-# When the camera sees NOBODY but the ring shows a persistent body, face it —
-# neck-first (a glance the camera can act on; face tracking takes over the moment
-# a face appears), base turn only when the body is beyond the neck's reach. Runs
-# in the social lane, so it inherits the mid-sentence freeze, user hold/steering
-# stand-down, no-drive room rule, and idle-base requirement for free.
-MOTION_RADAR_ORIENT_ENABLED = False   # OFF since 2026-09-02 22:23: it turned him +60° toward a radar
-                                      # return before anyone spoke, and in the 22:02 run spun him seven
-                                      # times toward dogs/ghosts, undoing the name-call reflex. The voice
-                                      # bearing now covers "somebody is calling from off camera"; the ring
-                                      # keeps its role inside the come-here search. Flip on to try again.
-MOTION_RADAR_ORIENT_WINDOW_SECS = 2.5      # fresh-frame sample the decision reads
-MOTION_RADAR_ORIENT_CONFIRM_TICKS = 3      # consecutive no-face ticks with a body
-MOTION_RADAR_ORIENT_MIN_CONFIDENCE = 0.30  # body confidence floor
-MOTION_RADAR_ORIENT_MIN_BEARING_DEG = 20.0 # closer than this = already facing them
-MOTION_RADAR_ORIENT_NECK_MAX_DEG = 40.0    # within the neck's reach -> glance only
-MOTION_RADAR_ORIENT_NECK_HOLD_SECS = 6.0   # directed-gaze hold on the glance
-MOTION_RADAR_ORIENT_QUIET_SECS = 3.0       # no own-maneuver window before deciding
-MOTION_RADAR_ORIENT_COOLDOWN_SECS = 30.0   # between orients
-# One look per body: a bearing he turned toward and found nobody at is spent for
-# the TTL (field 2026-08-19 22:49: three +60° chases of the same rear return in
-# three minutes, each spinning him away from the owner). World-frame via IMU yaw.
-MOTION_RADAR_ORIENT_VISITED_TTL_SECS = 150.0
-# A fresh VOICE bearing outranks the ring: while one is this recent, radar orient
-# stands down entirely (field 2026-09-02 22:03: the name-call reflex had the
-# caller dead ahead and 4 s later radar orient turned +60° toward a return the
-# camera never confirmed — seven such spins in six minutes, dogs and ghosts).
-MOTION_RADAR_ORIENT_VOICE_DEFER_SECS = 20.0
 # Idle arm wander swings the HERO arm 1300-2000 qus off neutral every 4-9 s.
 # The Flex mic ring is mounted near that section; the owner confirms it is
 # fixed and shifts only a few degrees with the arm, so wander stays ON. The
@@ -9626,7 +9404,6 @@ WAKE_ORIENT_RADAR_TIEBREAK_MIN_RANGE_M = 1.0
 # turn is adopted as a search leg (like "I'm behind you"). A utterance that also
 # says "come" is a come command and is left to that path.
 OVER_HERE_REFLEX_ENABLED = True
-MOTION_RADAR_ORIENT_VISITED_DEG = 30.0
 
 # ── Idle base wander ("weight shift", owner spec 2026-08-19) ────────────────────
 # The drive-base sibling of the idle arm/head wander: occasional small maneuvers
@@ -9675,6 +9452,10 @@ MOTION_IDLE_WANDER_CHAIN_LEGS_MAX = 6
 MOTION_IDLE_WANDER_CHAIN_TURN_MAX_DEG = 12.0
 MOTION_IDLE_WANDER_CHAIN_MOVE_MIN_M = 0.10
 MOTION_IDLE_WANDER_CHAIN_MOVE_MAX_M = 0.30
+# A fresh voice bearing (motion_agency.note_voice_bearing, from the name-call reflex
+# and every transcribed segment) blocks a NEW idle wander for this long: someone
+# just spoke, and they may call again.
+MOTION_IDLE_WANDER_VOICE_DEFER_SECS = 20.0
 
 # ── Conversation edge-in (owner spec 2026-08-19) ────────────────────────────────
 # "If he's having a conversation, he should try to get closer." The public-zone
@@ -10683,13 +10464,6 @@ MOTION_CONNECT_RETRY_DELAY_SECS = 1.0
 # blocking audio) wants the speaker, the effect stops within ~50 ms — an effect can
 # never delay speech. Keys with multiple files are picked at random per play.
 SOUND_EFFECTS_ENABLED        = True
-# Drive/servo effects play from Rex's own body while he is MOVING, and the drive
-# whir now LOOPS for the whole travel. Treating those as "Rex is talking" held mic
-# suppression up for the entire maneuver, so the owner could not be heard over his
-# own motors — field 2026-07-25: repeated "don't move" / "stop moving" went
-# unheard while a realign loop retried every ~10 s. Speech and music still
-# suppress; motor noise does not.
-SOUND_EFFECTS_DRIVE_SUPPRESSES_MIC = False
 # No-effects window after Rex stops talking, while he waits for an answer. His clips
 # run ~1.5 s and the mic reopens ~0.1 s after playback, so an effect fired here covers
 # a whole short reply. Field 2026-08-06: a servo whir one second after his question ate
@@ -10719,7 +10493,7 @@ SOUND_EFFECTS_DRIVE_LOOP_MAX_SECS = 30.0
 # How long after an explicit voice motion command its drive sounds keep using
 # overlay mode — long enough to cover every leg of a multi-step spoken route.
 MOTION_COMMANDED_FX_WINDOW_SECS = 20.0
-# Autonomous motion is frequent now (idle wander, radar orient, edge-in, object
+# Autonomous motion is frequent now (idle wander, edge-in, object
 # step, spontaneous approach), so ITS motor accents duck to this fraction of a
 # commanded move's volume — present as texture, never as loud as a command
 # confirmation. 1.0 = no ducking. (Owner 2026-08-19: first asked for about half,

@@ -262,7 +262,7 @@ def _user_commanded_fx() -> bool:
 
 def _fx_gain() -> float:
     """Volume scale for drive accents. Autonomous motion is FREQUENT now (idle
-    wander, radar orient, edge-in, object step...), so its motor sounds duck to
+    wander, edge-in, object step...), so its motor sounds duck to
     a fraction of a commanded move's level (owner 2026-08-19: about half) —
     present, but ambient. A voice-commanded move keeps full volume: there the
     sound is confirmation, not texture."""

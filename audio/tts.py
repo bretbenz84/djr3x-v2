@@ -1447,8 +1447,6 @@ def _speak_local(
     back to ElevenLabs.
 
     `clean_text` must already be audio-tag-free — Qwen would read [tags] aloud.
-    Rex's own voice (label 'rex') is cached as WAV keyed on the local backend so
-    repeat lines are instant; impersonation voices are never cached (one-off).
     """
     global _speaking
     try:
@@ -1463,38 +1461,6 @@ def _speak_local(
         return False
 
     sr = local_tts.sample_rate()
-    # Only Rex's own voice is ever cacheable (impersonation takes are one-off), and
-    # only when the local cache is enabled — off by default so --local-tts testing
-    # always hears freshly synthesized audio.
-    cacheable = (
-        getattr(voice_ref, "label", "") == "rex"
-        and bool(getattr(config, "LOCAL_TTS_CACHE_ENABLED", False))
-    )
-
-    # Cache hit (Rex voice only) → play the stored WAV through the buffered path.
-    cache_file = None
-    if cacheable:
-        cache_file = _cache_path(
-            clean_text, f"local:{voice_ref.label}",
-            local_tts.cache_identity(),
-        )
-        wav_path = cache_file.with_suffix(".wav")
-        if wav_path.exists():
-            logger.info("[tts] local cache hit: %s", wav_path.name)
-            audio, samplerate = _read_audio(wav_path)
-            if audio is not None and len(audio):
-                if log_text:
-                    try:
-                        conv_log.log_rex(clean_text)
-                    except Exception as exc:
-                        logger.debug("[tts] conversation log write failed: %s", exc)
-                _play(
-                    audio, samplerate, emotion,
-                    on_playback_start=on_playback_start,
-                    post_playback_tail_secs=post_playback_tail_secs,
-                    flush_on_playback_stop=flush_on_playback_stop,
-                )
-                return True
 
     # Breeze streams Rex speech and prepares complete cloned takes. Qwen
     # retains its buffered take path for long impressions that cannot keep up
@@ -1505,8 +1471,8 @@ def _speak_local(
     if take is None and (streaming_local or (is_clone and bool(getattr(config, "LOCAL_TTS_TAKE_PIPELINE", True)))):
         take = local_tts.Take(clean_text, voice_ref)
 
-    # Kill switch: pipeline off → render the clone whole and play it like a
-    # cache hit (the pre-pipeline behavior).
+    # Kill switch: pipeline off → render the clone whole and play it through
+    # the buffered path (the pre-pipeline behavior).
     if not streaming_local and take is None and is_clone and bool(getattr(config, "LOCAL_TTS_CLONE_FULL_BUFFER", True)):
         try:
             full_audio, full_sr = local_tts.synthesize(clean_text, voice_ref)
@@ -1593,7 +1559,6 @@ def _speak_local(
                 emotion, ttl_secs=max(8.0, buffered_secs + 6.0), defer_mouth=True,
             )
 
-            all_samples: list[np.ndarray] = list(buffered) if cacheable else []
             ttfa_logged = False
             underruns = 0
             play_started_at = time.monotonic()
@@ -1667,8 +1632,6 @@ def _speak_local(
                     for samples in gen:
                         if canceled:
                             break
-                        if cacheable:
-                            all_samples.append(samples)
                         for piece in _led_chunks(samples, sr):
                             if echo_cancel.was_canceled() or not delivery.allowed():
                                 canceled = True
@@ -1715,18 +1678,6 @@ def _speak_local(
                 local_tts.backend(),
                 getattr(voice_ref, "label", "?"),
             )
-
-        # Cache the full take (Rex voice only) for future hits.
-        if cacheable and cache_file is not None and all_samples and not canceled:
-            try:
-                import soundfile as sf
-                full = _trim_trailing_silence(np.concatenate(all_samples), sr)
-                wav_out = cache_file.with_suffix(".wav")
-                wav_out.parent.mkdir(parents=True, exist_ok=True)
-                sf.write(str(wav_out), full, sr)
-                logger.info("[tts] saved local take to cache: %s", wav_out.name)
-            except Exception as exc:
-                logger.debug("[tts] local cache write failed: %s", exc)
         return True
     finally:
         try:
@@ -1990,16 +1941,6 @@ def _cache_path(
     return Path(config.TTS_CACHE_DIR) / f"{digest}.mp3"
 
 
-def _local_cache_wav(clean_text: str) -> Path:
-    """Cache WAV path for Rex's OWN voice on the local backend (impersonation
-    voices are never cached). Keyed on backend + model, distinct from ElevenLabs."""
-    from audio import local_tts
-    return _cache_path(
-        clean_text, "local:rex",
-        local_tts.cache_identity(),
-    ).with_suffix(".wav")
-
-
 def is_cached(
     text: str,
     voice_settings: Optional[dict] = None,
@@ -2014,13 +1955,9 @@ def is_cached(
     """
     if not text or not text.strip():
         return False
-    # In local mode Rex's takes cache under a different (backend) key; audio tags
-    # are stripped for Qwen, so the key is the plain normalized text. When the local
-    # cache is disabled (the default), nothing is ever cached → always "not cached".
+    # Local takes are never cached → always "not cached" in local mode.
     if _use_local_backend():
-        if not bool(getattr(config, "LOCAL_TTS_CACHE_ENABLED", False)):
-            return False
-        return _local_cache_wav(strip_audio_tags(_normalize_for_speech(text))).exists()
+        return False
     spoken_text = _normalize_for_speech(text)
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
     synth_text, voice_settings = _apply_audio_tags(
@@ -2058,9 +1995,10 @@ def ensure_cached(
     ):
         logger.info("[tts] cache prefill skipped — audio suppressed")
         return False
-    # Local mode: prefill via the on-device engine (never touch ElevenLabs).
+    # Local mode: local takes are never cached, so there is nothing to prefill
+    # (and ElevenLabs is never touched).
     if _use_local_backend():
-        return _ensure_cached_local(strip_audio_tags(_normalize_for_speech(text)))
+        return False
     spoken_text = _normalize_for_speech(text)
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
     synth_text, voice_settings = _apply_audio_tags(
@@ -2080,34 +2018,6 @@ def ensure_cached(
     cache_file.write_bytes(audio_bytes)
     logger.info("[tts] prefilled cache: %s", cache_file.name)
     return True
-
-
-def _ensure_cached_local(clean_text: str) -> bool:
-    """Prefill Rex's local-voice WAV cache for `clean_text` (already tag-stripped)
-    without playing. Used at startup so the first --local-tts line is instant. No-op
-    when the local cache is disabled (the default) — every line synthesizes fresh."""
-    if not bool(getattr(config, "LOCAL_TTS_CACHE_ENABLED", False)):
-        return False
-    wav = _local_cache_wav(clean_text)
-    if wav.exists():
-        return True
-    try:
-        from audio import local_tts
-        ref = local_tts.rex_voice_ref()
-        if ref is None or not local_tts.is_available():
-            return False
-        audio, sr = local_tts.synthesize(clean_text, ref)
-        if audio is None or not len(audio):
-            return False
-        audio = _trim_trailing_silence(audio, sr)
-        import soundfile as sf
-        wav.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(str(wav), audio, sr)
-        logger.info("[tts] prefilled local cache: %s", wav.name)
-        return True
-    except Exception as exc:
-        logger.debug("[tts] local cache prefill failed: %s", exc)
-        return False
 
 
 _el_client = None
