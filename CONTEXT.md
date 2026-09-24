@@ -3827,6 +3827,14 @@ All still yield to the base interlock and sleep/shutdown. README lists phrases.
 
 ## Full-down arm command correction (2026-09-23)
 
+High-five coordination follow-up: owner explicitly confirmed simultaneous motion
+from full-down. A directed exception from the recorded full-down corridor to
+HIGH permits one atomic target batch, without an initial shoulder-only lift.
+HIGH uses equal 1.25× pace for all joints and proportional speed/acceleration;
+general animation retains the independent 1.25/1.6/2× settings. Packet tests
+verify all three joints share one movement stage and travel-proportional rates.
+Reverse lowering and base/shutdown parking retain their staged routes.
+
 23:19 run: “Outstretch your hand” fell through to chat because only “outstretch
 your arm” was mapped. Added the hand variant and stretch-out/straight-out hand
 aliases to the deterministic offer-pose command. Parser tests cover polite
@@ -3850,10 +3858,12 @@ simulated serial packets, not physical speed measurements.
 Owner reconfirmed recorded pose 3 and safe entry/exit despite the older general
 elbow bound. Spoken `down` now selects 2272 / 1397.25 / 2377.75 µs, separate from
 the moderate emotional LOW anchor. A narrow clearance exception permits only
-shoulder travel with that recorded elbow/wrist tuple fixed. Entry now raises
-the shoulder while preserving the current elbow/wrist, then sets the recorded
-downstream joints and lowers the shoulder. This removes the reported wrist-up
-curl caused by using raised tuck on entry. Exit still raises then tucks.
+shoulder travel with that recorded elbow/wrist tuple fixed. Entry now sets the
+recorded downstream joints at the current shoulder height when the travel box
+is clear, then lowers the shoulder. The previous wrist-curl fix still lifted
+the shoulder unnecessarily; normal animation/command poses now skip that lift.
+Park and other configurations outside that clearance retain the raised fallback.
+Exit still raises then tucks.
 Retraction bridges are permitted after the head latch,
 so shutdown/base parking can complete from full-down or interrupted travel.
 General limits and other recorded-pose exclusions remain unchanged. Regression

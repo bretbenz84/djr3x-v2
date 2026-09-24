@@ -12,7 +12,7 @@ import config
 from hardware import servos
 from hardware.throttle_motion import (
     CHANNELS, PARK, TUCK, clearance_box, cold_start_park_known, remember_park, validate_pose,
-    FULL_DOWN, FULL_DOWN_RAISED, RETRACT_RAISED, full_down_corridor,
+    FULL_DOWN, FULL_DOWN_RAISED, RETRACT_RAISED, full_down_corridor, HIGH_FIVE,
 )
 
 _log = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ SPEECH = (
 # Measured level extension; low/high anchors stay inside the established boxes.
 INTRODUCTION = pose(544, 650.25, 1484.5)
 LOW = pose(1636, 1550, 1500)
-HIGH = pose(544, 2340.25, 1575.5)
+HIGH = HIGH_FIVE
 COMMAND_POSES = {"down": FULL_DOWN, "offer": INTRODUCTION, "high_five": HIGH, "rest": REST}
 PRIDE_WRIST = 2254 * 4  # Downward curl within the raised/intermediate clearance box.
 
@@ -270,10 +270,18 @@ class Controller:
                         return False
                 return self.move(target, kind, duration, parking=parking)
             if full_down_corridor(target):
+                # Usually the downstream joints can reach their recorded values
+                # at the CURRENT shoulder height. Enter the verified lowering
+                # corridor there instead of lifting to its highest endpoint.
+                entry = {**FULL_DOWN, 8: current[8]}
+                if clearance_box(current, entry):
+                    stages = (entry, target)
+                else:
+                    raised_current = {**current, 8: FULL_DOWN_RAISED[8]}
+                    stages = (raised_current, FULL_DOWN_RAISED, target)
                 # Raise with the current elbow/wrist unchanged. The retraction
-                # bridge curls the wrist fully up and is only needed on exit.
-                raised_current = {**current, 8: FULL_DOWN_RAISED[8]}
-                for stage in (raised_current, FULL_DOWN_RAISED, target):
+                # bridge is only a fallback when current-height entry is unsafe.
+                for stage in stages:
                     if not self.move(stage, kind, duration, parking=parking):
                         return False
                 return True
@@ -286,6 +294,7 @@ class Controller:
                 self.connection, target, speed_caps=getattr(config, f'THROTTLE_{kind}_SPEED'),
                 accel_caps=getattr(config, f'THROTTLE_{kind}_ACCEL'), duration=duration,
                 cancel=self.stop_event, cold_start=cold_start, parking=parking,
+                coordinated=target == HIGH,
             )
         except InterruptedError:
             # The head can latch between our interruption check and the wire
@@ -393,7 +402,11 @@ class Controller:
                                 target = adjusted_pose(target, name)
                         else:
                             target = COMMAND_POSES[name]
+                        _log.info('Throttle command=%s target_us=%s', name,
+                                  [target[ch] / 4 for ch in CHANNELS])
                         reached = self.move(target, 'IDLE', 2.0)
+                        _log.info('Throttle command=%s pulse_target_reached=%s target_us=%s',
+                                  name, reached, [target[ch] / 4 for ch in CHANNELS])
                         with self.lock:
                             if self.pose_request == requested and reached:
                                 self.pose_until = float('inf') if requested[0] == 'hold' else time.monotonic() + 10.0

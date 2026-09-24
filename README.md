@@ -303,9 +303,11 @@ the original CSV is retained as raw observations, not a list of approved poses.
 On 2026-09-23 the owner subsequently confirmed recorded pose 3 (2272 / 1397.25 /
 2377.75 µs) and entry/exit clearance. Runtime “arm down” now uses that exact pose.
 Its exception permits shoulder travel only with the recorded elbow and wrist
-fixed. On entry the worker raises the shoulder with the current elbow and wrist
-unchanged, moves those joints directly to the recorded down position, then lowers
-the shoulder. This avoids an unnecessary wrist-up curl before lowering. Exit
+fixed. On entry the worker sets the recorded elbow/wrist at the current shoulder
+height when the full travel box is clear, then lowers the shoulder. Normal idle,
+speech, and command poses therefore avoid a preliminary shoulder lift or wrist-up
+detour. From configurations outside that clearance region (such as park), the
+verified raised entry remains the fallback. Exit
 raises the shoulder, then uses a raised tuck configuration for retraction.
 This also supports shutdown and base retraction, including interrupted shoulder
 travel. General elbow/wrist limits remain unchanged; pose 4 is not approved by
@@ -574,6 +576,11 @@ not measured physical speed guarantees.
   “put your arm up”: the measured raised-hand pose.
 - “Relax your arm” / “pull your arm back” / “return your arm to neutral”: the
   normal bent-elbow rest pose.
+
+High five coordinates all three joints with the same proportional pace (1.25×).
+The owner confirmed simultaneous movement from full-down: this directed recorded
+transition now uses one atomic target batch, without a preliminary shoulder lift
+or tuck detour. The reverse lowering transition retains its staged route.
 
 Commands accept polite prefixes and hold for ten seconds **after arrival**, then
 return to emotional animation. These are poses, not contact-detecting gestures.

@@ -159,7 +159,7 @@ class RuntimeTest(unittest.TestCase):
         seen = []
         self.port.on_target = lambda p: seen.append(p)
         self.assertTrue(controller.move(expected, 'IDLE', 2))
-        self.assertEqual(seen, [{**arm.REST, 8: motion.RAISED}, motion.FULL_DOWN_RAISED, expected])
+        self.assertEqual(seen, [{**expected, 8: arm.REST[8]}, expected])
         seen.clear()
         with mock.patch.object(config, 'THROTTLE_RETRACT_SETTLE_SECS', 0):
             controller._park(for_base=True)
@@ -167,7 +167,7 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(seen, [motion.FULL_DOWN_RAISED, motion.RETRACT_RAISED,
                                 motion.TUCK, motion.PARK])
 
-    def test_lowering_preserves_wrist_until_raised_then_moves_directly_down(self):
+    def test_lowering_does_not_raise_shoulder_from_animation_poses(self):
         starts = (arm.REST, arm.INTRODUCTION, arm.HIGH, arm.LOW, motion.PARK,
                   motion.TUCK, arm.expressive_pose(arm.REST, pride=True))
         starts += arm.IDLE + tuple(p for gesture in arm.SPEECH for p in gesture)
@@ -179,14 +179,60 @@ class RuntimeTest(unittest.TestCase):
                 controller = arm.Controller()
                 controller.connection = self.port
                 self.assertTrue(controller.move(motion.FULL_DOWN, 'IDLE', 2))
-                self.assertEqual(seen, [{**start, 8: motion.RAISED},
-                                        motion.FULL_DOWN_RAISED, motion.FULL_DOWN])
+                if start == motion.PARK:
+                    # The parked shoulder is outside the general downstream
+                    # clearance region; retain its verified raised exit.
+                    self.assertEqual(seen, [{**start, 8: motion.RAISED},
+                                            motion.FULL_DOWN_RAISED, motion.FULL_DOWN])
+                else:
+                    self.assertEqual(seen, [{**motion.FULL_DOWN, 8: start[8]},
+                                            motion.FULL_DOWN])
+                    shoulders = [start[8]] + [p[8] for p in seen]
+                    self.assertEqual(shoulders, sorted(shoulders))
                 # Every commanded segment still passes the independent-joint
                 # clearance check; no intermediate wrist-up target is introduced.
                 for previous, target in zip([start] + seen, seen):
                     self.assertTrue(motion.clearance_box(previous, target))
-                self.assertEqual(seen[0][10], start[10])
-                self.assertEqual(seen[1][10], motion.FULL_DOWN[10])
+                self.assertEqual(seen[-1][10], motion.FULL_DOWN[10])
+
+    def test_extension_reaches_exact_recorded_level_pose_from_command_poses(self):
+        import csv
+        with open('data/throttle_measurements.csv') as source:
+            recorded = next(r for r in csv.DictReader(source)
+                            if r['note'] == 'Arm fully extended, level.')
+        expected = arm.pose(*(float(recorded[k]) for k in
+                              ('shoulder_us', 'elbow_us', 'wrist_us')))
+        self.assertEqual(arm.COMMAND_POSES['offer'], expected)
+        for start in (arm.REST, arm.HIGH, arm.LOW, motion.FULL_DOWN,
+                      arm.expressive_pose(arm.REST, pride=True)):
+            with self.subTest(start=start):
+                self.port.pose = dict(start)
+                controller = arm.Controller()
+                controller.connection = self.port
+                self.assertTrue(controller.move(arm.COMMAND_POSES['offer'], 'IDLE', 2))
+                self.assertEqual(self.port.pose, expected)
+
+    def test_high_five_from_full_down_starts_all_joints_in_one_batch(self):
+        self.port.pose = dict(motion.FULL_DOWN)
+        seen = []
+        self.port.on_target = lambda p: seen.append(p)
+        controller = arm.Controller()
+        controller.connection = self.port
+        self.assertTrue(controller.move(arm.HIGH, 'IDLE', 2))
+        self.assertEqual(seen, [arm.HIGH])
+        self.assertTrue(motion.clearance_box(motion.FULL_DOWN, arm.HIGH))
+        self.assertFalse(motion.clearance_box(arm.HIGH, motion.FULL_DOWN))
+        self.assertNotIn(motion.RETRACT_RAISED, seen)
+        # All three targets arrive in the same atomic packet, with
+        # proportional speed and acceleration (within integer quantization).
+        distances = {ch: abs(arm.HIGH[ch] - motion.FULL_DOWN[ch]) for ch in motion.CHANNELS}
+        for opcode in (0x87, 0x89):
+            rates = {p[1]: p[2] + 128 * p[3] for p in self.port.packets
+                     if p[0] == opcode and p[1] in motion.CHANNELS}
+            self.assertEqual(set(rates), set(motion.CHANNELS))
+            for ch in (9, 10):
+                self.assertAlmostEqual(rates[8] / distances[8], rates[ch] / distances[ch],
+                                       delta=1 / min(distances.values()))
 
     def test_full_down_exception_does_not_relax_other_low_shoulder_poses(self):
         self.assertFalse(motion.clearance_box(arm.REST, motion.FULL_DOWN))

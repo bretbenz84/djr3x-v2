@@ -719,7 +719,8 @@ def _throttle_packet(pose):
 
 
 def move_throttle_pose(connection, pose, *, speed_caps, accel_caps, duration,
-                       cancel=None, cold_start=False, parking=False):
+                       cancel=None, cold_start=False, parking=False,
+                       coordinated=False):
     """Validate the full travel box and send all three targets atomically.
 
     The dedicated worker owns targets; speech/idle callbacks never write them.
@@ -745,8 +746,13 @@ def move_throttle_pose(connection, pose, *, speed_caps, accel_caps, duration,
             throttle_motion.validate_pose(current, limits)
         if not throttle_motion.clearance_box(current, pose):
             raise ValueError('Throttle transition outside the measured clearance model')
+        pace = dict(config.THROTTLE_PACE)
+        if coordinated:
+            # High-five joints share proportional progress instead of the
+            # independent pace used for general expressive animation.
+            pace = dict.fromkeys(pace, min(pace.values()))
         profile = throttle_motion.profiles(current, pose, limits, speed_caps, accel_caps,
-                                           duration, pace=config.THROTTLE_PACE)
+                                           duration, pace=pace)
         throttle_motion.invalidate_park()
         for ch, (speed, accel) in profile.items():
             _throttle_write_locked(connection, _encode(_CMD_SET_ACCEL, ch, accel))

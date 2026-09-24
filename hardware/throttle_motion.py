@@ -13,6 +13,7 @@ PARK = {8: 2272 * 4, 9: 2496 * 4, 10: 512 * 4}
 TUCK = {8: 1636 * 4, 9: 2100 * 4, 10: 512 * 4}
 RAISED = 544 * 4
 FULL_DOWN = {8: 2272 * 4, 9: 5589, 10: 9511}
+HIGH_FIVE = {8: 544 * 4, 9: 9361, 10: 6302}
 FULL_DOWN_RAISED = {**FULL_DOWN, 8: RAISED}
 RETRACT_RAISED = {**TUCK, 8: RAISED}
 
@@ -27,6 +28,11 @@ STATE_FILE = Path(__file__).resolve().parents[1] / 'data' / 'throttle_arm_parked
 
 
 def clearance_box(start, end):
+    # Owner explicitly verified simultaneous full-down -> high-five movement.
+    # Keep this directed exception to the recorded targets; it does not change
+    # the general low-shoulder elbow limit or approve the reverse transition.
+    if full_down_corridor(start) and end == HIGH_FIVE:
+        return True
     # Exact downstream configuration only; do not relax the general elbow or
     # wrist envelope. Also permits resuming a partially completed shoulder move.
     if full_down_corridor(start) and full_down_corridor(end):
