@@ -34,6 +34,32 @@ class CommandTests(unittest.TestCase):
                 for text in (f"don't {phrase}", f'he said to {phrase}', f'why did you {phrase}'):
                     self.assertIsNone(command_parser._parse_arm_or_pride(text))
 
+    def test_hold_release_adjust_and_remaining_aliases(self):
+        phrases = {
+            'reach for the sky': 'high_five', 'hand up': 'high_five',
+            'raise your throttle arm': 'high_five', 'put your hand out': 'offer',
+            'reach forward': 'offer', 'hold your arm out in front': 'offer',
+            'arm back down': 'down', 'let your arm hang': 'down',
+            'lower your throttle arm': 'down', 'bring your arm in': 'rest',
+            'pull your hand in': 'rest', 'back to your resting pose': 'rest',
+            'hold that pose': 'hold', 'you can relax now': 'release',
+            'a little higher': 'higher', 'a little lower': 'lower',
+        }
+        for phrase, pose in phrases.items():
+            self.assertEqual(command_parser.parse(phrase).args, {'pose': pose})
+            self.assertIsNone(command_parser._parse_arm_or_pride('do not ' + phrase))
+
+    def test_adjustments_are_small_and_clearance_checked(self):
+        for direction in ('higher', 'lower'):
+            for start in (arm.REST, arm.LOW, arm.HIGH, arm.INTRODUCTION, arm.PARK):
+                end = arm.adjusted_pose(start, direction)
+                self.assertLessEqual(abs(end[8] - start[8]), 240)
+                self.assertEqual((end[9], end[10]), (start[9], start[10]))
+                self.assertTrue(arm.clearance_box(start, end))
+        # This raised-only wrist position cannot be lowered through the box.
+        raised = arm.pose(544, 650, 2496)
+        self.assertEqual(arm.adjusted_pose(raised, 'lower'), raised)
+
     def test_negation_and_narration_do_not_claim_commands(self):
         for text in ("don't put your arm down", 'he asked me to hold out your hand',
                      'what happens when I say give me a high five', 'do not end pride mode'):
@@ -75,6 +101,22 @@ class PoseWorkerTests(runtime.RuntimeTest):
         self.assertIsNone(controller.pose_request)
         self.assertFalse(arm.request_pose('high_five'))
         self.assertEqual(self.port.pose, arm.PARK)
+
+    def test_hold_has_no_expiry_and_release_resumes_animation(self):
+        self.assertTrue(arm.start())
+        self.assertTrue(arm.request_pose('hold'))
+        controller = arm._controller
+        deadline = time.monotonic() + 3
+        while controller.pose_until is None and time.monotonic() < deadline:
+            controller.stop_event.wait(.02)
+        self.assertEqual(controller.pose_until, float('inf'))
+        held = dict(self.port.pose)
+        arm.speech_start({'affect': 'excited', 'intensity': 1})
+        controller.stop_event.wait(.2)
+        self.assertEqual(self.port.pose, held)
+        self.assertTrue(arm.request_pose('release'))
+        self.assertIsNone(controller.pose_request)
+        self.assertIsNone(controller.pose_until)
 
     def test_no_worker_or_manual_override_refuses(self):
         self.assertFalse(arm.request_pose('down'))

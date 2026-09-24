@@ -610,6 +610,18 @@ def _parse_arm_or_pride(text: str):
     clean = re.sub(r"^(?:(?:can|could|would) you )?(?:please )?", "", clean)
     clean = re.sub(r"(?: please| rex)$", "", clean).strip()
     poses = {
+        "reach for the sky": "high_five", "hand up": "high_five",
+        "raise your throttle arm": "high_five",
+        "put your hand out": "offer", "reach forward": "offer",
+        "hold your arm out in front": "offer",
+        "arm back down": "down", "let your arm hang": "down",
+        "lower your throttle arm": "down",
+        "bring your arm in": "rest", "pull your hand in": "rest",
+        "back to your resting pose": "rest",
+        "hold that pose": "hold", "keep that pose": "hold",
+        "you can relax now": "release", "resume arm animation": "release",
+        "a little higher": "higher", "a little lower": "lower",
+        "raise your arm a little": "higher", "lower your arm a little": "lower",
         "put your arm down": "down", "lower your arm": "down", "arm down": "down",
         "hold out your hand": "offer", "hold your hand out": "offer",
         "extend your arm": "offer", "hold out your arm": "offer",

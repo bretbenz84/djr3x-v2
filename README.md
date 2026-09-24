@@ -563,3 +563,15 @@ worker is unavailable or the base owns the arm, Rex says he cannot move it.
 “Stand down pride mode”, “turn off pride mode”, “stop pride mode”, and “end pride
 mode” immediately clear the voice/body overlay and send `PRIDE:0` to both LED
 boards. No firmware change is needed for these new spoken commands.
+
+Additional arm phrasing includes “reach for the sky,” “hand up,” “raise your
+throttle arm,” “put your hand out,” “reach forward,” “hold your arm out in
+front,” “arm back down,” “let your arm hang,” “lower your throttle arm,”
+“bring your arm in,” “pull your hand in,” and “back to your resting pose.”
+
+“Hold that pose” / “keep that pose” holds the pose after the current movement
+finishes without a timer. “You can relax now” / “resume arm animation” releases
+it. “A little higher/lower” requests a 60 µs shoulder adjustment, limited to
+the normal raised/intermediate range and checked against the entire travel
+clearance box; at a limit it stays in place. Adjusted poses hold ten seconds.
+Base movement and shutdown still override all holds.

@@ -18401,7 +18401,9 @@ def _execute_command(
         from sequences import throttle_arm
         accepted = throttle_arm.request_pose(args.get("pose"))
         resp = ({"down": "Lowering my arm.", "offer": "Holding out my hand.",
-                 "high_five": "High five!", "rest": "Relaxing my arm."}.get(args.get("pose"))
+                 "high_five": "High five!", "rest": "Relaxing my arm.",
+                 "hold": "Holding that pose.", "release": "Back to normal.",
+                 "higher": "I'll try a little higher.", "lower": "I'll try a little lower."}.get(args.get("pose"))
                 if accepted else "I can't move that arm right now.")
         _speak_blocking(resp)
         return resp

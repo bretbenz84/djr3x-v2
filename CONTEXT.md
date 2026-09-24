@@ -3818,3 +3818,9 @@ seconds after arrival. Base hold clears requests and rejects new ones; shutdown
 and manual-control guards remain primary. `pride.deactivate` clears the mode
 and immediately sends PRIDE:0 to both boards. No firmware update required.
 Tests: arm_pose_commands plus throttle_runtime and throttle_base_interlock.
+
+Arm command continuation: the remaining natural aliases are implemented, plus
+`hold` (unlimited hold after current movement), `release` (resume emotion), and
+`higher`/`lower` (60 µs shoulder-only adjustments inside 544–1636 µs, checking
+configured limits and direct clearance). Unsafe adjustments remain in place.
+All still yield to the base interlock and sleep/shutdown. README lists phrases.

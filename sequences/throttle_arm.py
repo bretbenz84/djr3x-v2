@@ -75,10 +75,24 @@ def expression_state():
     return mood, intensity, pride.is_active()
 
 
+def adjusted_pose(current, direction):
+    """Small shoulder-only change; reject any unsafe independent-joint path."""
+    if direction not in {'higher', 'lower'} or not 544 * 4 <= current[8] <= 1636 * 4:
+        return dict(current)
+    target = dict(current)
+    target[8] = max(544 * 4, min(1636 * 4, current[8] + (-240 if direction == 'higher' else 240)))
+    limits = {cfg['ch']: cfg for cfg in config.THROTTLE_SERVO_CHANNELS.values()}
+    try:
+        validate_pose(target, limits)
+    except ValueError:
+        return dict(current)
+    return target if clearance_box(current, target) else dict(current)
+
+
 def request_pose(name):
-    """Queue a ten-second pose hold on the existing worker; never start hardware."""
+    """Queue a pose, hold, release, or small adjustment; never start hardware."""
     controller = _controller
-    if (name not in COMMAND_POSES or not config.THROTTLE_ARM_ENABLED
+    if (name not in {*COMMAND_POSES, 'hold', 'release', 'higher', 'lower'} or not config.THROTTLE_ARM_ENABLED
             or controller is None or not controller.thread.is_alive()
             or controller.done.is_set() or controller.stop_event.is_set()
             or controller.park_event.is_set() or not servos._automatic_motion_allowed()
@@ -87,6 +101,12 @@ def request_pose(name):
     with controller.lock:
         if controller.base_hold:
             return False
+        if name == 'release':
+            controller.pose_request = None
+            controller.pose_until = None
+            controller.introduction_until = 0.0
+            controller.last_expression = None
+            return True
         controller.pose_request = (name, object())
         controller.pose_until = None
         controller.introduction_until = 0.0
@@ -346,10 +366,17 @@ class Controller:
                     pose_until = self.pose_until
                 if requested is not None:
                     if pose_until is None:
-                        reached = self.move(COMMAND_POSES[requested[0]], 'IDLE', 2.0)
+                        name = requested[0]
+                        if name in {'hold', 'higher', 'lower'}:
+                            target = servos.read_throttle_pose(self.connection)
+                            if name != 'hold':
+                                target = adjusted_pose(target, name)
+                        else:
+                            target = COMMAND_POSES[name]
+                        reached = self.move(target, 'IDLE', 2.0)
                         with self.lock:
                             if self.pose_request == requested and reached:
-                                self.pose_until = time.monotonic() + 10.0
+                                self.pose_until = float('inf') if requested[0] == 'hold' else time.monotonic() + 10.0
                     elif now >= pose_until:
                         with self.lock:
                             if self.pose_request == requested:
