@@ -13,7 +13,10 @@ class CommandTests(unittest.TestCase):
                            ('give me a high-five', 'high_five'), ('relax your arm', 'rest')]:
             match = command_parser.parse(text)
             self.assertEqual((match.command_key, match.args), ('throttle_pose', {'pose': pose}))
-        for text in ('stand down pride mode', 'Please turn off pride mode.'):
+        for text in ('stand down pride mode', 'Please turn off pride mode.',
+                     'Scan down pride mode.', 'standown pride mode', 'standdown pride mode',
+                     'Rex, can you please scan down pride mode?',
+                     'disable pride mode', 'deactivate pride mode'):
             self.assertEqual(command_parser.parse(text).command_key, 'pride_off')
 
     def test_additional_arm_phrasings(self):
@@ -21,6 +24,9 @@ class CommandTests(unittest.TestCase):
             'high_five': ('raise your arm', 'lift your arm', 'put your arm up',
                           'hold your hand up', 'high five me', 'give me five'),
             'offer': ('outstretch your arm', 'stretch your arm out',
+                      'outstretch your hand', 'stretch out your hand',
+                      'stretch your hand out', 'put your hand straight out',
+                      'hold your hand straight out',
                       'hold your arm straight out', 'reach out your hand', 'offer me your hand'),
             'down': ('lower your hand', 'bring your arm down', 'put your hand down'),
             'rest': ('pull your arm back', 'bring your hand back', 'return your arm to neutral'),
@@ -62,7 +68,8 @@ class CommandTests(unittest.TestCase):
 
     def test_negation_and_narration_do_not_claim_commands(self):
         for text in ("don't put your arm down", 'he asked me to hold out your hand',
-                     'what happens when I say give me a high five', 'do not end pride mode'):
+                     'what happens when I say give me a high five', 'do not end pride mode',
+                     "don't scan down pride mode", 'he said standown pride mode'):
             self.assertIsNone(command_parser._parse_arm_or_pride(text))
 
     def test_dispatch_and_pride_exit(self):
@@ -74,11 +81,16 @@ class CommandTests(unittest.TestCase):
             response = I._execute_command(command_parser.parse('give me a high five'), None, None, 'give me a high five')
             self.assertEqual(response, 'High five!')
             request.assert_called_once_with('high_five')
+            request.reset_mock()
+            response = I._execute_command(command_parser.parse('Outstretch your hand.'),
+                                          None, None, 'Outstretch your hand.')
+            self.assertEqual(response, 'Holding out my hand.')
+            request.assert_called_once_with('offer')
             request.return_value = False
             response = I._execute_command(command_parser.parse('hold out your hand'), None, None, 'hold out your hand')
             self.assertIn("can't", response)
             with mock.patch.object(pride, '_active_until', time.monotonic() + 600):
-                I._execute_command(command_parser.parse('stand down pride mode'), None, None, 'stand down pride mode')
+                I._execute_command(command_parser.parse('Scan down pride mode.'), None, None, 'Scan down pride mode.')
                 self.assertFalse(pride.is_active())
                 head.assert_called_once_with('PRIDE:0')
                 chest.assert_called_once_with('PRIDE:0')

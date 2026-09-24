@@ -196,6 +196,32 @@ class RuntimeTest(unittest.TestCase):
         self.assertIsNone(controller.fault)
         self.assertTrue(controller.parked)
 
+    def test_pride_exit_restores_wrist_and_clears_both_led_overlays(self):
+        from intelligence import pride
+        controller = arm.Controller()
+        pride_pose = arm.expressive_pose(arm.REST, pride=True)
+        seen = []
+        def arrived(target):
+            seen.append(target)
+            if target == pride_pose:
+                pride.deactivate()
+            elif pride_pose in seen and target == arm.REST:
+                controller.park_event.set()
+        self.port.on_target = arrived
+        with (mock.patch.object(pride, '_active_until', time.monotonic() + 600),
+              mock.patch.object(pride, '_enabled', return_value=True),
+              mock.patch('intelligence.body_mood.current_mood', return_value=('neutral', 0)),
+              mock.patch('hardware.leds_head.send_command') as head,
+              mock.patch('hardware.leds_chest.send_command') as chest):
+            controller.run()
+            self.assertFalse(pride.is_active())
+            head.assert_called_once_with('PRIDE:0')
+            chest.assert_called_once_with('PRIDE:0')
+        self.assertIsNone(controller.fault)
+        self.assertIn(pride_pose, seen)
+        self.assertIn(arm.REST, seen[seen.index(pride_pose) + 1:])
+        self.assertTrue(controller.parked)
+
     def test_introduction_callback_cannot_start_worker(self):
         arm.introduction()
         self.assertIsNone(arm._controller)

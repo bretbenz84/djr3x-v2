@@ -565,7 +565,9 @@ not measured physical speed guarantees.
 - “Put your arm down” / “lower your arm”: recorded pose 3, with shoulder,
   forearm, and wrist fully down (2272 / 1397.25 / 2377.75 µs).
 - “Hold out your hand” / “extend your arm” / “outstretch your arm” /
-  “stretch your arm out” / “reach out your hand”: the measured level forward reach.
+  “stretch your arm out” / “reach out your hand” / “outstretch your hand” /
+  “stretch out your hand” / “stretch your hand out” / “put your hand straight out” /
+  “hold your hand straight out”: the measured level forward reach.
 - “Give me a high five” / “raise your hand” / “raise your arm” / “lift your arm” /
   “put your arm up”: the measured raised-hand pose.
 - “Relax your arm” / “pull your arm back” / “return your arm to neutral”: the
@@ -580,6 +582,9 @@ worker is unavailable or the base owns the arm, Rex says he cannot move it.
 “Stand down pride mode”, “turn off pride mode”, “stop pride mode”, and “end pride
 mode” immediately clear the voice/body overlay and send `PRIDE:0` to both LED
 boards. No firmware change is needed for these new spoken commands.
+“Standdown pride mode”, “standown pride mode”, and the observed ASR mishearing
+“scan down pride mode” also execute that same exit command, as do “disable pride
+mode” and “deactivate pride mode”.
 
 Additional arm phrasing includes “reach for the sky,” “hand up,” “raise your
 throttle arm,” “put your hand out,” “reach forward,” “hold your arm out in

@@ -3827,6 +3827,19 @@ All still yield to the base interlock and sleep/shutdown. README lists phrases.
 
 ## Full-down arm command correction (2026-09-23)
 
+23:19 run: “Outstretch your hand” fell through to chat because only “outstretch
+your arm” was mapped. Added the hand variant and stretch-out/straight-out hand
+aliases to the deterministic offer-pose command. Parser tests cover polite
+forms and negation/narration; dispatch verifies the exact logged utterance
+queues `offer`, including when speaker identity is unknown.
+
+Pride-exit field fix (23:14 run): ASR transcribed “Scan down pride mode.” The
+parser missed it, and the LLM claimed deactivation while pride stayed true.
+Whole-utterance aliases now accept scan down / standdown / standown, plus
+disable/deactivate pride mode. They route to the real deactivation handler.
+Regression checks cover the recorded utterance dispatching PRIDE:0 to both
+boards and the simulated arm worker returning from the Pride wrist to REST.
+
 Follow-up pace tuning: owner requested faster motion throughout, progressively
 more for elbow and wrist. `THROTTLE_PACE` is 1.25/1.6/2.0 for channels 8/9/10.
 Runtime scales caps and duration-limited profiles, allowing independent arrival;

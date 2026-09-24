@@ -633,6 +633,9 @@ def _parse_arm_or_pride(text: str):
         "arm up": "high_five", "high five me": "high_five",
         "give me five": "high_five",
         "outstretch your arm": "offer", "stretch out your arm": "offer",
+        "outstretch your hand": "offer", "stretch out your hand": "offer",
+        "stretch your hand out": "offer", "put your hand straight out": "offer",
+        "hold your hand straight out": "offer",
         "stretch your arm out": "offer", "hold your arm out": "offer",
         "reach out your hand": "offer", "reach your hand out": "offer",
         "extend your hand": "offer", "put your arm straight out": "offer",
@@ -647,7 +650,11 @@ def _parse_arm_or_pride(text: str):
     }
     if clean in poses:
         return CommandMatch("throttle_pose", "pattern", {"pose": poses[clean]})
-    if clean in {"stand down pride mode", "turn off pride mode", "stop pride mode", "end pride mode"}:
+    # Qwen ASR recorded "Scan down pride mode" in the 2026-09-23 23:14 run.
+    # Keep aliases whole-utterance-only so narration/negation cannot trigger exit.
+    if clean in {"stand down pride mode", "standdown pride mode", "standown pride mode",
+                 "scan down pride mode", "turn off pride mode", "stop pride mode",
+                 "end pride mode", "disable pride mode", "deactivate pride mode"}:
         return CommandMatch("pride_off", "pattern", {})
     return None
 
