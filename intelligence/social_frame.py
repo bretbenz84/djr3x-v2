@@ -220,6 +220,7 @@ def build_frame(
     answered_question: Optional[dict] = None,
     agenda_directive: str = "",
     turn_plan: Optional["TurnPlan"] = None,
+    speaker_uncertain: bool = False,
 ) -> SocialFrame:
     plan = response_length.classify(user_text, answered_question=answered_question)
     energy = _safe_user_energy()
@@ -379,6 +380,7 @@ def build_frame(
         addressee=_addressee(
             person_id,
             urgent_identity=urgent_identity,
+            speaker_uncertain=speaker_uncertain,
         ),
         purpose=purpose,
         max_words=plan.max_words,
@@ -941,7 +943,10 @@ def _addressee(
     person_id: Optional[int],
     *,
     urgent_identity: bool = False,
+    speaker_uncertain: bool = False,
 ) -> str:
+    if speaker_uncertain:
+        return "unidentified speaker (do not use a name)"
     if urgent_identity:
         try:
             ctx = social_scene.unknown_group_context(

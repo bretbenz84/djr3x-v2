@@ -13,7 +13,7 @@ import re
 import time
 from typing import Optional
 
-from memory.name_validation import normalize_person_name
+from memory.name_validation import normalize_person_name, _collapse_dotted_initials
 
 
 INTRO_CONTEXT_TTL_SECS = 45.0
@@ -218,6 +218,7 @@ def denies_introduction(
 
 
 def _parse_intro_text(text: str) -> IntroductionParse:
+    text = _collapse_dotted_initials(text)
     rel = None
     name = None
 

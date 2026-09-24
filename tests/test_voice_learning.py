@@ -231,6 +231,21 @@ class RuntimeTests(unittest.TestCase):
     def turn(self,text='I went fishing at the lake yesterday.', *, mouth=999):
         return self.r.process(self.prepare(mouth),text)
 
+    def test_plausible_bret_voice_does_not_prompt_visible_unenrolled_jeff(self):
+        self.faces = [face(2)]
+        self.I._last_scan_ranked = [(1, 'Bret Benziger', .474, 1), (3, 'Other', .240, 1)]
+        self.assertIsNone(self.turn('Two feet.'))
+        self.assertIsNone(self.r.learner.pending)
+        self.assertIsNone(self.r.turn_person)
+
+    def test_plausible_other_voice_cancels_unasked_proposal(self):
+        self.faces = [face(2)]
+        self.assertTrue(self.r.request(2, 'Jeff Benziger'))
+        self.I._last_scan_ranked = [(1, 'Bret Benziger', .474, 1), (3, 'Other', .240, 1)]
+        self.assertIsNone(self.turn('Two feet.'))
+        self.assertIsNone(self.r.learner.pending)
+        self.assertEqual(self.r.learner.last_reason, 'plausible_other_voice')
+
     def confirm(self):
         question=self.turn('Hey Rex, how are you?')
         self.assertIn('Jeff',question)

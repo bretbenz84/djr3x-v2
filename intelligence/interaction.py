@@ -14969,8 +14969,9 @@ def _maybe_web_search_reply(
 _tool_routed_path: "list[str]" = []
 
 # One-shot holder: a reply this turn already wrote to the transcript + GUI itself.
-# The streaming reply path logs when the TEXT is ready and returns immediately, so
-# the caller's single log lands fast. _speak_blocking, by contrast, returns only
+# The streaming reply path owns its completed transcript and marks it here too,
+# so an intervening motion notice cannot defeat last-line deduplication.
+# _speak_blocking, by contrast, returns only
 # after PLAYBACK finishes — so a web-search answer that takes ~30s to speak did not
 # reach the GUI until it had finished being spoken (owner 2026-08-06: "the GUI shows
 # the text only after TTS has spoken"). Those paths now log up front and park the
@@ -14983,6 +14984,14 @@ def _note_prelogged_response(text: str) -> None:
     _prelogged_response.clear()
     if text and text.strip():
         _prelogged_response.append(text)
+
+
+def _record_streamed_response(text: str) -> None:
+    """Own transcript completion even if an asynchronous line logs afterward."""
+    conv_memory.add_to_transcript("Rex", text)
+    conv_log.log_rex(text, to_gui=False)
+    conv_log.finish_rex_stream(text)
+    _note_prelogged_response(text)
 
 
 def _consume_prelogged_response() -> "Optional[str]":
@@ -15852,6 +15861,7 @@ def _stream_llm_response(
             answered_question=answered_question,
             agenda_directive=agenda_directive,
             turn_plan=turn_plan,
+            speaker_uncertain=person_id is None,
         )
         comedy_mode = comedy_modes.select_mode(
             text,
@@ -16898,8 +16908,7 @@ def _stream_and_speak_sentences(
         # to the GUI (to_gui=False, else the whole reply re-appears as a duplicate),
         # then finalize the streamed bubble to the canonical (delivered) text.
         try:
-            conv_log.log_rex(full_text, to_gui=False)
-            conv_log.finish_rex_stream(full_text)
+            _record_streamed_response(full_text)
         except Exception as exc:
             _log.debug("[interaction] stream conversation log failed: %s", exc)
 

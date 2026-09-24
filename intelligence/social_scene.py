@@ -174,6 +174,7 @@ def conversation_cast_context(
     *,
     current_person_id: Optional[int] = None,
     current_person_name: Optional[str] = None,
+    speaker_uncertain: bool = False,
 ) -> ConversationCastContext:
     """Return a prompt-ready representation of the visible conversational cast."""
     scene = from_snapshot(snapshot)
@@ -184,7 +185,10 @@ def conversation_cast_context(
     )
     group_label = visible_group_label(scene)
 
-    if current and len(scene.known) >= 2:
+    if speaker_uncertain:
+        current = None
+        addressee = "unidentified speaker (do not use a name)"
+    elif current and len(scene.known) >= 2:
         addressee = f"{current.first_name} primarily; visible group: {group_label}"
     elif current:
         addressee = current.first_name
@@ -203,6 +207,8 @@ def conversation_cast_context(
         f"Conversation cast: addressee={addressee}; visible_group={group_label}; "
         f"known_visible={len(scene.known)}; unknown_visible={scene.unknown_count}."
     ]
+    if speaker_uncertain:
+        lines.append("Visible people are not proof of who spoke. Address the current voice without a name; do not borrow a visible person's identity.")
     if current:
         lines.append(f"Current speaker / primary addressee: {current.first_name}.")
 

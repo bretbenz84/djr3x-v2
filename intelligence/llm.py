@@ -1282,6 +1282,7 @@ def assemble_system_prompt(
         cast = social_scene.conversation_cast_context(
             ws,
             current_person_id=person_id,
+            speaker_uncertain=person_id is None,
         )
         if cast.directive:
             sections.append("Conversation cast and referents:\n" + cast.directive)

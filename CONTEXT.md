@@ -3824,3 +3824,18 @@ Arm command continuation: the remaining natural aliases are implemented, plus
 `higher`/`lower` (60 µs shoulder-only adjustments inside 544–1636 µs, checking
 configured limits and direct clearance). Unsafe adjustments remain in place.
 All still yield to the base interlock and sleep/shutdown. README lists phrases.
+
+## 20:53 runtime review (2026-09-23)
+
+Reactive prompts now preserve unidentified speakers instead of borrowing a
+visible person's name. Voice enrollment suppresses speculative face-based
+confirmation when a different enrolled voice is plausible; this does not lower
+identification or learning thresholds. Introduction parsing preserves dotted
+initials (J.C.); streaming owns its completed transcript to prevent duplicate
+logging around asynchronous motion notices. 264 isolated regression tests pass.
+Owner said “meet JT” (Jeremy), which ASR recorded as J.C.; no identity records
+were changed. Correctly transcribed JT also parses successfully. Jeremy has
+no active voiceprints in this run. Front-right radial ToF quarantine is a known,
+mitigated issue (invalid radial falls back to the matrix); its warning alone
+does not establish the approach-stop cause. Repeated turn overshoot needs
+physical follow-up. See `docs/field_review_2026-09-23.md`.

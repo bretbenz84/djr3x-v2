@@ -170,6 +170,21 @@ class Runtime:
             self.learner.cancel('identity_corrected')
             return None
         p = self.learner.pending
+        # A plausible enrolled candidate is enough to suppress a speculative
+        # question to a different visible face. This does NOT name the speaker
+        # or authorize learning; the attribution resolver still owns that.
+        plausible_known = bool(
+            s.ranked
+            and float(s.ranked[0][2]) >= config.SPEAKER_ID_KNOWN_SPEAKER_FLOOR
+            and (
+                len(s.ranked) < 2
+                or s.ranked[0][2] - s.ranked[1][2]
+                >= speaker_id.required_ambiguity_margin(s.ranked)
+            )
+        )
+        if p and not p.confirmed and plausible_known and s.ranked[0][0] != p.person_id:
+            self.learner.cancel('plausible_other_voice')
+            return None
         if p and p.confirmed:
             if self.learner.observe(s, conversations.transcript_version()[0]):
                 self.turn_person = (p.person_id, p.name)
@@ -212,9 +227,7 @@ class Runtime:
         faces = visible_faces(i.world_state.get('people') or [])
         missing = [f for f in faces if f.get('person_db_id') is not None
                    and speaker_id.comparable_print_count(f['person_db_id']) == 0]
-        strong_known = bool(s.ranked and float(s.ranked[0][2]) >= self.learner.policy.foreign_cosine
-                            and (len(s.ranked) < 2 or s.ranked[0][2] - s.ranked[1][2] >= speaker_id.required_ambiguity_margin(s.ranked)))
-        if not p and not strong_known:
+        if not p and not plausible_known:
             for face in missing:
                 pid = face.get('person_db_id')
                 if pid is not None and speaker_id.comparable_print_count(pid) == 0:
