@@ -145,6 +145,42 @@ class RuntimeTest(unittest.TestCase):
         controller._park()
         self.assertTrue(controller.parked)
 
+    def test_down_command_reaches_recorded_pose_and_retracts_in_stages(self):
+        import csv
+        with open('data/throttle_measurements.csv') as source:
+            recorded = next(r for r in csv.DictReader(source)
+                            if r['note'] == 'Arm fully down including forearm and wrist')
+        expected = arm.pose(*(float(recorded[k]) for k in
+                              ('shoulder_us', 'elbow_us', 'wrist_us')))
+        self.assertEqual(arm.COMMAND_POSES['down'], expected)
+        controller = arm.Controller()
+        controller.connection = self.port
+        self.port.pose = dict(arm.REST)
+        seen = []
+        self.port.on_target = lambda p: seen.append(p)
+        self.assertTrue(controller.move(expected, 'IDLE', 2))
+        self.assertEqual(seen, [motion.RETRACT_RAISED, motion.FULL_DOWN_RAISED, expected])
+        seen.clear()
+        with mock.patch.object(config, 'THROTTLE_RETRACT_SETTLE_SECS', 0):
+            controller._park(for_base=True)
+        self.assertTrue(controller.parked)
+        self.assertEqual(seen, [motion.FULL_DOWN_RAISED, motion.RETRACT_RAISED,
+                                motion.TUCK, motion.PARK])
+
+    def test_full_down_exception_does_not_relax_other_low_shoulder_poses(self):
+        self.assertFalse(motion.clearance_box(arm.REST, motion.FULL_DOWN))
+        for ch in (9, 10):
+            other = dict(motion.FULL_DOWN)
+            other[ch] += 40
+            self.assertFalse(motion.clearance_box(other, other))
+        partial = dict(motion.FULL_DOWN)
+        partial[8] = 1900 * 4
+        self.port.pose = partial
+        controller = arm.Controller()
+        controller.connection = self.port
+        self.assertTrue(controller.move(arm.INTRODUCTION, 'IDLE', 2))
+        self.assertEqual(self.port.pose, arm.INTRODUCTION)
+
     def test_worker_applies_live_mood_then_parks(self):
         controller = arm.Controller()
         seen = []
@@ -252,14 +288,26 @@ class RuntimeTest(unittest.TestCase):
         self.assertTrue(arm._controller.parked)
         self.assertEqual(self.port.pose, motion.PARK)
 
-    def test_startup_speed_is_brisk_but_within_tested_joint_caps(self):
+    def test_runtime_pace_reaches_wire_even_when_duration_limits_speed(self):
+        self.port.pose = dict(arm.REST)
+        target = {ch: value + 2000 for ch, value in arm.REST.items()}
+        servos.move_throttle_pose(
+            self.port, target, speed_caps=config.THROTTLE_SPEECH_SPEED,
+            accel_caps=config.THROTTLE_SPEECH_ACCEL, duration=5,
+        )
+        speeds = {p[1]: p[2] + 128 * p[3] for p in self.port.packets if p[0] == 0x87}
+        # Equal travel formerly sent 4 to every joint. Pace must affect actual
+        # packets, not merely raise caps that a slow requested duration defeats.
+        self.assertEqual(speeds, {8: 5, 9: 6, 10: 8})
+
+    def test_startup_speed_is_brisk_but_within_configured_joint_caps(self):
         servos.move_throttle_pose(
             self.port, arm.TUCK, speed_caps=config.THROTTLE_STARTUP_SPEED,
             accel_caps=config.THROTTLE_STARTUP_ACCEL, duration=config.THROTTLE_STARTUP_MOVE_SECS,
         )
         shoulder_speed = next(p[2] + 128 * p[3] for p in self.port.packets if p[:2] == bytes([0x87, 8]))
         self.assertGreaterEqual(shoulder_speed, 18)
-        for kind in ('STARTUP', 'IDLE', 'SPEECH', 'PARK'):
+        for kind in ('STARTUP', 'IDLE', 'SPEECH', 'PARK', 'RETRACT'):
             for ch in motion.CHANNELS:
                 self.assertLessEqual(getattr(config, f'THROTTLE_{kind}_SPEED')[ch], self.limits[ch]['speed'])
                 self.assertLessEqual(getattr(config, f'THROTTLE_{kind}_ACCEL')[ch], self.limits[ch]['acceleration'])

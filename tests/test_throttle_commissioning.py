@@ -76,8 +76,8 @@ class ThrottleCommissioningTest(unittest.TestCase):
               mock.patch.object(self.config, 'THROTTLE_SHOULDER_STARTUP', 6000)):
             self.servos._apply_throttle_startup_locked()
         self.assertEqual(self.wire.call_args_list, [
-            mock.call(bytes([0x89, 8, 6, 0])),
-            mock.call(bytes([0x87, 8, 30, 0])),
+            mock.call(bytes([0x89, 8, 8, 0])),
+            mock.call(bytes([0x87, 8, 38, 0])),
             mock.call(bytes([0x84, 8, 112, 46])),
         ])
 

@@ -300,6 +300,15 @@ reviewing the saved poses. Measurements 3 and 4 (shoulder 2272 µs, elbow 1397.2
 therefore conflict with that limit and are excluded from the supervised pose tour;
 the original CSV is retained as raw observations, not a list of approved poses.
 
+On 2026-09-23 the owner subsequently confirmed recorded pose 3 (2272 / 1397.25 /
+2377.75 µs) and entry/exit clearance. Runtime “arm down” now uses that exact pose.
+Its exception permits shoulder travel only with the recorded elbow and wrist
+fixed. The worker raises the shoulder before changing those downstream joints,
+then lowers it; exit reverses this route through a raised tuck configuration.
+This also supports shutdown and base retraction, including interrupted shoulder
+travel. General elbow/wrist limits remain unchanged; pose 4 is not approved by
+this exception. The standalone tour's established-limit filtering is unchanged.
+
 `tools/throttle_pose_tour.py` defaults to printing a plan without opening hardware.
 Its explicit `--action park` and `--action run` commands operate only throttle
 channels, acquire Rex's single-instance lock to make the helper release the port,
@@ -546,7 +555,15 @@ the chest uses its existing FastLED GRB configuration.
 
 #### Spoken throttle-arm poses
 
-- “Put your arm down” / “lower your arm”: the lowered shoulder/forearm pose.
+Runtime motion uses per-joint pace multipliers: shoulder 1.25×, elbow 1.6×,
+wrist 2× the original profiles, including startup, idle, speech, poses, parking,
+and base retraction. Speed and acceleration caps scale with the pace; joints
+can finish at different times within the existing independent-progress clearance
+checks. Holds and pauses are unchanged. These are commanded profile increases,
+not measured physical speed guarantees.
+
+- “Put your arm down” / “lower your arm”: recorded pose 3, with shoulder,
+  forearm, and wrist fully down (2272 / 1397.25 / 2377.75 µs).
 - “Hold out your hand” / “extend your arm” / “outstretch your arm” /
   “stretch your arm out” / “reach out your hand”: the measured level forward reach.
 - “Give me a high five” / “raise your hand” / “raise your arm” / “lift your arm” /

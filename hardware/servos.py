@@ -727,8 +727,10 @@ def move_throttle_pose(connection, pose, *, speed_caps, accel_caps, duration,
     """
     limits = {cfg['ch']: cfg for cfg in config.THROTTLE_SERVO_CHANNELS.values()}
     with _lock:
-        if parking and pose not in (throttle_motion.TUCK, throttle_motion.PARK):
-            raise ValueError('Only the tuck and park targets may finish after a head latch')
+        if parking and pose not in (throttle_motion.TUCK, throttle_motion.PARK,
+                                    throttle_motion.FULL_DOWN_RAISED,
+                                    throttle_motion.RETRACT_RAISED):
+            raise ValueError('Only verified retraction targets may finish after a head latch')
         if (not config.THROTTLE_ARM_ENABLED or throttle_motion_blocked(parking=parking)
                 or (cancel is not None and cancel.is_set())):
             raise InterruptedError('Throttle motion is disabled or canceled')
@@ -743,7 +745,8 @@ def move_throttle_pose(connection, pose, *, speed_caps, accel_caps, duration,
             throttle_motion.validate_pose(current, limits)
         if not throttle_motion.clearance_box(current, pose):
             raise ValueError('Throttle transition outside the measured clearance model')
-        profile = throttle_motion.profiles(current, pose, limits, speed_caps, accel_caps, duration)
+        profile = throttle_motion.profiles(current, pose, limits, speed_caps, accel_caps,
+                                           duration, pace=config.THROTTLE_PACE)
         throttle_motion.invalidate_park()
         for ch, (speed, accel) in profile.items():
             _throttle_write_locked(connection, _encode(_CMD_SET_ACCEL, ch, accel))

@@ -12,6 +12,7 @@ import config
 from hardware import servos
 from hardware.throttle_motion import (
     CHANNELS, PARK, TUCK, clearance_box, cold_start_park_known, remember_park, validate_pose,
+    FULL_DOWN, FULL_DOWN_RAISED, RETRACT_RAISED, full_down_corridor,
 )
 
 _log = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ SPEECH = (
 INTRODUCTION = pose(544, 650.25, 1484.5)
 LOW = pose(1636, 1550, 1500)
 HIGH = pose(544, 2340.25, 1575.5)
-COMMAND_POSES = {"down": LOW, "offer": INTRODUCTION, "high_five": HIGH, "rest": REST}
+COMMAND_POSES = {"down": FULL_DOWN, "offer": INTRODUCTION, "high_five": HIGH, "rest": REST}
 PRIDE_WRIST = 2254 * 4  # Downward curl within the raised/intermediate clearance box.
 
 
@@ -207,6 +208,12 @@ def validate_repertoire():
             raise ValueError('Invalid throttle expression bridge')
     if not clearance_box(TUCK, PARK):
         raise ValueError('Invalid throttle park path')
+    for target in (RETRACT_RAISED, FULL_DOWN_RAISED, FULL_DOWN):
+        validate_pose(target, limits)
+    route = (TUCK, RETRACT_RAISED, FULL_DOWN_RAISED, FULL_DOWN)
+    for start, end in zip(route, route[1:]):
+        if not (clearance_box(start, end) and clearance_box(end, start)):
+            raise ValueError('Invalid recorded full-down route')
 
 
 class Controller:
@@ -257,6 +264,16 @@ class Controller:
         # A forward reach and a lowered mood can require a bent-elbow bridge.
         current = servos.read_throttle_pose(self.connection)
         if any(current.values()) and not clearance_box(current, target):
+            if full_down_corridor(current):
+                for stage in (FULL_DOWN_RAISED, RETRACT_RAISED):
+                    if not self.move(stage, kind, duration, parking=parking):
+                        return False
+                return self.move(target, kind, duration, parking=parking)
+            if full_down_corridor(target):
+                for stage in (RETRACT_RAISED, FULL_DOWN_RAISED, target):
+                    if not self.move(stage, kind, duration, parking=parking):
+                        return False
+                return True
             if not (clearance_box(current, REST) and clearance_box(REST, target)):
                 raise ValueError('No verified throttle expression transition')
             if not self.move(REST, kind, duration, parking=parking):

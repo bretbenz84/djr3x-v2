@@ -2936,7 +2936,7 @@ THROTTLE_STARTUP_MOVE_SECS = 1.25
 THROTTLE_IDLE_MOVE_SECS = (2.3, 3.3)
 THROTTLE_SPEECH_MOVE_SECS = (1.35, 2.0)
 THROTTLE_PARK_MOVE_SECS = 1.5
-# Brisk base-clearance retraction, still capped by the tested joint profiles.
+# Brisk base-clearance retraction, capped by the configured joint profiles.
 THROTTLE_RETRACT_MOVE_SECS = 0.9
 THROTTLE_RETRACT_SETTLE_SECS = 0.5
 THROTTLE_RETRACT_SPEED = {8: 30, 9: 70, 10: 70}
@@ -2945,7 +2945,7 @@ THROTTLE_SPEECH_GAP_SECS = (3.5, 5.5)
 THROTTLE_SPEECH_PAUSE_SECS = 0.35
 THROTTLE_SPEECH_FALLBACK_SECS = 6.5
 THROTTLE_SPEECH_SETTLE_SECS = 1.4
-# Per-joint caps remain within the tested tour's 30/70/70, 6/12/12.
+# Base profiles before the owner-requested per-joint pace increase below.
 THROTTLE_STARTUP_SPEED = {8: 26, 9: 60, 10: 65}
 THROTTLE_STARTUP_ACCEL = {8: 5, 9: 10, 10: 12}
 THROTTLE_IDLE_SPEED = {8: 14, 9: 32, 10: 36}
@@ -2954,6 +2954,20 @@ THROTTLE_SPEECH_SPEED = {8: 24, 9: 56, 10: 70}
 THROTTLE_SPEECH_ACCEL = {8: 5, 9: 10, 10: 12}
 THROTTLE_PARK_SPEED = {8: 26, 9: 60, 10: 65}
 THROTTLE_PARK_ACCEL = {8: 5, 9: 10, 10: 12}
+
+# Runtime pace: shoulder +25%, elbow +60%, wrist +100%. Apply to both
+# profile limits and duration-limited movement, so short gestures speed up too.
+# Clearance boxes already account for independent joint progress.
+THROTTLE_PACE = {8: 1.25, 9: 1.6, 10: 2.0}
+for _throttle_cfg in THROTTLE_SERVO_CHANNELS.values():
+    _pace = THROTTLE_PACE[_throttle_cfg['ch']]
+    for _field in ('speed', 'acceleration'):
+        _throttle_cfg[_field] = round(_throttle_cfg[_field] * _pace)
+for _kind in ('STARTUP', 'IDLE', 'SPEECH', 'PARK', 'RETRACT'):
+    for _suffix in ('SPEED', 'ACCEL'):
+        _profile = globals()[f'THROTTLE_{_kind}_{_suffix}']
+        for _ch, _pace in THROTTLE_PACE.items():
+            _profile[_ch] = round(_profile[_ch] * _pace)
 
 
 def servo_rest_position(name: str) -> int:

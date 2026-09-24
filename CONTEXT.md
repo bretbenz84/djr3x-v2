@@ -3825,6 +3825,25 @@ Arm command continuation: the remaining natural aliases are implemented, plus
 configured limits and direct clearance). Unsafe adjustments remain in place.
 All still yield to the base interlock and sleep/shutdown. README lists phrases.
 
+## Full-down arm command correction (2026-09-23)
+
+Follow-up pace tuning: owner requested faster motion throughout, progressively
+more for elbow and wrist. `THROTTLE_PACE` is 1.25/1.6/2.0 for channels 8/9/10.
+Runtime scales caps and duration-limited profiles, allowing independent arrival;
+all staged clearance checks and base/stop interlocks remain. Standalone tour
+profile calls retain default pace 1. Holds/pauses are unchanged. Verified with
+simulated serial packets, not physical speed measurements.
+
+Owner reconfirmed recorded pose 3 and safe entry/exit despite the older general
+elbow bound. Spoken `down` now selects 2272 / 1397.25 / 2377.75 µs, separate from
+the moderate emotional LOW anchor. A narrow clearance exception permits only
+shoulder travel with that recorded elbow/wrist tuple fixed. Entry uses raised
+tuck, then raised recorded downstream joints, then lowers the shoulder; exit
+reverses those stages. Retraction bridges are permitted after the head latch,
+so shutdown/base parking can complete from full-down or interrupted travel.
+General limits and other recorded-pose exclusions remain unchanged. Regression
+tests use simulated Maestro I/O; no live motion was performed.
+
 ## 20:53 runtime review (2026-09-23)
 
 Reactive prompts now preserve unidentified speakers instead of borrowing a
