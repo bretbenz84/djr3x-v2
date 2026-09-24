@@ -17,6 +17,59 @@ Live modes treated as LIVE (code behind them is not dead): `--noaudio`, `--local
 `--gui`, `--noservos`, `--jeopardy`, and OFFLINE mode (`connectivity.is_offline()` — the
 deterministic command lanes are the ONLY router when offline, so they stay).
 
+## Resume here (status as of 2026-09-23, work paused)
+
+| Step | Status | Commit |
+|---|---|---|
+| Callback-humor fix (A2) | DONE, pushed — needs a live session (feature never ran before) | `36564fb` |
+| Stage 1 — unreferenced code + stale tools | DONE, pushed (~4.1k lines) | `2d2989c` |
+| Stage 2 — retired routing machinery | DONE, pushed (~3.7k lines) | `9e868bd` |
+| Stage 3 — flag-off paths | DONE, pushed (~3.4k lines) | `39bcf12` |
+| Stage 4 — Lean-off rollback + governor-rejected generators | **NOT DONE — start here.** A run was stopped mid-way; its partial edits exist only as a `git stash` on the dev Mac and must NOT be reused (it edited `intelligence/speech_engine.py`, which breaks the keep-the-governor rule). Redo from scratch. | — |
+| Stage 5 — governor | CANCELLED by owner (D3) | — |
+| Stage 6 — voice/face ID fallbacks, MediaPipe object fallback, ElevenLabs v2 | NOT DONE (independent of Stage 4; can go first) | — |
+| Stage 7 — flag collapse | optional, skip unless touching a module anyway | — |
+| Stage 8 — docs archive + CLAUDE.md known-failure refresh | NOT DONE (last) | — |
+
+**Standing owner rules** (Part B has the full list): Lean brain is the only brain; never edit
+`intelligence/action_governor.py`, `intelligence/presence_cadence.py` or the governor plumbing in
+`intelligence/speech_engine.py`; no voice/face-ID fallbacks (CAM++ and InsightFace only — the
+robot has all dependencies); Qwen local-TTS switches stay; work on `main`, one commit per stage.
+
+**How stages were executed** (worked well; ~1 h per stage): split the stage's Part C bullets into
+groups that own DISJOINT files (one group owns `interaction.py`; a single integrator owns
+`config.py`, `tests/test_audio_and_conversation_gating.py`, CONTEXT/CLAUDE/README/docs and applies
+the groups' hand-offs afterwards) → adversarial per-group diff review + full sweep → fix → commit.
+Suggested groups — Stage 4: (a) `interaction.py` + `profile_questions.py` + idle-banter/streaming
+tests, (b) `consciousness.py` + `idle_behaviors.py` + the transitive helpers
+(`callback_engine.build_lull_prompt`, `object_qa`, `room_model`, `awareness/situation.py`,
+`rex_pov.active_pov_text`) + their tests, (c) `conversation_agenda.py` + `plan_intent.py` +
+`conversation_steering.py` + `social_frame.py` + `comedy_modes.py` + `evals/run_quality_eval.py`
++ their tests. Stage 6: (a) face (`vision/face.py`, face tools), (b) voice (`speaker_id.py`,
+`voice_score.py`, `voice_signatures.py`, `people.py`, the ECAPA/signature bits of `interaction.py`,
+voice tools/tests), (c) ElevenLabs v2 (`tts.py`, `speech_queue.py`; the `stream_prev_text` edits
+in `interaction.py` go to the integrator), (d) `vision/animal_detector.py`; the integrator also
+owns `requirements.txt`, `setup_assets.py`, `setup_macos.sh`.
+
+**Tests.** Run modules only via `venv/bin/python -m unittest tests.<module>` or
+`tools/run_lean_checks.py` — never `python -c` or importing tests from a script (that bypasses the
+`sys.argv[0]=='unittest'` write guards). Full sweep + diff: `tools/run_test_sweep.py` (~10 min).
+Some test modules write fixture rows into the real `assets/memory/*.db` and `assets/state/*.json`
+— harmless on the dev Mac, back them up first on the robot.
+
+Pre-existing failures at `39bcf12` (all verified at base; NOT caused by this work):
+`test_audio_and_conversation_gating` (direct_shutdown_clip_leaves_leds_off,
+existing_common_name_prompt_logs_human_turn_before_returning, preroll_baseline_when_aec_inactive,
+startup_boot_tts_thread_speaks_after_configured_delay), `test_body_mood` (1),
+`test_held_object_curiosity` (2), `test_holiday_plan_cue` (1), `test_idle_tease_silence` (1),
+`test_memory_admin` (2), `test_pose_face_guard` (1), `test_pride_mode` (1),
+`test_proactive_discipline` (idle_monologue — deleted by Stage 4), `test_reaction_awareness` (3),
+`test_regex_routing_guards` (1), `test_rex_supervisor` (2), `test_rfdetr_backend` (1),
+`test_self_state_injection` (4), `test_speaker_challenge` (cold_signature — deleted by Stage 6),
+`test_vision_panel_skeleton` (2), `test_wake_orient` (2).
+Flaky: `test_jeopardy_run_fixes` hangs at interpreter exit ~50% of runs; `test_sound_effects`
+dedup test under load; `test_lean_memory_musing` spoken-musing flag fails in the evening (wall clock).
+
 ## Honest sizing
 
 The tree is ~187k prod lines + ~97k test lines. Provably dead or config-dead code is
