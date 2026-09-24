@@ -94,7 +94,8 @@ matter).
 **Local LLM conventions**: qwen2.5:1.5b via `local_llm.generate` — labelled-line
 output only (never JSON), factual judgments only (never affect), validate
 against echo/repetition, fail closed, never on the TTFS critical path
-(`CONVERSATION_TURN_CLASSIFIER_ENABLED=False` precedent). Background workers use
+(the shelved turn-classifier precedent; that module was deleted 2026-09-23, see git
+history at `c00eed5`). Background workers use
 the arc pattern: coalesced daemon worker + lock + stale-discard cursor.
 
 ## 3. Design overview
@@ -280,7 +281,8 @@ candidates is a factual task (allowed for the 1.5B); the sensitivity *wall* is
 deterministic (§5), so the model only contributes recall within the allowed
 region, never the safety boundary.
 
-Prompt sketch (labelled lines, mirroring `turn_classifier._build_prompt`):
+Prompt sketch (labelled lines, mirroring `turn_classifier._build_prompt`, deleted
+2026-09-23; see git history at `c00eed5`):
 
 ```
 User said: "<turn text>"

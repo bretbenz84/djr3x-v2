@@ -196,9 +196,12 @@ class RigViewState(QObject):
         self.spring.replace(tube_vertices(spring_points(matrices), .005))
 
 class RexAvatar(AvatarState):
-    """Same widget/snapshot contract as the previous avatar, with a 3D scene."""
-    def __init__(self, parent=None, *, show_background=True, show_grid=True):
-        super().__init__(parent, show_background=show_background, show_grid=show_grid)
+    """Widget/snapshot contract of the AvatarState base, rendered as a 3D scene.
+
+    The QQuickWidget owns painting; the inherited class supplies state only.
+    """
+    def __init__(self, parent=None, *, show_background=True):
+        super().__init__(parent, show_background=show_background)
         # Gravity-rest elbow, closed visor; missing channels retain last state.
         for name, channel in config.SERVO_CHANNELS.items():
             self._target[name] = normalize_servo(name, channel.get('rest', channel['neutral']))
@@ -223,10 +226,6 @@ class RexAvatar(AvatarState):
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick_3d)
         self._timer.start()
-
-    def paintEvent(self, event):
-        # QQuickWidget owns painting; the inherited class supplies state only.
-        pass
 
     def _tick_3d(self):
         if not self.isVisible():

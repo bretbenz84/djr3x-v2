@@ -182,7 +182,7 @@ When a premise's only content word equals its topic (e.g. "loves astrophotograph
 Any `command_key` not in `_LEGACY_COMMAND_ACTION_MAP` (wave_to, volume_up/down, set/query_personality, memory_correct_fact, memory_remember_fact) yields `decision=None`, so the breakout can never fire and the gate falls through to `return True`. Under an `answer_to_rex` frame these explicit commands are dropped to conversation; goal-relevant casualties: `wave_to` (fun gag) and `memory_remember_fact` ("remember I'm vegetarian" right after a Rex question is silently not stored). *(Closely related to rank 2.)*
 **Fix:** when the command is not a contextual-reply candidate (decision None / key unmapped), return False (route normally) rather than default-blocking; or add the missing keys with breakout rules. Regression: "remember I'm vegetarian" / "wave at them" under an active reply-expecting frame.
 
-**36. memory.people.find_by_voice is dead and lacks the margin guard** — dead_feature / low / low · `memory/people.py:183-210`
+**36. ✅ FIXED (2026-09-23, dead-code Stage 1: deleted) — memory.people.find_by_voice is dead and lacks the margin guard** — dead_feature / low / low · `memory/people.py:183-210`
 `find_by_voice` has zero callers (live voice path is `audio/speaker_id.py` with a margin/ambiguity guard) and accepts the single best match with no margin check, plus a stale '0.75' docstring. A future caller could re-introduce close-voice misattribution.
 **Fix:** delete `find_by_voice` (no callers, no tests). If a helper is wanted, route through `audio.speaker_id`. Fix the stale 0.75 docstring to 0.50.
 
@@ -190,7 +190,7 @@ Any `command_key` not in `_LEGACY_COMMAND_ACTION_MAP` (wave_to, volume_up/down, 
 `_delete_matching` searches structural columns including 'source'/'category'. 'explicit' is the default source for preferences/interests, so "forget all explicit memories" / "forget anything secondhand" would wipe whole stores via substring matching. Unusual phrasing, but a latent data-loss path.
 **Fix:** drop structural columns ('source','category','domain','preference_type') from the searchable field tuples in `_delete_matching`/`forget_memory_detail`/`fact_or_event_matches`; or denylist the source/category vocabulary in `target_terms`.
 
-**38. Large block of legacy animation functions + speech_start/_speaking_loop are dead** — dead_feature / low / low · `sequences/animations.py:1021-1099, 1106-1158, 1312-1339, 1560-1586`
+**38. ✅ PARTLY FIXED (2026-09-23, dead-code Stage 1: the speech_start/speech_stop/speech_level/_speaking_loop block and 10 legacy functions deleted; nod/headshake/thinking/surprised/dismissal remain, still uncalled) — Large block of legacy animation functions + speech_start/_speaking_loop are dead** — dead_feature / low / low · `sequences/animations.py:1021-1099, 1106-1158, 1312-1339, 1560-1586`
 16 legacy top-level animation functions (nod/headshake/excited_burst/roast_pose/etc.) and the entire `animations.speech_start`/`_speaking_loop` path have no live callers — the expressive path is `play_body_beat` + `servos.speech_reactive_move`. The dead speech path would even fight servos for the head channels through the single serial lock if invoked.
 **Fix:** delete the dead legacy functions and the speech_start/speech_stop/speech_level/_speaking_loop block (keep arm_wave, arm_idle, camera_pose, speech_activity_start/stop). Verify no orphaned constants remain; run the suite.
 

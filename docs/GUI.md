@@ -76,7 +76,9 @@ connection.
 
 ## Known Limitations
 
-- The avatar is a simple 2D visualization, not a mechanically exact CAD model.
+- The avatar is a Qt Quick 3D model (`gui/rex_avatar_3d.py`) driven by mirrored servo/LED
+  state; it is not a mechanically exact CAD model. (The old 2D QPainter avatar was removed
+  2026-09-23.)
 - Person boxes depend on `world_state.people[*].face_box`; if only a point is
   available, the vision panel draws a marker instead.
 - Closing the GUI requests normal `SHUTDOWN`; shutdown audio/servo animation may

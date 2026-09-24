@@ -322,14 +322,6 @@ def build_board(round_no: Optional[int] = None) -> Optional[dict]:
     }
 
 
-def format_board(board: dict) -> str:
-    bits: list[str] = []
-    for category in board.get("categories") or []:
-        values = ", ".join(str(v) for v in sorted((category.get("clues") or {}).keys()))
-        bits.append(f"{category.get('name')} for {values}")
-    return "; ".join(bits)
-
-
 # The J! archive abbreviates category names ("COMBINED STATE ABBREV.") and the
 # TTS reads the raw token as a word ("abreev" — field 2026-08-25: the players
 # couldn't tell what the category was for several rounds). Expanded for SPEECH

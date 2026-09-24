@@ -512,15 +512,6 @@ def _slot_is_drawable_person(person: dict[str, Any]) -> bool:
     return bool(person.get("name") or person.get("face_id") or person.get("voice_id"))
 
 
-def _person_details(person: dict[str, Any]) -> str:
-    parts = []
-    for key in ("engagement", "distance_zone", "pose"):
-        value = person.get(key)
-        if value:
-            parts.append(str(value).replace("_", " "))
-    return " / ".join(parts)
-
-
 def _person_expression(person: dict[str, Any]) -> str:
     for key in ("face_expression", "facial_expression"):
         value = person.get(key)

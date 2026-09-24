@@ -387,11 +387,6 @@ def _build_pivot_context(person_id: Optional[int], topic: str) -> SteeringContex
     )
 
 
-def build_directive(person_id: Optional[int], user_text: str) -> str:
-    ctx = note_user_turn(person_id, user_text)
-    return ctx.directive if ctx else ""
-
-
 def _read_active(person_id: Optional[int]) -> Optional[dict]:
     active = _active.get(person_id)
     if not active:

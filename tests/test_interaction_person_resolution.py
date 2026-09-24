@@ -97,24 +97,6 @@ class InteractionPersonResolutionTests(unittest.TestCase):
         finally:
             topic_thread.clear()
 
-    def test_single_visible_matching_candidate_uses_lower_floor(self):
-        from intelligence import interaction
-
-        self.assertEqual(
-            interaction._single_visible_engaged_continuity_floor(
-                ws_pid=1,
-                raw_best_id=1,
-            ),
-            0.35,
-        )
-        self.assertEqual(
-            interaction._single_visible_engaged_continuity_floor(
-                ws_pid=1,
-                raw_best_id=2,
-            ),
-            0.45,
-        )
-
 
 class EnrollmentEpisodicCaptureTests(unittest.TestCase):
     """Enrolling a brand-new person logs "I met <name>" to Rex's episodic memory —

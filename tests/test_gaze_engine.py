@@ -362,9 +362,7 @@ class LiveActuationTest(unittest.TestCase):
         )
 
     def _mock_servo(self):
-        m = self.mock.MagicMock()
-        m.get_face_tracking_baseline.return_value = {}
-        return m
+        return self.mock.MagicMock()
 
     def test_maybe_drive_gaze_inert_under_test_runner(self):
         # Default (no opt-in): the gate returns False without touching the head.

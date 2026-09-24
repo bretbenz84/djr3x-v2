@@ -98,11 +98,6 @@ def get_conversation_history(person_id: int, limit: int = 5) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def delete_conversations(person_id: int) -> None:
-    """Remove all conversation records for a person."""
-    db.execute("DELETE FROM conversations WHERE person_id = ?", (person_id,))
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # In-memory session transcript buffer
 # ─────────────────────────────────────────────────────────────────────────────

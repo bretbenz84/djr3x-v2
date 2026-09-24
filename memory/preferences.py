@@ -157,34 +157,6 @@ def find_preference(
     return [dict(row) for row in rows]
 
 
-def delete_preference(
-    person_id: int,
-    domain: Optional[str] = None,
-    key: Optional[str] = None,
-) -> None:
-    """Delete preferences for a person, optionally filtered by domain/key."""
-    clauses = ["person_id = ?"]
-    params: list[object] = [int(person_id)]
-    if domain:
-        clauses.append("domain = ?")
-        params.append(_clean_token(domain))
-    if key:
-        clauses.append("key = ?")
-        params.append(_clean_token(key))
-    db.execute(
-        f"DELETE FROM person_preferences WHERE {' AND '.join(clauses)}",
-        tuple(params),
-    )
-
-
-def mark_preference_used(preference_id: int) -> None:
-    """Mark a preference as used in a prompt/reply decision."""
-    db.execute(
-        "UPDATE person_preferences SET last_used_at = ? WHERE id = ?",
-        (_now(), int(preference_id)),
-    )
-
-
 def format_preference_for_prompt(pref: dict) -> str:
     """Render a compact prompt line like music.dislikes: country."""
     domain = pref.get("domain") or "general"
@@ -195,8 +167,3 @@ def format_preference_for_prompt(pref: dict) -> str:
         detail = value or key
         return f"{domain}.boundary: {detail}"
     return f"{domain}.{pref_type}: {value or key}"
-
-
-def delete_preferences(person_id: int) -> None:
-    """Remove all preference rows for a person."""
-    db.execute("DELETE FROM person_preferences WHERE person_id = ?", (int(person_id),))

@@ -170,7 +170,6 @@ class DuplicatePrintTests(unittest.TestCase):
                 db.execute("INSERT INTO biometrics(person_id,type,encoding) VALUES(1,'voice_campplus_zh_en_v1',?)", (v.tobytes(),))
                 people.add_biometric(1, 'voice', w)
                 self.assertEqual(S.comparable_print_count(1), 2)
-                self.assertEqual(people.count_native_voice_prints(1), 2)
                 self.assertEqual(people.count_biometrics(1, 'voice'), 2)
                 rank = S.rank_embedding(v)[0]
                 self.assertEqual(rank[3], 2)

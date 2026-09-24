@@ -418,55 +418,6 @@ def _publish_speaker(*, winner_pid, winner_slot, confidence, now=None) -> None:
 
 # ── Consumer helpers ───────────────────────────────────────────────────────────
 
-def current_speaker(snapshot=None) -> Optional[dict]:
-    """The visible person whose ``is_speaking`` is True and FRESH right now,
-    resolved to a name — mirrors ``face.visible_known_names``. Returns the
-    highest-confidence such slot as ``{person_db_id, name, speaking_confidence,
-    speaking_updated_at}`` or None. For real-time consumers (e.g. face-tracking);
-    voice attribution should use ``recent_visual_speaker`` instead. Never raises.
-    """
-    try:
-        if snapshot is not None:
-            entries = (snapshot or {}).get("people") or []
-        else:
-            from world_state import world_state
-            entries = world_state.get("people") or []
-    except Exception:
-        return None
-
-    stale = float(getattr(config, "ACTIVE_SPEAKER_STALE_SECS", 1.0))
-    now = time.time()
-    best: Optional[dict] = None
-    for slot in entries:
-        if not isinstance(slot, dict):
-            continue
-        if not slot.get("is_speaking"):
-            continue
-        if slot.get("face_visible") is False or slot.get("face_missing"):
-            continue
-        updated = slot.get("speaking_updated_at") or 0.0
-        if now - float(updated) > stale:
-            continue
-        conf = float(slot.get("speaking_confidence") or 0.0)
-        if best is None or conf > best["speaking_confidence"]:
-            best = {
-                "person_db_id": _safe_int(slot.get("person_db_id")),
-                "name": None,
-                "speaking_confidence": conf,
-                "speaking_updated_at": float(updated),
-            }
-    if best is None:
-        return None
-    if best["person_db_id"] is not None:
-        try:
-            from memory import people as _people
-            row = _people.get_person(best["person_db_id"])
-            best["name"] = (row or {}).get("name")
-        except Exception:
-            best["name"] = None
-    return best
-
-
 def recent_visual_speaker(max_age_secs: Optional[float] = None) -> Optional[dict]:
     """The person who was visually speaking most recently, within ``max_age_secs``
     (default ``ACTIVE_SPEAKER_LATCH_SECS``).

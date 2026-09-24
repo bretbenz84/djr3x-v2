@@ -24,7 +24,7 @@ class JeopardyPanel(QWidget):
         self._revealed_categories = 0
         self._last_category_reveal_at = 0.0
         self._current_clue_drawn = False
-        self._avatar = RexAvatar(self, show_background=False, show_grid=False)
+        self._avatar = RexAvatar(self, show_background=False)
         self._avatar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setMinimumSize(980, 640)
 
@@ -151,34 +151,6 @@ class JeopardyPanel(QWidget):
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(logo, Qt.AlignmentFlag.AlignCenter, "JEOPARDY!")
-
-    def _draw_rex_badge(self, painter: QPainter, rect: QRectF) -> None:
-        cx = rect.center().x()
-        top = rect.top()
-        painter.setPen(QPen(QColor("#1d2833"), 4))
-        painter.setBrush(QColor("#4d5155"))
-        painter.drawRoundedRect(QRectF(cx - 86, top + 48, 172, 80), 14, 14)
-        painter.setBrush(QColor("#dc7d22"))
-        painter.drawChord(QRectF(cx - 74, top + 20, 148, 74), 0, 180 * 16)
-        painter.setBrush(QColor("#0c1b37"))
-        for ex in (cx - 34, cx + 34):
-            painter.drawEllipse(QRectF(ex - 17, top + 68, 34, 34))
-            painter.setBrush(QColor("#1d6cff"))
-            painter.drawEllipse(QRectF(ex - 11, top + 74, 22, 22))
-            painter.setBrush(QColor("#0c1b37"))
-        painter.setPen(QPen(QColor("#15181b"), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(rect.center().x(), top + 122, rect.center().x(), top + 178)
-        painter.setPen(QPen(QColor("#272b30"), 16, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(cx - 82, top + 180, cx - 145, top + 210)
-        painter.drawLine(cx + 82, top + 180, cx + 145, top + 130)
-        painter.setBrush(QColor("#db7c22"))
-        painter.setPen(QPen(QColor("#623715"), 3))
-        painter.drawRoundedRect(QRectF(cx - 92, top + 168, 184, 86), 18, 18)
-        painter.setBrush(QColor("#30343a"))
-        painter.drawRoundedRect(QRectF(cx - 100, top + 210, 200, 70), 10, 10)
-        painter.setPen(QPen(QColor("#bcc0bd"), 4))
-        for x in range(-70, 71, 24):
-            painter.drawLine(cx + x, top + 220, cx + x, top + 268)
 
     def _draw_board(self, painter: QPainter, rect: QRectF) -> None:
         self._metal_panel(painter, rect, radius=10)

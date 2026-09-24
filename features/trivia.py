@@ -12,7 +12,6 @@ Public API:
     check_answer(question, user_answer)     → bool
     parse_difficulty(text)                  → int | None
     resolve_category(text, categories)       → str | None
-    reset_session()
 """
 
 import json
@@ -343,10 +342,3 @@ def check_answer(question: dict, user_answer: str) -> bool:
         if len(normalized) > 4 and fuzz.partial_ratio(user, normalized) >= threshold:
             return True
     return False
-
-
-def reset_session() -> None:
-    """Clear all asked-question tracking for the current session."""
-    global _asked
-    _asked = {}
-    _log.info("[trivia] Session reset — asked question tracking cleared")

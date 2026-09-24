@@ -278,23 +278,6 @@ def mark_interest_asked(
     )
 
 
-def delete_interest(
-    person_id: int,
-    interest_name: Optional[str] = None,
-) -> None:
-    """Delete all interests for a person, or one named interest."""
-    from memory import semantic
-    if interest_name:
-        db.execute(
-            "DELETE FROM person_interests WHERE person_id = ? AND lower(name) = lower(?)",
-            (int(person_id), _clean_name(interest_name)),
-        )
-        semantic.invalidate_candidates()
-        return
-    db.execute("DELETE FROM person_interests WHERE person_id = ?", (int(person_id),))
-    semantic.invalidate_candidates()
-
-
 def format_interest_for_prompt(interest: dict) -> str:
     """Render a compact interest line for prompt injection."""
     name = interest.get("name") or "unknown interest"

@@ -16,10 +16,6 @@ from world_state import world_state
 _log = logging.getLogger(__name__)
 
 _DISENGAGED_ENGAGEMENT = frozenset({"low", "none", "disengaged"})
-_CHILD_AGE_VALUES = frozenset({"child", "teen"})
-
-# Proxemics zones that indicate active engagement vs passive/distant presence
-_ENGAGED_ZONES = frozenset({"intimate", "social"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,19 +102,3 @@ def analyze_crowd(people_list: list[dict]) -> dict:
         "engaged_count": engaged_count,
         "disengaged_people": disengaged,
     }
-
-
-def detect_child_present() -> bool:
-    """
-    Return True if any person in world_state.people has age_category or age_estimate
-    of 'child' or 'teen'. Rex switches to family-friendly mode when this is True.
-    """
-    for person in world_state.get("people"):
-        age = (
-            person.get("age_category")
-            or person.get("age_estimate")
-            or "adult"
-        ).lower()
-        if age in _CHILD_AGE_VALUES:
-            return True
-    return False

@@ -103,29 +103,6 @@ def set_param(param_name: str, value: int, updated_by: str = "unknown") -> tuple
     return (old_value, new_value)
 
 
-def set_param_by_level(param_name: str, level_name: str, updated_by: str) -> tuple[int, int]:
-    """
-    Resolve a named level (e.g. 'high', 'off') through config.PERSONALITY_NAMED_LEVELS
-    and write the resulting integer via set_param. Raises ValueError for unknown levels.
-    """
-    level_key = level_name.lower().strip()
-    if level_key not in config.PERSONALITY_NAMED_LEVELS:
-        raise ValueError(
-            f"Unknown personality level {level_name!r}. "
-            f"Valid levels: {sorted(config.PERSONALITY_NAMED_LEVELS)}"
-        )
-    return set_param(param_name, config.PERSONALITY_NAMED_LEVELS[level_key], updated_by)
-
-
-def get_all_params() -> dict[str, int]:
-    """Return a dict of all personality parameter current values, seeded with config defaults."""
-    rows = db.fetchall("SELECT parameter, value FROM personality_settings")
-    result = dict(config.PERSONALITY_DEFAULTS)
-    for row in rows:
-        result[row["parameter"]] = row["value"]
-    return result
-
-
 def generate_acknowledgment(param_name: str, old_value: int, new_value: int) -> str:
     """
     Ask Rex to acknowledge a parameter change in character. Must be called after set_param
@@ -149,35 +126,6 @@ def generate_acknowledgment(param_name: str, old_value: int, new_value: int) -> 
     except Exception as exc:
         _log.error("generate_acknowledgment failed: %s", exc)
         return f"...{param_name} recalibrated to {new_value}. Systems updated."
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Emotion state — world_state-backed
-# ─────────────────────────────────────────────────────────────────────────────
-
-_VALID_EMOTIONS: frozenset[str] = frozenset(config.EYE_COLORS.keys())
-
-
-def get_emotion() -> str:
-    """Return current emotion from world_state.self_state."""
-    return world_state.get("self_state").get("emotion", "neutral")
-
-
-def set_emotion(emotion: str) -> None:
-    """
-    Set current emotion in world_state.self_state. Valid emotions are the keys of
-    config.EYE_COLORS. Resets mood intensity to 1.0 so decay has a full course to run.
-    """
-    global _mood_intensity
-    if emotion not in _VALID_EMOTIONS:
-        raise ValueError(
-            f"Unknown emotion {emotion!r}. Valid emotions: {sorted(_VALID_EMOTIONS)}"
-        )
-    self_state = world_state.get("self_state")
-    self_state["emotion"] = emotion
-    world_state.update("self_state", self_state)
-    with _lock:
-        _mood_intensity = 0.0 if emotion == "neutral" else 1.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -369,13 +317,3 @@ def decrement_anger() -> int:
 
     _sync_anger_level(new_level)
     return new_level
-
-
-def reset_anger() -> None:
-    """Reset anger level to 0 and clear the cooldown timestamp."""
-    global _anger_level, _anger_last_incremented
-    with _lock:
-        _anger_level = 0
-        _anger_last_incremented = None
-
-    _sync_anger_level(0)

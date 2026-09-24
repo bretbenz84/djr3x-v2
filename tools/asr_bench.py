@@ -49,7 +49,7 @@ def _load_wav(path: Path) -> np.ndarray:
 
 
 def _word_accuracy(ref: str, hyp: str) -> float:
-    # Same scoring as tools/mic_check.py (kept in sync by tests/test_asr_bench.py).
+    # Same scoring as tools/mic_check.py:_word_accuracy (keep the two copies identical).
     import re
 
     tok = lambda s: re.sub(r"[^a-z0-9' ]", " ", s.lower()).split()

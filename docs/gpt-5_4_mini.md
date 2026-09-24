@@ -25,8 +25,10 @@ surface area: **37 `chat.completions.create` call sites across 14 files**.
 - **Hybrid rollout**: flip only the **user-facing conversation** to `gpt-5.4-mini`; keep
   the deterministic classifiers / routers / JSON-extraction / vision calls on
   `gpt-4o-mini`. Shrinks the risk + test surface from 37 calls to ~6.
-- The **real gate** is `tools/gpt5_smoke_test.py` (live API). The unittest suite mocks
-  the LLM, so it will NOT catch real API breakage.
+- The **real gate** was a live smoke test (`tools/gpt5_smoke_test.py`, retired 2026-09-23
+  after it settled the temperature question on 2026-06-17; see config
+  `LLM_GPT5_PASS_TEMPERATURE`). The unittest suite mocks the LLM, so it will NOT catch
+  real API breakage.
 - **Rollback is one line**: set `LLM_CONVERSATION_MODEL` back to `LLM_MODEL`.
 
 ---
@@ -39,7 +41,7 @@ surface area: **37 `chat.completions.create` call sites across 14 files**.
 | Config (OFF) | `config.py` | `LLM_CONVERSATION_MODEL` (=`LLM_MODEL`), `LLM_REASONING_EFFORT` (None), `LLM_VERBOSITY` (None), `LLM_GPT5_PASS_TEMPERATURE` (False). |
 | Wired conversation calls | `intelligence/llm.py` | 6 user-facing generators routed through the shim via `llm_compat.conversation_model()`: `warmup`, `stream_response` (main path), `scenery_change_remark`, `generate_curiosity_question`, `generate_onboarding_reaction`, `generate_expression_reaction`. |
 | Mock tests | `tests/test_llm_compat.py` | 17 tests locking the param-translation contract (no network). |
-| Live smoke test | `tools/gpt5_smoke_test.py` | One real API call per shape; settles the temperature question. Not in CI. |
+| Live smoke test (retired) | `tools/gpt5_smoke_test.py` (deleted 2026-09-23; git history at `c00eed5`) | One real API call per shape; settled the temperature question on 2026-06-17. Not in CI. |
 | A/B runner | `tools/gpt5_ab_test.py` | Runs a fixed corpus through both models (real pipeline), writes a side-by-side. Not in CI. See "A/B results" below. |
 
 The other ~31 call sites (action router, intent/empathy/address classifiers, memory
@@ -110,15 +112,9 @@ schemas** (7 `response_format={"type":"json_object"}` calls) and vision detail h
 
 Do these in order. Stop and evaluate between each.
 
-### Step 1 — Settle the temperature question (live smoke test)
-```bash
-venv/bin/python tools/gpt5_smoke_test.py --model gpt-5.4-mini --effort none            # temp dropped
-venv/bin/python tools/gpt5_smoke_test.py --model gpt-5.4-mini --effort none --pass-temp # temp forwarded
-```
-- Watch which `temperature=0` line PASSES. If it passes **with `--pass-temp`**, the model
-  accepts temperature → you may later keep deterministic temps. If it 400s, leave temp
-  dropped.
-- Note the per-shape **seconds** (especially `streaming`) — that's your latency budget.
+### Step 1 — Settle the temperature question (live smoke test) — DONE 2026-06-17
+Settled by `tools/gpt5_smoke_test.py` (retired 2026-09-23; git history at `c00eed5` keeps
+it): gpt-5.4-mini accepts `temperature` at `effort=none` and returns 400 at `medium`.
 
 #### Results (run 2026-06-17, `gpt-5.4-mini`)
 

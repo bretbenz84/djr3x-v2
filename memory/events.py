@@ -911,8 +911,3 @@ def resolve_matching_commitments(person_id: int, text: str) -> list[dict]:
             cancel_event(int(ev["id"]), text)                     # retracted
         resolved.append(ev)
     return resolved
-
-
-def delete_events(person_id: int) -> None:
-    """Remove all events for a person."""
-    db.execute("DELETE FROM person_events WHERE person_id = ?", (person_id,))

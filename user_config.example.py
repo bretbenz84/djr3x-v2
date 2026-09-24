@@ -355,9 +355,3 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # a turn far past any real answer's length, someone calling the dog, or a
 # complaint about the game. Rex stays quiet and the answer clock keeps running.
 # JEOPARDY_IGNORE_NON_ANSWERS = True
-
-# Only charge the current player for a wrong answer when it could plausibly be
-# theirs (the speaker is unresolved, or resolves to them). A confidently
-# recognized OTHER contestant shouting a guess is the room helping out, and
-# their miss costs nobody. Correct answers still score for whoever's turn it is.
-# JEOPARDY_ONLY_CHARGE_THE_ANSWERER = True

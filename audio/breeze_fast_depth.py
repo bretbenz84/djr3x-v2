@@ -31,7 +31,6 @@ import mlx.core as mx
 from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.tts.models.breeze_tts.breeze_tts import Model
 
-_ORIGINAL = Model._depth_tokens
 _PATCHED = False
 
 
@@ -118,16 +117,6 @@ def enable_fast_depth() -> bool:
         return False
     Model._depth_tokens = _depth_tokens_cached
     _PATCHED = True
-    return True
-
-
-def disable_fast_depth() -> bool:
-    """Restore mlx-audio's original uncached depth decoder."""
-    global _PATCHED
-    if not _PATCHED:
-        return False
-    Model._depth_tokens = _ORIGINAL
-    _PATCHED = False
     return True
 
 

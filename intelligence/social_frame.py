@@ -36,11 +36,6 @@ _QUESTION_START = re.compile(
     r"is|are|am|should)\b",
     re.IGNORECASE,
 )
-_QUESTION_CLAUSE_START_PAT = re.compile(
-    r"\b(who|what|when|where|why|how|can|could|would|will|do|does|did|"
-    r"is|are|am|should|got|any|care to|want to|wanna)\b",
-    re.IGNORECASE,
-)
 _SENTENCE_SPLIT = re.compile(r"[^.!?]+[.!?]*")
 _WORD_PAT = re.compile(r"[A-Za-z0-9']+")
 _QUOTED_QUESTION_RE = re.compile(
@@ -1154,30 +1149,6 @@ def _is_tiny_question_opener(sentence: str) -> bool:
             re.IGNORECASE,
         )
     ) or len(words) <= 4
-
-
-def _salvage_non_question_lead(sentence: str) -> Optional[str]:
-    text = (sentence or "").strip()
-    if "?" not in text:
-        return text
-    if _QUESTION_START.search(text):
-        return None
-
-    question_at = None
-    for match in _QUESTION_CLAUSE_START_PAT.finditer(text):
-        prefix = text[: match.start()].strip(" ,;:-")
-        if len(_WORD_PAT.findall(prefix)) >= 4:
-            question_at = match.start()
-            break
-    if question_at is None:
-        return None
-
-    prefix = text[:question_at].strip(" ,;:-")
-    if not prefix:
-        return None
-    if prefix[-1] not in ".!?":
-        prefix += "."
-    return prefix
 
 
 def _is_tiny_opener(sentence: str) -> bool:

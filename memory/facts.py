@@ -536,30 +536,6 @@ def get_pets(person_id: int) -> list[dict]:
     return sorted(out.values(), key=lambda p: -p["confidence"])
 
 
-def get_stale_facts(person_id: int, days: int) -> list[dict]:
-    """Return facts that are stale or low-confidence, sorted by confirmation value."""
-    facts = [
-        f for f in get_facts(person_id)
-        if f.get("decay_rate") != "permanent"
-        and (
-            f.get("freshness_label") == "stale"
-            or float(f.get("confidence") or 0.0) < 0.60
-            or (
-                f.get("age_days") is not None
-                and f.get("age_days") >= max(1, int(days))
-            )
-        )
-    ]
-    facts.sort(
-        key=lambda f: (
-            -float(f.get("importance") or 0.0),
-            float(f.get("confidence") or 0.0),
-            -(f.get("age_days") or 0),
-        )
-    )
-    return facts
-
-
 def get_prompt_facts(person_id: int, *, limit: int = 12) -> list[dict]:
     """Return facts sorted for prompt use, with confidence/freshness metadata."""
     return get_prompt_worthy_facts(person_id, limit=limit)
@@ -805,10 +781,3 @@ def apply_fact_correction(
         importance=0.9 if importance is None else importance,
         decay_rate=decay_rate,
     )
-
-
-def delete_facts(person_id: int) -> None:
-    """Remove all facts for a person."""
-    db.execute("DELETE FROM person_facts WHERE person_id = ?", (person_id,))
-    from memory import semantic
-    semantic.invalidate_candidates()

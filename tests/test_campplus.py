@@ -39,17 +39,15 @@ class StorageTests(unittest.TestCase):
 
     def test_legacy_192_print_cannot_match_or_prevent_enrollment(self):
         self.assertEqual(speaker_id.rank_embedding(unit()), [])
-        self.assertIsNone(people.find_by_voice(unit()))
         self.assertFalse(people.has_voice_biometric(2))
         self.assertEqual(speaker_id.comparable_print_count(2), 0)
         people.add_biometric(1, 'voice', unit())
         self.assertEqual(speaker_id.rank_embedding(unit())[0][0], 1)
-        self.assertEqual(people.find_by_voice(unit())['id'], 1)
-        self.assertEqual(people.count_native_voice_prints(1), 1)
+        self.assertEqual(speaker_id.comparable_print_count(1), 1)
         self.assertEqual(people.count_biometrics(1, 'voice'), 1)
         with patch.object(voice_score, '_active_backend', 'ecapa'):
             self.assertEqual(speaker_id.rank_embedding(unit())[0][0], 2)
-            self.assertEqual(people.count_native_voice_prints(1), 0)
+            self.assertEqual(speaker_id.comparable_print_count(1), 0)
 
     def test_signatures_do_not_cross_model_boundary(self):
         with patch.object(voice_score, '_active_backend', 'ecapa'):
@@ -68,9 +66,9 @@ class StorageTests(unittest.TestCase):
         from memory import admin
         people.add_biometric(2, 'voice', unit(1))
         self.assertTrue(admin.clear_biometrics(2, 'voice'))
-        self.assertEqual(people.count_native_voice_prints(2), 0)
+        self.assertEqual(speaker_id.comparable_print_count(2), 0)
         with patch.object(voice_score, '_active_backend', 'ecapa'):
-            self.assertEqual(people.count_native_voice_prints(2), 1)
+            self.assertEqual(speaker_id.comparable_print_count(2), 1)
 
 
 

@@ -29,19 +29,6 @@ from dataclasses import dataclass
 import re
 from typing import Any, Optional
 
-from world_state import world_state
-
-
-@dataclass(frozen=True)
-class PreferenceReply:
-    text: str
-    emotion: str
-    body_beat: str
-    stance: str
-    topic: str
-    pre_beat_ms: int = 120
-    post_beat_ms: int = 120
-
 
 @dataclass(frozen=True)
 class _TopicOpinion:
@@ -56,9 +43,6 @@ class _TopicOpinion:
     beat: str = ""
     emotion: str = ""
 
-
-_YES_WORDS = {"like", "love", "enjoy", "prefer", "care_for", "into", "fan"}
-_NO_WORDS = {"hate", "dislike", "avoid"}
 
 _TRAILING_FILLER_RE = re.compile(
     r"\b(?:or\s+not|at\s+all|very\s+much|that\s+much|too|though|rex)\b",
@@ -290,8 +274,7 @@ def extract_preference_query(text: str) -> Optional[dict[str, Any]]:
 
 
 # ── Stance as CONTEXT for the lean brain (2026-08-13) ────────────────────────
-# The live path. Everything below this block answers a taste question OUTRIGHT and
-# is no longer reached on a spoken turn; see the module docstring.
+# The live path; see the module docstring.
 
 _STANCE_IN_WORDS: dict[str, str] = {
     "strong_like": "you genuinely love it",
@@ -389,134 +372,6 @@ def prompt_lines(user_text: str) -> list[str]:
     ]
 
 
-def answer_preference_query(text: str, args: Optional[dict[str, Any]] = None) -> Optional[PreferenceReply]:
-    """Rex's stored answer plus the body beat, or None when nothing is stored.
-
-    None means DEFER — the caller must fall through to normal conversation so the
-    lean brain answers in voice. Never invent a stance here; that is what the hash
-    bucket did. Retained as the deterministic/offline surface; the live spoken path
-    is prompt_lines().
-    """
-    parsed = dict(args or {})
-    if not parsed:
-        parsed = extract_preference_query(text) or {}
-    mode = str(parsed.get("mode") or "open").strip().lower()
-
-    # Hoisted above every mode branch: compare and favorite used to skip the guard.
-    scan = " ".join(
-        [str(text or ""), str(parsed.get("topic") or ""), str(parsed.get("domain") or "")]
-        + [str(o) for o in (parsed.get("options") or []) if isinstance(o, str)]
-    )
-    if is_group_rating_request(scan):
-        return PreferenceReply(
-            text="I do not rate whole categories of people. Individual organics generate plenty of data.",
-            emotion="curious",
-            body_beat="thinking_tilt",
-            stance="boundary",
-            topic=_clean_topic(str(parsed.get("topic") or parsed.get("domain") or "")) or "that",
-        )
-
-    if mode == "favorite":
-        domain = _clean_topic(str(parsed.get("domain") or parsed.get("topic") or ""))
-        favorite = _favorite_for_domain(domain)
-        if not favorite:
-            return None
-        spoken = favorite if favorite.endswith((".", "!", "?")) else f"{favorite}."
-        return PreferenceReply(
-            text=spoken,
-            emotion="happy",
-            body_beat="happy_bounce",
-            stance="favorite",
-            topic=domain,
-        )
-
-    if mode == "compare":
-        options = parsed.get("options") or []
-        if not isinstance(options, (list, tuple)):
-            options = []
-        clean_options = [_clean_topic(str(option)) for option in options]
-        clean_options = [option for option in clean_options if option]
-        if len(clean_options) < 2:
-            return None
-        choice = _choose_option(clean_options[0], clean_options[1])
-        if choice is None:
-            return None
-        return PreferenceReply(
-            text=f"{choice}. Obviously.",
-            emotion="happy",
-            body_beat="agreement_nod",
-            stance="prefers",
-            topic=f"{clean_options[0]} or {clean_options[1]}",
-        )
-
-    topic = _clean_topic(str(parsed.get("topic") or ""))
-    if not topic:
-        return None
-    verb = _normalize_verb(str(parsed.get("verb") or ""))
-    opinion = _opinion_for_topic(topic)
-    if opinion is None:
-        return None
-    if mode == "yes_no" and verb:
-        return _answer_yes_no(topic, verb, opinion)
-    return _answer_open(topic, opinion)
-
-
-def _answer_yes_no(topic: str, verb: str, opinion: _TopicOpinion) -> PreferenceReply:
-    asks_negative = verb in _NO_WORDS
-    likes_it = opinion.score >= 0.20
-    dislikes_it = opinion.score <= -0.20
-
-    if asks_negative:
-        if dislikes_it:
-            text = opinion.hate_yes or _yes_for_negative(topic, opinion.score)
-            beat = "disgust_recoil" if opinion.score <= -0.72 else "agreement_nod"
-            emotion = "angry" if opinion.score <= -0.72 else "curious"
-            return PreferenceReply(text, emotion, beat, opinion.stance, topic)
-        text = opinion.hate_no or _no_for_negative(topic, opinion.score)
-        return PreferenceReply(text, opinion.emotion or "happy", "disagreement_shake", opinion.stance, topic)
-
-    if likes_it:
-        text = opinion.like_yes or _yes_for_positive(topic, opinion.score)
-        beat = opinion.beat or ("giddy_wiggle" if opinion.score >= 0.80 else "agreement_nod")
-        emotion = opinion.emotion or ("excited" if opinion.score >= 0.80 else "happy")
-        return PreferenceReply(text, emotion, beat, opinion.stance, topic)
-    if dislikes_it:
-        text = _soften_strong_no(opinion.like_no or _no_for_positive(topic, opinion.score))
-        beat = opinion.beat or ("disgust_recoil" if opinion.score <= -0.72 else "disagreement_shake")
-        emotion = opinion.emotion or ("angry" if opinion.score <= -0.72 else "curious")
-        return PreferenceReply(text, emotion, beat, opinion.stance, topic)
-
-    return PreferenceReply(
-        opinion.open_text,
-        opinion.emotion or "curious",
-        opinion.beat or "disbelief_stare",
-        opinion.stance,
-        topic,
-    )
-
-
-def _answer_open(topic: str, opinion: _TopicOpinion) -> PreferenceReply:
-    beat = opinion.beat
-    emotion = opinion.emotion
-    if not beat:
-        if opinion.score >= 0.75:
-            beat = "giddy_wiggle"
-            emotion = "excited"
-        elif opinion.score >= 0.20:
-            beat = "agreement_nod"
-            emotion = "happy"
-        elif opinion.score <= -0.75:
-            beat = "disgust_recoil"
-            emotion = "angry"
-        elif opinion.score <= -0.20:
-            beat = "disagreement_shake"
-            emotion = "curious"
-        else:
-            beat = "disbelief_stare"
-            emotion = "curious"
-    return PreferenceReply(opinion.open_text, emotion or "curious", beat, opinion.stance, topic)
-
-
 def _opinion_for_topic(topic: str) -> Optional[_TopicOpinion]:
     """Rex's AUTHORED opinion on this topic, or None when he simply has none.
 
@@ -531,21 +386,6 @@ def _opinion_for_topic(topic: str) -> Optional[_TopicOpinion]:
         if any(_topic_matches(key, keyword) for keyword in opinion.keywords):
             return opinion
     return None
-
-
-def _choose_option(a: str, b: str) -> Optional[str]:
-    """Which of two options Rex actually prefers, or None when he has no basis.
-
-    The tie-break used to be a SHA1 coin flip — the same failure as the opinion
-    bucket: a confident, permanent answer invented from nothing.
-    """
-    opinion_a = _opinion_for_topic(a)
-    opinion_b = _opinion_for_topic(b)
-    if opinion_a is None or opinion_b is None:
-        return None
-    if abs(opinion_a.score - opinion_b.score) <= 0.05:
-        return None
-    return a if opinion_a.score > opinion_b.score else b
 
 
 def _favorite_for_domain(domain: str) -> Optional[str]:
@@ -563,57 +403,6 @@ def _favorite_for_domain(domain: str) -> Optional[str]:
         if known != "general" and known in key:
             return value
     return None
-
-
-def _yes_for_positive(_topic: str, score: float) -> str:
-    if score >= 0.80:
-        return "Mmhmm."
-    return "Yes."
-
-
-def _no_for_positive(topic: str, score: float) -> str:
-    if score <= -0.78:
-        return _strong_no()
-    return f"Nope. {topic} does not pass inspection."
-
-
-def _yes_for_negative(_topic: str, score: float) -> str:
-    if score <= -0.78:
-        return "Mmhmm. Strongly."
-    return "Yes."
-
-
-def _no_for_negative(_topic: str, score: float) -> str:
-    if score >= 0.78:
-        return "Nope. I like it."
-    return "No."
-
-
-def _strong_no() -> str:
-    return "Absolutely not." if _child_detected() else "Hell to the no."
-
-
-def _soften_strong_no(text: str) -> str:
-    if _child_detected() and text.startswith("Hell to the no"):
-        return "Absolutely not" + text[len("Hell to the no"):]
-    return text
-
-
-def _child_detected() -> bool:
-    try:
-        return any((person or {}).get("age_estimate") == "child" for person in world_state.get("people") or [])
-    except Exception:
-        return False
-
-
-def _is_sensitive_group_topic(topic: str) -> bool:
-    """Deprecated alias for is_group_rating_request.
-
-    Kept only so an out-of-tree caller does not break. Prefer the public function:
-    it is what the live paths call, and callers must pass the WHOLE utterance —
-    scanning just the parsed topic is how compare/favorite mode skipped the guard.
-    """
-    return is_group_rating_request(topic)
 
 
 def _clean_topic(value: str) -> str:

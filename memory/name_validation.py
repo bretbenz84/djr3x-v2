@@ -418,11 +418,6 @@ def normalize_person_name(value: str, *, allow_single: bool = True) -> Optional[
     return " ".join(tokens)
 
 
-def is_single_token_name(value: str) -> bool:
-    name = normalize_person_name(value)
-    return bool(name and len(name.split()) == 1)
-
-
 def names_are_similar(left: str, right: str, *, threshold: float = 0.84) -> bool:
     left_key = normalized_name_key(left)
     right_key = normalized_name_key(right)

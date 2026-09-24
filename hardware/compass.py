@@ -421,11 +421,6 @@ def get_service_yaw(*, require_calibrated: bool = False) -> "float | None":
     return _service.get_fused_yaw()
 
 
-def service_calibrated() -> bool:
-    """Whether the running service has a real hard/soft-iron calibration."""
-    return bool(_service is not None and _service.cal.loaded)
-
-
 # ── Bench demo loop ────────────────────────────────────────────────────────────
 
 def demo(hz: float = 10.0) -> int:

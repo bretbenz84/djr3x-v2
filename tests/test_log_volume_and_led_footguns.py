@@ -1,4 +1,4 @@
-"""Log volume that hid the signal, and two LED calls that move the mouth silently.
+"""Log volume that hid the signal.
 
 The 2026-08-20 run was 7515 lines. Two patterns accounted for 20% of it: 773
 identical `zone_block front` motion events (10.3%) and 742 `pose_face_guard`
@@ -82,35 +82,6 @@ class MotionEventCollapsingTests(unittest.TestCase):
                 time.sleep(0.08)
                 motion._log_motion_event(self._block())
                 self.assertEqual(info.call_count, 2)
-
-
-class MouthWithoutAudioTests(unittest.TestCase):
-    """leds_head.speak() puts the head firmware into its FREE-RUNNING mouth
-    animation (ANIM_SPEAK) — it keeps going with no audio behind it until a stop
-    command arrives, or the 1500 ms firmware watchdog gives up. Two helpers in
-    sequences/animations did that with nothing attached; excited_burst never
-    stopped it at all. Same shape as the bug fixed in efdae3f."""
-
-    def test_excited_burst_closes_the_mouth_it_opened(self):
-        from sequences import animations
-        with (
-            mock.patch.object(animations, "leds_head") as head,
-            mock.patch.object(animations, "leds_chest") as chest,
-            mock.patch.object(animations, "servos"),
-            mock.patch.object(animations.time, "sleep"),
-        ):
-            animations.excited_burst()
-            head.speak.assert_called_once()
-            head.speak_stop.assert_called_once()
-            chest.active.assert_called_once()
-
-    def test_the_dead_speech_helper_is_documented_as_a_footgun(self):
-        """It is unused, but it is exactly the shape of the bug — the next caller
-        needs to be told before they reach for it."""
-        from sequences import animations
-        doc = animations.speech_start.__doc__ or ""
-        self.assertIn("UNUSED", doc)
-        self.assertIn("free-running", doc.lower())
 
 
 if __name__ == "__main__":

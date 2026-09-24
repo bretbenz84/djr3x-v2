@@ -458,53 +458,6 @@ def analyze_environment(frame, force: bool = False, known_names=None) -> dict:
     return result
 
 
-def detect_animals(frame) -> list[dict]:
-    """
-    Detect animals in frame using GPT-4o vision (config detail: "animal_detection").
-
-    Returns a list of dicts, each containing:
-        id         str  — "animal_1", "animal_2", ...
-        species    str  — common name, e.g. "dog", "cat", "parrot"
-        position   str  — rough location in frame, e.g. "left side", "background right"
-        last_seen  float — time.time() timestamp
-
-    Updates world_state.animals. Returns [] if no animals are present or on failure.
-    """
-    if frame is None:
-        return []
-
-    prompt = (
-        "Examine this image for any animals. "
-        "Return a JSON array — one object per animal detected. "
-        "If no animals are visible, return an empty array: []\n"
-        "Each object must have exactly two keys:\n"
-        '  "species": common name of the animal, e.g. "dog", "cat", "parrot",\n'
-        '  "position": brief location in frame, e.g. "left side", "center", '
-        '"background right", "foreground".\n'
-        "Return ONLY the JSON array — no preamble, no explanation, no markdown fences."
-    )
-
-    raw = _call_gpt4o(frame, prompt, "animal_detection")
-    if raw is None:
-        return []
-
-    data = _parse_json(raw)
-    if not isinstance(data, list):
-        _log.error("detect_animals: expected list, got: %.120s", raw)
-        return []
-
-    animals = _animal_records_from_response(data)
-
-    world_state.update("animals", animals)
-    if animals:
-        _log.info(
-            "detect_animals: %d detected — %s",
-            len(animals),
-            [a["species"] for a in animals],
-        )
-    return animals
-
-
 def detect_animals_local(frame) -> list[dict]:
     """
     Detect animals in frame using the local MediaPipe object detector.
@@ -847,62 +800,6 @@ def _scan_for_startle_species(frame) -> list[dict]:
         world_state.update("animals", current)
         _log.info("startle scan: merged %s", [a["species"] for a in added])
     return added
-
-
-def count_crowd(frame) -> dict:
-    """
-    Count people in frame using GPT-4o vision (config detail: "scene_analysis").
-
-    Returns a dict with:
-        count        int  — people detected, capped at 5 (5 means "5 or more")
-        count_label  str  — "alone" (0–1), "pair" (2), "small_group" (3–4), "crowd" (5+)
-
-    Updates world_state.crowd, preserving the existing dominant_speaker value.
-    Returns {"count": 0, "count_label": "alone"} on frame=None or failure.
-    """
-    _fallback = {"count": 0, "count_label": "alone"}
-
-    if frame is None:
-        return _fallback
-
-    prompt = (
-        "Count the number of people visible in this image. "
-        "Return a JSON object with exactly two keys:\n"
-        '  "count": integer — number of people visible. Use 5 to mean "5 or more".\n'
-        '  "count_label": "alone" for 0–1 people, "pair" for 2, '
-        '"small_group" for 3–4, "crowd" for 5 or more.\n'
-        "Return ONLY the JSON object — no preamble, no explanation, no markdown fences."
-    )
-
-    raw = _call_gpt4o(frame, prompt, "scene_analysis")
-    if raw is None:
-        return _fallback
-
-    data = _parse_json(raw)
-    if not isinstance(data, dict):
-        _log.error("count_crowd: expected dict, got: %.120s", raw)
-        return _fallback
-
-    try:
-        count = min(int(data.get("count", 0)), 5)
-    except (TypeError, ValueError):
-        _log.warning("count_crowd: non-integer count in response — defaulting to 0")
-        count = 0
-
-    label = data.get("count_label") or _count_label(count)
-
-    # Preserve dominant_speaker set by speaker-id pipeline — do not clobber it
-    existing = world_state.get("crowd")
-    result = {
-        "count":             count,
-        "count_label":       label,
-        "dominant_speaker":  existing.get("dominant_speaker"),
-        "last_updated":      time.time(),
-    }
-
-    world_state.update("crowd", result)
-    _log.debug("count_crowd: %d people (%s)", count, label)
-    return {"count": count, "count_label": label}
 
 
 # Allowed normalized values for locate_people, used to coerce model output.

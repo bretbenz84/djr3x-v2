@@ -98,13 +98,6 @@ def get_system_state() -> dict:
     }
 
 
-def increment_interaction_count() -> None:
-    """Increment the session interaction counter without updating the timestamp."""
-    global _session_interaction_count
-    with _state_lock:
-        _session_interaction_count += 1
-
-
 def record_interaction() -> None:
     """Mark a completed interaction — increments the count and updates the timestamp."""
     global _session_interaction_count, _last_interaction_at

@@ -1,5 +1,5 @@
 """
-intelligence/lean_brain.py — the lean conversation core (rebuild, Phase 0: react mode).
+intelligence/lean_brain.py — the lean conversation core: Rex's live primary voice.
 
 ONE streaming model call replaces the four-stage brain (action_router → conversation_agenda →
 social_frame → a 4,400-word assembled prompt). The whole reply prompt is:
@@ -10,17 +10,21 @@ social_frame → a 4,400-word assembled prompt). The whole reply prompt is:
     scene)  +  the recent turns as REAL user/assistant chat messages.
 
 No agenda, no behavior menu, no per-turn contract, no 207 contradictory directives. Trust the
-model; let silence be silence (this module only ever REACTS — it never fills a lull).
+model; let silence be silence (replies only REACT; the one lull-breaker is the gated
+`consider_initiating` impulse below).
 
 Latency-first design:
-  * one call, not the current three-to-four sequential calls;
+  * one call, not the classic brain's three-to-four sequential calls;
   * a small, consistent prompt → fast time-to-first-token;
-  * `stream_reply` yields raw chunks and `stream_sentences` yields complete sentences, so the
-    live path can speak the first sentence the moment it exists (first audio doesn't wait for
-    the whole reply).
+  * `stream_reply` yields raw chunks, so the live path (interaction's sentence splitter) can
+    speak the first sentence the moment it exists (first audio doesn't wait for the whole
+    reply).
 
-Nothing here runs until config.LEAN_BRAIN_ENABLED is set and the seam is wired in; today it is
-exercised only by the offline A/B harness tools/lean_replay.py.
+Live wiring (config.LEAN_BRAIN_ENABLED): interaction._reply_token_stream streams every reply
+through `stream_reply`; llm.stream_response routes proactive/greeting/reaction lines through
+`stream_directive` (ONE VOICE); interaction._maybe_lean_impulse asks `consider_initiating`
+whether to break a lull. `respond` is the latency-measuring wrapper for the offline A/B harness
+tools/lean_replay.py.
 """
 
 from __future__ import annotations
@@ -40,9 +44,6 @@ _log = logging.getLogger(__name__)
 
 # Speakers whose transcript lines are Rex's own (mapped to the assistant role).
 _REX_SPEAKERS = {"rex", "dj-r3x", "dj rex", "djr3x", "r3x", "dj r3x"}
-
-# Split on a sentence end followed by whitespace — used to stream sentence-by-sentence.
-_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
 
 
 def _persona() -> str:
@@ -1057,35 +1058,6 @@ def stream_directive(
             continue
         if getattr(delta, "content", None):
             yield delta.content
-
-
-def stream_sentences(
-    user_text: str,
-    person_id: Optional[int] = None,
-    transcript: Optional[list[dict]] = None,
-    world: Optional[dict] = None,
-) -> Generator[str, None, None]:
-    """Yield COMPLETE sentences as they finish streaming, so the live path can hand each one
-    to TTS the moment it lands — first audio doesn't wait for the whole reply."""
-    min_chars = int(getattr(config, "LLM_STREAMING_MIN_SENTENCE_CHARS", 12))
-    buf = ""
-    for chunk in stream_reply(user_text, person_id, transcript, world):
-        buf += chunk
-        while True:
-            m = _SENTENCE_END.search(buf)
-            if not m:
-                break
-            sentence, buf = buf[: m.start()], buf[m.end():]
-            sentence = sentence.strip()
-            if len(sentence) >= min_chars:
-                yield sentence
-            elif sentence:
-                # too short to be its own beat — glue it to the next sentence.
-                buf = sentence + " " + buf
-                break
-    tail = buf.strip()
-    if tail:
-        yield tail
 
 
 def respond(

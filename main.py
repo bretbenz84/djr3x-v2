@@ -387,32 +387,6 @@ def _play_audio_file(
             echo_cancel.set_playing(False)
 
 
-def _play_listening_chime_async(reason: str) -> None:
-    """Queue the listening chime through speech_queue so AEC suppresses it."""
-    if bool(
-        getattr(config, "NO_AUDIO_MODE", False)
-        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
-    ):
-        return
-    if not bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
-        return
-    path = Path(getattr(config, "LISTENING_CHIME_FILE", "") or "")
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parent / path
-    if not path.exists():
-        logger.warning("Listening chime missing: %s", path)
-        return
-    try:
-        logger.info("Playing listening chime (%s): %s", reason, path)
-        speech_queue.enqueue_audio_file(
-            str(path),
-            priority=1,
-            tag="system:listening_chime",
-        )
-    except Exception as exc:
-        logger.warning("Could not queue listening chime (%s): %s", reason, exc)
-
-
 def _configured_sensor_warning_lines(kind: str, fallback: list[str]) -> list[str]:
     configured = getattr(config, "STARTUP_SENSOR_WARNING_LINES", {}) or {}
     raw_lines = None

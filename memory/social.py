@@ -160,14 +160,6 @@ def get_between(person_a_id: int, person_b_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def delete_for_person(person_id: int) -> None:
-    """Remove all relationship edges involving person_id (both directions)."""
-    db.execute(
-        "DELETE FROM person_relationships WHERE from_person_id = ? OR to_person_id = ?",
-        (person_id, person_id),
-    )
-
-
 def summarize_for_prompt(person_id: int, person_name: str) -> str:
     """
     Return a short human-readable summary of person_id's relationships for

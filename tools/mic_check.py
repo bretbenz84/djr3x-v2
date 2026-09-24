@@ -48,7 +48,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
 import config  # noqa: E402
-from utils.config_loader import AUDIO_DEVICE_INDEX  # noqa: E402
+from utils.config_loader import AUDIO_DEVICE_INDEX, AUDIO_DEVICE_NAME  # noqa: E402
 
 SR = int(getattr(config, "AUDIO_SAMPLE_RATE", 16000))
 
@@ -105,7 +105,7 @@ def _device_index() -> int | None:
                          f"(try: python -c \"import sounddevice; print(sounddevice.query_devices())\")")
     if AUDIO_DEVICE_INDEX is not None:
         return int(AUDIO_DEVICE_INDEX)
-    name = str(getattr(config, "AUDIO_DEVICE_NAME", "") or "").strip().lower()
+    name = str(AUDIO_DEVICE_NAME or "").strip().lower()
     if not name:
         return None
     import sounddevice as sd

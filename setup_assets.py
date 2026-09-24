@@ -117,10 +117,6 @@ DLIB_MODELS = [
         "name": "dlib_face_recognition_resnet_model_v1.dat",
         "url": "https://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2",
     },
-    {
-        "name": "mmod_human_face_detector.dat",
-        "url": "https://dlib.net/files/mmod_human_face_detector.dat.bz2",
-    },
 ]
 
 # ── InsightFace model pack (SCRFD detection + ArcFace recognition) ───────────

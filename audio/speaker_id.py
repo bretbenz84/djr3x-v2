@@ -1,7 +1,7 @@
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
@@ -409,60 +409,6 @@ def _log_scoreboard(
         dur,
         format_scoreboard(scored),
     )
-
-
-def identify_speaker_raw(
-    audio_array: np.ndarray,
-) -> Tuple[Optional[int], Optional[str], float]:
-    """Return the TOP per-person centroid voice match without a threshold filter.
-
-    Returns (best_id, best_name, best_sim), or (None, None, 0.0) if no match could be
-    computed. The low-level primitive — callers apply their own acceptance logic.
-    """
-    scored = rank_speakers(audio_array)
-    if not scored:
-        return (None, None, 0.0)
-    _log_scoreboard(scored)
-    best_id, name, best_sim, _n = scored[0]
-    return (best_id, name, float(best_sim))
-
-
-def identify_speaker(
-    audio_array: np.ndarray,
-) -> Tuple[Optional[int], Optional[str], float]:
-    """Return (person_id, name, score) for a confident voice match, else (None, None, 0.0).
-
-    Accepts the top centroid match only when it clears SPEAKER_ID_SIMILARITY_THRESHOLD
-    AND beats the next-closest DIFFERENT person by SPEAKER_ID_KNOWN_MARGIN. The margin
-    guard lets the threshold sit low (0.50, where a real returning speaker actually
-    scores) without false-matching a different known voice when two candidates are close.
-    """
-    scored = rank_speakers(audio_array)
-    if not scored:
-        return (None, None, 0.0)
-    _log_scoreboard(scored)
-    best_id, name, best_sim, _n = scored[0]
-    if best_sim < config.SPEAKER_ID_SIMILARITY_THRESHOLD:
-        return (None, None, 0.0)
-    second = scored[1][2] if len(scored) > 1 else -1.0
-    margin = required_ambiguity_margin(scored)
-    if (best_sim - second) < margin:
-        logger.info(
-            "[speaker_id] ambiguous: %s#%s=%.3f vs next=%.3f (margin %.3f < %.2f) — no match",
-            name, best_id, best_sim, second, best_sim - second, margin,
-        )
-        return (None, None, 0.0)
-    if best_sim < 0.80:
-        logger.warning(
-            "[speaker_id] LOW-CONFIDENCE match person_id=%s name=%r score=%.3f (< 0.80) — treat with caution",
-            best_id, name, best_sim,
-        )
-    else:
-        logger.info(
-            "[speaker_id] matched person_id=%s name=%r score=%.3f",
-            best_id, name, best_sim,
-        )
-    return (best_id, name, float(best_sim))
 
 
 _BACKEND_EMBED_DIMS = {"ecapa": 192, "resemblyzer": 256, "campplus": 192}

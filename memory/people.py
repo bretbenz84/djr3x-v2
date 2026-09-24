@@ -6,7 +6,7 @@ Metric note:
     backends coexist: 512-dim L2-normalized ArcFace (insightface, threshold 1.10)
     and legacy 128-dim dlib (threshold 0.6) — find_by_face picks thresholds by the
     query's dimension and skips stored rows of the other dimension.
-  - Voice matching uses cosine similarity (Resemblyzer standard, higher = better match).
+  - Voice matching (audio/speaker_id.py) uses cosine similarity (Resemblyzer standard, higher = better match).
   These are intentionally different — using the same metric for both is a common bug.
 """
 
@@ -213,38 +213,6 @@ def find_by_face(encoding: np.ndarray) -> Optional[dict]:
     return person
 
 
-def find_by_voice(embedding: np.ndarray) -> Optional[dict]:
-    """
-    Return the best-matching person record for a Resemblyzer voice embedding, or None.
-
-    Uses cosine similarity. Match is accepted only if similarity is at or above
-    SPEAKER_ID_SIMILARITY_THRESHOLD (default 0.75).
-    """
-    rows = db.fetchall(
-        "SELECT person_id, encoding FROM biometrics WHERE type = ?", (_voice_score.biometric_type(),)
-    )
-    query = embedding.astype(np.float32)
-    query_norm = query / (np.linalg.norm(query) + 1e-10)
-
-    best_id, best_sim = None, -1.0
-    for row in rows:
-        stored = _from_blob(bytes(row["encoding"]))
-        if stored.shape != query.shape:
-            # Other-embedder enrollment (192-d ECAPA vs 256-d Resemblyzer) —
-            # expected during migration, not an error.
-            _log.debug("voice embedding shape mismatch: stored %s vs query %s", stored.shape, query.shape)
-            continue
-        stored_norm = stored / (np.linalg.norm(stored) + 1e-10)
-        sim = _voice_score.map_similarity(float(np.dot(stored_norm, query_norm)))
-        if sim > best_sim:
-            best_sim = sim
-            best_id = row["person_id"]
-
-    if best_id is not None and best_sim >= _voice_score.match_threshold():
-        return get_person(best_id)
-    return None
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Person CRUD
 # ─────────────────────────────────────────────────────────────────────────────
@@ -396,14 +364,6 @@ def find_person_by_spoken_name_variant(name: str) -> Optional[dict]:
                 matches[person["id"]] = {**person, "matched_spoken_name": label}
                 break
     return next(iter(matches.values())) if len(matches) == 1 else None
-
-
-def _person_score(person: dict) -> tuple[int, int, float, int]:
-    face_count = int(person.get("face_count") or 0)
-    voice_count = int(person.get("voice_count") or 0)
-    visit_count = int(person.get("visit_count") or 0)
-    familiarity = float(person.get("familiarity_score") or 0.0)
-    return (face_count + voice_count, visit_count, familiarity, -int(person["id"]))
 
 
 def find_potential_person_match(name: str) -> Optional[dict]:
@@ -614,18 +574,6 @@ def add_biometric(person_id: int, type: str, encoding: np.ndarray) -> Optional[i
         "INSERT INTO biometrics (person_id, type, encoding, created_at) VALUES (?, ?, ?, ?)",
         (person_id, type, _to_blob(encoding), _now()),
     )
-
-
-def latest_biometric_id(person_id: int, type: str) -> Optional[int]:
-    """Row id of the most recently stored face/voice biometric for a person."""
-    if type == "voice":
-        type = _voice_score.biometric_type()
-    row = db.fetchone(
-        "SELECT id FROM biometrics WHERE person_id = ? AND type = ? "
-        "ORDER BY id DESC LIMIT 1",
-        (person_id, type),
-    )
-    return int(row["id"]) if row else None
 
 
 def delete_biometric(biometric_id: int) -> bool:
@@ -1209,27 +1157,6 @@ def count_biometrics(person_id: int, type_: str) -> int:
     row = db.fetchone(
         f"SELECT {count_expr} AS n FROM biometrics WHERE person_id = ? AND type = ?",
         (person_id, type_),
-    )
-    return int(row["n"]) if row else 0
-
-
-def count_native_voice_prints(person_id: int) -> int:
-    """Voice rows from the ACTIVE embedder only (by stored dimension).
-
-    Stale other-backend rows (256-d Resemblyzer after the ECAPA switch) must not
-    count toward the auto-refresh cap or the bootstrap floor: live-logged
-    2026-07-06-21-15, Bret's 6 legacy prints made count_biometrics read 6 >= the
-    5-sample cap, so the bootstrap that would have rebuilt his ECAPA print from
-    face-confirmed turns never fired and he stayed Guest 1.
-    """
-    if person_id is None:
-        return 0
-    n_bytes = _voice_score.embedding_dim() * 4  # float32
-    count_expr = "COUNT(DISTINCT encoding)" if _voice_score.active_backend() == "campplus" else "COUNT(*)"
-    row = db.fetchone(
-        f"SELECT {count_expr} AS n FROM biometrics "
-        "WHERE person_id = ? AND type = ? AND LENGTH(encoding) = ?",
-        (person_id, _voice_score.biometric_type(), n_bytes),
     )
     return int(row["n"]) if row else 0
 

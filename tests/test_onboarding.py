@@ -309,7 +309,8 @@ class OnboardingDBTests(unittest.TestCase):
         from intelligence import onboarding
         from memory import relationships as rel_memory
 
-        rel_memory.save_qa(self.person_id, "job", "what do you do?", "engineer", 1)
+        rel_memory.save_question_asked(self.person_id, "job", "what do you do?", 1)
+        rel_memory.answer_latest_pending_question(self.person_id, "engineer")
         q = onboarding.next_question(self.person_id, asked_keys=set())
         self.assertNotEqual(q["key"], "job")
 

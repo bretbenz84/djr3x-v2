@@ -26,17 +26,17 @@ class HeadAnchorTest(unittest.TestCase):
 
     def test_anchor_from_nose_and_ear_span(self):
         from vision import pose
-        anchor = pose.head_anchor_px(1000, 800)
-        self.assertIsNotNone(anchor)
-        hx, hy, head_w = anchor
+        anchors = pose.head_anchors_px(1000, 800)
+        self.assertEqual(len(anchors), 1)
+        hx, hy, head_w = anchors[0]
         self.assertAlmostEqual(hx, 500.0)        # nose.x 0.50 * 1000
         self.assertAlmostEqual(hy, 320.0)        # nose.y 0.40 * 800
         self.assertAlmostEqual(head_w, 120.0, delta=1.0)  # ear span 0.12 * 1000
 
-    def test_no_keypoints_returns_none(self):
+    def test_no_keypoints_returns_no_anchors(self):
         from vision import pose
         self.ws.mutate("people", lambda _c: [{"id": "p", "face_box": (1, 2, 3, 4)}])
-        self.assertIsNone(pose.head_anchor_px(1000, 800))
+        self.assertEqual(pose.head_anchors_px(1000, 800), [])
 
 
 class RejectFacesOffBodyTest(unittest.TestCase):

@@ -95,40 +95,6 @@ class PublishAndLatchTest(_WorldStateFixture):
         self.assertIsNotNone(A.recent_visual_speaker(max_age_secs=10.0))  # latch kept
 
 
-class CurrentSpeakerTest(_WorldStateFixture):
-    def test_returns_fresh_visible_highest_confidence(self):
-        now = time.time()
-        world_state.update("people", [
-            {"id": "p1", "person_db_id": None, "face_visible": True,
-             "is_speaking": True, "speaking_confidence": 0.3, "speaking_updated_at": now},
-            {"id": "p2", "person_db_id": None, "face_visible": True,
-             "is_speaking": True, "speaking_confidence": 0.7, "speaking_updated_at": now},
-        ])
-        cur = A.current_speaker()
-        self.assertIsNotNone(cur)
-        self.assertEqual(cur["speaking_confidence"], 0.7)
-
-    def test_ignores_stale_and_invisible(self):
-        now = time.time()
-        world_state.update("people", [
-            {"id": "p1", "person_db_id": None, "face_visible": True,
-             "is_speaking": True, "speaking_confidence": 0.9, "speaking_updated_at": now - 100.0},
-            {"id": "p2", "person_db_id": None, "face_visible": False,
-             "is_speaking": True, "speaking_confidence": 0.9, "speaking_updated_at": now},
-        ])
-        self.assertIsNone(A.current_speaker())
-
-    def test_resolves_name_via_people_db(self):
-        now = time.time()
-        world_state.update("people", [
-            {"id": "p1", "person_db_id": 5, "face_visible": True,
-             "is_speaking": True, "speaking_confidence": 0.8, "speaking_updated_at": now},
-        ])
-        with mock.patch("memory.people.get_person", return_value={"name": "Dana"}):
-            cur = A.current_speaker()
-        self.assertEqual(cur["name"], "Dana")
-
-
 class NonClobberTest(_WorldStateFixture):
     def test_speaker_write_and_identity_write_coexist(self):
         # An active-speaker write and a concurrent identity re-bind on the same

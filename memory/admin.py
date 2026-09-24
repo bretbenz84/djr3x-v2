@@ -43,15 +43,6 @@ FACT_CATEGORIES = [
     "other",
 ]
 
-# Keys are free-form snake_case labels (favorite_<x>, nephew, …), so these are only
-# SUGGESTIONS offered as autocomplete — the user can still type anything.
-COMMON_FACT_KEYS = [
-    "birthday", "pronouns", "hometown", "job_title", "worldview",
-    "favorite_music", "favorite_food", "favorite_movie", "favorite_color",
-    "favorite_band", "favorite_drink", "favorite_team",
-    "pet_name", "spouse", "child", "sibling", "nephew", "niece", "parent",
-]
-
 # Per-category key suggestions, so picking a category like "relationship" shows the
 # conventional keys (boss, coworker, mentor, …) instead of a blank box. The KEY is the
 # kind of thing; the VALUE is the specifics — e.g. category=relationship, key=boss,

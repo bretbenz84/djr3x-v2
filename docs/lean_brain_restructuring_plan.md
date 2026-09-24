@@ -18,7 +18,7 @@ LLM cost optimization is not a priority. No new resident inference model is adde
   No dollar estimates, measured latency gains, or OS pressure claims are made.
 - Phase 1: ordinary Lean replies use minimal agenda preparation. Existing care,
   boundary, correction and closure handling remains; delivery tone still uses the
-  established frame/comedy contracts. Candidate deletion invalidates prewarm work.
+  established frame/comedy contracts.
 - Phase 2/2B: delivered questions are tracked per target and explicitly settled.
   Answers captured before a question cannot settle it, and stale frame objects
   cannot settle a new session. The authoritative resolver owns final identity and
@@ -148,7 +148,7 @@ establish today's hardware latency.
 | Finding | Evidence and implication |
 | --- | --- |
 | The separate JSON-prose action-router model fallback is already disabled by default. | `config.py:6167`, `action_router.decide()` in `intelligence/action_router.py`. Preserve the deterministic routes and main-call tool fallback; do not budget a fictional always-on router call as a saving. |
-| General local turn classification is off. The normal intent path is deterministic. | `CONVERSATION_TURN_CLASSIFIER_ENABLED=False`; `interaction.py` calls `intent_classifier.classify_deterministic()`. The local model is a collection of helpers, not a universal routing stage. |
+| General local turn classification is off. The normal intent path is deterministic. | The turn classifier module was deleted (2026-09-23), so no general local classification stage exists; `interaction.py` calls `intent_classifier.classify_deterministic()`. The local model is a collection of helpers, not a universal routing stage. |
 | A conversation arc already runs in the background, using OpenAI by default. | `intelligence/topic_thread.py` refreshes a coalesced summary; `llm.assemble_system_prompt()` injects it. Lean `_system_prompt()` does not directly include that arc. Reuse useful state before commissioning another summarizer. |
 | Lean's primary history is eight transcript entries by default. | `lean_brain._messages()` and `LEAN_BRAIN_TRANSCRIPT_TURNS`. A short window needs explicit continuity; increasing the transcript alone increases prompt cost and still does not establish action truth. |
 | Memory ranking can perform synchronous local inference. | `memory/retrieval.py` calls `memory.semantic.relevance()`, which calls `_topic_vector()` and `_embed_candidate()`. Cache misses request embeddings inline, potentially for multiple candidates. A per-request timeout is not a total context budget. |

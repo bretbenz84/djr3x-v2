@@ -1079,17 +1079,6 @@ class PlaceRecognizer:
         ts = now if now is not None else self._clock()
         return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="microseconds")
 
-    def reset_belief(self) -> None:
-        """Drop the in-memory belief/hysteresis state (durable store untouched). Tests."""
-        with self._lock:
-            self._history.clear()
-            self._current_place = None
-            self._moved_since_confirm = False
-            self._unknown_streak = 0
-            self._unknown_armed = True
-            self._static_flip_pid, self._static_flip_streak = None, 0
-            self._publish_place(None)
-
     def reject_belief(self, name: Optional[str] = None) -> bool:
         """A human said this is NOT the room Rex believes he is in — drop the belief.
 

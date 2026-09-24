@@ -22,6 +22,29 @@ import config
 from audio import speaker_id, voice_score
 
 
+def _accept(ranked):
+    """The live acceptance rule over rank_speakers' scoreboard, as its callers apply
+    it (speaker_id.window_evidence; interaction/attribution via required_margin):
+    the top person must clear the match threshold AND beat the next different
+    person by required_ambiguity_margin. Returns (person_id, name, score), or
+    (None, None, 0.0) when there is no confident match."""
+    with (
+        mock.patch.object(speaker_id, "get_embedding",
+                          return_value=np.zeros(4, dtype=np.float32)),
+        mock.patch.object(speaker_id, "rank_embedding", return_value=ranked),
+    ):
+        scored = speaker_id.rank_speakers(np.zeros(4, dtype=np.float32))
+    if not scored:
+        return (None, None, 0.0)
+    pid, name, score, _n = scored[0]
+    second = scored[1][2] if len(scored) > 1 else -1.0
+    if score < voice_score.match_threshold():
+        return (None, None, 0.0)
+    if (score - second) < speaker_id.required_ambiguity_margin(scored):
+        return (None, None, 0.0)
+    return (pid, name, float(score))
+
+
 class IdentifySpeakerAcceptanceTest(unittest.TestCase):
     def setUp(self):
         backend = mock.patch.object(voice_score, "_active_backend", "ecapa")
@@ -37,8 +60,7 @@ class IdentifySpeakerAcceptanceTest(unittest.TestCase):
         config.SPEAKER_ID_KNOWN_MARGIN = self._margin
 
     def _identify(self, ranked):
-        with mock.patch.object(speaker_id, "rank_speakers", return_value=ranked):
-            return speaker_id.identify_speaker(np.zeros(4, dtype=np.float32))
+        return _accept(ranked)
 
     def test_real_self_match_is_accepted(self):
         # Bret 0.55 beats Cheers 0.445 by 0.105 (>= 0.07) and clears 0.50.
@@ -87,9 +109,8 @@ class ThinChallengerReliefTest(unittest.TestCase):
         # Log 2026-07-06-19-23: Bret (6 prints) 0.558 vs JT (1 print) 0.502.
         ranked = [(1, "Bret", 0.558, 6), (2, "JT", 0.502, 1)]
         self.assertAlmostEqual(speaker_id.required_ambiguity_margin(ranked), 0.035)
-        # And the full identify path now accepts Bret.
-        with mock.patch.object(speaker_id, "rank_speakers", return_value=ranked):
-            pid, name, _ = speaker_id.identify_speaker(np.zeros(4, dtype=np.float32))
+        # And the acceptance rule now accepts Bret.
+        pid, name, _ = _accept(ranked)
         self.assertEqual((pid, name), (1, "Bret"))
 
     def test_field_case_thin_print_on_top_keeps_full_margin(self):
@@ -97,11 +118,7 @@ class ThinChallengerReliefTest(unittest.TestCase):
         # the challenge must still fire while JT's print is unverified.
         ranked = [(2, "JT", 0.563, 1), (1, "Bret", 0.529, 6)]
         self.assertAlmostEqual(speaker_id.required_ambiguity_margin(ranked), 0.07)
-        with mock.patch.object(speaker_id, "rank_speakers", return_value=ranked):
-            self.assertEqual(
-                speaker_id.identify_speaker(np.zeros(4, dtype=np.float32)),
-                (None, None, 0.0),
-            )
+        self.assertEqual(_accept(ranked), (None, None, 0.0))
 
     def test_low_top_score_gets_no_relief(self):
         # A cross-match impostor lands ~0.53 on the mature centroid (measured JT →

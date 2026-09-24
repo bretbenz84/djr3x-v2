@@ -47,9 +47,6 @@ SENSITIVITY_SAFE = "safe"
 SENSITIVITY_GUARDED = "guarded"
 SENSITIVITY_EXCLUDED = "excluded"
 _SENSITIVITIES = (SENSITIVITY_SAFE, SENSITIVITY_GUARDED, SENSITIVITY_EXCLUDED)
-# Conservative ordering: a row's sensitivity may only ever move DOWN this list
-# index-wise (toward excluded), never back up toward safe.
-_SENSITIVITY_RANK = {SENSITIVITY_SAFE: 0, SENSITIVITY_GUARDED: 1, SENSITIVITY_EXCLUDED: 2}
 
 CATEGORIES = {
     "passion",
@@ -311,21 +308,6 @@ def get_all(person_id: Optional[int]) -> list[dict]:
             (person_id,),
         )
     ]
-
-
-def has_topic(person_id: int, topic: str) -> bool:
-    """True when ANY row (including guarded/excluded/retired) already covers this
-    topic — lets the banker skip re-classifying material it has already judged."""
-    if not isinstance(person_id, int):
-        return False
-    topic_slug = _slug(topic)
-    if not topic_slug:
-        return False
-    row = db.fetchone(
-        "SELECT id FROM person_callback_material WHERE person_id = ? AND topic_slug = ?",
-        (person_id, topic_slug),
-    )
-    return row is not None
 
 
 def is_running_bit(row: dict) -> bool:

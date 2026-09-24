@@ -87,28 +87,6 @@ def get_asked_question_keys(person_id: int) -> set[str]:
     return {row["question_key"] for row in rows}
 
 
-def save_qa(
-    person_id: int,
-    question_key: str,
-    question_text: str,
-    answer_text: str,
-    depth_level: int,
-) -> None:
-    """Store a Q&A pair and apply the familiarity increment for the given depth level."""
-    db.execute(
-        """INSERT INTO person_qa
-           (person_id, question_key, question_text, answer_text, asked_at, depth_level)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (person_id, question_key, question_text, answer_text, _now(), depth_level),
-    )
-    increment_key = f"qa_depth_{depth_level}"
-    increment = config.FAMILIARITY_INCREMENTS.get(increment_key)
-    if increment is not None:
-        people_db.update_familiarity(person_id, increment)
-    else:
-        _log.warning("No familiarity increment defined for depth level %d", depth_level)
-
-
 def save_question_asked(
     person_id: int,
     question_key: str,
@@ -202,8 +180,3 @@ def get_next_question(person_id: int, friendship_tier: str) -> Optional[dict]:
         if question["depth"] <= max_depth and question["key"] not in asked:
             return question
     return None
-
-
-def delete_qa(person_id: int) -> None:
-    """Remove all Q&A records for a person."""
-    db.execute("DELETE FROM person_qa WHERE person_id = ?", (person_id,))

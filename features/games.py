@@ -18,7 +18,6 @@ Public API:
                                             # Rex's response to player input
     stop_game(person_id=None)            → str    # graceful closing line
     is_active()                          → bool
-    current_game()                       → str | None
 """
 
 import json
@@ -3783,12 +3782,6 @@ def jeopardy_claims_selection(text: str) -> bool:
 def suppresses_conversation_interruptions() -> bool:
     """Return True while game flow should own the next spoken turn."""
     return is_active()
-
-
-def current_game() -> Optional[str]:
-    """Return the normalized name of the current game, or None if no game is active."""
-    with _lock:
-        return _active_game
 
 
 def snapshot() -> dict:

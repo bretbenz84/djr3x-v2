@@ -27,12 +27,11 @@ import state as _state_module
 from state import State as _State
 from hardware import servos, leds_head, leds_chest
 from sequences import throttle_arm
-from intelligence import emotion_orchestrator
 from world_state import world_state
 
 _log = logging.getLogger(__name__)
 
-# Set while a TTS utterance is in progress — gates both speaking gestures and wander.
+# Set while a TTS utterance is in progress — gates the wander and boot-scan loops.
 _speaking = threading.Event()
 _motion_lock = threading.Lock()
 _arm_motion_lock = threading.Lock()
@@ -1274,99 +1273,6 @@ def arm_wander_thread() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Speech
-# ---------------------------------------------------------------------------
-
-def _speaking_loop() -> None:
-    """Background: subtle expressive head movements during a TTS utterance."""
-    while _speaking.is_set():
-        choice = random.randint(0, 3)
-        if choice == 0:
-            # Slight neck turn — shift gaze as if addressing the room
-            side = random.choice([-1, 1])
-            target = {0: NECK_CENTER + side * random.randint(250, 500)}
-        elif choice == 1:
-            # Emphasis lift — head rises slightly on an important phrase
-            target = {1: HEADLIFT_NEUTRAL + random.randint(80, 200)}
-        elif choice == 2:
-            # Expressive head tilt
-            tilt = random.choice([-1, 1]) * random.randint(50, 120)
-            target = {2: HEADTILT_NEUTRAL + tilt}
-        else:
-            # Drift back toward neutral — natural reset between gestures
-            target = {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL}
-
-        servos.move_to(target, step_us=50, step_delay=0.02)
-
-        hold = random.uniform(1.0, 3.0)
-        deadline = time.monotonic() + hold
-        while _speaking.is_set() and time.monotonic() < deadline:
-            time.sleep(0.1)
-
-
-def speech_start(emotion: str = "neutral") -> None:
-    """
-    UNUSED — superseded by animations.speech_activity_start + audio/tts._begin_speech,
-    which drive the mouth from real audio. Kept only because the pose/gesture logic
-    below is still a useful reference. DO NOT call it: leds_head.speak() starts the
-    firmware's free-running mouth animation with NO audio attached, which is the
-    shape of the "mouth moves before he speaks" bug (fixed efdae3f). If you need
-    the pose without the mouth, take the servo block and leave the LED calls.
-
-    Call at the start of a TTS utterance.
-    Sends the emotion pattern to both Arduinos, adjusts head pose to match,
-    and starts a background thread for subtle expressive head movements.
-    """
-    _speaking.set()
-    threading.Thread(target=_speaking_loop, daemon=True, name="speech_gestures").start()
-
-    frame = emotion_orchestrator.frame_for_speech(emotion)
-    led_emotion = frame.led_style
-    emotion_orchestrator.publish_frame(frame)
-
-    leds_chest.speak(led_emotion)
-    leds_head.speak(led_emotion)
-    leds_head.set_eye_emotion(led_emotion)
-    servos.set_breathing_emotion(led_emotion)
-
-    if frame.affect in {"excited", "giddy", "surprised"}:
-        # No headtilt command here: set_servos is an instant target jump, and the
-        # heavy head on its 8 mm tilt rod can't take that snap. Excitement and
-        # surprise read from the visor at max + headlift at max instead.
-        servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_HIGH})
-    elif frame.affect in {"sad", "sleepy"}:
-        servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_DOWN, 2: HEADTILT_SLIGHT_DOWN})
-    elif frame.affect == "angry":
-        servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_NEUTRAL})
-    elif frame.affect == "disgusted":
-        servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_DOWN})
-    elif frame.affect == "happy":
-        servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_UP})
-    else:
-        servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_NEUTRAL})
-
-
-def speech_stop() -> None:
-    """Call when TTS finishes. Stops gesture thread and resets head pose to idle."""
-    _speaking.clear()
-    leds_head.speak_stop()
-    leds_chest.idle()
-    servos.set_breathing_emotion("neutral")
-    baseline = servos.get_face_tracking_baseline()
-    servos.set_servos({
-        0: baseline.get(0, NECK_CENTER),
-        3: VISOR_HALF,
-        1: baseline.get(1, HEADLIFT_NEUTRAL),
-        2: baseline.get(2, HEADTILT_NEUTRAL),
-    })
-
-
-def speech_level(amplitude: int) -> None:
-    """Drive mouth LED brightness from audio buffer level (0–255)."""
-    leds_head.speak_level(amplitude)
-
-
-# ---------------------------------------------------------------------------
 # Head expressions
 # ---------------------------------------------------------------------------
 
@@ -1389,15 +1295,6 @@ def headshake(count: int = 2) -> None:
     servos.set_servo(0, NECK_CENTER)
 
 
-def visor_flutter(count: int = 2) -> None:
-    """Expressive punctuation — quick open/half cycle."""
-    for _ in range(count):
-        servos.set_servo(3, VISOR_OPEN)
-        time.sleep(0.10)
-        servos.set_servo(3, VISOR_HALF)
-        time.sleep(0.10)
-
-
 def thinking() -> None:
     """Rex considering something: slight upward tilt, sideways glance."""
     servos.set_servos({2: HEADTILT_SLIGHT_UP, 0: NECK_CENTER + 1000})
@@ -1412,18 +1309,6 @@ def surprised() -> None:
 # ---------------------------------------------------------------------------
 # Gaze / neck tracking
 # ---------------------------------------------------------------------------
-
-def look_left(amount: int = 2000) -> None:
-    servos.set_servo(0, max(1984, NECK_CENTER - amount))
-
-
-def look_right(amount: int = 2000) -> None:
-    servos.set_servo(0, min(9984, NECK_CENTER + amount))
-
-
-def look_center() -> None:
-    servos.set_servo(0, NECK_CENTER)
-
 
 def camera_pose() -> None:
     """Visor fully open + neck centered before image capture. Waits 0.5 s to settle."""
@@ -1676,33 +1561,9 @@ def travel_glance_pose(side: str = "center", pitch: str = "level",
 # Arm
 # ---------------------------------------------------------------------------
 
-def arm_hero_pose() -> None:
-    """Heroarm forward, elbow up, hand neutral — confident presentation pose."""
-    servos.set_servos({7: HEROARM_FORWARD, 4: ELBOW_DOWN, 5: HAND_NEUTRAL})
-
-
 def arm_idle() -> None:
     """Return right arm assembly to neutral."""
     servos.set_servos({4: ELBOW_NEUTRAL, 5: HAND_NEUTRAL, 7: HEROARM_NEUTRAL})
-
-
-def arm_fidget() -> None:
-    """Small randomized hand nudge — idle micro-behavior."""
-    nudge = random.randint(-400, 400)
-    servos.set_servo(5, HAND_NEUTRAL + nudge)
-    time.sleep(0.5)
-    servos.set_servo(5, HAND_NEUTRAL)
-
-
-def arm_rhythm_tick(beat_phase: float) -> None:
-    """
-    Subtle elbow dip locked to music beat phase (0.0–1.0 per beat).
-    Call from the DJ playback loop on each detected beat downbeat.
-    """
-    if beat_phase < 0.15:
-        servos.set_servo(4, ELBOW_UP)
-    elif beat_phase < 0.5:
-        servos.set_servo(4, ELBOW_NEUTRAL)
 
 
 def arm_wave(count: int | None = None) -> None:
@@ -2119,38 +1980,6 @@ def _run_pride_flourish() -> bool:
 # Composite reactions
 # ---------------------------------------------------------------------------
 
-def excited_burst() -> None:
-    """Full excited reaction: arm up, head bob, visor open, chest AllRed.
-
-    NOTE: leds_head.speak() puts the head firmware into its FREE-RUNNING mouth
-    animation (ANIM_SPEAK) with no audio behind it. Nothing calls this today, but
-    it left the mouth running with only the firmware's 1500 ms watchdog to stop it
-    — so it now closes the mouth itself.
-    """
-    leds_chest.speak("excited")
-    leds_head.speak("excited")
-    leds_head.set_eye_emotion("excited")
-    servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_HIGH, 7: HEROARM_FORWARD, 4: ELBOW_DOWN})
-    time.sleep(0.25)
-    servos.set_servo(1, HEADLIFT_NEUTRAL)
-    time.sleep(0.15)
-    servos.set_servo(1, HEADLIFT_UP)
-    time.sleep(0.15)
-    servos.set_servo(1, HEADLIFT_NEUTRAL)
-    leds_head.speak_stop()
-    leds_chest.active()
-
-
-def roast_pose() -> None:
-    """Lean into a roast — slight head tilt down + sideways look."""
-    servos.set_servos({2: HEADTILT_SLIGHT_DOWN, 3: VISOR_HALF, 0: NECK_CENTER + 600})
-
-
 def dismissal() -> None:
     """Dismissive head-turn away."""
     servos.set_servos({0: NECK_CENTER + 2500, 2: HEADTILT_SLIGHT_DOWN})
-
-
-def return_to_neutral() -> None:
-    """Smoothly return all channels to neutral positions."""
-    servos.neutral(step_us=30)

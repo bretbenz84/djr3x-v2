@@ -224,6 +224,8 @@ the prompt **once** from it.
 > engagement/pivot well and instantly, and the **arc already supplies a clean topic**. The module is left
 > INERT behind `config.CONVERSATION_TURN_CLASSIFIER_ENABLED` (default False) for a possible future
 > OFF-path use (background/lagged like the arc). See its do-not-regress entry in `CONTEXT.md`.
+> **Deleted 2026-09-23** (dead-code plan D12): the module, its test and the
+> `CONVERSATION_TURN_CLASSIFIER_*` config keys are gone; git history at `c00eed5` keeps them.
 
 One small structured `qwen2.5:1.5b` call per turn returning
 `{topic, engagement, intent, sentiment, wants_pivot, addressee}`.

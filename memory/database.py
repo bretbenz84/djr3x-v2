@@ -235,8 +235,7 @@ _MIGRATIONS = [
     # transcript used to live only in memory and die at shutdown, so "what did we
     # talk about on July 12?" had nothing to read. One row per spoken turn; `day`
     # is the LOCAL calendar date for natural-language date queries; person_id is
-    # best-effort speaker resolution (NULL for Rex/unknowns). Backfillable from
-    # logs/conversation-*.log via tools/backfill_conversation_log.py.
+    # best-effort speaker resolution (NULL for Rex/unknowns).
     """
     CREATE TABLE IF NOT EXISTS conversation_log (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -512,15 +511,6 @@ def connection() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def get_db() -> sqlite3.Connection:
-    """Return an open connection with row_factory=Row. Caller is responsible for closing it."""
-    conn = sqlite3.connect(_DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
-
-
 def fetchone(query: str, params: tuple = ()) -> sqlite3.Row | None:
     """Execute a SELECT and return the first matching row, or None on no match or error."""
     try:
@@ -549,20 +539,6 @@ def execute(query: str, params: tuple = ()) -> int | None:
             return cur.lastrowid
     except Exception as exc:
         _log.error("execute failed | query=%s | params=%s | %s", query, params, exc)
-        return None
-
-
-def executemany(query: str, params_seq: list[tuple]) -> int | None:
-    """Execute a batch statement. Returns total rowcount, or None on error."""
-    try:
-        with connection() as conn:
-            cur = conn.executemany(query, params_seq)
-            return cur.rowcount
-    except Exception as exc:
-        _log.error(
-            "executemany failed | query=%s | count=%d | %s",
-            query, len(params_seq), exc,
-        )
         return None
 
 

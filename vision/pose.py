@@ -239,13 +239,6 @@ def _get(kp: dict, name: str) -> Optional[tuple[float, float, float]]:
     return entry
 
 
-def _midpoint(a: Optional[tuple], b: Optional[tuple]) -> Optional[tuple]:
-    """Return midpoint (x, y) of two (x, y, vis) tuples, or None if either is missing."""
-    if a is None or b is None:
-        return None
-    return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
-
-
 # ── Gesture classification ────────────────────────────────────────────────────
 
 def _classify_gesture(kp: dict) -> str:
@@ -845,13 +838,6 @@ def head_anchors_px(frame_w: int, frame_h: int) -> list:
         if a is not None:
             anchors.append(a)
     return anchors
-
-
-def head_anchor_px(frame_w: int, frame_h: int):
-    """The FIRST detected pose head in PIXELS (``(nose_x, nose_y, head_width)``), or
-    None. Kept for back-compat; prefer head_anchors_px for the multi-person guard."""
-    anchors = head_anchors_px(frame_w, frame_h)
-    return anchors[0] if anchors else None
 
 
 def process_frame(frame) -> list[dict]:

@@ -329,11 +329,6 @@ class GUIDashboardBridge:
             if resolution is not None:
                 self._camera_stats["resolution"] = (int(resolution[0]), int(resolution[1]))
 
-    def set_scene_description(self, text: str) -> None:
-        with self._lock:
-            self._scene_description = (text or "").strip()
-            self._updated_at = time.time()
-
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:
             frame = self._frame.copy() if self._frame is not None and hasattr(self._frame, "copy") else None

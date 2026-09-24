@@ -340,24 +340,6 @@ def get_active_events(person_id: int, limit: int = 3) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_unacknowledged_since(person_id: int, since_iso: Optional[str]) -> list[dict]:
-    """Active events not yet acknowledged since the given ISO timestamp.
-
-    Pass None for `since_iso` to mean 'since beginning of time'. Used to decide
-    whether Rex should open with a soft acknowledgment of a recent loss.
-    """
-    active = get_active_events(person_id, limit=10)
-    out = []
-    for ev in active:
-        last_ack = ev.get("last_acknowledged_at")
-        if not last_ack:
-            out.append(ev)
-            continue
-        if since_iso and last_ack < since_iso:
-            out.append(ev)
-    return out
-
-
 def get_due_checkins(
     person_id: int,
     limit: int = 3,
@@ -664,21 +646,6 @@ def mute_latest_active_negative_for_person(
     event = dict(rows[0])
     mute_checkins(int(event["id"]), reason=reason)
     return event
-
-
-def mark_all_acknowledged_for_person(person_id: int) -> None:
-    """Convenience: mark every active event acknowledged in one shot.
-
-    Called after Rex opens the interaction with a soft acknowledgment so we
-    don't repeat the same opening across consecutive turns within a session.
-    """
-    db.execute(
-        "UPDATE person_emotional_events SET last_acknowledged_at = datetime('now') "
-        "WHERE person_id = ? "
-        "AND checkins_muted_at IS NULL "
-        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now')",
-        (int(person_id),),
-    )
 
 
 def summarize_for_prompt(

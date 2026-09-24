@@ -261,11 +261,6 @@ def sleep() -> None:
     send_command("SLEEP")
 
 
-def charge_status(soc: int, charging: bool) -> None:
-    """Show the off-state contiguous 24-LED battery meter."""
-    send_command(f"CHARGE:{max(0, min(100, int(soc)))}:{1 if charging else 0}")
-
-
 def off() -> None:
     """Turn all chest LEDs off immediately."""
     send_command("OFF")
@@ -276,11 +271,6 @@ def fade_off() -> None:
     power-down for shutdown. The firmware freezes the current frame and ramps
     brightness to 0 over ~4s autonomously, so this returns immediately."""
     send_command("FADEOFF")
-
-
-def next_pattern() -> None:
-    """Cycle to the next built-in LED pattern."""
-    send_command("NEXT")
 
 
 def compliment_flash() -> None:

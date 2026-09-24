@@ -13,7 +13,7 @@ Never mind." and took the swear as a fourth contestant.
 memory/name_validation.py rejects profanity at the source now; this cleans up the
 rows that predate that.
 
-Companion to tools/remove_phantom_person.py (the 2026-07-30 backchannel
+Supersedes the retired tools/remove_phantom_person.py (the 2026-07-30 backchannel
 incident). This one adds the three things that mattered here: it backs BOTH
 databases up first, it prints every row before touching anything, and it refuses
 to delete a person who has left any real trace (a face/voice print, a

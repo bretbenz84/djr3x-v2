@@ -12,11 +12,7 @@ distant faces, and non-frontal views far better than dlib, at ~70ms/frame CPU.
 If the InsightFace models fail to load, the module falls back to dlib for the
 session and logs a warning.
 
-"dlib": legacy HOG/mmod detector + 128-dim ResNet descriptor. When
-config.FACE_DETECTOR_FORCE_HOG is True, the HOG detector is used from the
-start and mmod is never loaded. When False, mmod (CNN) is used by default; if it
-runs above _SLOW_THRESHOLD_SECS for _SLOW_COUNT_TO_SWITCH consecutive frames the
-module permanently switches to HOG for the session and logs a warning.
+"dlib": legacy HOG detector + 128-dim ResNet descriptor.
 
 The two backends' embeddings are INCOMPATIBLE (512 vs 128 dim) — the matcher in
 memory/people.find_by_face silently skips stored encodings whose dimension does
@@ -26,7 +22,6 @@ after switching.
 
 import json
 import logging
-import time
 import warnings
 from typing import Optional
 
@@ -41,7 +36,6 @@ _log = logging.getLogger(__name__)
 # ── Model handles (populated once on first use) ───────────────────────────────
 
 _insight_app     = None   # insightface.app.FaceAnalysis (detection + recognition)
-_cnn_detector    = None   # dlib.cnn_face_detection_model_v1
 _hog_detector    = None   # dlib.get_frontal_face_detector()
 _shape_predictor = None   # dlib.shape_predictor
 _face_recognizer = None   # dlib.face_recognition_model_v1
@@ -50,13 +44,6 @@ _models_attempted = False
 
 # Resolved at first load: "insightface" or "dlib" (after any fallback).
 _active_backend: Optional[str] = None
-
-# ── mmod performance tracking for automatic HOG fallback ─────────────────────
-
-_use_hog              = config.FACE_DETECTOR_FORCE_HOG
-_SLOW_THRESHOLD_SECS  = 0.4   # single-frame mmod budget
-_SLOW_COUNT_TO_SWITCH = 3     # consecutive slow frames before switching
-_slow_count           = 0
 
 # Keys whose stored values are never echoed in log output.
 _SILENT_KEYS = frozenset({"skin_color"})
@@ -202,7 +189,7 @@ def _load_insightface() -> bool:
 
 
 def _load_dlib() -> bool:
-    global _cnn_detector, _hog_detector, _shape_predictor, _face_recognizer
+    global _hog_detector, _shape_predictor, _face_recognizer
 
     try:
         import dlib
@@ -211,16 +198,6 @@ def _load_dlib() -> bool:
         return False
 
     ok = True
-
-    if not config.FACE_DETECTOR_FORCE_HOG:
-        try:
-            _cnn_detector = dlib.cnn_face_detection_model_v1(config.FACE_DETECTOR_MODEL)
-            _log.info("Loaded mmod face detector: %s", config.FACE_DETECTOR_MODEL)
-        except Exception as exc:
-            _log.error("Failed to load mmod detector %s: %s", config.FACE_DETECTOR_MODEL, exc)
-            ok = False
-    else:
-        _log.info("FACE_DETECTOR_FORCE_HOG=True — skipping mmod, using HOG only")
 
     try:
         _hog_detector = dlib.get_frontal_face_detector()
@@ -248,7 +225,7 @@ def _load_dlib() -> bool:
 # ── Internal detection helpers ────────────────────────────────────────────────
 
 def _detect_rects(rgb: np.ndarray) -> list:
-    """Run the active detector and return a list of dlib rectangles.
+    """Run the HOG detector and return a list of dlib rectangles.
 
     Detections below config.FACE_DETECTOR_MIN_CONFIDENCE are dropped. Background
     clutter the HOG detector reports comes back as LOW-confidence detections, so a
@@ -256,37 +233,13 @@ def _detect_rects(rgb: np.ndarray) -> list:
     person" prompts in a messy room) without discarding small/distant real faces —
     a min-SIZE gate would instead drop exactly the distant face we want to keep.
     """
-    global _use_hog, _slow_count
-
     upsample = max(0, int(getattr(config, "FACE_DETECTOR_UPSAMPLE", 1) or 0))
     min_conf = float(getattr(config, "FACE_DETECTOR_MIN_CONFIDENCE", 0.0) or 0.0)
 
-    if _use_hog:
-        # Scored overload: run() returns (rects, scores, sub_detector_idx). The
-        # plain __call__ overload returns rects only, with no score to gate on.
-        rects, scores, _ = _hog_detector.run(rgb, upsample, 0.0)
-        return [r for r, s in zip(rects, scores) if s >= min_conf]
-
-    t0 = time.monotonic()
-    cnn_dets = _cnn_detector(rgb, upsample)
-    elapsed = time.monotonic() - t0
-    # mmod exposes per-detection .confidence (a different scale than HOG; the
-    # default threshold is HOG-tuned, so this mainly affects the HOG path actually
-    # in use). Keep detections at or above the gate.
-    rects = [d.rect for d in cnn_dets if float(getattr(d, "confidence", 1.0)) >= min_conf]
-
-    if elapsed > _SLOW_THRESHOLD_SECS:
-        _slow_count += 1
-        if _slow_count >= _SLOW_COUNT_TO_SWITCH:
-            _use_hog = True
-            _log.warning(
-                "mmod averaging >%.2fs per frame — switching to HOG detector for this session",
-                _SLOW_THRESHOLD_SECS,
-            )
-    else:
-        _slow_count = 0
-
-    return rects
+    # Scored overload: run() returns (rects, scores, sub_detector_idx). The
+    # plain __call__ overload returns rects only, with no score to gate on.
+    rects, scores, _ = _hog_detector.run(rgb, upsample, 0.0)
+    return [r for r, s in zip(rects, scores) if s >= min_conf]
 
 
 def _largest_face(faces: list[dict]) -> Optional[dict]:
@@ -456,18 +409,6 @@ def enroll_unknown_face(
         return True
     _log.error("enroll_unknown_face: database write failed for person_id=%d", person_id)
     return False
-
-
-def get_face_position(frame: np.ndarray) -> Optional[tuple[int, int]]:
-    """
-    Return the (x, y) pixel center of the largest detected face, or None.
-    Called by the face-tracking loop to compute neck servo corrections.
-    """
-    face = _largest_face(detect_faces(frame))
-    if face is None:
-        return None
-    x, y, w, h = face["bounding_box"]
-    return (x + w // 2, y + h // 2)
 
 
 def update_appearance(person_id: int, frame: np.ndarray) -> None:

@@ -992,25 +992,6 @@ def _format_box(person: dict[str, Any]) -> str:
     return f"{x:.0f},{y:.0f} {w:.0f}x{h:.0f}px"
 
 
-def _format_position(position: Any) -> str:
-    if not isinstance(position, (list, tuple)) or len(position) < 2:
-        return ""
-    x = _coerce_float(position[0])
-    y = _coerce_float(position[1])
-    if x is None or y is None:
-        return ""
-    if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
-        return f"{x * 100.0:.0f}%, {y * 100.0:.0f}%"
-    return f"{x:.0f}, {y:.0f}px"
-
-
-def _format_face_fraction(value: Any) -> str:
-    fraction = _coerce_float(value)
-    if fraction is None:
-        return ""
-    return f"{max(0.0, fraction) * 100.0:.1f}% of frame"
-
-
 def _format_mood(person: dict[str, Any]) -> str:
     for key in ("face_mood", "mood", "emotion", "affect"):
         value = person.get(key)
@@ -1063,17 +1044,6 @@ def _format_expression(person: dict[str, Any]) -> str:
     if text:
         return text
     return ""
-
-
-def _last_seen_label(person: dict[str, Any]) -> str:
-    age = _coerce_float(person.get("face_last_seen_age_secs"))
-    if age is None:
-        timestamp = _coerce_float(person.get("face_last_seen_at"))
-        if timestamp is not None and timestamp > 1_000_000_000:
-            age = max(0.0, time.time() - timestamp)
-    if age is None:
-        return ""
-    return _format_age(age)
 
 
 def _animal_last_seen_label(animal: dict[str, Any]) -> str:

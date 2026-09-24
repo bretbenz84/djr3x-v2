@@ -12,7 +12,6 @@ import numpy as np
 
 import config
 from audio import speaker_id, voice_score
-from memory import people
 
 
 class MapSimilarityTest(unittest.TestCase):
@@ -114,16 +113,6 @@ class DimensionCoexistenceTest(unittest.TestCase):
         ):
             ranked = speaker_id.rank_speakers(np.zeros(4, dtype=np.float32))
         self.assertEqual([r[0] for r in ranked], [1])   # legacy row silently skipped
-
-    def test_find_by_voice_skips_other_dim_rows(self):
-        query = self._unit(192, 1)
-        rows = [{"person_id": 5, "encoding": self._unit(256, 3).tobytes()}]
-        with (
-            mock.patch.object(people.db, "fetchall", return_value=rows),
-            mock.patch.object(people, "get_person",
-                              side_effect=lambda pid: {"id": pid}),
-        ):
-            self.assertIsNone(people.find_by_voice(query))
 
     def test_rank_speakers_scores_are_mapped(self):
         # A perfect self-match under ECAPA maps to the clamp (0.99), not raw 1.0.

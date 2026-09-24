@@ -1,6 +1,6 @@
 """Unit tests for the Mac-side motion stack against a fake ESP32 serial port.
 
-Covers the hardware.motion transport (handshake, seq/ack, telemetry snapshot),
+Covers the hardware.motion transport (handshake, seq, telemetry snapshot),
 the motion_controller policy (clamping, autonomous gate, voice verbs), and the
 deterministic action_router.classify_explicit_motion classifier. No hardware
 needed — a FakeESP32Serial stands in for the firmware.
@@ -178,13 +178,11 @@ class TransportTest(_MotionTestBase):
         self.assertFalse(self._connect(reply_hello=False))
         self.assertFalse(motion.connected())
 
-    def test_send_seq_and_ack(self):
+    def test_send_seq(self):
         self._connect()
         seq = motion.send({"cmd": "turn", "deg": 90})
         self.assertIsInstance(seq, int)
-        ack = motion.wait_ack(seq, 1.0)
-        self.assertIsNotNone(ack)
-        self.assertTrue(ack["accepted"])
+        self.assertEqual(self._last("turn")["seq"], seq)
 
     def test_telemetry_snapshot(self):
         self._connect()

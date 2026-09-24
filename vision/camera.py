@@ -214,15 +214,6 @@ def register_on_reconnect(callback: Callable[[float], None]) -> None:
             _reconnect_callbacks.append(callback)
 
 
-def unregister_on_reconnect(callback: Callable[[float], None]) -> None:
-    """Remove a previously registered reconnect callback."""
-    with _reconnect_lock:
-        try:
-            _reconnect_callbacks.remove(callback)
-        except ValueError:
-            pass
-
-
 def get_frame() -> Optional[np.ndarray]:
     """Return a copy of the most recent frame, or None if none available yet."""
     with _frame_lock:

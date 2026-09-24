@@ -245,7 +245,7 @@ LLM_CONVERSATION_MODEL = "gpt-5.4-mini"
 LLM_REASONING_EFFORT  = "none"
 LLM_VERBOSITY         = "low"
 # GPT-5 reasoning models REJECT a non-default temperature (400) WHEN reasoning is engaged.
-# Smoke test (2026-06-17, tools/gpt5_smoke_test.py) CONFIRMED gpt-5.4-mini ACCEPTS
+# A live smoke test (2026-06-17) CONFIRMED gpt-5.4-mini ACCEPTS
 # temperature at reasoning_effort="none" and 400s at "medium". Safe here because the
 # conversation path runs at effort="none". (If you ever raise effort above "none", set
 # this back to False — and raise the reply token budget; reasoning eats the output.)
@@ -268,8 +268,8 @@ LLM_MAX_RETRIES          = 2
 # ── Lean brain (rebuild, Phase 0) ──────────────────────────────────────────────
 # One streaming model call — the coherent Rex persona (REX_CORE_PROMPT) + a small live
 # context + the recent turns as real chat messages — replacing the router→agenda→social_frame
-# →4,400-word-prompt pipeline. OFF until proven via the offline replay harness (tools/
-# lean_replay.py); wiring it into the live turn path is a later step. Latency-first: small,
+# →4,400-word-prompt pipeline. Rex's live primary voice (interaction._reply_token_stream);
+# tools/lean_replay.py is the offline A/B harness. Latency-first: small,
 # consistent prompt for fast time-to-first-token; the live path streams sentence-by-sentence.
 LEAN_BRAIN_ENABLED          = True    # ON for live GUI testing — set False to revert to the classic brain instantly
 LEAN_BRAIN_MODEL            = ""      # "" → the standard conversation model (gpt-5.4-mini, reasoning off)
@@ -548,17 +548,6 @@ CONVERSATION_ARC_TIMEOUT_SECS = 8.0
 # is re-derived FRESH from this window every time (NOT incrementally rewritten —
 # feeding the prior summary back made the local model echo it verbatim and freeze).
 CONVERSATION_ARC_CONTEXT_LINES = 12
-# ── Turn classifier (Bet 3) ──────────────────────────────────────────────────
-# One cheap structured read of each user turn via the local qwen2.5:1.5b sidecar:
-# {topic, engagement, intent, sentiment, wants_pivot, addressee}. Meant to retire
-# the regex zoo (user_energy._classify / conversation_steering._looks_disengaged /
-# topic_thread._classify_topic). It runs ON the turn's critical path (it informs
-# routing/governors for THIS reply), so it adds local-LLM latency — default OFF
-# until validated on the robot. When on, callers AUGMENT their existing
-# deterministic heuristics with it and fall back on any failure (classify→None).
-CONVERSATION_TURN_CLASSIFIER_ENABLED = False
-CONVERSATION_TURN_CLASSIFIER_MAX_TOKENS = 64
-CONVERSATION_TURN_CLASSIFIER_TIMEOUT_SECS = 1.5
 
 # Act on the arc's read: when its Mood line says the conversation is falling flat
 # (disengaged / bored / disappointed / …), ease Rex's roast from normal→light in
@@ -771,7 +760,6 @@ VOICES_DIR            = "assets/voices"
 
 FACE_LANDMARK_MODEL   = "assets/models/face/shape_predictor_68_face_landmarks.dat"
 FACE_RECOGNITION_MODEL = "assets/models/face/dlib_face_recognition_resnet_model_v1.dat"
-FACE_DETECTOR_MODEL   = "assets/models/face/mmod_human_face_detector.dat"
 MEDIAPIPE_FACE_LANDMARKER_MODEL = "assets/models/face/face_landmarker.task"
 # ── Object detector backend ───────────────────────────────────────────────────
 # "rfdetr": RF-DETR nano (Apache 2.0, real-time DETR) — ~40ms/frame CPU with far
@@ -798,7 +786,7 @@ MEDIAPIPE_POSE_LANDMARKER_MODEL = "assets/models/pose/pose_landmarker_lite.task"
 #   INSIGHTFACE_MODEL_ROOT (downloaded by setup_assets.py; auto-downloaded on
 #   first use if missing and online). Pretrained weights are NON-COMMERCIAL
 #   licensed — fine for this personal robot.
-# "dlib": legacy HOG/mmod + 128-dim ResNet descriptor. Also the automatic runtime
+# "dlib": legacy HOG + 128-dim ResNet descriptor. Also the automatic runtime
 #   fallback if the InsightFace models fail to load.
 # NOTE: the two backends' embeddings are incompatible (128 vs 512 dim). Faces
 # enrolled under dlib will not match under insightface — re-enroll after switching.
@@ -811,11 +799,6 @@ INSIGHTFACE_DET_SIZE = _env_int("INSIGHTFACE_DET_SIZE", 640, min_value=160, max_
 # SCRFD detection score gate (0-1). Well-calibrated: real faces score >0.6 even
 # small/oblique; clutter false-positives sit below 0.4.
 INSIGHTFACE_MIN_CONFIDENCE = 0.5
-
-# Skip mmod entirely and use HOG from the start. mmod averages >400ms/frame on
-# FaceTime camera — HOG is sufficient for this use case. Set False to re-enable mmod.
-# (dlib backend only.)
-FACE_DETECTOR_FORCE_HOG = True
 
 # dlib upsample passes before face detection. Higher values see smaller faces at
 # the cost of CPU (each pass ~4x the pixels — geometric). Lowered 3 -> 2 now that
@@ -1116,8 +1099,6 @@ SPEAKER_SWITCH_MARGIN = _env_float("SPEAKER_SWITCH_MARGIN", 0.0030, min_value=0.
 SPEAKER_SWITCH_SECS = _env_float("SPEAKER_SWITCH_SECS", 0.4, min_value=0.0, max_value=5.0)
 SPEAKER_RELEASE_SECS = _env_float("SPEAKER_RELEASE_SECS", 0.6, min_value=0.0, max_value=5.0)
 
-# Live consumers (e.g. face-tracking) ignore an is_speaking flag older than this.
-ACTIVE_SPEAKER_STALE_SECS = _env_float("ACTIVE_SPEAKER_STALE_SECS", 1.0, min_value=0.2, max_value=10.0)
 # The latched "who was visually speaking near end-of-turn" used by VOICE identity
 # resolution. Voice attribution runs AFTER the turn ends (past SILENCE_TIMEOUT +
 # transcription), by which time the live is_speaking is already cleared — so the
@@ -1528,8 +1509,7 @@ LEAN_BACKGROUND_BUDGET = 10
 # Owner idea 2026-08-01: every spoken turn is written through to conversation_log
 # (people.db) so "what did we talk about on July 12?" / "earlier today?" / "last
 # time?" reads the ACTUAL words back and the lean reply call summarizes them in
-# Rex's voice — no extra LLM call. Backfill history from logs/conversation-*.log
-# with tools/backfill_conversation_log.py.
+# Rex's voice — no extra LLM call.
 CONVERSATION_LOG_ENABLED = True
 RECALL_CONVO_MAX_TURNS = 40          # max logged turns injected (evenly sampled)
 
@@ -2487,10 +2467,6 @@ PET_NAMES = ("Max",)
 # awaited answer, query shapes, second-person ask) and otherwise listens.
 # The lean impulse still interjects on its governed cadence.
 GROUP_CHATTER_KNOWN_SPEAKER_GATE_ENABLED = _env_bool("GROUP_CHATTER_KNOWN_SPEAKER_GATE_ENABLED", True)
-# RETIRED (2026-08-03): the flat species-level announce window was replaced by the
-# presence ledger (ANIMAL_DEPARTURE_GRACE_SECS and friends, further down) — kept
-# only so an env override doesn't crash an old deployment script; nothing reads it.
-ANIMAL_SPECIES_REMARK_COOLDOWN_SECS = _env_float("ANIMAL_SPECIES_REMARK_COOLDOWN_SECS", 300.0, min_value=0.0, max_value=86400.0)
 
 # Whole-utterance homophone fixes — applied ONLY when the phrase IS the entire
 # utterance (optionally wrapped in "hey rex"/"please"), never inside a longer
@@ -3648,14 +3624,6 @@ SPEAKER_GAZE_SEARCH_WINDOW_SECS = _env_float(
     13.5,
     min_value=0.0,
     max_value=60.0,
-)
-# Legacy min-gap between waypoint commands. Superseded by the SETTLE + DWELL
-# cadence below (kept defined for back-compat; no longer gates the scan).
-SPEAKER_GAZE_SEARCH_INTERVAL_SECS = _env_float(
-    "SPEAKER_GAZE_SEARCH_INTERVAL_SECS",
-    1.15,
-    min_value=0.1,
-    max_value=5.0,
 )
 # Per-waypoint cadence: snap to the pose (SETTLE, servo move finishing), then HOLD
 # STILL (DWELL) issuing no servo command so the head is steady. dlib detection runs
@@ -7085,13 +7053,13 @@ SPEAKER_ID_CONFIDENT_THRESHOLD = 0.75
 # Voice-only challenge (the single-print cross-match trap, field log 2026-07-05: JT's
 # voice matched Bret's print at 0.660 while the camera showed only JT). On the
 # voice-only path a MARGINAL match is challenged — "who's that speaking?" — instead of
-# silently attributed, when the matched person hasn't been on camera within the grace
-# window AND someone else (face or real pose) is visible right now.
+# silently attributed, when the matched person's own voice hasn't matched confidently
+# within the continuity window (below) AND someone else (face or real pose) is visible
+# right now.
 SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED = _env_bool("SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED", True)
-SPEAKER_ID_UNSEEN_GRACE_SECS = _env_float("SPEAKER_ID_UNSEEN_GRACE_SECS", 20.0, min_value=0.0, max_value=300.0)
 SPEAKER_ID_CHALLENGE_COOLDOWN_SECS = _env_float("SPEAKER_ID_CHALLENGE_COOLDOWN_SECS", 45.0, min_value=0.0, max_value=600.0)
 # Also challenge when the frame is EMPTY (no visual contradiction, but no corroboration
-# either): a marginal match on someone unseen for the grace window gets "who's that?"
+# either): a marginal match outside the continuity window gets "who's that?"
 # instead of silent credit. Owner preference — an unenrolled housemate should be asked
 # about and enrolled on the answer, not impersonate the nearest print.
 SPEAKER_ID_CHALLENGE_EMPTY_FRAME = _env_bool("SPEAKER_ID_CHALLENGE_EMPTY_FRAME", True)
@@ -7158,15 +7126,10 @@ VOICE_SIGNATURE_WARM_WINDOW_SECS = _env_float("VOICE_SIGNATURE_WARM_WINDOW_SECS"
 # floor on a noisy utterance.
 SPEAKER_ID_ENGAGED_VISIBLE_FLOOR = 0.50
 
-# Single visible engaged continuity floor: when exactly one known person is
-# visible, that person is already engaged, and no unknown face is visible, do
-# not derail into "who said that?" just because the voice model's top low-score
-# candidate was someone else. Face tracking plus conversation continuity win.
-SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR = 0.45
-
-# Lower floor when the weak top voice candidate is the same single visible
-# engaged person. In a one-on-one frame, face + conversation continuity + even
-# a weak matching candidate should beat the off-camera-unknown branch.
+# Lower floor (vs SPEAKER_ID_ENGAGED_VISIBLE_FLOOR) when the weak top voice
+# candidate is the same single visible engaged person. In a one-on-one frame,
+# face + conversation continuity + even a weak matching candidate should beat
+# the off-camera-unknown branch.
 SPEAKER_ID_SINGLE_VISIBLE_MATCH_FLOOR = 0.35
 
 # Below this many seconds of captured audio, the voice embedder's score is
@@ -7206,57 +7169,20 @@ SPEAKER_ID_MULTI_VISIBLE_RECENT_FLOOR = 0.45
 # someone the voice doesn't point at, and a confident voice never reaches here.
 SPEAKER_ID_MULTI_VISIBLE_SPEAKING_FLOOR = 0.35
 
-# Grief-flow attribution floor: when the structured loss/grief flow has an
-# active step awaiting THIS engaged-and-visible person's reply (Rex just asked
-# them a direct question like "What was your grandpa's name?"), short utterances
-# such as single names can score below the engaged+visible floor. Face match +
-# top-candidate match + Rex-just-asked-them is plenty of evidence — don't
-# divert to off-camera handling on a near-miss and derail the conversation.
-SPEAKER_ID_GRIEF_FLOW_FLOOR = 0.30
-
 # Floor score at which Rex will voice an uncertain guess ("I'm not sure, but
 # it could be Bret") when directly asked "who's speaking?". Below this floor
 # Rex honestly admits he doesn't recognize the voice. Only affects the
 # query_who_is_speaking intent — not the acceptance logic.
 SPEAKER_ID_MAYBE_FLOOR = 0.50
 
-# If Rex asks a newcomer their name and they answer with only a very common
-# first name, ask for a last name before creating the memory row. This avoids
-# merging multiple people into "John" / "Mike" / "Jennifer" style records.
-COMMON_FIRST_NAME_LAST_NAME_DISAMBIGUATION_ENABLED = True
+# Once per session, ask a returning person stored under a first name only for a
+# last name, so multiple people don't merge into "John" / "Mike" / "Jennifer"
+# style records.
 COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS = 30.0
 # First names are fine early in a relationship. Only ask a known first-name-only
 # person for a last name after Rex has had a real back-and-forth with them in
 # the current session.
 COMMON_FIRST_NAME_LAST_NAME_MIN_PERSON_TURNS = LONG_CONVERSATION_MIN_EXCHANGES
-COMMON_FIRST_NAMES_REQUIRE_LAST_NAME = [
-    "Michael", "Mike", "David", "John", "James", "Robert", "William", "Bill",
-    "Richard", "Rick", "Joseph", "Joe", "Thomas", "Tom", "Christopher", "Chris",
-    "Daniel", "Dan", "Matthew", "Matt", "Anthony", "Tony", "Mark", "Donald",
-    "Steven", "Steve", "Paul", "Andrew", "Andy", "Joshua", "Josh", "Kenneth",
-    "Kevin", "Brian", "George", "Edward", "Ed", "Ronald", "Timothy", "Tim",
-    "Jason", "Jeffrey", "Jeff", "Ryan", "Jacob", "Gary", "Nicholas", "Nick",
-    "Eric", "Jonathan", "Jon", "Stephen", "Larry", "Justin", "Scott",
-    "Brandon", "Benjamin", "Ben", "Samuel", "Sam", "Gregory", "Greg",
-    "Alexander", "Alex", "Patrick", "Frank", "Raymond", "Jack", "Dennis",
-    "Jerry", "Tyler", "Aaron", "Jose", "Henry", "Adam", "Douglas", "Doug",
-    "Nathan", "Peter", "Zachary", "Zach", "Kyle", "Walter", "Harold",
-    "Jeremy", "Ethan", "Carl", "Keith", "Roger", "Gerald", "Christian",
-    "Terry", "Sean", "Arthur", "Austin", "Noah", "Liam", "Mason", "Logan",
-    "Lucas", "Elijah", "Oliver", "Aiden", "Dylan",
-    "Mary", "Patricia", "Pat", "Jennifer", "Jen", "Linda", "Elizabeth",
-    "Liz", "Barbara", "Susan", "Jessica", "Sarah", "Karen", "Nancy", "Lisa",
-    "Betty", "Margaret", "Megan", "Sandra", "Ashley", "Kimberly", "Kim",
-    "Emily", "Donna", "Michelle", "Carol", "Amanda", "Melissa", "Deborah",
-    "Debbie", "Stephanie", "Rebecca", "Laura", "Sharon", "Cynthia",
-    "Kathleen", "Amy", "Shirley", "Angela", "Helen", "Anna", "Brenda",
-    "Pamela", "Pam", "Nicole", "Emma", "Samantha", "Katherine", "Kate",
-    "Christine", "Debra", "Rachel", "Catherine", "Carolyn", "Janet", "Ruth",
-    "Maria", "Heather", "Diane", "Virginia", "Julie", "Joyce", "Victoria",
-    "Kelly", "Christina", "Lauren", "Joan", "Evelyn", "Olivia", "Judith",
-    "Martha", "Cheryl", "Andrea", "Hannah", "Jacqueline", "Mia", "Sophia",
-    "Isabella", "Ava", "Abigail", "Madison", "Charlotte", "Amelia",
-]
 COMMON_FIRST_NAME_LAST_NAME_PROMPTS = [
     "{first}, huh? There are a few of those running around. Give me a last name too.",
     "{first}. Bold choice, sharing a name with half the species. Last name?",
@@ -8719,14 +8645,6 @@ STARTUP_BOOT_TTS_DELAY_SECS = _env_float(
     max_value=5.0,
 )
 
-# The "processing" chirp that fills the model-warmup gap between the boot line
-# ("wait, I'm not done") and the ready line. The clip is only ~1.5 s while the gap
-# it covers is many times that, so it LOOPS (owner 2026-07-24: "it should play on a
-# loop until he's ready"). Gated playback, so the ready line preempts it instantly;
-# main.py also stops it explicitly right before speaking.
-STARTUP_THINKING_LOOP_GAP_SECS = 1.2   # quiet beat between repeats — a pulse, not a drone
-STARTUP_THINKING_LOOP_MAX_SECS = 90.0  # cap: never outlive a stalled startup
-
 # "Models loaded, I'm ready" line spoken when startup finishes — REPLACES the old
 # ready chime (see main.py / PLAY_LISTENING_CHIME). main.py cycles through these in
 # DJ-R3X's dry roast style, never repeating consecutively across launches (state in
@@ -8806,7 +8724,6 @@ SHUTDOWN_TTS_LINES = [
     "Systems offline. Wake me for emergencies or good music.",
     "Powering off. Don't have too much fun without me.",
 ]
-SHUTDOWN_TTS_EMOTION = "neutral"
 SHUTDOWN_TTS_STATE_PATH = str(
     Path(__file__).resolve().parent / "assets" / "state" / "shutdown_tts.json"
 )
@@ -9131,10 +9048,6 @@ PLAN_INTENT_QWEN_TIMEOUT_SECS = 0.9
 # How long after Rex asks a plan clarifier his answer still triggers the suggestion
 # (the "I'm going camping" → "Where?" → "Fraser Flats" → "what if…" handoff window).
 PLANS_CLARIFY_TTL_SECS = 300.0
-# v2 upgrade path (NOT built): set True + add a search provider (awareness/places.py,
-# mirroring the wttr.in fetch) to let Rex research obscure specific places. LLM-only
-# today, so obscure spots get a "where's that near?" clarify instead of a guess.
-PLAN_SUGGESTION_WEB_SEARCH_ENABLED = False
 
 # Weekly small-talk (Fri-eve weekend plans, Sun-eve week ahead, Mon-morn recap).
 # Per (person, ISO-week, slot) — fires at most once per slot per week.
@@ -9617,13 +9530,6 @@ MOTION_COME_ALIGN_SETTLE_SECS = 1.2
 # sampler + vision latency can actually catch a face the camera crosses mid-turn
 # (field 2026-08-11: 75 deg/s legs blew past the owner repeatedly).
 MOTION_COME_SCAN_RATE_DEG_S = 40.0
-# Sightings are sampled EVERY autonomy tick — including while a scan turn is mid-
-# flight (the settled-state step alone misses locks that happen as the camera
-# sweeps past, field 2026-07-23: face lock during scan turn 3, sweep continued to
-# -180° and Rex pirouetted). If the person was seen this recently, the search turns
-# a small step back toward that side and restarts the sweep there, instead of
-# taking the next (bigger) sweep leg away from them.
-MOTION_COME_SIGHT_FRESH_SECS = 6.0
 # Come-here no longer needs the head LOCK to find someone: a known face visible in
 # world_state.people is enough. Alignment reads the FUSED bearing — neck offset from
 # neutral PLUS the face's offset within the frame — which is geometrically correct
@@ -9633,7 +9539,6 @@ MOTION_COME_SIGHT_FRESH_SECS = 6.0
 # 2026-07-24: face plainly visible in the GUI at ~9 ft, but a gaze search had
 # pulled the head away, so the lock was gone and Rex swept the room instead of
 # approaching.
-MOTION_COME_RESIGHT_TURN_DEG = 30.0
 # CALIBRATED angular scales for the come-here bearing — REAL degrees, measured,
 # not the abstract fraction×60 that overstated every bearing 1.5-2.4x and had him
 # overshooting the requester by ~45° per align (field 2026-08-11 20:15).
@@ -10245,14 +10150,12 @@ MOTION_FLINCH_MIN_VALID_M = 0.02       # 0/1 cm reads are sensor garbage; 1 inch
 # A trajectory test was considered and rejected: the tick is 1.0 s and the corridor
 # between MOTION_FLINCH_TRIGGER_M and a plausible teleport floor is ~10 cm, so a
 # walking approach would routinely skip it and be suppressed as a phantom.
-# Fails OPEN when the firmware predates fl_radial/fr_radial — no independent
-# reading means no veto, i.e. exactly today's behavior, never a new blind spot.
+# A radial side corroborates only when it shows its own intrusion (inside
+# MOTION_FLINCH_TRIGGER_M and closed by MOTION_FLINCH_APPROACH_DROP_M vs its own
+# baseline) — a stationary nearby table is not an approach. Missing radial evidence
+# (firmware without fl_radial/fr_radial) holds still; firmware obstacle stopping
+# stays active regardless of the host reflex.
 MOTION_FLINCH_REQUIRE_CORROBORATION = True
-MOTION_FLINCH_CORROBORATION_MAX_M = 0.60  # radial must also read at least this near.
-                                       # Deliberately loose: the two sensors sit at
-                                       # different heights, and this only has to
-                                       # separate "something is in front of the
-                                       # chassis" from "the room is open".
 MOTION_FLINCH_BASELINE_ADAPT_M = 0.12  # max per-tick drift of the open-distance baseline
 MOTION_FLINCH_CLEAR_CONFIRM_TICKS = 3  # consecutive clear ticks before the baseline may RISE (so a
                                        # multi-frame ToF dropout can't inflate it and fake an approach)
@@ -10341,13 +10244,8 @@ EXPLORE_VISION_MAX_FAILURES = _env_int(
 )  # consecutive vision errors before aborting (never wander blind)
 # ── Locomotion (varied, ToF-gated finite legs — no streamed drive, no `come`) ──
 EXPLORE_LOCOMOTION_ENABLED = _env_bool("EXPLORE_LOCOMOTION_ENABLED", True)
-EXPLORE_LEG_DIST_M = _env_float("EXPLORE_LEG_DIST_M", 0.80, min_value=0.1, max_value=2.0)
-EXPLORE_LEG_DIST_JITTER_M = _env_float(
-    "EXPLORE_LEG_DIST_JITTER_M", 0.25, min_value=0.0, max_value=1.0,
-)  # each leg varies around EXPLORE_LEG_DIST_M instead of marching a fixed distance
 # Sensor-driven navigation: radial ToF chooses heading; the post-turn front pair
-# (including the firmware's 8x8 matrix overlay) chooses distance. The older nominal
-# and jitter knobs remain for config compatibility but are no longer navigation inputs.
+# (including the firmware's 8x8 matrix overlay) chooses distance.
 EXPLORE_LEG_MIN_M = _env_float("EXPLORE_LEG_MIN_M", 0.20, min_value=0.05, max_value=1.0)
 EXPLORE_LEG_MAX_M = _env_float("EXPLORE_LEG_MAX_M", 1.50, min_value=0.2, max_value=3.0)
 EXPLORE_CLEARANCE_MARGIN_M = _env_float(
@@ -10841,7 +10739,6 @@ MOTION_SWING_BLOCKED_LINE = (
 MOTION_SERIAL_TIMEOUT_SECS = 0.1
 MOTION_CONNECT_RETRY_ATTEMPTS = 3
 MOTION_CONNECT_RETRY_DELAY_SECS = 1.0
-MOTION_ACK_TIMEOUT_SECS = 0.5         # how long send-and-confirm waits for an ack
 
 
 # ─────────────────────────────────────────────────────────────────────────────

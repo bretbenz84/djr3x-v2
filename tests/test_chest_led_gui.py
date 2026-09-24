@@ -66,7 +66,7 @@ class CommandMirrorTest(unittest.TestCase):
         self.assertEqual(state["emotion"], "sad")
 
     def test_charge_carries_soc_and_charging(self) -> None:
-        leds_chest.charge_status(55, True)
+        leds_chest.send_command("CHARGE:55:1")
         state = _chest_snapshot()
         self.assertEqual(state["mode"], "charge")
         self.assertEqual(state["soc"], 55)
@@ -82,7 +82,7 @@ class CommandMirrorTest(unittest.TestCase):
 
     def test_next_pattern_changes_nothing(self) -> None:
         leds_chest.idle()
-        leds_chest.next_pattern()
+        leds_chest.send_command("NEXT")
         self.assertEqual(_chest_snapshot()["mode"], "idle")
 
 
@@ -149,16 +149,12 @@ class RenderStateTest(unittest.TestCase):
 
 @unittest.skipUnless(_GUI_OK, "PySide6 / Qt platform unavailable")
 class AvatarIngestionTest(unittest.TestCase):
-    def test_snapshot_updates_chest_state_and_paints(self) -> None:
+    def test_snapshot_updates_chest_state(self) -> None:
         avatar = RexAvatar()
         avatar.set_snapshot({"chest_led_state": {"mode": "speak", "emotion": "happy",
                                                  "updated_at": 1.0}})
         self.assertEqual(avatar._chest_state["mode"], "speak")
-        # Render once offscreen so the new drawing path actually executes.
-        from PySide6.QtGui import QImage, QPainter
-        image = QImage(430, 400, QImage.Format.Format_ARGB32)
-        avatar.resize(430, 400)
-        avatar.render(image)
+        self.assertEqual(avatar._chest_state["emotion"], "happy")
 
 
 if __name__ == "__main__":

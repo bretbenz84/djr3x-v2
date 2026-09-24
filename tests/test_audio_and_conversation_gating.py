@@ -1992,13 +1992,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 stack.enter_context(
                     mock.patch.object(
                         interaction,
-                        "_handle_common_first_name_intro_last_name_reply",
-                        return_value=None,
-                    )
-                )
-                stack.enter_context(
-                    mock.patch.object(
-                        interaction,
                         "_handle_existing_common_first_name_last_name_reply",
                         return_value=None,
                     )
@@ -2173,12 +2166,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction, "_handle_common_first_name_last_name_reply",
                         return_value=(None, None, None),
-                    )
-                )
-                stack.enter_context(
-                    mock.patch.object(
-                        interaction, "_handle_common_first_name_intro_last_name_reply",
-                        return_value=None,
                     )
                 )
                 stack.enter_context(
@@ -2417,13 +2404,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 stack.enter_context(
                     mock.patch.object(
                         interaction,
-                        "_handle_common_first_name_intro_last_name_reply",
-                        return_value=None,
-                    )
-                )
-                stack.enter_context(
-                    mock.patch.object(
-                        interaction,
                         "_handle_existing_common_first_name_last_name_reply",
                         return_value=None,
                     )
@@ -2631,13 +2611,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 stack.enter_context(
                     mock.patch.object(
                         interaction,
-                        "_handle_common_first_name_intro_last_name_reply",
-                        return_value=None,
-                    )
-                )
-                stack.enter_context(
-                    mock.patch.object(
-                        interaction,
                         "_handle_existing_common_first_name_last_name_reply",
                         return_value=None,
                     )
@@ -2738,14 +2711,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             ),
             "Bret Penziker",
         )
-
-    def test_common_first_name_only_requires_last_name(self):
-        from intelligence import interaction
-
-        self.assertTrue(interaction._is_common_first_name_only("John"))
-        self.assertTrue(interaction._is_common_first_name_only("Jennifer"))
-        self.assertFalse(interaction._is_common_first_name_only("Bret"))
-        self.assertFalse(interaction._is_common_first_name_only("John Smith"))
 
     def test_last_name_reply_extracts_last_name_or_full_name(self):
         from intelligence import interaction
@@ -2863,57 +2828,52 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             relationship="acquaintance",
             subject_kind="person",
         )
-        interaction._pending_common_first_name_introduction = None
-        try:
-            with (
-                mock.patch.object(
-                    interaction,
-                    "_resolve_existing_visible_introduced_person",
-                    return_value=None,
-                ),
-                mock.patch.object(
-                    interaction,
-                    "_enroll_introduced_person",
-                    return_value=3,
-                ) as enroll,
-                mock.patch.object(
-                    interaction,
-                    "_intro_ack_and_followup",
-                    return_value="Ack Daniel.",
-                ) as ack,
-                mock.patch.object(
-                    interaction,
-                    "_mark_single_name_for_later_last_name",
-                ) as mark_later,
-            ):
-                response = interaction._handle_introduction_parse(
-                    parsed,
-                    introducer_id=1,
-                    introducer_name="Bret Benziger",
-                    visible_newcomer=True,
-                )
-
-            self.assertEqual(response, "Ack Daniel.")
-            enroll.assert_called_once_with(
-                "Daniel",
-                1,
-                "Bret Benziger",
-                "acquaintance",
-                enroll_visible_face=True,
-            )
-            ack.assert_called_once_with(
-                1,
-                "Bret Benziger",
-                3,
-                "Daniel",
-                "acquaintance",
-                subject_kind="person",
+        with (
+            mock.patch.object(
+                interaction,
+                "_resolve_existing_visible_introduced_person",
+                return_value=None,
+            ),
+            mock.patch.object(
+                interaction,
+                "_enroll_introduced_person",
+                return_value=3,
+            ) as enroll,
+            mock.patch.object(
+                interaction,
+                "_intro_ack_and_followup",
+                return_value="Ack Daniel.",
+            ) as ack,
+            mock.patch.object(
+                interaction,
+                "_mark_single_name_for_later_last_name",
+            ) as mark_later,
+        ):
+            response = interaction._handle_introduction_parse(
+                parsed,
+                introducer_id=1,
+                introducer_name="Bret Benziger",
                 visible_newcomer=True,
             )
-            mark_later.assert_called_once_with(3, "Daniel")
-            self.assertIsNone(interaction._pending_common_first_name_introduction)
-        finally:
-            interaction._pending_common_first_name_introduction = None
+
+        self.assertEqual(response, "Ack Daniel.")
+        enroll.assert_called_once_with(
+            "Daniel",
+            1,
+            "Bret Benziger",
+            "acquaintance",
+            enroll_visible_face=True,
+        )
+        ack.assert_called_once_with(
+            1,
+            "Bret Benziger",
+            3,
+            "Daniel",
+            "acquaintance",
+            subject_kind="person",
+            visible_newcomer=True,
+        )
+        mark_later.assert_called_once_with(3, "Daniel")
 
     def test_relationship_only_introduction_opens_pending_slot(self):
         from intelligence import interaction
@@ -3019,48 +2979,6 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             self.assertIsNone(interaction._pending_introduction)
         finally:
             interaction._pending_introduction = None
-
-    def test_common_first_name_introduction_refusal_enrolls_first_name_only(self):
-        from intelligence import interaction
-
-        interaction._pending_common_first_name_introduction = {
-            "first_name": "Daniel",
-            "introducer_id": 1,
-            "introducer_name": "Bret Benziger",
-            "relationship": "acquaintance",
-            "visible_newcomer": True,
-            "subject_kind": "person",
-            "asked_at": interaction.time.monotonic(),
-        }
-        try:
-            with (
-                mock.patch.object(
-                    interaction,
-                    "_enroll_introduced_person",
-                    return_value=3,
-                ) as enroll,
-                mock.patch.object(
-                    interaction,
-                    "_intro_ack_and_followup",
-                    return_value="Ack Daniel.",
-                ) as ack,
-            ):
-                completed = interaction._handle_common_first_name_intro_last_name_reply(
-                    "I'd rather not say"
-                )
-
-            self.assertEqual(completed, "Ack Daniel.")
-            enroll.assert_called_once_with(
-                "Daniel",
-                1,
-                "Bret Benziger",
-                "acquaintance",
-                enroll_visible_face=True,
-            )
-            ack.assert_called_once()
-            self.assertIsNone(interaction._pending_common_first_name_introduction)
-        finally:
-            interaction._pending_common_first_name_introduction = None
 
     def test_returning_common_first_name_person_waits_for_longer_conversation(self):
         from intelligence import interaction
@@ -9634,12 +9552,6 @@ class GroupChatterGatingTest(unittest.TestCase):
                     "find_or_create_person",
                     return_value=(77, True),
                 ) as find_or_create,
-                mock.patch.object(
-                    interaction.config,
-                    "IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS",
-                    0.0,
-                ),
-                mock.patch.object(interaction.config, "IDENTITY_VOICE_ENROLL_MIN_WORDS", 1),
                 mock.patch.object(interaction.speaker_id, "enroll_voice") as enroll_voice,
                 mock.patch.object(interaction.people_memory, "update_familiarity") as update_familiarity,
                 mock.patch.object(interaction, "_has_unknown_visible_person", return_value=False),
@@ -9670,15 +9582,10 @@ class GroupChatterGatingTest(unittest.TestCase):
             self.assertIn("volleyball", response.lower())
             self.assertIsNone(interaction._pending_offscreen_identify)
             find_or_create.assert_called_once_with("JT")
-            # The gate is mocked open above (min audio 0.0 / min words 1), so the
-            # bare "JT" sample enrolls; the gate-defers-short-samples behavior is
-            # covered separately by test_voice_enrollment_requires_longer_sample.
-            enroll_voice.assert_called_once()
-            self.assertEqual(enroll_voice.call_args.args[0], 77)
-            np.testing.assert_array_equal(
-                enroll_voice.call_args.args[1],
-                np.array([1.0, 1.0, 1.0, 2.0, 2.0], dtype=np.float32),
-            )
+            # Naming the voice resolves the person but never saves a voiceprint:
+            # CAM++ voices are learned through conversational collection
+            # (docs/conversational_voice_learning.md), not from the held clip.
+            enroll_voice.assert_not_called()
             update_familiarity.assert_called_once()
             bind_identity.assert_called_once_with(77, "JT")
             retired = {call.args[0] for call in retire_slot.call_args_list}
@@ -9693,9 +9600,9 @@ class GroupChatterGatingTest(unittest.TestCase):
             interaction._pending_offscreen_identify = old_pending
             interaction._session_exchange_count = old_exchange_count
 
-    def _offscreen_claim_case(self, rank_score, expect_enroll):
-        """Claimed name = EXISTING person with prints: the held clip must actually
-        sound like them (>= OFFSCREEN_IDENTIFY_CLAIM_VERIFY_FLOOR) to be enrolled.
+    def _offscreen_claim_case(self, rank_score):
+        """Claimed name = EXISTING person with prints: the held clip is never
+        enrolled onto them, however well it scores against their prints.
         Field 2026-07-23 20:12: a guest joked 'obviously me, Bret' to the who's-that
         ask and her clip (0.516 vs Bret's prints) was enrolled onto Bret."""
         import numpy as np
@@ -9721,8 +9628,6 @@ class GroupChatterGatingTest(unittest.TestCase):
                     interaction.people_memory, "find_or_create_person",
                     return_value=(1, False),          # EXISTING Bret, not created
                 ),
-                mock.patch.object(interaction.config, "IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS", 0.0),
-                mock.patch.object(interaction.config, "IDENTITY_VOICE_ENROLL_MIN_WORDS", 1),
                 mock.patch.object(
                     interaction.speaker_id, "rank_speakers",
                     return_value=[(1, "Bret Benziger", rank_score, 2)],
@@ -9746,19 +9651,16 @@ class GroupChatterGatingTest(unittest.TestCase):
                     anonymous_speaker_label="unknown_voice_6",
                 )
             self.assertTrue(consumed)
-            if expect_enroll:
-                enroll_voice.assert_called_once()
-            else:
-                enroll_voice.assert_not_called()
+            enroll_voice.assert_not_called()
         finally:
             interaction._pending_offscreen_identify = old_pending
             interaction._session_exchange_count = old_exchange_count
 
     def test_offscreen_claimed_existing_person_low_score_not_enrolled(self):
-        self._offscreen_claim_case(rank_score=0.516, expect_enroll=False)
+        self._offscreen_claim_case(rank_score=0.516)
 
-    def test_offscreen_claimed_existing_person_matching_clip_enrolls(self):
-        self._offscreen_claim_case(rank_score=0.74, expect_enroll=True)
+    def test_offscreen_claimed_existing_person_matching_clip_not_enrolled(self):
+        self._offscreen_claim_case(rank_score=0.74)
 
     def test_offscreen_identity_confusion_reply_repairs_and_clears(self):
         import numpy as np
@@ -10282,28 +10184,6 @@ class PostResponseMemoryExtractionTest(unittest.TestCase):
                 "this is a longer conversational thought that might need an actual answer",
             )
         )
-
-    def test_voice_enrollment_requires_longer_sample(self):
-        import numpy as np
-        import config
-        from intelligence import interaction
-
-        short = np.zeros(int(config.AUDIO_SAMPLE_RATE * 0.25), dtype=np.float32)
-        long = np.zeros(int(config.AUDIO_SAMPLE_RATE * 1.4), dtype=np.float32)
-
-        allowed, reason = interaction._voice_enrollment_sample_allowed(
-            short,
-            transcript_text="Sara Ever",
-        )
-        self.assertFalse(allowed)
-        self.assertIn("audio_too_short", reason)
-
-        allowed, reason = interaction._voice_enrollment_sample_allowed(
-            long,
-            transcript_text="Sara Ever",
-        )
-        self.assertTrue(allowed)
-        self.assertEqual(reason, "ok")
 
     def test_proactive_unknown_identity_prompt_does_not_fire_while_active(self):
         from intelligence import consciousness

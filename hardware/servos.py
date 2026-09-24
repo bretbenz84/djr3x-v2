@@ -962,12 +962,6 @@ def set_face_tracking_baseline(
             _speech_baseline.update(updates)
 
 
-def get_face_tracking_baseline() -> dict[int, int]:
-    """Return the head pose that speech/breathing should orbit around."""
-    with _lock:
-        return dict(_face_tracking_baseline)
-
-
 def reset_face_tracking_baseline() -> None:
     """Reset gaze baseline to the configured neutral head pose."""
     with _lock:
@@ -1707,33 +1701,6 @@ def breathing_thread() -> None:
         _stop_breathing.wait(tick)
 
     _log.info("Breathing thread stopped")
-
-
-def idle_animation() -> None:
-    """
-    One cycle of random small movements on neck and headlift channels.
-    Intended to be called periodically from the consciousness loop during IDLE.
-    """
-    if _program_servo_updates_blocked():
-        return
-    if not SERVOS_ENABLED:
-        _log.debug("idle_animation no-op: SERVOS_ENABLED=False")
-        if not _gui_servo_sim_enabled():
-            return
-
-    neck_cfg  = config.SERVO_CHANNELS["neck"]
-    lift_cfg  = config.SERVO_CHANNELS["headlift"]
-
-    # Small random offsets from neutral (±200 quarter-microseconds)
-    neck_offset = random.randint(-200, 200)
-    lift_offset = random.randint(-150, 150)
-
-    neck_pos = _clamp(neck_cfg["ch"], neck_cfg["neutral"] + neck_offset)
-    lift_pos = _clamp(lift_cfg["ch"], lift_cfg["neutral"] + lift_offset)
-
-    set_servos({neck_cfg["ch"]: neck_pos, lift_cfg["ch"]: lift_pos})
-    time.sleep(random.uniform(0.8, 2.0))
-    set_servos({neck_cfg["ch"]: neck_cfg["neutral"], lift_cfg["ch"]: lift_cfg["neutral"]})
 
 
 _headlift_hum_boot_at = time.monotonic()   # process-start reference for the startup mute

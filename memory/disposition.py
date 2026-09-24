@@ -282,11 +282,3 @@ def summarize_for_prompt(person_id: int, *, min_samples: int = 20) -> str:
         f"is {phrase} (dominant visible expression: {dominant}, confidence {confidence:.2f}). "
         "Treat this as a light visual habit, not a diagnosis of inner emotion; use sparingly."
     )
-
-
-def delete_stats(person_id: int) -> None:
-    try:
-        pid = int(person_id)
-    except (TypeError, ValueError):
-        return
-    db.execute("DELETE FROM person_disposition_stats WHERE person_id = ?", (pid,))

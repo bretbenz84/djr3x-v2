@@ -80,20 +80,6 @@ def _require_port(env_key: str, label: str) -> "str | None":
     return val
 
 
-def _require_int_env(env_key: str, label: str) -> "int | None":
-    val = os.getenv(env_key, "").strip()
-    if not val:
-        _log.warning("Hardware config missing: %s not set — %s disabled.", env_key, label)
-        return None
-    try:
-        return int(val)
-    except ValueError:
-        _log.warning(
-            "Hardware config invalid: %s=%r is not an integer — %s disabled.", env_key, val, label
-        )
-        return None
-
-
 def _optional_env(env_key: str) -> "str | None":
     val = os.getenv(env_key, "").strip()
     return val or None

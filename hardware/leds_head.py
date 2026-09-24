@@ -484,12 +484,6 @@ def set_eye_color(r: int, g: int, b: int) -> None:
     send_command(f"EYE:{r},{g},{b}")
 
 
-def set_eye_emotion(emotion: str) -> None:
-    """Convenience wrapper: looks up emotion in config.EYE_COLORS and sets eye color."""
-    color = config.EYE_COLORS.get(emotion, config.EYE_COLORS["neutral"])
-    set_eye_color(*color)
-
-
 def off() -> None:
     """Turn all head LEDs off immediately."""
     global _eye_color, _eyes_active, _led_mode, _eyes_should_be_on, _speaking
@@ -544,11 +538,6 @@ def sleep() -> None:
     _led_mode = "sleep"
     _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=False)
     send_command("SLEEP")
-
-
-def charge_status(soc: int) -> None:
-    """Off-state mouth breathing color selected from battery SOC."""
-    send_command(f"CHARGE:{max(0, min(100, int(soc)))}")
 
 
 # ── Eye keep-alive heartbeat ─────────────────────────────────────────────────

@@ -125,15 +125,6 @@ def enable_ref_cache() -> bool:
     return True
 
 
-def disable_ref_cache() -> bool:
-    global _PATCHED
-    if not _PATCHED:
-        return False
-    Model._prompt_embeddings = _ORIGINAL
-    _PATCHED = False
-    return True
-
-
 def clear(model) -> None:
     cache = getattr(model, "_rex_reference_cache", None)
     if cache is not None:

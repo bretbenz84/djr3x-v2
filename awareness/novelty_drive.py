@@ -30,17 +30,13 @@ _log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _last_novel_at: float = time.monotonic()
-_last_kind: str = "startup"
-_events_this_session: int = 0
 
 
 def record_novel_event(kind: str, detail: str = "") -> None:
     """Something genuinely new happened — reset the staleness clock."""
-    global _last_novel_at, _last_kind, _events_this_session
+    global _last_novel_at
     with _lock:
         _last_novel_at = time.monotonic()
-        _last_kind = str(kind or "unknown")
-        _events_this_session += 1
     _log.info("[novelty] %s%s — staleness clock reset", kind,
               f" ({detail})" if detail else "")
     # Something new happening lifts Rex's day mood a little — this is the single
@@ -60,12 +56,3 @@ def staleness_secs() -> float:
 def is_stale() -> bool:
     """The room has offered nothing new for a while — curiosity pressure is on."""
     return staleness_secs() >= float(getattr(config, "NOVELTY_STALE_AFTER_SECS", 1800.0))
-
-
-def status() -> dict:
-    with _lock:
-        return {
-            "staleness_secs": time.monotonic() - _last_novel_at,
-            "last_kind": _last_kind,
-            "events_this_session": _events_this_session,
-        }

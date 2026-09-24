@@ -3,7 +3,7 @@ ESP32 motion-base serial transport.
 
 Low-level link to the differential-drive controller: open the port, run the
 `hello` handshake, stream NDJSON commands, and keep a thread-safe snapshot of the
-latest telemetry/acks/dones/events from a background reader. The wire contract is
+latest telemetry/dones/events from a background reader. The wire contract is
 docs/motion_protocol.md (v1); the firmware is firmware/djr3x_motion.
 
 All operations are no-ops (with a debug log) when motion is disabled
@@ -26,7 +26,7 @@ _log = logging.getLogger(__name__)
 _SERIAL_ERRORS = (serial.SerialException, serial.SerialTimeoutException, OSError)
 
 _PROTO_VERSION = int(getattr(config, "MOTION_PROTO_VERSION", 1))
-_MAX_REMEMBERED = 64          # cap on retained acks/dones/events
+_MAX_REMEMBERED = 64          # cap on retained dones/events
 
 # ── Module state ────────────────────────────────────────────────────────────────
 _ser: "serial.Serial | None" = None
@@ -44,7 +44,6 @@ _last_port: "str | None" = None     # remembered for auto-reconnect after a drop
 _hello: "dict | None" = None
 _latest_telemetry: "dict | None" = None
 _latest_tofmx: "dict | None" = None  # decoded 8x8 matrix frame: {t, grid[64], rej[8]}
-_acks: "dict[int, dict]" = {}
 _dones: "dict[int, dict]" = {}
 _events: "list[dict]" = []
 _parse_errors = 0
@@ -141,7 +140,6 @@ def connect(
         _hello = None
         _latest_telemetry = None
         _latest_tofmx = None
-        _acks.clear()
         _dones.clear()
         _events.clear()
 
@@ -287,11 +285,6 @@ def _dispatch(msg: dict) -> None:
     elif mtype == "hello":
         with _state_lock:
             _hello = msg
-    elif mtype == "ack":
-        seq = msg.get("seq")
-        if isinstance(seq, int):
-            with _state_lock:
-                _remember(_acks, seq, msg)
     elif mtype == "done":
         # Command outcomes at INFO: without this, a command the firmware accepted but
         # ended early (done:blocked — boxed in at a bookshelf) was invisible in the
@@ -508,17 +501,6 @@ def owner() -> str:
 def state() -> str:
     t = telemetry()
     return t.get("state", "unknown") if t else "unknown"
-
-
-def wait_ack(seq: int, timeout: float = 0.5) -> "dict | None":
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        with _state_lock:
-            ack = _acks.get(seq)
-        if ack is not None:
-            return ack
-        time.sleep(0.01)
-    return None
 
 
 def done_result(seq: int) -> "str | None":

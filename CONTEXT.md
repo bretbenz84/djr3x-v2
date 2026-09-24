@@ -717,7 +717,7 @@ Identity combines:
 - Face recognition from `vision.face` — `config.FACE_BACKEND` selects the backend:
   `insightface` (default; SCRFD detector + ArcFace 512-dim L2-normalized embeddings via
   ONNX Runtime, models under `assets/models/insightface/` downloaded by `setup_assets.py`,
-  auto-falls-back to dlib if they fail to load) or `dlib` (legacy HOG/mmod + 128-dim
+  auto-falls-back to dlib if they fail to load) or `dlib` (legacy HOG + 128-dim
   descriptor). `memory/people.find_by_face` is dimension-aware: Euclidean thresholds are
   picked by the query's dim (dlib 0.6/margin 0.06; ArcFace 1.10 ≈ cos 0.40/margin 0.08 —
   live-measured same-person d≈0.24-0.37 vs different-person d≈1.37) and stored rows of the
@@ -1464,7 +1464,7 @@ venv/bin/python main.py
 - Relationship-tone tracking: warmth/edge tracks the RELATIONSHIP, not per-turn (`llm._relationship_tone_rule` over `warmth/antagonism/trust_score`; `tests/test_relationship_tone.py`).
 - Offline conversational-quality replay harness (no robot): replays scenarios through the deterministic stack (`tests/test_conversation_replay.py` + `tests/fixtures/conversation_replays.json`).
 - Cold-open ranker: the startup celebration cold-open RANKS gate-passing candidates instead of taking the first (`consciousness._pick_due_celebration_checkin`; `tests/test_celebration_ranker.py`).
-- Turn classifier (Bet 3): SHELVED/dormant — do NOT regress to on-path (`intelligence/turn_classifier.py`).
+- Turn classifier (Bet 3): SHELVED, then deleted 2026-09-23 (dead-code plan D12; git history at `c00eed5` keeps `intelligence/turn_classifier.py`) — do NOT rebuild it on-path.
 - Rex persistent POV: carries ONE current preoccupation and leads with substance instead of react→roast→question (`intelligence/rex_pov.py`; `tests/test_rex_pov.py`).
 - Roast rebalance: curious-first, not roast-first (`config REX_CORE_PROMPT`/`PERSONALITY_DEFAULTS` + the live personality DB).
 - Memory-followup cadence clamp: stop the proactive event interrogation (`interaction._post_response`/`_memory_followup_cadence_allows`, `FOLLOWUP_*`; `tests/test_followup_resolution.py`).

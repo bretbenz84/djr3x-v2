@@ -112,7 +112,7 @@ Turn per-face booleans into a single, stable answer: *who is the current speaker
 ### Algorithm
 1. **VAD gate.** If VAD reports no speech, **no one** is the active speaker. Decay/clear the current speaker after `SPEAKER_RELEASE_SECS` of no speech. This single gate removes most chewing/yawning false positives for free.
 2. **Candidate set.** Among visible faces, keep those with `facing_camera = True`. If that empties the set (everyone slightly turned), fall back to all visible faces so Rex still attributes *someone* during active speech.
-3. **Winner.** Pick the candidate with the highest `lip_energy`. Require it to clear `lip_active` AND beat the runner-up by `SPEAKER_MARGIN` (mirrors the margin-guard pattern already used in `speaker_id.identify_speaker` — reuse that mental model for consistency).
+3. **Winner.** Pick the candidate with the highest `lip_energy`. Require it to clear `lip_active` AND beat the runner-up by `SPEAKER_MARGIN` (mirrors the margin-guard pattern already used in `speaker_id.required_ambiguity_margin`, the `rank_speakers` scoreboard margin guard — reuse that mental model for consistency).
 4. **Hysteresis.** Once a person is the active speaker, keep them until a *different* candidate out-scores them by `SPEAKER_SWITCH_MARGIN` for at least `SPEAKER_SWITCH_SECS`. This prevents flicker between two animated people and rides over mid-sentence mouth closes.
 5. **Single-face shortcut.** Exactly one visible face during active speech ⇒ that person is the speaker (skip margin checks). Mirrors the `len(available) == 1` shortcut already in `_match_expression_to_people`.
 
@@ -211,7 +211,7 @@ Log format suggestion (reuse the `Name#id=score` style from `speaker_id._log_sco
 2. Layer 2 buffers + energy math; log-only (don't write `is_speaking` yet). Calibrate threshold.
 3. Layer 1 yaw helper + `facing_camera`; log-only.
 4. Layer 3 arbitration + hysteresis; begin writing `is_speaking`. Calibrate margins.
-5. `current_speaker()` helper + wire one consumer (e.g. face-tracking targets the speaker).
+5. `current_speaker()` helper + wire one consumer (e.g. face-tracking targets the speaker). (The helper was built but never got a consumer; deleted 2026-09-23 as dead code.)
 6. Dev/calibration script + on-device tuning pass; finalize defaults.
 
 Each step is independently testable and leaves the system working if the next isn't built yet — consistent with the capture-only / phased approach already used for episodic memory and the motion base.

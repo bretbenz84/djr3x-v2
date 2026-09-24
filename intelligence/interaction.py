@@ -826,13 +826,11 @@ _pending_tell_about: Optional[dict] = None
 #   created_at/asked_at: TTL + kickoff-beat + inactivity-timeout clocks
 _pending_onboarding: Optional[dict] = None
 
-# Someone answered an identity/intro prompt with a very common first name only,
-# or a returning known person still only has that common first name on file.
+# A returning known person still only has a very common first name on file.
 # Hold/enforce the last-name clarification so memory rows stay distinct.
 # Shape: {first_name: str, audio: np.ndarray, asked_at: float,
 #         prior_engagement: Optional[dict]}
 _pending_common_first_name_identity: Optional[dict] = None
-_pending_common_first_name_introduction: Optional[dict] = None
 _pending_existing_common_first_name: Optional[dict] = None
 # {person_id, first_name, last_name, asked_at} — a heard-but-unusual surname
 # awaiting a yes/no confirm before a durable rename (so one garbled token like
@@ -5473,7 +5471,7 @@ def _maybe_interest_idle_followup(
                     1,
                 )
             except Exception as exc:
-                _log.debug("interest idle follow-up save_qa failed: %s", exc)
+                _log.debug("interest idle follow-up save_question_asked failed: %s", exc)
     return completed
 
 
@@ -5603,7 +5601,7 @@ def _maybe_low_memory_idle_question(
                 question.get("depth", 1),
             )
         except Exception as exc:
-            _log.debug("low-memory idle question save_qa failed: %s", exc)
+            _log.debug("low-memory idle question save_question_asked failed: %s", exc)
     return completed
 
 
@@ -8505,20 +8503,6 @@ def _name_word_count(name: str) -> int:
     return len([part for part in (name or "").split() if part.strip()])
 
 
-def _is_common_first_name_only(name: str) -> bool:
-    if not bool(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_DISAMBIGUATION_ENABLED", True)):
-        return False
-    normalized = _normalize_name(name or "")
-    if not normalized or _name_word_count(normalized) != 1:
-        return False
-    common = {
-        str(item).strip().lower()
-        for item in getattr(config, "COMMON_FIRST_NAMES_REQUIRE_LAST_NAME", [])
-        if str(item).strip()
-    }
-    return normalized.lower() in common
-
-
 def _format_common_first_name_last_name_prompt(first_name: str) -> str:
     prompts = list(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_PROMPTS", []) or [])
     if not prompts:
@@ -8975,7 +8959,7 @@ def _clear_memory_related_pending_state() -> None:
     global _awaiting_followup_event, _pending_offscreen_identify
     global _pending_face_reveal_confirm, _pending_introduction
     global _pending_intro_followup
-    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_common_first_name_identity
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
@@ -8990,7 +8974,6 @@ def _clear_memory_related_pending_state() -> None:
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_common_first_name_identity = None
-    _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
@@ -9511,7 +9494,7 @@ def _utterance_invites_identity_question(text: str) -> bool:
 
 def _clear_pending_identity_prompts(reason: str) -> bool:
     global _identity_prompt_until, _pending_offscreen_identify, _pending_face_reveal_confirm
-    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_common_first_name_identity
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation, _pending_introduction
@@ -9524,7 +9507,6 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
             _pending_offscreen_identify,
             _pending_face_reveal_confirm,
             _pending_common_first_name_identity,
-            _pending_common_first_name_introduction,
             _pending_existing_common_first_name,
             _pending_identity_match_confirmation,
             _pending_prompted_name_confirmation,
@@ -9538,7 +9520,6 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     _pending_offscreen_identify = None
     _pending_face_reveal_confirm = None
     _pending_common_first_name_identity = None
-    _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
@@ -9663,26 +9644,6 @@ def _pending_question_recent_attribution(
         "durable_qa" if pending else "topic_thread",
     )
     return recent_id, resolved_name, True
-
-
-def _single_visible_engaged_continuity_floor(
-    *,
-    ws_pid: Optional[int],
-    raw_best_id: Optional[int],
-) -> float:
-    broad_floor = float(
-        getattr(config, "SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR", 0.45)
-    )
-    if _safe_int(raw_best_id) == _safe_int(ws_pid):
-        match_floor = float(
-            getattr(
-                config,
-                "SPEAKER_ID_SINGLE_VISIBLE_MATCH_FLOOR",
-                broad_floor,
-            )
-        )
-        return min(broad_floor, match_floor)
-    return broad_floor
 
 
 def _extract_offscreen_identify_reply(
@@ -10668,7 +10629,8 @@ def _voice_only_attribution_suspect(person_id, speaker_score: float) -> bool:
     matched person. On the voice-only resolution path (no identified faces), don't
     silently attribute when ALL of:
       - the match is marginal (below SPEAKER_ID_CONFIDENT_THRESHOLD), and
-      - the matched person hasn't been on camera recently (grace covers camera pans), and
+      - the matched person's OWN voice hasn't matched confidently within the
+        continuity window (being on camera is not evidence of speaking), and
       - someone ELSE is visible right now (face or real pose).
     The caller then routes to the who's-that-speaking ask instead. Cooldown-limited so
     a chatty second voice doesn't get challenged every single turn."""
@@ -11095,7 +11057,7 @@ def _handle_common_first_name_last_name_reply(
     Returns (response_text, enrolled_person_id, full_name). response_text may be
     None when the pending context expired or the reply was not a usable last name.
     """
-    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_common_first_name_identity
 
     ctx = _pending_common_first_name_identity
     if not _common_first_name_context_fresh(ctx):
@@ -11163,69 +11125,6 @@ def _handle_common_first_name_last_name_reply(
     else:
         response = f"Got it — {full_name}. Good to actually know you."
     return response, enrolled_id, full_name
-
-
-def _handle_common_first_name_intro_last_name_reply(text: str) -> Optional[str]:
-    """Complete an explicit introduction delayed for a common first name."""
-    global _pending_common_first_name_introduction
-
-    ctx = _pending_common_first_name_introduction
-    if not _common_first_name_context_fresh(ctx):
-        _pending_common_first_name_introduction = None
-        return None
-
-    first_name = str(ctx.get("first_name") or "").strip()
-    refused_last_name = _is_last_name_refusal(text, first_name)
-    if refused_last_name:
-        last_name = None
-    else:
-        last_name = _extract_last_name_reply(text, first_name)
-    if not first_name:
-        return None
-    if not last_name and not refused_last_name:
-        return None
-
-    full_name = first_name if refused_last_name else f"{first_name} {last_name}"
-    introducer_id = int(ctx["introducer_id"])
-    introducer_name = str(ctx.get("introducer_name") or "friend")
-    relationship = ctx.get("relationship")
-    visible_newcomer = bool(ctx.get("visible_newcomer", True))
-    subject_kind = str(ctx.get("subject_kind") or "person")
-
-    new_id = _enroll_introduced_person(
-        full_name,
-        introducer_id,
-        introducer_name,
-        relationship,
-        enroll_visible_face=visible_newcomer,
-    )
-    _pending_common_first_name_introduction = None
-    if new_id is None:
-        return None
-
-    if refused_last_name:
-        _remember_last_name_declined(new_id, first_name)
-        _log.info(
-            "[introduction] last-name request declined for %r; filing first name only",
-            first_name,
-        )
-    else:
-        _log.info(
-            "[introduction] %s introduced %s as %s (person_id=%s) after last-name disambiguation",
-            introducer_name,
-            full_name,
-            relationship or "acquaintance",
-            new_id,
-        )
-    return _intro_ack_and_followup(
-        introducer_id,
-        introducer_name,
-        new_id,
-        full_name,
-        relationship,
-        subject_kind=subject_kind,
-        visible_newcomer=visible_newcomer,
-    )
 
 
 def _handle_existing_common_first_name_last_name_reply(text: str) -> Optional[str]:
@@ -12660,7 +12559,7 @@ def _handle_introduction_parse(
     introducer_name: str,
     visible_newcomer: bool = True,
 ) -> Optional[str]:
-    global _pending_introduction, _pending_common_first_name_introduction
+    global _pending_introduction
 
     if parsed.subject_kind == "pet":
         _store_pet_introduction(
@@ -20476,7 +20375,7 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     global _lean_mood_shared_this_session
     global _lean_news_mentioned_this_session, _last_news_story_offered
     global _pending_introduction, _pending_intro_followup
-    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_common_first_name_identity
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
@@ -20580,7 +20479,6 @@ def _end_session(*, include_consolidation: bool = True) -> None:
         _pending_introduction = None
         _pending_intro_followup = None
         _pending_common_first_name_identity = None
-        _pending_common_first_name_introduction = None
         _pending_existing_common_first_name = None
         _pending_identity_match_confirmation = None
         _pending_prompted_name_confirmation = None
@@ -20869,7 +20767,6 @@ def _end_session(*, include_consolidation: bool = True) -> None:
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_common_first_name_identity = None
-    _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
@@ -21096,7 +20993,7 @@ def _record_pool_topics_in_response(response_text: str, person_id: int) -> None:
                 "[interaction] pool topic %r marked asked from Rex's response", key
             )
         except Exception as exc:
-            _log.debug("record_pool_topics: save_qa error: %s", exc)
+            _log.debug("record_pool_topics: save_question_asked error: %s", exc)
 
 
 def _grief_flow_active(person_id: Optional[int]) -> bool:
@@ -24744,7 +24641,6 @@ def _boundary_fallback_topic(exclude_text: Optional[str] = None) -> Optional[str
         or _pending_dual_intro is not None
         or _pending_intro_followup is not None
         or _pending_common_first_name_identity is not None
-        or _pending_common_first_name_introduction is not None
         or _pending_existing_common_first_name is not None
         or _pending_identity_match_confirmation is not None
         or _pending_prompted_name_confirmation is not None
@@ -24783,7 +24679,7 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
     """Close optional pending prompts when a person sets a boundary or declines."""
     global _pending_face_reveal_confirm, _pending_offscreen_identify
     global _pending_introduction, _pending_intro_followup
-    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_common_first_name_identity
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
@@ -24816,8 +24712,6 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
         _pending_intro_followup = None
     if _pending_common_first_name_identity is not None:
         _pending_common_first_name_identity = None
-    if _pending_common_first_name_introduction is not None:
-        _pending_common_first_name_introduction = None
     if _pending_existing_common_first_name is not None:
         if (
             person_id is None
@@ -25460,7 +25354,7 @@ def _curiosity_check(
                 pool_question.get("depth", 1),
             )
         except Exception as exc:
-            _log.debug("curiosity_check save_qa error: %s", exc)
+            _log.debug("curiosity_check save_question_asked error: %s", exc)
 
     return question_text
 
@@ -26618,7 +26512,7 @@ def _handle_speech_segment(
     playback — see that call site."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _pending_introduction, _pending_intro_followup
-    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_common_first_name_identity
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_offscreen_identify, _pending_face_reveal_confirm
@@ -28264,27 +28158,6 @@ def _handle_speech_segment(
             conv_log.log_rex(common_name_response)
             _session_exchange_count += 1
             _register_rex_utterance(common_name_response)
-            return
-
-        common_intro_response = (
-            _handle_common_first_name_intro_last_name_reply(text)
-            if not game_conversation_lock
-            else None
-        )
-        if common_intro_response:
-            _record_heard_turn_once()
-            response_text = common_intro_response
-            final_executed_path = "identity.common_intro_reply"
-            _speak_blocking(
-                common_intro_response,
-                emotion="happy",
-                pre_beat_ms=150,
-                post_beat_ms_override=300,
-            )
-            conv_memory.add_to_transcript("Rex", common_intro_response)
-            conv_log.log_rex(common_intro_response)
-            _session_exchange_count += 1
-            _register_rex_utterance(common_intro_response)
             return
 
         last_name_confirm_response = (
@@ -32108,7 +31981,7 @@ def start(*, text_only: bool = False) -> None:
     global _thread, _identity_prompt_until, _awaiting_followup_event
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
     global _post_question_retro_scan_at
-    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_common_first_name_identity
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
@@ -32141,7 +32014,6 @@ def start(*, text_only: bool = False) -> None:
     _disarm_gap_watch()
     _awaiting_followup_event = None
     _pending_common_first_name_identity = None
-    _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
@@ -32224,7 +32096,7 @@ def stop() -> None:
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
     global _post_question_retro_scan_at
     global _pending_introduction, _pending_intro_followup
-    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_common_first_name_identity
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
@@ -32255,7 +32127,6 @@ def stop() -> None:
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_common_first_name_identity = None
-    _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
