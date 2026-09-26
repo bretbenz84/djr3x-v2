@@ -90,7 +90,12 @@ need household field testing. Set `PHOTO_MEMORY_ENABLED = False` in
 `user_config.py` to restore legacy pet-name guessing. Other `PHOTO_MEMORY_*`
 settings live in `config.py`.
 
-Teaching requires trusted transcription and a resolved speaker allowed to learn.
+Teaching requires trusted transcription and a resolved speaker. Explicit pet
+labels also accept the authoritative `continuous sole-face conversation` verdict:
+the known person stayed visible throughout the utterance and no competing speaker
+evidence contradicted them. This does not authorize automatic personal-memory or
+voiceprint updates from an ambiguous voice sample. Other tentative/unknown
+speaker verdicts still cannot label photos.
 The answer window expires 60 seconds after the question actually speaks. Saved
 bytes belong to that question's immutable observation ID; newer camera frames
 never replace the photograph being labelled.

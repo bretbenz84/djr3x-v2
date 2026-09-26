@@ -13429,6 +13429,20 @@ def _turn_speaker_uncertain() -> bool:
         return False
 
 
+def _photo_label_speaker_confirmed(person_id: Optional[int]) -> bool:
+    """Explicit photo labels may use authoritative sole-face attribution.
+
+    learning_allowed=False protects automatic personal/biometric learning; it
+    must not turn a known conversational speaker into an unknown one for an
+    explicit pet-photo instruction. No voiceprint permissions change here.
+    """
+    res = (_current_turn_speaker_evidence or {}).get("resolution") or {}
+    return bool(person_id is not None and res.get("status") == "known"
+                and res.get("person_id") == person_id and not res.get("conflicts")
+                and (res.get("learning_allowed") is True
+                     or res.get("basis") == "continuous sole-face conversation"))
+
+
 def _identity_decision_payload(
     *,
     turn_id: Optional[int],
@@ -27833,7 +27847,7 @@ def _handle_speech_segment(
         if not game_conversation_lock and not photo_answer:
             photo_line = photo_memory.pet_command(
                 text, owner_id=person_id,
-                trusted=bool(transcript_trusted) and not _turn_speaker_uncertain())
+                trusted=bool(transcript_trusted) and _photo_label_speaker_confirmed(person_id))
             if photo_line is not None:
                 delivered = _speak_blocking(photo_line, emotion="happy", log_text=False)
                 if delivered:
@@ -27842,7 +27856,7 @@ def _handle_speech_segment(
             if photo_answer:
                 photo_line = _photo_memory_takeover(
                     text, person_id=person_id,
-                    trusted=bool(transcript_trusted) and not _turn_speaker_uncertain(),
+                    trusted=bool(transcript_trusted) and _photo_label_speaker_confirmed(person_id),
                     answering_animal=True,
                 )
             if photo_line is None:

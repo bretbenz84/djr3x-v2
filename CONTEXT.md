@@ -4,6 +4,18 @@ This file is a compact handoff for future AI/development sessions. It explains w
 
 ## Photographic pet/object memory (2026-09-25)
 
+21:32 field run: all three refused Toby introductions actually resolved to
+known Bret via continuous sole-face evidence, with learning_allowed=False.
+The photo handler wrongly used the general automatic-learning uncertainty gate
+and said it couldn't identify him. Explicit pet labels/answers now separately
+accept that known, conflict-free authoritative sole-face verdict, with trusted
+ASR and matching person ID; automatic personal-memory/voiceprint gates stay
+unchanged. Voice scores were close Bret/PJ pairs on .6-.69s voiced clips. The
+separate "This is Toby" turn had no recognized visible face and remained
+ambiguous. No broad threshold relaxation or camera-gap guess was introduced.
+Regression suite: photo_memory, voice_learning, action_results_and_attribution,
+identity_instrumentation (130 tests passed with hardware/network blocked).
+
 21:26 field run saved Max; a background comparison recognized him at .95/.05,
 while the direct question's separate view was rejected for occlusion. Later
 background imagery was also blurred. Motion is plausible, not proven as sole

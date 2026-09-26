@@ -350,10 +350,29 @@ class IntegrationTests(PhotoCase):
     def test_logged_unprompted_dog_introduction_saves_in_speech_pipeline(self):
         self._speech_answer("This is my dog Max.", direct=True)
 
+    def test_known_sole_face_can_explicitly_teach_without_voice_learning(self):
+        self._speech_answer("This is my dog Max.", direct=True, sole_face=True)
+
+    def test_known_sole_face_can_answer_photo_question(self):
+        self._speech_answer("That's Max.", sole_face=True)
+
+    def test_photo_label_permission_does_not_promote_ambiguous_speaker(self):
+        from intelligence import interaction as I
+        good = {"status": "known", "person_id": 1, "learning_allowed": False,
+                "basis": "continuous sole-face conversation", "conflicts": []}
+        for change in ({"status": "ambiguous"}, {"person_id": 2},
+                       {"conflicts": ["other speaker"]}, {"basis": "unconfirmed"}):
+            with self.subTest(change=change), mock.patch.object(
+                    I, "_current_turn_speaker_evidence", {"resolution": {**good, **change}}):
+                self.assertFalse(I._photo_label_speaker_confirmed(1))
+        with mock.patch.object(I, "_current_turn_speaker_evidence", {"resolution": good}):
+            self.assertTrue(I._photo_label_speaker_confirmed(1))
+            self.assertTrue(I._turn_speaker_uncertain())  # biometric/automatic learning guard remains
+
     def test_logged_identity_question_uses_album_in_speech_pipeline(self):
         self._speech_answer("What dog do you see?", direct=True, query=True)
 
-    def _speech_answer(self, text, unknown_face=False, direct=False, query=False):
+    def _speech_answer(self, text, unknown_face=False, direct=False, query=False, sole_face=False):
         # Reuse the audio/identity fixture, not a mock of the speech handler.
         from tests.test_voice_learning import RuntimeTests, face
         from intelligence import dialogue_act, conversation_state
@@ -363,6 +382,10 @@ class IntegrationTests(PhotoCase):
         self.addCleanup(fixture.doCleanups)
         fixture._mock_speech_pipeline()
         I = fixture.I
+        if sole_face:
+            from intelligence.attribution import Resolution
+            fixture.stack.enter_context(mock.patch.object(I, "_resolve_turn_attribution", return_value=
+                Resolution("known", 1, "Bret", "continuous sole-face conversation", learning_allowed=False)))
         for state in (dialogue_act, conversation_state):
             state.clear()
             self.addCleanup(state.clear)
