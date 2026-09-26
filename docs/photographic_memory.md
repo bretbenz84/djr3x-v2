@@ -74,8 +74,15 @@ same name again after an uncertain view to add another angle. Pet comparisons
 include all saved pets despite detector dog/cat wobble. Names shared by different
 teachers remain separate identities.
 
-`PHOTO_MEMORY_MODEL = None` uses the existing `VISION_MODEL`. Requests send crops
+`PHOTO_MEMORY_MODEL` defaults to `gpt-4.1`, independently of the scene model.
+The previous `gpt-4o-mini` failed even saved-photo self-matches in the household
+replay; use `None` only to deliberately inherit `VISION_MODEL`. Requests send crops
 to OpenAI as [multiple image inputs](https://developers.openai.com/api/docs/guides/images-vision).
+Each image has an adjacent one-based label matching the reference catalog.
+The comparison describes the observation and references before selecting a
+match, and logs those descriptions. Localization's `recognition_ready` flag is
+advisory when references exist: the actual comparison determines whether the
+visible details suffice, using the same confidence/margin thresholds.
 One background animal worker starts at most one check per 30 seconds while
 animals remain visible. Each API call has an eight-second timeout with retries
 disabled. A check uses one localization call and, when references exist, one
@@ -109,3 +116,15 @@ serial I/O. Coverage includes original-pixel cropping, persistence, abstention,
 malformed results, concurrent detections, stale/ambiguous/untrusted answers, the
 real speech-handler path, and legacy reactions with the feature disabled. These
 tests do not measure real-camera recognition quality.
+
+For an explicitly authorized API replay, run
+`venv/bin/python tools/replay_photo_memory.py --live` with exactly two saved pet
+identities. It sends the saved images to OpenAI and uses API credits, without
+operating hardware. Without `--live`, it sends nothing. `--model` evaluates a
+candidate without changing configuration. It checks each identity in both
+reference orders and with only the wrong identity available, saving results to
+the gitignored `data/photo_memory/replay_report.json`. On 2026-09-25 GPT-4.1
+passed all six comparisons plus two separate full localization/comparison
+replays; the old model failed all four positive baseline checks, including a
+confident Toby-to-Max misidentification. These are saved-reference sanity
+checks, not held-out tests of new views, movement or lighting.

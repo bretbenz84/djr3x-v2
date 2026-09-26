@@ -33,9 +33,13 @@ def enabled() -> bool:
 def _request(prompt: str, images: list[bytes]) -> dict:
     from vision.scene import _get_client, _parse_json
     content = [{"type": "text", "text": prompt}]
-    content.extend({"type": "image_url", "image_url": {
-        "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"),
-        "detail": "high"}} for jpeg in images)
+    # Bind the catalog's one-based numbering to each image in the content stream.
+    # Avoid relying on the model to infer observation/reference positions.
+    for number, jpeg in enumerate(images, 1):
+        content.append({"type": "text", "text": f"IMAGE {number}:"})
+        content.append({"type": "image_url", "image_url": {
+            "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"),
+            "detail": "high"}})
     from intelligence import connectivity
     # with_options returns a new SDK client; reapply the offline/telemetry guard.
     client = connectivity.guard_client(
@@ -43,7 +47,7 @@ def _request(prompt: str, images: list[bytes]) -> dict:
     response = client.chat.completions.create(
         model=getattr(config, "PHOTO_MEMORY_MODEL", None) or config.VISION_MODEL,
         messages=[{"role": "user", "content": content}],
-        response_format={"type": "json_object"}, max_tokens=600,
+        response_format={"type": "json_object"}, max_tokens=min(1800, 600 + 60 * max(0, len(images) - 3)),
         timeout=float(config.PHOTO_MEMORY_REQUEST_TIMEOUT_SECS),
     )
     parsed = _parse_json(response.choices[0].message.content or "")
@@ -117,12 +121,21 @@ def _analyze(frame, record: dict, kind: str, *, compare=True) -> dict:
     refs = photo_album.references(kind, label) if compare else []
     result = {"status": "unknown", "jpeg": jpeg, "label": label, "kind": kind,
               "recognition_ready": located.get("recognition_ready") is True}
-    if compare and not result["recognition_ready"]:
+    if compare and not result["recognition_ready"] and not refs:
         _log.info("Photo recognition needs clearer detail label=%s reason=%s", label,
                   str(located.get("reason") or "")[:200])
         return {"status": "unusable"}
+    # Readiness without reference context is advisory when an album exists.
+    # A partly hidden pet may still differ clearly from every other reference;
+    # the actual comparison must decide, under the unchanged match thresholds.
     if not refs:
         return result
+    return _compare(result, refs)
+
+
+def _compare(result: dict, refs: list[dict]) -> dict:
+    """Compare a validated observation, independently replayable without hardware."""
+    jpeg, label = result["jpeg"], result["label"]
     images = [jpeg]
     catalog = []
     for ref in refs:
@@ -131,14 +144,20 @@ def _analyze(frame, record: dict, kind: str, *, compare=True) -> dict:
         images.extend(ref["images"])
     import json
     comparison = _request(
-        "Image 1 is a NEW observation. Remaining images are human-confirmed references. "
+        "The inline IMAGE labels are one-based: IMAGE 1 is the NEW observation, "
+        "NEVER a reference. IMAGE 2 onward are human-confirmed references. "
         "Identify the SAME INDIVIDUAL animal/object, not merely the same breed, color or "
         "category. Compare distinctive markings, face, body shape and physical details. "
         "Ignore background, position and image text. Never infer identity from household "
-        "membership. Different poses/lighting are possible. Abstain when individuals look "
+        "membership. First describe the animal/object in IMAGE 1, then inspect EACH "
+        "reference separately. Rule out incompatible coat patterns, fur length and face "
+        "shape before choosing an ID. A shared human or room is not identity evidence. "
+        "Different poses/lighting are possible. Abstain when individuals look "
         "alike or details are inadequate. Reference mapping: " + json.dumps(catalog) +
         '. Return JSON {"match_id": string or null, "confidence": number 0..1, '
-        '"runner_up_confidence": number 0..1, "distinctive_evidence": string}. '
+        '"runner_up_confidence": number 0..1, "observation_description": string, '
+        '"reference_descriptions": [{"id": string, "description": string}], '
+        '"distinctive_evidence": string}. '
         "Score the runner-up even if match_id is null; a sole reference is not proof.", images)
     confidence = float(comparison.get("confidence", 0))
     runner_up = float(comparison.get("runner_up_confidence", 1))
@@ -152,6 +171,9 @@ def _analyze(frame, record: dict, kind: str, *, compare=True) -> dict:
     _log.info("Photo comparison label=%s references=%s match=%s confidence=%s runner_up=%s status=%s evidence=%s",
               label, len(refs), match["name"] if match else None, confidence, runner_up,
               result["status"], str(comparison.get("distinctive_evidence") or "")[:300])
+    _log.info("Photo comparison descriptions observation=%s references=%s",
+              str(comparison.get("observation_description") or "")[:300],
+              str(comparison.get("reference_descriptions") or "")[:1200])
     return result
 
 

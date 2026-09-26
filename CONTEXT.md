@@ -4,6 +4,20 @@ This file is a compact handoff for future AI/development sessions. It explains w
 
 ## Photographic pet/object memory (2026-09-25)
 
+21:37 field run: Toby saved, then model chose Max at .90 (below .92 threshold).
+User-authorized API replay isolated the comparison: gpt-4o-mini failed all four
+saved-image positive checks, including calling Toby's own image Max at .95.
+Adding explicit image labels alone still failed Max checks (then hit TPM limit).
+GPT-4.1 passed all six comparison cases (each pet, both catalog orders, and
+correct identity omitted) plus both full localization/comparison replays.
+PHOTO_MEMORY_MODEL now defaults to gpt-4.1; comparison has adjacent image numbers
+and per-reference descriptions. Localization recognition_ready is advisory if
+references exist, letting actual visual comparison decide under unchanged
+thresholds. The photos/labels were not modified. tools/replay_photo_memory.py
+requires --live for any network and forbids hardware; results are gitignored in
+the album directory. These are self-reference sanity checks, NOT proof of new
+camera-view accuracy. Photo module: 51 isolated tests pass.
+
 21:32 field run: all three refused Toby introductions actually resolved to
 known Bret via continuous sole-face evidence, with learning_allowed=False.
 The photo handler wrongly used the general automatic-learning uncertainty gate

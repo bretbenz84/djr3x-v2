@@ -6506,7 +6506,7 @@ ANIMAL_PENDING_REACTION_TTL_SECS = 90
 # fresh crops and reference images are sent to OpenAI for visual comparison.
 PHOTO_MEMORY_ENABLED = True
 PHOTO_MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "photo_memory")
-PHOTO_MEMORY_MODEL = None  # None uses VISION_MODEL.
+PHOTO_MEMORY_MODEL = "gpt-4.1"  # Photo replay passed; gpt-4o-mini confused Max/Toby.
 PHOTO_MEMORY_INTERVAL_SECS = 30.0
 PHOTO_MEMORY_SETTLE_SECS = 0.6  # hold current head pose before explicit pet captures
 PHOTO_MEMORY_REQUEST_TIMEOUT_SECS = 8.0  # each of localization + comparison

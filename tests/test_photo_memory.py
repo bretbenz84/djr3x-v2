@@ -119,6 +119,40 @@ class LearningTests(PhotoCase):
 
 
 class ComparisonTests(PhotoCase):
+    def test_api_image_numbers_are_bound_to_each_actual_image(self):
+        from vision import scene
+        from intelligence import connectivity
+        client = mock.Mock()
+        client.with_options.return_value = client
+        client.chat.completions.create.return_value.choices = [
+            mock.Mock(message=mock.Mock(content='{"usable": true}'))]
+        with mock.patch.object(scene, "_get_client", return_value=client), \
+             mock.patch.object(connectivity, "guard_client", side_effect=lambda c, _: c):
+            PM._request("Compare image 1 against image 2", [b"observation", b"reference"])
+        content = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        self.assertEqual([c["type"] for c in content],
+                         ["text", "text", "image_url", "text", "image_url"])
+        self.assertEqual(content[1]["text"], "IMAGE 1:")
+        self.assertEqual(content[3]["text"], "IMAGE 2:")
+        import base64
+        self.assertEqual(base64.b64decode(content[2]["image_url"]["url"].split(",")[1]), b"observation")
+        self.assertEqual(base64.b64decode(content[4]["image_url"]["url"].split(",")[1]), b"reference")
+
+    def test_comparison_mapping_tracks_reordered_multiview_gallery(self):
+        import json
+        refs = [{"id": "second", "name": "Toby", "images": [b"toby1", b"toby2"]},
+                {"id": "first", "name": "Max", "images": [b"max"]}]
+        response = {"match_id": "second", "confidence": .99, "runner_up_confidence": .01,
+                    "distinctive_evidence": "face markings"}
+        with mock.patch.object(PM, "_request", return_value=response) as api:
+            result = PM._compare({"status": "unknown", "jpeg": b"new", "label": "dog"}, refs)
+        prompt, images = api.call_args.args
+        mapping = json.loads(prompt.split("Reference mapping: ")[1].split(". Return JSON")[0])
+        self.assertEqual(mapping, [{"id": "second", "image_numbers": [2, 3]},
+                                   {"id": "first", "image_numbers": [4]}])
+        self.assertEqual(images, [b"new", b"toby1", b"toby2", b"max"])
+        self.assertEqual(result["name"], "Toby")
+
     def test_partial_view_can_be_taught_but_cannot_identify(self):
         located = {**self.located(), "recognition_ready": False,
                    "reason": "One dog held by a person; face turned away"}
@@ -128,6 +162,16 @@ class ComparisonTests(PhotoCase):
         self.assertTrue(teaching["jpeg"])
         self.assertFalse(teaching["recognition_ready"])
         self.assertEqual(recognition["status"], "unusable")
+
+    def test_partial_view_with_references_reaches_actual_comparison(self):
+        ref = album.save(b"ref", name="Toby", kind="animal", label="dog", owner_id=1)
+        located = {**self.located(), "recognition_ready": False}
+        comparison = {"match_id": ref["id"], "confidence": .98, "runner_up_confidence": .01,
+                      "distinctive_evidence": "Visible white blaze and ear shape match"}
+        with mock.patch.object(PM, "_request", side_effect=[located, comparison]) as api:
+            result = PM._analyze(self.frame, self.record, "animal")
+        self.assertEqual(api.call_count, 2)
+        self.assertEqual(result["name"], "Toby")
 
     def test_multiple_or_missing_target_count_cannot_pass_usable_flag(self):
         for count in (None, 0, 2):
