@@ -709,6 +709,17 @@ class WedgeRelaunchPolicy:
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run() -> int:
+    from utils.single_instance import lock_path, is_held_by_other
+    from utils.supervisor_handoff import SupervisorHandoff
+    handoff = SupervisorHandoff(lock_path(), is_held_by_other)
+    handoff.start()
+    try:
+        return _run(handoff)
+    finally:
+        handoff.close()
+
+
+def _run(handoff) -> int:
     signal.signal(signal.SIGTERM, lambda *_: _stop.set())
     signal.signal(signal.SIGINT, lambda *_: _stop.set())
 
@@ -771,14 +782,17 @@ def run() -> int:
         nonlocal open_channels
         last_exc = None
         for ch in chan_candidates:
+            s = None
             try:
-                s = sd.InputStream(
+                s = handoff.open_stream(lambda: sd.InputStream(
                     device=device,
                     samplerate=_SAMPLE_RATE,
                     channels=ch,
                     dtype="float32",
                     blocksize=_CHUNK_SAMPLES,
-                )
+                ))
+                if s is None:
+                    return None
                 s.start()
                 open_channels = ch
                 if ch != 1:
@@ -789,18 +803,19 @@ def run() -> int:
                     )
                 return s
             except Exception as exc:
+                if s is not None:
+                    s.close()  # A close failure retains the lease and aborts reopen.
                 last_exc = exc
                 continue
         raise RuntimeError(f"could not open mic with channels {chan_candidates}: {last_exc}")
 
     def _fire(reason: str):
         nonlocal stream, listening, child, restart_after_controller, next_update_check
+        if _controller_running(child):
+            return
         log.info("Wake detected (%s) — launching controller.", reason)
         if stream is not None:
-            try:
-                stream.stop(); stream.close()
-            except Exception:
-                pass
+            stream.close()  # Do not launch a controller after failed microphone close.
             stream = None
         listening = False
         # Instant audio feedback (chime) before the slower controller boots. Mic
@@ -812,6 +827,8 @@ def run() -> int:
             # safe while dormant, then replaces itself when the controller exits.
             restart_after_controller = True
         next_update_check = time.monotonic() + _update_interval_secs()
+        if _controller_running(child):
+            return
         child = _launch_controller()
         if child is None and restart_after_controller:
             _restart_supervisor()
@@ -863,7 +880,7 @@ def run() -> int:
                 if periodic is not None and periodic.updated and not running:
                     if stream is not None:
                         try:
-                            stream.stop(); stream.close()
+                            stream.close()
                         except Exception:
                             pass
                         stream = None
@@ -873,7 +890,7 @@ def run() -> int:
                 # Dormant: release the mic so the controller owns it, and poll.
                 if stream is not None:
                     try:
-                        stream.stop(); stream.close()
+                        stream.close()
                     except Exception:
                         pass
                     stream = None
@@ -887,6 +904,9 @@ def run() -> int:
             if stream is None:
                 try:
                     stream = _open_stream()
+                    if stream is None:
+                        _stop.wait(.1)
+                        continue
                     model.reset()
                     consecutive = 0
                 except Exception as exc:
@@ -907,7 +927,7 @@ def run() -> int:
             except Exception as exc:
                 log.warning("Mic read failed (%s) — reopening.", exc)
                 try:
-                    stream.stop(); stream.close()
+                    stream.close()
                 except Exception:
                     pass
                 stream = None
@@ -957,7 +977,7 @@ def run() -> int:
     finally:
         if stream is not None:
             try:
-                stream.stop(); stream.close()
+                stream.close()
             except Exception:
                 pass
         log.info("Supervisor stopping (controller left running: %s).",

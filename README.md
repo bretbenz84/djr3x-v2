@@ -430,10 +430,15 @@ profiles/acceleration may lengthen the requested travel duration. All targets us
 one three-channel packet and fresh pulse readback; the original hero-arm speech
 behavior remains independent.
 
-Startup requires parked pulse readbacks. If all outputs are off, it can reassert
+Startup accepts parked pulse readbacks or a recognized startup waypoint (within
+the same 0.5 µs arrival tolerance), resuming the remaining verified startup path.
+An interrupted position can also recover through tuck when every pulse is within
+configured/board limits and the entire joint travel box to tuck passes clearance.
+Clearance boundaries use that same tolerance to avoid accepting arrival and then
+rejecting the next movement over a fraction of a microsecond. If all outputs are off, it can reassert
 park only after a previously completed park recorded in the local, ignored
 `data/throttle_arm_parked.json`. A missing marker, partially disabled channels, or
-an unexpected pose prevents automatic repositioning. Runtime, tour, and menu-bar
+a pose without a verified path to tuck prevents automatic repositioning. Runtime, tour, and menu-bar
 writes invalidate that marker before moving; successful runtime/tour parking (or
 an explicit `throttle_pose_tour.py --action inspect` at stationary park) restores it.
 Do not rely on the marker after physically repositioning an unpowered joint or
@@ -559,8 +564,8 @@ the chest uses its existing FastLED GRB configuration.
 
 #### Spoken throttle-arm poses
 
-Runtime motion uses per-joint pace multipliers: shoulder 1.25×, elbow 1.6×,
-wrist 2× the original profiles, including startup, idle, speech, poses, parking,
+Runtime motion uses per-joint pace multipliers: shoulder 1.375×, elbow 1.76×,
+wrist 2.2× the original profiles (10% above the previous tuning), including startup, idle, speech, poses, parking,
 and base retraction. Speed and acceleration caps scale with the pace; joints
 can finish at different times within the existing independent-progress clearance
 checks. Holds and pauses are unchanged. These are commanded profile increases,
@@ -577,7 +582,7 @@ not measured physical speed guarantees.
 - “Relax your arm” / “pull your arm back” / “return your arm to neutral”: the
   normal bent-elbow rest pose.
 
-High five coordinates all three joints with the same proportional pace (1.25×).
+High five coordinates all three joints with the same proportional pace (1.375×).
 The owner confirmed simultaneous movement from full-down: this directed recorded
 transition now uses one atomic target batch, without a preliminary shoulder lift
 or tuck detour. The reverse lowering transition retains its staged route.

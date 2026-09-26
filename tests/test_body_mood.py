@@ -134,6 +134,27 @@ class BodyMoodStateTest(unittest.TestCase):
         body_mood.set_mood("proud", intensity=1.0, ttl=60)
         self.assertGreater(body_mood.visor_target(), floor)
 
+    def test_squint_relaxes_toward_neutral_as_emotion_decays(self):
+        for mood in ("angry", "suspicious", "offended"):
+            body_mood.clear()
+            body_mood.set_mood(mood, intensity=1.0, ttl=10)
+            self.assertEqual(body_mood.visor_target(), 5100)
+            self._t[0] += 5
+            self.assertAlmostEqual(body_mood.visor_target(), (5100 + 6560) / 2, delta=2)
+        for mood in ("sad", "bored", "thinking", "happy"):
+            body_mood.clear()
+            body_mood.set_mood(mood, intensity=1.0, ttl=10)
+            self.assertGreaterEqual(body_mood.visor_target(), 6000)
+
+    def test_idle_visor_drifts_in_relaxed_range(self):
+        targets = [body_mood.idle_visor_target(t / 10) for t in range(140)]
+        self.assertGreater(max(targets) - min(targets), 300)
+        self.assertGreaterEqual(min(targets), 6000)
+        self.assertLessEqual(max(targets), config.SERVO_CHANNELS["visor"]["max"])
+        self.assertLess(max(abs(a - b) for a, b in zip(targets, targets[1:])), 20)
+        with mock.patch.object(config, "SERVO_IDLE_VISOR_ENABLED", False):
+            self.assertIsNone(body_mood.idle_visor_target(1.0))
+
     def test_visor_none_below_min_intensity(self):
         body_mood.set_mood("proud", intensity=1.0, ttl=10)
         self._t[0] += 9.0  # intensity ~0.1, below the 0.25 visor floor
@@ -328,6 +349,24 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
             c._step_mood_expression({}, mock.Mock())
         set_servo.assert_not_called()
 
+    def test_idle_yields_to_listening_and_scripted_head_gestures(self):
+        from intelligence import consciousness as c
+        for listening, gesture in ((True, False), (False, True)):
+            with (mock.patch("hardware.servos.listening_motion_active", return_value=listening),
+                  mock.patch("hardware.servos.head_gesture_active", return_value=gesture),
+                  mock.patch("hardware.servos.manual_override_enabled", return_value=False),
+                  mock.patch("hardware.servos.set_servo") as move,
+                  mock.patch.object(config, "BODY_MOOD_IDLE_GESTURE_ENABLED", False)):
+                c._step_mood_expression({}, mock.Mock())
+                move.assert_not_called()
+
+    def test_idle_yields_to_body_sequence(self):
+        from intelligence import consciousness as c
+        with (mock.patch("sequences.animations.body_motion_active", return_value=True),
+              mock.patch("hardware.servos.set_servo") as move):
+            c._step_mood_expression({}, mock.Mock())
+            move.assert_not_called()
+
     def test_manual_override_blocks_all(self):
         from intelligence import consciousness as c
         body_mood.set_mood("proud", intensity=1.0, ttl=60)
@@ -347,16 +386,13 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
             c._step_mood_expression({}, mock.Mock())
         set_servo.assert_not_called()
 
-    def test_visor_released_to_lens_clear_floor_when_mood_ends(self):
-        # SAFETY REGRESSION GUARD: when a mood decays the visor must be released to the
-        # LENS-CLEAR FLOOR (6400 / VISOR_HALF), never to the servo neutral (6000) which
-        # sits below the floor and would partially cover the camera lens.
+    def test_visor_released_to_relaxed_idle_when_mood_ends(self):
         from intelligence import consciousness as c
         servo = self._servo()
         visor_ch = int(config.SERVO_CHANNELS["visor"]["ch"])
         floor = int(body_mood.visor_lens_clear_floor())
-        self.assertEqual(floor, 6400)
-        self.assertGreater(floor, int(config.SERVO_CHANNELS["visor"]["neutral"]))  # 6400 > 6000
+        self.assertEqual(floor, 5100)
+        relaxed = int(config.SERVO_CHANNELS["visor"]["neutral"])
         breathing = mock.Mock()
         patches = [
             mock.patch("hardware.servos.manual_override_enabled", servo.manual_override_enabled),
@@ -365,6 +401,8 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
             mock.patch("hardware.servos.set_motion_profile"),
             mock.patch("hardware.servos.set_breathing_emotion", breathing),
             mock.patch.object(config, "BODY_MOOD_IDLE_GESTURE_ENABLED", False),
+            mock.patch.object(body_mood, "idle_visor_target", return_value=relaxed),
+            mock.patch.object(config, "BODY_MOOD_AMBIENT_FALLBACK_ENABLED", False),
         ]
         for p in patches:
             p.start()
@@ -378,20 +416,19 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
                 self.assertGreaterEqual(pos, floor)          # never below the lens floor
             breathing.assert_any_call("excited")
             breathing.reset_mock()
-            # Tick 2: mood gone → visor RELEASED to the lens-clear floor (not 6000), and
-            # breathing released back to neutral, each exactly once.
+            # Tick 2: mood gone → relaxed idle, with breathing returned to neutral.
             body_mood.clear()
             with mock.patch("hardware.servos.set_servo") as set_servo:
                 c._step_mood_expression({}, mock.Mock())
-                set_servo.assert_called_once_with(visor_ch, floor)
+                set_servo.assert_called_once_with(visor_ch, relaxed)
                 self.assertGreaterEqual(set_servo.call_args.args[1], floor)
                 self.assertFalse(c._mood_owns_visor)
             breathing.assert_called_once_with("neutral")
             breathing.reset_mock()
-            # Tick 3: fully released → no redundant visor or breathing commands.
+            # Tick 3: idle continues, breathing is not redundantly reasserted.
             with mock.patch("hardware.servos.set_servo") as set_servo:
                 c._step_mood_expression({}, mock.Mock())
-                set_servo.assert_not_called()
+                set_servo.assert_called_once_with(visor_ch, relaxed)
             breathing.assert_not_called()
         finally:
             for p in reversed(patches):

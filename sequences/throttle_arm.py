@@ -286,7 +286,9 @@ class Controller:
                         return False
                 return True
             if not (clearance_box(current, REST) and clearance_box(REST, target)):
-                raise ValueError('No verified throttle expression transition')
+                raise ValueError(f'No verified throttle expression transition: '
+                                 f'current_us={[current[ch] / 4 for ch in CHANNELS]} '
+                                 f'target_us={[target[ch] / 4 for ch in CHANNELS]}')
             if not self.move(REST, kind, duration, parking=parking):
                 return False
         try:
@@ -333,17 +335,44 @@ class Controller:
             validate_repertoire()
             self.connection = servos.throttle_connection()
             current = servos.read_throttle_pose(self.connection)
+            startup = STARTUP
+            _log.info('Throttle startup current_us=%s', [current[ch] / 4 for ch in CHANNELS])
             if not any(current.values()) and cold_start_park_known():
                 if not self.move(PARK, 'PARK', config.THROTTLE_PARK_MOVE_SECS,
                                  parking=True, cold_start=True):
                     return
             elif any(abs(current[ch] - PARK[ch]) > 2 for ch in CHANNELS):
-                raise ValueError('Throttle startup requires the verified park; no automatic reposition')
+                # A failed earlier startup can leave a completed waypoint
+                # instead of PARK. Resume only a recognized, bounded waypoint;
+                # never infer clearance for an arbitrary position.
+                for index, waypoint in enumerate(STARTUP):
+                    if all(abs(current[ch] - waypoint[ch]) <= 2 for ch in CHANNELS):
+                        startup = STARTUP[index + 1:]
+                        _log.info('Throttle resuming verified startup waypoint %d', index)
+                        break
+                else:
+                    # A stopped move need not land on an exact waypoint. Accept
+                    # live, bounded output pulses only when the entire return
+                    # to TUCK passes the same independent-joint clearance check
+                    # used by runtime motion. Zero/partial/unsafe poses fail.
+                    limits = {cfg['ch']: cfg for cfg in config.THROTTLE_SERVO_CHANNELS.values()}
+                    try:
+                        validate_pose(current, limits)
+                        recoverable = clearance_box(current, TUCK)
+                    except ValueError:
+                        recoverable = False
+                    if not recoverable:
+                        raise ValueError('Throttle startup requires a verified path to tuck; '
+                                         f'current_us={[current[ch] / 4 for ch in CHANNELS]}')
+                    _log.info('Throttle startup recovering through verified tuck path')
             if self.park_event.is_set():
-                remember_park()
-                self.parked = True
+                if all(abs(current[ch] - PARK[ch]) <= 2 for ch in CHANNELS) or not any(current.values()):
+                    remember_park()
+                    self.parked = True
+                else:
+                    self._park()
                 return
-            for target in STARTUP:
+            for target in startup:
                 if not self.move(target, 'STARTUP', config.THROTTLE_STARTUP_MOVE_SECS):
                     break
             next_idle = time.monotonic() + random.uniform(*config.THROTTLE_IDLE_DWELL_SECS)

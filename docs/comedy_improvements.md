@@ -571,6 +571,16 @@ Sulk-after-flop deferred. Tests: `tests/test_humor_actions.py`
 (`test_router_roast_action_makes_rex_smug`, `test_joke_action_does_not_make_rex_smug`). **Effort: S.**
 
 ### Angry/offended visor squint — **✅ IMPLEMENTED** *(make insult/anger read as a squint, not an open glare)*
+
+**Camera calibration update (2026-09-25):** The relocated camera is clear down to
+**1275 µs / 5100 q-µs**. Sustained suspicion, anger and offense, angry speech, and
+suspicion/anger beats now use this lower limit. Relaxed speech stays at or above
+1500 µs, and neutral idle visor motion drifts ±45 µs around 1640 µs over seven
+seconds. Mood decay blends back toward neutral. Both lower-corner object/animal
+exclusion zones are removed. Sleep/privacy still close the visor; the ordinary
+visor-peek beat now stays open enough to preserve vision. Earlier calibration
+values below describe the previous camera placement.
+
 **Shipped:** `body_mood._MOOD_POSE` offended/angry visor targets → **6400** (the lens-clear floor),
 so insult/anger now narrows the visor to a squint instead of opening it (`angry` was an open 6800,
 `offended` 6500). The floor enforces "squint, but not blind." Tests: `tests/test_body_mood.py`

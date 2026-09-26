@@ -12601,9 +12601,12 @@ def _step_mood_expression(snapshot: dict, profile: "SituationProfile") -> None:
         if not body_mood.enabled():
             return
         from hardware import servos as servo_mod
+        from sequences import animations
+        if animations.body_motion_active():
+            return
 
         try:
-            if servo_mod.manual_override_enabled():
+            if servo_mod.manual_override_enabled() or servo_mod.head_gesture_active():
                 return
         except Exception:
             return
@@ -12623,13 +12626,14 @@ def _step_mood_expression(snapshot: dict, profile: "SituationProfile") -> None:
                 target = body_mood.visor_target()
             except Exception:
                 target = None
-            if target is None and _mood_owns_visor:
-                # Mood ended → release the visor back to its lens-clear resting position.
-                # MUST be the lens-clear floor (VISOR_HALF), NOT the servo neutral (6000),
-                # which sits below the floor and would partially cover the camera lens.
-                target = int(body_mood.visor_lens_clear_floor())
+            if target is None:
+                releasing = _mood_owns_visor
                 _mood_owns_visor = False
-            elif target is not None:
+                target = body_mood.idle_visor_target(now)
+                if target is None and releasing:
+                    target = max(body_mood.visor_lens_clear_floor(),
+                                 int(config.SERVO_CHANNELS["visor"]["neutral"]))
+            else:
                 _mood_owns_visor = True
             if target is not None:
                 try:

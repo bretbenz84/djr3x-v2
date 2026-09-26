@@ -65,6 +65,36 @@ class RuntimeTest(unittest.TestCase):
         servos.move_throttle_pose(self.port, target, speed_caps=config.THROTTLE_SPEECH_SPEED,
                                  accel_caps=config.THROTTLE_SPEECH_ACCEL, duration=3.5, **kwargs)
 
+    def test_startup_accepts_arrival_tolerance_at_clearance_boundary(self):
+        controller = arm.Controller()
+        controller.connection = self.port
+        def arrived(target):
+            if target == motion.TUCK:
+                self.port.pose[8] += 1  # Accepted arrival, 0.25 us below shoulder boundary.
+        self.port.on_target = arrived
+        for target in arm.STARTUP:
+            self.assertTrue(controller.move(target, 'STARTUP', 1.25))
+        self.assertEqual(self.port.pose, arm.REST)
+
+    def test_restart_resumes_recognized_startup_pose_but_not_unknown_pose(self):
+        for initial, expected_success in (({**motion.TUCK, 8: motion.TUCK[8] + 1}, True),
+                                          (arm.pose(1636.25, 1957.25, 512), True),
+                                          ({8: 0, 9: 8400, 10: 2048}, False),
+                                          (arm.pose(1800, 1400, 2200), False)):
+            with self.subTest(initial=initial):
+                self.port.pose = dict(initial)
+                self.port.packets.clear()
+                controller = arm.Controller()
+                self.port.on_target = lambda p: controller.park_event.set() if p == arm.REST else None
+                controller.run()
+                if expected_success:
+                    self.assertIsNone(controller.fault)
+                    self.assertTrue(controller.parked)
+                else:
+                    self.assertIn('startup requires', controller.fault)
+                    # Holding the unknown pose is permitted; repositioning is not.
+                    self.assertEqual(self.port.pose, initial)
+
     def test_every_repertoire_path_stays_clear_for_independent_joint_progress(self):
         arm.validate_repertoire()
         normal = arm.IDLE + tuple(p for gesture in arm.SPEECH for p in gesture)
@@ -391,7 +421,7 @@ class RuntimeTest(unittest.TestCase):
         speeds = {p[1]: p[2] + 128 * p[3] for p in self.port.packets if p[0] == 0x87}
         # Equal travel formerly sent 4 to every joint. Pace must affect actual
         # packets, not merely raise caps that a slow requested duration defeats.
-        self.assertEqual(speeds, {8: 5, 9: 6, 10: 8})
+        self.assertEqual(speeds, {8: 6, 9: 7, 10: 9})
 
     def test_startup_speed_is_brisk_but_within_configured_joint_caps(self):
         servos.move_throttle_pose(
@@ -452,13 +482,14 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(len(self.port.targets), count)
 
     def test_startup_fault_does_not_enable_autonomous_reposition_or_speech_restart(self):
-        self.port.pose = dict(arm.REST)
+        unknown = arm.pose(1800, 1400, 2200)
+        self.port.pose = dict(unknown)
         self.assertTrue(arm.start())
         self.assertTrue(arm._controller.done.wait(2.0))
         self.assertIsNotNone(arm._controller.fault)
         self.assertFalse(arm.start())
         # Only an at-current-pulse hold may be sent after rejecting startup.
-        self.assertEqual(self.port.pose, arm.REST)
+        self.assertEqual(self.port.pose, unknown)
 
     def test_sleep_state_requests_parking_and_holds_off_speech(self):
         ready = threading.Event()

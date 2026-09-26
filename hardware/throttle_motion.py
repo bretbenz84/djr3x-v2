@@ -9,6 +9,8 @@ import math
 from pathlib import Path
 
 CHANNELS = (8, 9, 10)
+# Same half-microsecond pulse tolerance used by the worker's arrival check.
+PULSE_TOLERANCE = 2
 PARK = {8: 2272 * 4, 9: 2496 * 4, 10: 512 * 4}
 TUCK = {8: 1636 * 4, 9: 2100 * 4, 10: 512 * 4}
 RAISED = 544 * 4
@@ -40,16 +42,17 @@ def clearance_box(start, end):
     shoulder = max(start[8], end[8])
     elbow = min(start[9], end[9])
     wrist = max(start[10], end[10])
-    minimum = 1546 if shoulder > 1702 * 4 else 636 if shoulder > 1636 * 4 else 500
-    if elbow < minimum * 4:
+    tolerance = PULSE_TOLERANCE
+    minimum = 1546 if shoulder > 1702 * 4 + tolerance else 636 if shoulder > 1636 * 4 + tolerance else 500
+    if elbow < minimum * 4 - tolerance:
         return False
-    if shoulder <= RAISED:
+    if shoulder <= RAISED + tolerance:
         return True
-    if shoulder <= 1384.5 * 4 and elbow >= 512 * 4 and wrist <= 2254.25 * 4:
+    if shoulder <= 1384.5 * 4 + tolerance and elbow >= 512 * 4 - tolerance and wrist <= 2254.25 * 4 + tolerance:
         return True
-    if shoulder <= 1636 * 4:
-        return wrist <= 1500 * 4 or elbow >= 900 * 4
-    return elbow >= 1546 * 4 and wrist <= 512 * 4
+    if shoulder <= 1636 * 4 + tolerance:
+        return wrist <= 1500 * 4 + tolerance or elbow >= 900 * 4 - tolerance
+    return elbow >= 1546 * 4 - tolerance and wrist <= 512 * 4 + tolerance
 
 
 def validate_pose(pose, limits):

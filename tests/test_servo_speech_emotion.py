@@ -73,7 +73,7 @@ class SpeechVisorFloorTests(unittest.TestCase):
     def _visor_target(self, servos, speech_motion, intensity=0.5):
         """One talking frame's visor target for a given emotion motion profile.
 
-        The per-frame jitter is pinned to 0 so only the floor/swing math shows; the
+        The per-frame jitter is pinned to its negative extreme to check the clamp; the
         visor wave still rides the wall clock, so the target lands somewhere in
         [floor, floor + swing] — which is what these tests bound.
         """
@@ -87,7 +87,7 @@ class SpeechVisorFloorTests(unittest.TestCase):
             with (
                 mock.patch.object(servos, "SERVOS_ENABLED", True),
                 mock.patch.object(servos, "_program_servo_updates_blocked", return_value=False),
-                mock.patch.object(servos.random, "randint", return_value=0),
+                mock.patch.object(servos.random, "randint", return_value=-45),
                 mock.patch.object(servos, "set_servos", side_effect=lambda t: captured.append(dict(t))),
             ):
                 servos.speech_reactive_move(intensity)
@@ -123,6 +123,14 @@ class SpeechVisorFloorTests(unittest.TestCase):
         # the visor stays open — the floor never drags an expressive emotion down.
         self.assertGreater(target, int(config.SERVO_CHANNELS["visor"]["neutral"]))
 
+    def test_angry_speech_reaches_camera_floor_even_with_negative_jitter(self):
+        from hardware import servos
+        from intelligence import emotion_orchestrator
+        motion = emotion_orchestrator.frame_for_emotion("angry").speech_motion
+        with mock.patch.object(servos.math, "sin", return_value=-1):
+            target = self._visor_target(servos, motion)
+        self.assertEqual(target, 5100)
+
     def test_a_capture_opens_the_visor_above_the_camera_clear_floor(self):
         import config
         from vision import camera
@@ -132,7 +140,7 @@ class SpeechVisorFloorTests(unittest.TestCase):
         # A picture must never be taken through the expressive floor.
         self.assertGreaterEqual(target, int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS))
         self.assertGreater(target, int(config.VISOR_SPEECH_FLOOR_QUS))
-        self.assertEqual(int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS), 6600)   # 1650 us
+        self.assertEqual(int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS), 5100)   # 1275 us
 
 
 if __name__ == "__main__":

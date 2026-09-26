@@ -77,7 +77,7 @@ class ThrottleCommissioningTest(unittest.TestCase):
             self.servos._apply_throttle_startup_locked()
         self.assertEqual(self.wire.call_args_list, [
             mock.call(bytes([0x89, 8, 8, 0])),
-            mock.call(bytes([0x87, 8, 38, 0])),
+            mock.call(bytes([0x87, 8, 41, 0])),
             mock.call(bytes([0x84, 8, 112, 46])),
         ])
 

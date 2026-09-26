@@ -2694,22 +2694,14 @@ SERVO_SPEECH_TILT_WOBBLE_QUS = 120
 SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS = 0.35
 SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS = 0.75
 SERVO_SPEECH_HAND_DIVISOR = 3
-# Visor travel while TALKING (hardware/servos._speech_targets). Each emotion picks
-# the bottom of its visor swing with visor_open_floor_frac (0.35 brooding … 0.92
-# wide-eyed); this is the hard floor underneath those. It used to be the visor's
-# own neutral, 6560 q-µs / 1640 µs — which sat ABOVE six of the ten emotion fracs
-# and flattened them all to the same opening, so the visor barely moved while he
-# talked. 6000 q-µs = 1500 µs (owner-set 2026-08-22) puts the quiet emotions back
-# below the talkative ones. It does clip the top of the camera frame, but not
-# enough to stop face recognition even standing right next to him, and any
-# deliberate capture re-opens the visor first (VISOR_CAMERA_CLEAR_FLOOR_QUS).
-# Raise toward 6560 to undo; the per-emotion fracs are the finer knob.
+# Camera repositioned 2026-09-25: 1275 µs is the lowest lens-clear position.
+# Ordinary speech stays relaxed at 1500 µs; angry speech explicitly requests the
+# lower expressive floor. Sleep/privacy retain the physical closed position.
+VISOR_CAMERA_CLEAR_FLOOR_QUS = 5100
 VISOR_SPEECH_FLOOR_QUS = 6000
-# Floor for DELIBERATE captures (camera.capture_still / capture_current_gaze):
-# 6600 q-µs = 1650 µs, the point below which the visor starts eating the top of
-# the frame. Both paths open to the channel max, comfortably above this — the
-# floor is what keeps a picture off the expressive floor above if that changes.
-VISOR_CAMERA_CLEAR_FLOOR_QUS = 6600
+SERVO_IDLE_VISOR_ENABLED = True
+SERVO_IDLE_VISOR_AMPLITUDE_QUS = 180  # ±45 µs around neutral; no idle squint
+SERVO_IDLE_VISOR_PERIOD_SECS = 7.0
 # Pokerarm sways back and forth while speaking on a SLOWER cadence than the hero arm
 # (which re-targets every update frame) — a slow, deliberate beat, yet far livelier
 # than the idle arm wander (which moves the pokerarm only every 4-9s).
@@ -2771,7 +2763,7 @@ SERVO_CHANNELS = {
     # driven to.
     "headlift": {"ch": 1, "min": 2600, "max": 7744, "neutral": 3600},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
-    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — 6000 hid part of the camera
+    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — relaxed open expression
     # A higher value lifts the arm, so the MIN end is the arm hanging down —
     # rest = 6300, the lowest value the limits allow. Powered down the servo is
     # limp and the arm falls to exactly there, so parking and starting here is
@@ -2955,10 +2947,10 @@ THROTTLE_SPEECH_ACCEL = {8: 5, 9: 10, 10: 12}
 THROTTLE_PARK_SPEED = {8: 26, 9: 60, 10: 65}
 THROTTLE_PARK_ACCEL = {8: 5, 9: 10, 10: 12}
 
-# Runtime pace: shoulder +25%, elbow +60%, wrist +100%. Apply to both
+# Runtime pace: another 10% above the previous 1.25/1.6/2.0 tuning. Apply to both
 # profile limits and duration-limited movement, so short gestures speed up too.
 # Clearance boxes already account for independent joint progress.
-THROTTLE_PACE = {8: 1.25, 9: 1.6, 10: 2.0}
+THROTTLE_PACE = {8: 1.375, 9: 1.76, 10: 2.2}
 for _throttle_cfg in THROTTLE_SERVO_CHANNELS.values():
     _pace = THROTTLE_PACE[_throttle_cfg['ch']]
     for _field in ('speed', 'acceleration'):
@@ -2991,10 +2983,9 @@ CAMERA_POSE_SETTLE_SECS = 0.5
 # gaze preserves the existing pose instead of centering the neck.
 DIRECTED_LOOK_SETTLE_SECS = 0.22
 # After turning to the commanded direction, hold this long before snapping the photo so
-# BOTH the neck and the visor servo reach their targets. The visor rests near neutral
-# (6000, below the 6400 lens-clear floor) and the idle breathing/mood loop keeps tugging
-# it back there, so a short settle photographs a partly-covered lens. capture_current_gaze
-# re-asserts the visor fully open across this whole window. (logged 2026-06-21)
+# BOTH the neck and the visor servo reach their targets. capture_current_gaze
+# reasserts the fully open capture pose across this window. The relocated camera
+# also stays clear during ordinary speech, emotional squints, and idle motion.
 DIRECTED_LOOK_CAPTURE_SETTLE_SECS = 1.5
 DIRECTED_LOOK_STEP_QUS = 160
 DIRECTED_LOOK_STEP_DELAY_SECS = 0.008
@@ -4850,11 +4841,8 @@ BODY_MOOD_IDLE_GESTURE_COOLDOWN_SECS = 25.0  # min spacing between idle mood ges
 BODY_MOOD_IDLE_GESTURE_CHANCE = 0.35       # per-eligible-tick probability of an idle mood gesture
 BODY_MOOD_REST_MAX_LIFT_OFFSET_QUS = 1100  # clamp the mood head-lift bias on the rest pose
 BODY_MOOD_REST_MAX_TILT_OFFSET_QUS = 320   # clamp the mood head-tilt bias on the rest pose
-# Visor lens-clear floor (quarter-µs): VISOR_HALF — "default resting open, clear of the
-# camera lens". The mood layer must NEVER command the visor below this (lower = more
-# closed = covers the lens Rex tracks faces with), including when releasing it back to
-# rest after a mood decays. Shared by body_mood.visor_target() and the visor release.
-BODY_MOOD_VISOR_LENS_CLEAR_FLOOR = 6400
+# Sustained suspicion/anger may squint to 1275 µs without covering the camera.
+BODY_MOOD_VISOR_LENS_CLEAR_FLOOR = VISOR_CAMERA_CLEAR_FLOOR_QUS
 BODY_MOOD_VISOR_SERVO_SPEED = 30           # Maestro speed for gentle mood visor moves (0-255)
 BODY_MOOD_VISOR_SERVO_ACCELERATION = 8     # Maestro acceleration for mood visor moves (0-255)
 
@@ -6306,26 +6294,9 @@ OBJECT_DETECTION_MAX_RESULTS = _env_int(
     min_value=1,
     max_value=25,
 )
-# Self-occlusion mask (field bug 2026-07-12): Rex's own eye stalks sit in front of the
-# wide lens and read as big dark blobs at the 1080p crop's bottom corners — the object
-# detector kept publishing them as "chairs" (and once a 0.21 "dog"), feeding phantom
-# furniture into world_state.objects, the rex.db room model, and visual curiosity.
-# Normalized (x0, y0, x1, y1) rects in frame coordinates; any detection whose box lies
-# MOSTLY inside a zone is dropped at the source. The GUI vision panel outlines the
-# zones (dim dashed violet) so they can be aligned against the live feed by eye —
-# adjust here if the camera or the eye hardware moves.
-# The zones describe the ROBOT'S face hardware — on a dev Mac's built-in camera
-# there are no eye stalks in frame, and masking a third of the picture just
-# hides real objects. When CAMERA_DEVICE_NAME points at a built-in Mac camera
-# (e.g. "MacBook Pro Camera"), the zones are disabled entirely; every consumer
-# (object scan, animal scan, GUI overlay) already tolerates an empty list.
-_CAMERA_IS_DEV_MAC = "macbook" in (os.getenv("CAMERA_DEVICE_NAME") or "").strip().lower()
-CAMERA_SELF_OCCLUSION_ZONES = [] if _CAMERA_IS_DEV_MAC else [
-    (0.00, 0.50, 0.32, 1.00),   # left eye stalk (bottom-left blob) — widened 0.15 -> 0.32
-                                # (field 2026-07-17: it still read as a 55% "chair"; the
-                                # blob spans ~30% of the frame width, screenshot-verified)
-    (0.60, 0.45, 1.00, 1.00),   # right eye stalk (bottom-right blob, the "chair")
-]
+# Camera repositioned 2026-09-25: neither lower corner contains face hardware.
+# Keep the optional mask mechanism available, but detect across the whole frame.
+CAMERA_SELF_OCCLUSION_ZONES = []
 CAMERA_SELF_OCCLUSION_MAX_OVERLAP = 0.55   # box fraction inside a zone that kills it
 # Consecutive-scan confirm streak before an object counts as really present — indoor
 # flicker / one-frame misreads must persist first, exactly like animal arrivals.

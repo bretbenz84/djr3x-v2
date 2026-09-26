@@ -45,6 +45,16 @@ class SelfOcclusionMaskTests(unittest.TestCase):
              mock.patch.object(config, "CAMERA_SELF_OCCLUSION_MAX_OVERLAP", 0.55, create=True):
             return ad._object_records_from_detections(detections, self.FRAME, now=123.0)
 
+    def test_repositioned_camera_detects_objects_in_both_lower_corners(self):
+        import config
+        from vision import animal_detector as ad
+        self.assertEqual(config.CAMERA_SELF_OCCLUSION_ZONES, [])
+        boxes = [_FakeBox(30, 650, 350, 350), _FakeBox(1400, 650, 350, 350)]
+        for box in boxes:
+            records = ad._object_records_from_detections(
+                [_FakeDetection("chair", 0.95, box=box)], self.FRAME, now=123.0)
+            self.assertEqual([r["label"] for r in records], ["chair"])
+
     def test_detection_inside_zone_is_suppressed(self):
         # Box fully inside the bottom-right zone (0.60-1.0 x, 0.45-1.0 y of 1920x1080).
         zone_box = _FakeBox(1300, 600, 400, 400)

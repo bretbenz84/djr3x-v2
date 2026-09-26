@@ -1490,7 +1490,7 @@ venv/bin/python main.py
 - Visit-milestone greeting fires ONCE, not every boot (`people.last_milestone_greeted` column + `record_milestone_greeted`; `consciousness._pick_milestone` guard + `milestone_to_mark` commit). visit_count only advances after a real conversation (`interaction._end_session` skips empty transcripts), so a person parked at visit 4 used to hear "your 5th visit" on every startup. `VISIT_MILESTONES=[5,10,25,50,100]`. `tests/test_greeting_repeat_fixes.py`.
 - Episodic memory rex.db — CAPTURE + RECALL (recall IS wired in, contrary to older notes): `memory/rex_db.py` (2nd connection layer, path read at call time) + `memory/episodes.py` capture, gated by `EPISODIC_MEMORY_ENABLED` + a test-runner suppression so the SUITE NEVER creates/writes a real rex.db (reads gated too). Capture hooks + an LLM shutdown session-summary; schema in `setup_assets.py`; `tests/test_episodes.py`. **Recall (Phase 2) is implemented + enabled** via `memory/episodic_recall.py` under the SEPARATE `EPISODIC_RECALL_ENABLED` switch (default on), with two surfaces. (1) The idle **"memory musing" beat** (`session_recap` — a "since I was last on" scene vibe + a couple of experiential highlights) is now a **Lean cue**: `interaction._lean_memory_musing_cue` feeds it into `lean_brain.consider_initiating` at the LOWEST priority (only when no celebration/holiday/event/callback/visual-riff fires), gated by `LEAN_MEMORY_MUSING_ENABLED` + `EPISODIC_RECALL_SESSION_RECAP_PROBABILITY` and capped at ONE per session (`_lean_memory_mused_this_session`, reset in `_end_session`) since the recap is stable within a session. The legacy `idle_behaviors.do_memory_musing` (purpose `memory_musing`, still in `LEAN_SUPPRESSED_PROACTIVE_PURPOSES`) is the pre-lean path and stays governor-suppressed — the cue replaced it. Tests: `tests/test_lean_memory_musing.py`. (2) The per-person **shared-memory reply callback** (`llm._pick_episodic_callback`, prob `EPISODIC_RECALL_PERSON_CALLBACK_PROBABILITY`) is injected into the CLASSIC `assemble_system_prompt` AND — since 2026-08-08 — into the lean reply path too (`lean_brain._person_lines` calls the same picker; shared roll + session dedup, kill switch `LEAN_EPISODIC_CALLBACK_ENABLED`; see the 2026-08-08 entry). The former lean-path recall gap is CLOSED. Two switches kept independent so the diary builds silently during A/B. Do NOT delete `episodic_recall.py` as dead scaffolding.
 - Episodic batch-2 capture kinds: enrollment/visit-departure/celebrity/emotional-checkin/celebration/boundary/games + memorable greeting tiers (birthday/milestone/celebration/reunion). Proactive-speech captures are SPOKE-GATED (only when Rex actually spoke); real-world events fire at the event. `memory/episodes.py` + `episodic_hooks` + `interaction`/`boundaries`/`games` hooks.
-- Mood-driven body language (`intelligence/body_mood.py`, pure state): a decaying "body mood" set by compliments/insults/amusement shapes posture — head lift/tilt bias on the RESTING pose (never fights the face-centering controller), visor openness, breathing cadence, occasional idle gesture. Visor is hard-clamped to the lens-clear floor (6400) so a mood can't blind the camera. `consciousness._step_mood_expression`/`_mood_rest_bias`; `tests/test_body_mood.py`.
+- Mood-driven body language (`intelligence/body_mood.py`, pure state): a decaying "body mood" set by compliments/insults/amusement shapes posture — head lift/tilt bias on the RESTING pose (never fights the face-centering controller), visor openness, breathing cadence, occasional idle gesture. Camera repositioned 2026-09-25: visor lens-clear floor is 5100 q-µs (1275 µs), reserved for suspicion/anger/offense; mood decay returns toward neutral and relaxed idle visor motion runs between speech/listening. Both lower-corner detection masks are now empty. `consciousness._step_mood_expression`/`_mood_rest_bias`; `tests/test_body_mood.py`.
 - Calmer head during speech + at the servo rails (`consciousness._step_face_tracking`/`_neck_saturated_at_rail`, `FACE_TRACKING_SPEECH_*`/`FACE_TRACKING_RAIL_DAMP_*`): soften centering while speaking; hold the neck instead of jittering when it's pinned at a limit (`tests/test_face_tracking.py`).
 - Compliment detection coverage (`config.COMPLIMENT_KEYWORDS/PHRASES`): broadened so everyday compliments ("nice robot", "good boy", "you're sweet/cool") fire the layer-1 proud beat BEFORE the reply (when the arm servos are free). Phrases, not bare words, to avoid false positives.
 - Idle "mind of his own" head wander (`consciousness._idle_wander`/`_step_idle_head_wander`/`_drive_idle_head_wander`, `IDLE_HEAD_WANDER_*`; `tests/test_idle_head_wander.py`): when the conversation lulls with a face locked, look around the room then return gaze and maybe re-greet. The face-loop drives it ABOVE the frame/listening early-returns (self-aborts on speech/listening/resumed talk); a 1Hz backstop ends any stalled wander — `active` can never get stuck.
@@ -3826,6 +3826,28 @@ configured limits and direct clearance). Unsafe adjustments remain in place.
 All still yield to the base interlock and sleep/shutdown. README lists phrases.
 
 ## Full-down arm command correction (2026-09-23)
+
+Latest speed adjustment: owner requested slightly faster again. Runtime pace is
+now 1.375/1.76/2.2, a 10% increase over the preceding tuning. High five uses the
+shared minimum pace (1.375) to preserve coordination. Holds and clearance paths
+are unchanged; integer Maestro profile quantization still applies.
+
+23:41/23:42 startup fault review: first run stopped with “No verified throttle
+expression transition,” then the next rejected its non-park starting pose.
+Reproduced a tolerance mismatch: arrival accepts ±2 quarter-microseconds but
+clearance rejected TUCK shoulder +1. Shared clearance boundaries now use that
+same 0.5 µs tolerance. Startup can resume only an exact recognized STARTUP
+waypoint within tolerance; unknown/manual poses and unverified zero outputs
+still fail closed. Added startup pulse and failed-transition endpoint logging,
+because the original logs lacked pulse values needed to prove that exact cause.
+Tests reproduce the pre-fix halt and verify recovery plus unknown-pose rejection.
+
+23:46 restart exposed the actual held pulses: 1636.25 / 1957.25 / 512 µs.
+The initial recovery fix was too narrow: this is between waypoints, not TUCK.
+Startup now also accepts bounded nonzero live pulses when their entire travel
+box to TUCK passes the existing clearance model, then follows normal STARTUP.
+The exact logged pose is covered by regression tests alongside partial-zero
+and unsafe-path rejection. No clearance region was added for this recovery.
 
 High-five coordination follow-up: owner explicitly confirmed simultaneous motion
 from full-down. A directed exception from the recorded full-down corridor to

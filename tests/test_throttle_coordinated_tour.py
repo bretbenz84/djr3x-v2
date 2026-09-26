@@ -96,7 +96,8 @@ class CoordinatedTest(unittest.TestCase):
     def test_wrist_boundary_at_shoulder_1636(self):
         start={8:6544,9:2000,10:6000}
         self.assertTrue(c.clearance_box(start,{8:2176,9:2600,10:2048}))
-        self.assertFalse(c.clearance_box({**start,10:6001},{8:2176,9:2600,10:2048}))
+        self.assertTrue(c.clearance_box({**start,10:6002},{8:2176,9:2600,10:2048}))
+        self.assertFalse(c.clearance_box({**start,10:6003},{8:2176,9:2600,10:2048}))
 
     def test_every_combined_move_tolerates_independent_progress(self):
         for move in c.make_plan():

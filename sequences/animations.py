@@ -84,14 +84,9 @@ HEADTILT_DOWN        = 5504
 HEADTILT_SLIGHT_UP   = 4000
 HEADTILT_SLIGHT_DOWN = 4700
 
-# Ch 3 — Visor: 4544–6976, neutral 6000, higher = more open
+# Ch 3 — Visor: higher = more open; 1275 µs is the camera-clear squint.
 VISOR_CLOSED  = 4544   # sleep / privacy — covers camera lens
-VISOR_SQUINT  = 5272   # ~halfway between neutral (6000) and fully-closed (4544): the
-                       # visor drops DOWN over the eyes — a transient "displeased
-                       # squint/glower" reacting to an insult. Below the lens-clear
-                       # floor, so beats dip here briefly then return (NEVER sustained —
-                       # the body_mood path stays clamped at the floor). Tune 5000–5700
-                       # for a deeper/shallower glower.
+VISOR_SQUINT  = int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS)
 VISOR_HALF    = 6400   # default resting open — clear of camera lens
 VISOR_NEUTRAL = 6000
 VISOR_OPEN    = 6976   # max — required before any camera capture
@@ -333,7 +328,7 @@ def _beat_suspicious_glance(snapshot: dict[int, int]) -> None:
             0: NECK_CENTER + side * 1250,
             1: HEADLIFT_NEUTRAL + 220,
             2: HEADTILT_SLIGHT_DOWN,
-            3: VISOR_NEUTRAL,
+            3: VISOR_SQUINT,
         },
         step_us=80,
         step_delay=0.008,
@@ -409,7 +404,7 @@ def _beat_thinking_tilt(snapshot: dict[int, int]) -> None:
 
 def _beat_dramatic_visor_peek(snapshot: dict[int, int]) -> None:
     side = random.choice([-1, 1])
-    _move_body({1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP, 3: VISOR_CLOSED}, step_us=115, step_delay=0.006)
+    _move_body({1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP, 3: VISOR_HALF}, step_us=115, step_delay=0.006)
     time.sleep(0.10)
     _move_body({3: VISOR_OPEN, 0: NECK_CENTER + side * 700}, step_us=130, step_delay=0.005)
     time.sleep(0.20)
@@ -792,6 +787,11 @@ def _canonical_body_beat(name: str) -> str | None:
     normalized = "_".join(str(name or "").strip().lower().replace("-", " ").split())
     canonical = _BODY_BEAT_ALIASES.get(normalized, normalized)
     return canonical if canonical in _BODY_BEAT_RUNNERS else None
+
+
+def body_motion_active() -> bool:
+    """Whether a scripted body sequence currently owns the motion channels."""
+    return _motion_lock.locked()
 
 
 def body_beat_names() -> list[str]:

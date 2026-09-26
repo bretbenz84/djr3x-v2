@@ -79,20 +79,15 @@ class BodyBeatAnimationTest(unittest.TestCase):
         self.assertLess(first_move[2], animations.HEADTILT_NEUTRAL)
         self.assertEqual(first_move[3], animations.VISOR_OPEN)
 
-    def test_visor_squint_is_halfway_between_neutral_and_closed(self):
-        # The angry glower depth: the visor drops to ~halfway between neutral and
-        # fully-closed — genuinely over the eyes, below the lens-clear floor.
+    def test_visor_squint_reaches_camera_clear_boundary(self):
         from sequences import animations
-
-        halfway = (animations.VISOR_NEUTRAL + animations.VISOR_CLOSED) // 2
-        self.assertAlmostEqual(animations.VISOR_SQUINT, halfway, delta=40)
-        self.assertLess(animations.VISOR_SQUINT, animations.VISOR_NEUTRAL)    # below neutral
-        self.assertGreater(animations.VISOR_SQUINT, animations.VISOR_CLOSED)  # not fully closed
-        self.assertLess(animations.VISOR_SQUINT, animations.VISOR_HALF)       # below the camera floor
+        self.assertEqual(animations.VISOR_SQUINT, 1275 * 4)
+        self.assertLess(animations.VISOR_SQUINT, animations.VISOR_NEUTRAL)
+        self.assertGreater(animations.VISOR_SQUINT, animations.VISOR_CLOSED)
 
     def test_anger_flash_drops_visor_over_the_eyes(self):
         # The beat insults route to (anger_flash) must drop the visor DOWN to the
-        # squint — below the lens-clear floor — so an insult reads as a glower.
+        # squint — at the lens-clear floor — so an insult reads as a glower.
         from sequences import animations
 
         moves = []
