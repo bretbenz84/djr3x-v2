@@ -6492,11 +6492,25 @@ ROOM_CHANGE_REMARK_LINES = [
     "A wild {label} appears. The room's got range.",
 ]
 
-# Animal detection runs alongside periodic scene scans. OpenAI animal detection
-# remains only in the periodic startle-species scan (runs alongside the local
-# detector) and explicit scene queries.
+# Animal detection runs alongside periodic scene scans. Optional photo memory
+# adds OpenAI crop validation/comparison; periodic startle scans and explicit
+# scene queries also use OpenAI.
 ANIMAL_DETECTION_ENABLED = True
 ANIMAL_PENDING_REACTION_TTL_SECS = 90
+
+# Human-labelled photographic memory. Crops/index stay local and gitignored;
+# fresh crops and reference images are sent to OpenAI for visual comparison.
+PHOTO_MEMORY_ENABLED = True
+PHOTO_MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "photo_memory")
+PHOTO_MEMORY_MODEL = None  # None uses VISION_MODEL.
+PHOTO_MEMORY_INTERVAL_SECS = 30.0
+PHOTO_MEMORY_REQUEST_TIMEOUT_SECS = 8.0  # each of localization + comparison
+PHOTO_MEMORY_CAPTURE_TTL_SECS = 120.0
+PHOTO_MEMORY_ANSWER_TTL_SECS = 60.0
+PHOTO_MEMORY_MATCH_THRESHOLD = 0.92
+PHOTO_MEMORY_MATCH_MARGIN = 0.20
+PHOTO_MEMORY_MAX_IDENTITIES = 12
+PHOTO_MEMORY_PHOTOS_PER_IDENTITY = 3
 
 # Animal presence bit (owner 2026-08-03): first sighting reacts; a REAL departure
 # then a return earns an escalating return joke ("womp rat energy" → "doing laps"

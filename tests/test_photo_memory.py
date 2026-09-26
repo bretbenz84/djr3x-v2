@@ -1,0 +1,334 @@
+"""Photographic identity contracts: exact capture binding, persistence, abstention.
+
+No camera, network, audio or real personal data is used.
+"""
+from pathlib import Path
+import tempfile
+import threading
+import time
+import unittest
+from unittest import mock
+
+import numpy as np
+import config
+from memory import photo_album as album
+from vision import photo_memory as PM
+
+
+class PhotoCase(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        for patch in (
+            mock.patch.object(config, "PHOTO_MEMORY_ENABLED", True),
+            mock.patch.object(config, "PHOTO_MEMORY_DIR", self.temp.name),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+        PM.reset()
+        self.addCleanup(PM.reset)
+        self.frame = np.zeros((200, 300, 3), dtype=np.uint8)
+        self.frame[:, 150:] = 255
+        self.record = {"species": "dog", "box": (0, 0, 150, 200)}
+
+    def capture(self, token="one", **values):
+        PM._observations[token] = {
+            "created": time.monotonic(), "status": "unknown", "kind": "animal",
+            "label": "dog", "jpeg": b"original photo", **values,
+        }
+        return token
+
+    def located(self):
+        return {"usable": True, "box": [0, 0, 1, 1]}
+
+
+class AlbumTests(PhotoCase):
+    def test_human_label_survives_session_reset(self):
+        token = self.capture()
+        self.assertTrue(PM.arm_question(token))
+        self.assertEqual(PM.answer("That's Max", owner_id=1, trusted=True), "Max")
+        PM.reset()
+        refs = album.references("animal", "cat")
+        self.assertEqual(refs[0]["name"], "Max")
+        self.assertEqual(refs[0]["images"], [b"original photo"])
+
+    def test_bounded_views_and_separate_owners(self):
+        for i in range(6):
+            album.save(str(i).encode(), name="Max", kind="animal", label="dog", owner_id=1)
+        album.save(b"other", name="Max", kind="animal", label="dog", owner_id=2)
+        refs = album.references("animal", "dog")
+        self.assertEqual(len(refs), 2)
+        self.assertEqual(refs[0]["images"], [b"3", b"4", b"5"])
+        self.assertEqual(len(list(Path(self.temp.name).glob("*.jpg"))), 4)
+
+    def test_corrupt_index_is_not_overwritten(self):
+        path = Path(self.temp.name) / "album.json"
+        path.write_text("broken")
+        with self.assertRaises(ValueError):
+            album.save(b"photo", name="Max", kind="animal", label="dog", owner_id=1)
+        self.assertEqual(path.read_text(), "broken")
+
+    def test_missing_reference_abstains_instead_of_hiding_sibling(self):
+        row = album.save(b"photo", name="Max", kind="animal", label="dog", owner_id=1)
+        (Path(self.temp.name) / row["photos"][0]).unlink()
+        with self.assertRaises(FileNotFoundError):
+            album.references("animal", "dog")
+
+
+class LearningTests(PhotoCase):
+    def test_no_delivered_question_no_learning(self):
+        self.capture()
+        self.assertIsNone(PM.answer("Max", owner_id=1, trusted=True))
+        self.assertEqual(album.references("animal", "dog"), [])
+
+    def test_exact_prompt_photo_not_newest_detection(self):
+        PM.arm_question(self.capture("asked"))
+        self.capture("newer", jpeg=b"different dog")
+        PM.answer("No, that's Toby", owner_id=1, trusted=True)
+        self.assertEqual(album.references("animal", "dog")[0]["images"], [b"original photo"])
+
+    def test_expired_answer_or_capture_cannot_train(self):
+        token = self.capture()
+        PM.arm_question(token)
+        PM._pending = (token, time.monotonic() - 61)
+        self.assertIsNone(PM.answer("Max", owner_id=1, trusted=True))
+        PM.arm_question(token)
+        PM._observations[token]["created"] -= 121
+        self.assertIsNone(PM.answer("Max", owner_id=1, trusted=True))
+
+    def test_untrusted_speech_and_unknown_speaker_cannot_train(self):
+        PM.arm_question(self.capture())
+        self.assertIsNone(PM.answer("Max", owner_id=1, trusted=False))
+        self.assertIsNone(PM.answer("Max", owner_id=None, trusted=True))
+        self.assertEqual(album.references("animal", "dog"), [])
+
+    def test_nonanswers_never_become_names(self):
+        for text in ["yes", "I don't know", "not Max", "Max is outside", "turn left",
+                     "move forward", "I'm going camping tomorrow", "who is that?", "no", "maybe Max"]:
+            with self.subTest(text=text):
+                self.assertIsNone(PM._answer_name(text))
+        self.assertEqual(PM._answer_name("It's Biscuit."), "Biscuit")
+
+    def test_recognized_greeting_only_accepts_explicit_correction(self):
+        PM.arm_question(self.capture(status="recognized", name="Max"))
+        self.assertIsNone(PM.answer("Toby", owner_id=1, trusted=True))
+        self.assertEqual(PM.answer("No, that's Toby", owner_id=1, trusted=True), "Toby")
+
+
+class ComparisonTests(PhotoCase):
+    def test_openai_bounds_crop_real_pixels(self):
+        from PIL import Image
+        import io
+        with mock.patch.object(PM, "_request", return_value=self.located()):
+            result = PM._analyze(self.frame, self.record, "animal")
+        image = Image.open(io.BytesIO(result["jpeg"]))
+        self.assertEqual(image.size, (150, 200))
+        self.assertEqual(image.getpixel((75, 100)), (0, 0, 0))
+        self.assertFalse((Path(self.temp.name) / "album.json").exists())
+
+    def test_matching_never_self_trains(self):
+        ref = album.save(b"reference", name="Max", kind="animal", label="dog", owner_id=1)
+        comparison = {"match_id": ref["id"], "confidence": .98,
+                      "runner_up_confidence": .2, "distinctive_evidence": "matching muzzle patch"}
+        with mock.patch.object(PM, "_request", side_effect=[self.located(), comparison]) as api:
+            result = PM._analyze(self.frame, self.record, "animal")
+        self.assertEqual(result["name"], "Max")
+        self.assertEqual(api.call_args.args[1][1:], [b"reference"])
+        self.assertEqual(album.references("animal", "dog")[0]["photos"], ref["photos"])
+
+    def test_similar_dogs_and_invented_ids_abstain(self):
+        ref = album.save(b"reference", name="Max", kind="animal", label="dog", owner_id=1)
+        for changes in [{"confidence": .8}, {"runner_up_confidence": .9},
+                        {"match_id": "invented"}, {"distinctive_evidence": ""},
+                        {"confidence": float("nan")}, {"runner_up_confidence": -1}]:
+            comparison = {"match_id": ref["id"], "confidence": .98,
+                          "runner_up_confidence": .2, "distinctive_evidence": "patch", **changes}
+            with self.subTest(changes=changes), mock.patch.object(
+                    PM, "_request", side_effect=[self.located(), comparison]):
+                result = PM._analyze(self.frame, self.record, "animal")
+            self.assertEqual(result["status"], "unknown")
+
+    def test_invalid_crops_and_multiple_subjects_fail_closed(self):
+        for box in [[0, 0, 0, 1], [0, 0, float("nan"), 1], [-1, 0, 1, 1]]:
+            with self.subTest(box=box), mock.patch.object(
+                    PM, "_request", return_value={"usable": True, "box": box}):
+                with self.assertRaises(ValueError):
+                    PM._analyze(self.frame, self.record, "animal")
+        with mock.patch.object(PM, "_request", return_value={"usable": False}):
+            self.assertEqual(PM._analyze(self.frame, self.record, "animal")["status"], "unusable")
+
+
+class WorkerTests(PhotoCase):
+    def test_api_failure_finishes_worker_without_writing_album(self):
+        with mock.patch.object(PM, "_analyze", side_effect=TimeoutError("offline")):
+            record = PM.observe(self.frame, [self.record])[0]
+            deadline = time.monotonic() + 2
+            while PM.result(record["photo_observation"]).get("status") == "checking" and time.monotonic() < deadline:
+                threading.Event().wait(.01)
+        self.assertEqual(PM.result(record["photo_observation"])["status"], "unavailable")
+        self.assertFalse(PM._busy)
+        self.assertFalse((Path(self.temp.name) / "album.json").exists())
+
+    def test_second_dog_invalidates_outstanding_singular_question(self):
+        PM.arm_question(self.capture())
+        PM.observe(self.frame, [self.record, self.record])
+        self.assertIsNone(PM.answer("Max", owner_id=1, trusted=True))
+
+    def test_detection_is_nonblocking_and_no_identity_transfers(self):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def slow(*args):
+            entered.set()
+            release.wait(2)
+            finished.set()
+            return {"status": "recognized", "name": "Max"}
+        with mock.patch.object(PM, "_analyze", side_effect=slow):
+            first = PM.observe(self.frame, [self.record])[0]
+            self.assertTrue(entered.wait(1))
+            later = PM.observe(self.frame, [self.record])[0]
+            self.assertNotIn("photo_observation", later)
+            self.assertNotIn("name", later)
+            release.set()
+            self.assertTrue(finished.wait(1))
+        self.assertIn("photo_observation", first)
+
+    def test_two_dogs_never_arm_ambiguous_learning(self):
+        with mock.patch.object(PM, "_analyze") as analyze:
+            records = PM.observe(self.frame, [self.record, self.record])
+        analyze.assert_not_called()
+        self.assertEqual([r["photo_memory"] for r in records], ["multiple", "multiple"])
+        self.assertFalse(PM.arm_question(None))
+
+    def test_disabled_never_starts_network(self):
+        with mock.patch.object(config, "PHOTO_MEMORY_ENABLED", False), mock.patch.object(PM, "_request") as api:
+            self.assertEqual(PM.observe(self.frame, [self.record]), [self.record])
+        api.assert_not_called()
+
+
+class IntegrationTests(PhotoCase):
+    def test_only_delivered_reaction_arms_photo_answer(self):
+        from intelligence import consciousness as C
+        token = self.capture()
+        pending = {"dog": {"species": "dog", "photo_memory": "checking", "photo_observation": token,
+                           "last_seen_at": time.monotonic(), "kind": "arrival"}}
+        with mock.patch.object(C, "_pending_animal_arrivals", pending), \
+             mock.patch.object(C, "_session_is_signing_off", return_value=False), \
+             mock.patch.object(C, "_furry_sibling_spoke_recently", return_value=False), \
+             mock.patch.object(C, "_animal_remark_covered_by_report", return_value=False), \
+             mock.patch.object(C, "_answering_a_directed_look", return_value=False), \
+             mock.patch.object(C, "_prime_emotion_frame"), \
+             mock.patch.object(C.episodic_hooks, "animal"), \
+             mock.patch.object(C, "_animal_presence", {}), \
+             mock.patch.object(C, "_animal_reacted_at", {}), \
+             mock.patch.object(C, "_animal_species_reacted_at", {}), \
+             mock.patch.object(C, "_speak_async", return_value=True) as speak:
+            self.assertTrue(C._fire_pending_animal_arrival_reaction())
+            self.assertIsNone(PM._pending)
+            speak.call_args.kwargs["on_spoke"]()
+            self.assertEqual(PM._pending[0], token)
+            self.assertFalse(pending)
+
+    def test_real_speech_pipeline_binds_pet_answer(self):
+        self._speech_answer("That's Max.")
+
+    def test_bare_pet_name_in_real_speech_pipeline(self):
+        self._speech_answer("Max.")
+
+    def test_pet_answer_with_unknown_human_visible_never_enrolls_human(self):
+        self._speech_answer("That's Max.", unknown_face=True)
+
+    def _speech_answer(self, text, unknown_face=False):
+        # Reuse the audio/identity fixture, not a mock of the speech handler.
+        from tests.test_voice_learning import RuntimeTests, face
+        from intelligence import dialogue_act, conversation_state
+        from memory import conversations
+        fixture = RuntimeTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture._mock_speech_pipeline()
+        I = fixture.I
+        for state in (dialogue_act, conversation_state):
+            state.clear()
+            self.addCleanup(state.clear)
+        conversations.clear_transcript()
+        self.addCleanup(conversations.clear_transcript)
+        fixture.faces = [face(1)] + ([face(None, 500)] if unknown_face else [])
+        for attr, value in {"_last_speaker_turn": None, "_pending_offscreen_identify": None,
+                            "_identity_prompt_until": fixture.now + 30 if unknown_face else 0.,
+                            "_pending_onboarding": None}.items():
+            fixture.stack.enter_context(mock.patch.object(I, attr, value))
+        token = self.capture()
+        PM.arm_question(token)
+        question = dialogue_act.note_rex_turn("What is this dog's name?", source="world.animal_arrival",
+                                             target_person_id=1, expected_reply_types=["answer"])
+        question.created_at = fixture.now
+        audio = fixture.prepare(mouth=None)
+        I._utterance_observations['faces'] = I._utterance_observations.pop('visual')
+        with mock.patch.object(I, "_enroll_new_person") as enroll:
+            I._handle_speech_segment(audio, transcribed_text=text,
+                                    raw_best_id_override=1, raw_best_name_override="Bret Benziger",
+                                    speaker_score_override=.95)
+        self.assertEqual([r["name"] for r in album.references("animal", "dog")], ["Max"],
+                         (I._speak_blocking.call_args_list, I._current_turn_speaker_evidence,
+                          dialogue_act.frames_snapshot(), PM._pending))
+        enroll.assert_not_called()
+        self.assertTrue(any("saved" in c.args[0] for c in I._speak_blocking.call_args_list))
+
+    def test_named_reaction_uses_photo_not_species_confirmation(self):
+        from intelligence import consciousness as C
+        C._animal_confirmed_pet["dog"] = "Wrong Dog"
+        self.addCleanup(C._animal_confirmed_pet.clear)
+        token = self.capture(status="recognized", name="Max")
+        _, line = C._animal_reaction_frame_and_line(
+            {"species": "dog", "photo_memory": "checking", "photo_observation": token})
+        self.assertEqual(line, "Oh hey, it's Max again!")
+        _, line = C._animal_reaction_frame_and_line({"species": "dog", "kind": "return"})
+        self.assertNotIn("Wrong Dog", line)
+
+    def test_reaction_composition_does_not_arm_learning(self):
+        from intelligence import consciousness as C
+        token = self.capture()
+        _, line = C._animal_reaction_frame_and_line(
+            {"species": "dog", "photo_memory": "checking", "photo_observation": token})
+        self.assertIn("Can you tell me?", line)
+        self.assertIsNone(PM._pending)
+
+    def test_actual_answer_takeover_saves_and_acknowledges(self):
+        from intelligence import interaction as I
+        PM.arm_question(self.capture())
+        with mock.patch.object(I, "_speak_blocking") as speak:
+            line = I._photo_memory_takeover("That's Max", person_id=1, trusted=True, answering_animal=True)
+        self.assertIn("saved", line)
+        speak.assert_called_once()
+        self.assertEqual(album.references("animal", "dog")[0]["name"], "Max")
+
+    def test_unrelated_turn_cannot_answer_photo_question(self):
+        from intelligence import interaction as I
+        PM.arm_question(self.capture())
+        with mock.patch.object(I, "_speak_blocking"):
+            self.assertIsNone(I._photo_memory_takeover(
+                "No, that's Jeremy", person_id=1, trusted=True, answering_animal=False))
+        self.assertEqual(album.references("animal", "dog"), [])
+
+    def test_scene_submits_detector_frame(self):
+        from vision import scene
+        with mock.patch.object(scene.local_animal_detector, "detect_animals", return_value=[self.record]), \
+             mock.patch.object(scene, "_confirm_persistent_animals", side_effect=lambda x: x), \
+             mock.patch.object(PM, "observe", return_value=[{**self.record, "photo_memory": "checking"}]) as observe, \
+             mock.patch.object(scene.world_state, "update"):
+            result = scene.detect_animals_local(self.frame)
+        self.assertIs(observe.call_args.args[0], self.frame)
+        self.assertEqual(result[0]["photo_memory"], "checking")
+
+    def test_explicit_object_teaching_and_recall(self):
+        from vision import camera, animal_detector
+        observed = {"status": "unknown", "jpeg": b"chair photo"}
+        with mock.patch.object(camera, "get_frame", return_value=self.frame), \
+             mock.patch.object(animal_detector, "detect_objects", return_value=[{"label": "chair"}]), \
+             mock.patch.object(PM, "_analyze", return_value=observed):
+            line = PM.object_command("remember this chair as Captain's chair", owner_id=1, trusted=True)
+        self.assertIn("saved", line)
+        self.assertEqual(album.references("object", "chair")[0]["name"], "Captain's chair")
+
+
+if __name__ == "__main__":
+    unittest.main()

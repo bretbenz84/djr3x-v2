@@ -42,6 +42,8 @@ def child(module):
         config.DB_PATH = str(Path(temp) / "people.db")
         config.REX_DB_PATH = str(Path(temp) / "rex.db")
         config.PLACE_DB_PATH = str(Path(temp) / "places.db")
+        config.PHOTO_MEMORY_DIR = str(Path(temp) / "photo_memory")
+        config.PHOTO_MEMORY_ENABLED = False  # tests opt in with mocked vision
         config.TTS_CACHE_DIR = str(Path(temp) / "tts")
         from hardware import throttle_motion
         throttle_motion.STATE_FILE = Path(temp) / "throttle_arm_parked.json"

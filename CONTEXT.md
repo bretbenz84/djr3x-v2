@@ -2,6 +2,21 @@
 
 This file is a compact handoff for future AI/development sessions. It explains what the project is, how to run it, the main architecture, and the current design assumptions. It intentionally omits long personality transcripts, old planning notes, and exhaustive behavior specs.
 
+## Photographic pet/object memory (2026-09-25)
+
+`vision/photo_memory.py` validates/refines local detector crops through OpenAI,
+then compares original pixels with `memory/photo_album.py` human-labelled JPEGs.
+`data/photo_memory/` is gitignored; atomic album index, three views per identity,
+12-identity comparison budget. Enabled by default. Background animal checks are
+bounded/rate-limited; objects use explicit remember/recognize commands. No model
+prediction self-trains. Confidence/margin failures abstain, and multi-animal
+views invalidate singular naming questions. Photo reactions bypass species-wide
+session-name guesses. Only delivered remarks arm the exact observation; trusted
+answers save it through the real speech handler. See docs/photographic_memory.md.
+Offline regression module: photo_memory; lean runner isolates the album and
+disables this feature unless a test explicitly opts in. Camera/API recognition
+quality still needs household field testing.
+
 ## Current voice enrollment (2026-09-08)
 
 [Conversational voice learning](docs/conversational_voice_learning.md) supersedes

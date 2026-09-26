@@ -22583,6 +22583,26 @@ def _motion_takeover_executable(
     return _router_decision_executable(decision, text=text)
 
 
+def _photo_memory_takeover(text: str, *, person_id: Optional[int], trusted: bool,
+                           answering_animal: bool = False) -> Optional[str]:
+    """Ground photo acknowledgments in a completed save, including corrections."""
+    from vision import photo_memory
+    if not photo_memory.enabled():
+        return None
+    line = photo_memory.object_command(text, owner_id=person_id, trusted=trusted)
+    if line is None and answering_animal:
+        try:
+            learned = photo_memory.answer(text, owner_id=person_id, trusted=trusted)
+            if learned:
+                line = f"Got it, {learned}. I've saved that photo so I can recognize them next time."
+        except Exception as exc:
+            _log.warning("[photo_memory] could not save confirmed photo: %s", exc)
+            line = "I heard the name, but I couldn't save the photo. Please show me again."
+    if line is not None:
+        _speak_blocking(line, emotion="happy", log_text=False)
+    return line
+
+
 def _explicit_motion_takeover(
     text: str,
     *,
@@ -27776,6 +27796,32 @@ def _handle_speech_segment(
                 )
                 return
 
+        # A pet-photo answer owns its name before any unknown-face introduction
+        # logic can interpret "That's Max" as a new human standing nearby.
+        from vision import photo_memory
+        photo_frame = dialogue_act.active_frame(person_id=person_id)
+        if (getattr(photo_frame, "source", "") == "world.animal_arrival"
+                and photo_memory.pending_answer(text) and not game_conversation_lock):
+            photo_line = _photo_memory_takeover(
+                text, person_id=person_id,
+                trusted=bool(transcript_trusted) and not _turn_speaker_uncertain(),
+                answering_animal=True,
+            )
+            if photo_line is None:
+                photo_line = "I couldn't confidently hear who said that. Please tell me the pet's name again."
+                _speak_blocking(photo_line, emotion="neutral", log_text=False)
+            else:
+                dialogue_act.answer_frame(photo_frame, person_id, trusted=True)
+            _record_heard_turn_once()
+            conv_memory.add_to_transcript("Rex", photo_line)
+            conv_log.log_rex(photo_line)
+            _session_exchange_count += 1
+            _register_rex_utterance(photo_line, source="world.animal_arrival")
+            _settle_response_wait_after_action()
+            suppress_memory_learning = True
+            final_executed_path = "vision.photo_memory"
+            return
+
         # If the engaged person answers an unknown-face/off-camera moment with
         # an actual introduction ("this is my dad, Jeff"), let the dedicated
         # introduction flow consume it before generic identity handling. Speaker
@@ -28910,7 +28956,9 @@ def _handle_speech_segment(
             ):
                 try:
                     from intelligence import consciousness as _consc
-                    _consc.note_pet_guess_answer(text)
+                    from vision import photo_memory
+                    if not photo_memory.enabled():
+                        _consc.note_pet_guess_answer(text)
                 except Exception:
                     pass
 
@@ -28918,9 +28966,17 @@ def _handle_speech_segment(
             # it even when the dialogue gate would skip the router, else commands spoken
             # right after Rex speaks get swallowed as conversation (live-logged 2026-06-23:
             # "move forward." / "Move backwards" -> conversation.reply).
-            fast_takeover_response = _explicit_motion_takeover(
-                text, person_id=person_id, router_audit=router_audit
+            fast_takeover_response = _photo_memory_takeover(
+                text, person_id=person_id,
+                trusted=bool(transcript_trusted) and not _turn_speaker_uncertain(),
             )
+            if fast_takeover_response is not None:
+                _router_audit_note_fast_local_action(router_audit, "vision.photo_memory",
+                    reason="human-labelled photographic memory")
+            if fast_takeover_response is None:
+                fast_takeover_response = _explicit_motion_takeover(
+                    text, person_id=person_id, router_audit=router_audit
+                )
             # An INVITE to explore the room ("look around a little", "make yourself at
             # home") is likewise a command, not an answer — start the self-directed
             # wander before the dialogue gate. Runs after the motion takeover so a

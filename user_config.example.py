@@ -189,6 +189,9 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # WEB_SEARCH_ENABLED = True              # answer current-info questions via web search
 # IMPERSONATION_ENABLED = True           # "do an impersonation of me/<person>" (needs local TTS)
 # ANIMAL_DETECTION_ENABLED = True        # react to pets / animals
+# PHOTO_MEMORY_ENABLED = True           # learn pets from human-labelled camera crops
+# PHOTO_MEMORY_MODEL = None             # use VISION_MODEL unless overridden
+# PHOTO_MEMORY_INTERVAL_SECS = 30.0      # minimum gap between automatic photo checks
 # SOUND_AWARENESS_ENABLED = True         # classify non-speech sounds (barks, doorbells, glass…)
 # SOUND_AWARENESS_REACTIONS_ENABLED = True  # …and react out loud to the notable ones
 # SOUND_EVENT_REACTION_COOLDOWN_SECS = 90.0 # min gap between spoken sound reactions

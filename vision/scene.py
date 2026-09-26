@@ -3,8 +3,8 @@ vision/scene.py — scene analysis, local animal detection, and crowd counting.
 
 OpenAI-backed scene helpers encode the frame as JPEG, send it to GPT-4o vision
 with a structured JSON prompt, and return the parsed result. The live animal
-monitor is separate: it uses a local MediaPipe object detector against the same
-camera frame buffer and spends no OpenAI credits.
+monitor uses a local detector against the same camera frame buffer. Optional
+photographic identification sends bounded background crop comparisons to OpenAI.
 
 Environment analysis is cached: the cached result is returned when the crowd count
 is stable (within _CROWD_CHANGE_DELTA people) AND less than
@@ -462,7 +462,7 @@ def detect_animals_local(frame) -> list[dict]:
     """
     Detect animals in frame using the local MediaPipe object detector.
 
-    This is the live, no-OpenAI-credits path. It updates world_state.animals
+    Detection is local; optional photographic memory is asynchronous. Updates world_state.animals
     when the detector is available. If the local model is missing/unavailable,
     the existing animal state is preserved and returned.
     """
@@ -474,6 +474,11 @@ def detect_animals_local(frame) -> list[dict]:
         return world_state.get("animals") or []
 
     animals = _confirm_persistent_animals(animals)
+    try:
+        from vision import photo_memory
+        animals = photo_memory.observe(frame, animals)
+    except Exception as exc:
+        _log.debug("photographic memory skipped: %s", exc)
     world_state.update("animals", animals)
     if animals:
         _log.info(
@@ -1230,11 +1235,13 @@ def start_periodic_scan(interval_secs: float) -> None:
 def stop() -> None:
     """Stop the periodic scan background thread if running."""
     global _scan_thread
+    from vision import photo_memory
     if _scan_thread is not None and _scan_thread.is_alive():
         _stop_event.set()
         _scan_thread.join(timeout=5.0)
     _scan_thread = None
     _stop_event.clear()
+    photo_memory.reset()
 
 
 def _scan_loop(interval_secs: float) -> None:

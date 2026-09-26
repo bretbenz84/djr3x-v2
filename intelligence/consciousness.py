@@ -2656,6 +2656,11 @@ def _stage_animal_arrivals(snapshot: dict) -> None:
     for species, animal in seen.items():
         if species in _pending_animal_arrivals:
             _pending_animal_arrivals[species]["last_seen_at"] = now
+            # A remark initially staged during cooldown can acquire its first
+            # fresh photo. Never replace a captured question with a later dog.
+            pending = _pending_animal_arrivals[species]
+            if not pending.get("photo_observation") and animal.get("photo_observation"):
+                pending.update({k: animal[k] for k in ("photo_memory", "photo_observation")})
         rec = _animal_presence.get(species)
         departed_at = float((rec or {}).get("departed_at") or 0.0)
         if rec is None or (not rec.get("present")
@@ -2796,6 +2801,8 @@ def _confirmed_pet_for(species) -> tuple[Optional[str], Optional[str]]:
     species (a bird, a visiting raccoon) keep strict per-species keying — those
     really are different animals.
     """
+    if bool(getattr(config, "PHOTO_MEMORY_ENABLED", False)):
+        return None, None  # Species membership is never individual identity.
     key = (str(species or "creature")).strip().lower()
     name = _animal_confirmed_pet.get(key)
     if name:
@@ -3016,6 +3023,22 @@ def _pet_name_guess_line(species: str) -> Optional[str]:
 
 def _animal_reaction_frame_and_line(animal: dict):
     species = (animal.get("species") or "creature").strip().lower()
+    if animal.get("photo_memory") or bool(getattr(config, "PHOTO_MEMORY_ENABLED", False)):
+        from vision import photo_memory
+        visual = photo_memory.result(animal.get("photo_observation"))
+        frame = emotion_orchestrator.frame_for_emotion(
+            "happy", intensity=0.6, source="event", trigger=f"animal_photo:{species}")
+        if visual.get("status") == "recognized":
+            return frame, f"Oh hey, it's {visual['name']} again!"
+        if visual.get("status") == "unknown":
+            noun = "dog" if species == "dog" else "animal"
+            return frame, f"I'm not sure what this {noun}'s name is. Can you tell me?"
+        if animal.get("photo_memory") == "multiple":
+            return frame, "A whole animal delegation! Show me one at a time so I can learn who's who."
+        # Failed/unclear images must not fall through to the old species-name guess.
+        return frame, random.choice(_FURRY_ANIMAL_REACTION_LINES if
+                                    _animal_is_furry_companion(species, animal)
+                                    else _GENERIC_ANIMAL_REACTION_LINES)
     if (animal.get("kind") or "arrival") == "return":
         # A return isn't a surprise — the joke is that Rex has clocked the pattern.
         # Warm/amused frame, escalating line pool by how many round-trips so far.
@@ -3157,6 +3180,20 @@ def _fire_pending_animal_arrival_reaction() -> bool:
                       "(directed-look report already described this view)",
                       _fire_species)
             continue
+        if animal.get("photo_observation"):
+            from vision import photo_memory
+            visual = photo_memory.result(animal["photo_observation"])
+            # A delayed governor candidate must not identify a dog from an old view.
+            if now - float(visual.get("created", 0)) > 20.0:
+                animal.pop("photo_observation", None)
+            elif visual.get("status") == "checking":
+                continue  # Network work belongs to its worker, never this loop.
+        if (animal.get("photo_memory") == "checking" and not animal.get("photo_observation")
+                and now - float(animal.get("first_seen_at", 0))
+                < float(getattr(config, "PHOTO_MEMORY_INTERVAL_SECS", 30.0)) + 20.0):
+            # Startup speech can outlive the first photo. Give the next scan a
+            # bounded chance to attach a fresh view before using a generic line.
+            continue
         frame, line = _animal_reaction_frame_and_line(animal)
 
         _ep_species = (animal.get("species") or "creature")
@@ -3165,7 +3202,9 @@ def _fire_pending_animal_arrival_reaction() -> bool:
 
         def _on_spoke(pending_key=pending_key, frame=frame, line=line, now=now,
                       species=_ep_species, position=_ep_position,
-                      kind=_ep_kind) -> None:
+                      kind=_ep_kind, photo_token=animal.get("photo_observation"),
+                      photo_mode=bool(animal.get("photo_memory") or
+                                      getattr(config, "PHOTO_MEMORY_ENABLED", False))) -> None:
             # Prime the face + retire the pending remark only on an actual spoken
             # reaction — under ENFORCE a losing candidate must not pop the queue.
             _prime_emotion_frame(frame)
@@ -3179,11 +3218,20 @@ def _fire_pending_animal_arrival_reaction() -> bool:
                 rec["remarks_spoken"] = int(rec.get("remarks_spoken") or 0) + 1
                 rec["last_remark_at"] = now
             _pending_animal_arrivals.pop(pending_key, None)
+            visual = {}
+            if photo_mode:
+                from vision import photo_memory
+                visual = photo_memory.result(photo_token)
+                photo_memory.arm_question(photo_token)
             if kind == "arrival":
                 # Record the owner-confirmed identity when we have one — the
                 # detector misreads species (dog->cat), and episodes that say
                 # "I saw a cat" get recycled by memory musings later.
-                episodic_hooks.animal(_animal_display_species(species), position)
+                display = _animal_display_species(species)
+                if photo_mode:
+                    display = (f"{species} named {visual['name']}" if visual.get("name")
+                               else species)
+                episodic_hooks.animal(display, position)
             _log.info(
                 "consciousness: animal %s reaction fired species=%s text=%r",
                 kind,
