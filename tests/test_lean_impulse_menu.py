@@ -88,6 +88,8 @@ class ConsiderInitiatingMenuTest(unittest.TestCase):
         captured = {}
 
         def fake_create(client, **kwargs):
+            captured["client"] = client
+            captured["timeout"] = kwargs.get("timeout")
             captured["messages"] = kwargs["messages"]
             captured["max_tokens"] = kwargs.get("max_tokens")
             return _stream(reply)
@@ -99,6 +101,15 @@ class ConsiderInitiatingMenuTest(unittest.TestCase):
             es.enter_context(mock.patch.object(LB, "_context_lines", return_value=[]))
             line = LB.consider_initiating(person_id=None, transcript=[], candidates=cands, **kw)
         return line, captured
+
+    def test_optional_impulse_uses_short_timeout_without_retries(self):
+        client = mock.Mock()
+        with mock.patch.object(LB.llm, "_client", client):
+            line, cap = self._run("PASS", [])
+        self.assertEqual(line, "")
+        client.with_options.assert_called_once_with(max_retries=0)
+        self.assertIs(cap["client"], client.with_options.return_value)
+        self.assertEqual(cap["timeout"], 2.0)
 
     def test_two_candidates_use_the_menu_and_report_choice(self):
         cands = [{"kind": "news_story", "cue": {"headline": "H", "summary": "S"}},

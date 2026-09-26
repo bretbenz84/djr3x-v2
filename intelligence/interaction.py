@@ -13674,7 +13674,7 @@ def _process_audio(
     t2.join()
 
 
-    return (text_box[0] or "", speaker_box[0], speaker_box[1], speaker_box[2],
+    return (text_box[0] if text_box[0] is not None else "", speaker_box[0], speaker_box[1], speaker_box[2],
             speaker_box[3], speaker_box[4])
 
 
@@ -25599,7 +25599,8 @@ def _arm_low_trust_reprompt_cooldown() -> None:
     _last_low_trust_reprompt_at = time.monotonic()
 
 
-def _should_reprompt_low_trust(text: str, *, trusted: bool, text_input: bool) -> bool:
+def _should_reprompt_low_trust(text: str, *, trusted: bool, text_input: bool,
+                              recognition_failed: bool = False) -> bool:
     """True when the human move for THIS turn is asking to repeat, not replying.
 
     Gates, in order of intent:
@@ -25628,7 +25629,7 @@ def _should_reprompt_low_trust(text: str, *, trusted: bool, text_input: bool) ->
     except Exception:
         pass
     words = re.findall(r"[A-Za-z0-9']+", text or "")
-    if len(words) < int(getattr(config, "LOW_TRUST_REPROMPT_MIN_WORDS", 3)):
+    if not recognition_failed and len(words) < int(getattr(config, "LOW_TRUST_REPROMPT_MIN_WORDS", 3)):
         return False
     cooldown = float(getattr(config, "LOW_TRUST_REPROMPT_COOLDOWN_SECS", 120.0))
     if (time.monotonic() - _last_low_trust_reprompt_at) < cooldown:
@@ -25652,6 +25653,21 @@ def _should_reprompt_low_trust(text: str, *, trusted: bool, text_input: bool) ->
     except Exception:
         pass
     return True
+
+
+def _should_reprompt_rejected_audio(text, *, require_trusted: bool, from_idle: bool) -> bool:
+    """A decoder failure is not proof of silence OR a human. Require independent
+    voiced audio in an ongoing exchange, outside Rex's playback and its tail."""
+    if (text or getattr(text, "rejection_reason", "") not in {"context-echo", "impossible-rate"}
+            or require_trusted or from_idle):
+        return False
+    voiced = float(_last_scan_secs.get("voiced") or 0)
+    duration = float(_last_scan_secs.get("buffer") or 0)
+    started = _utterance_observations.get("started_at")
+    if (voiced < 0.6 or duration <= 0 or voiced / duration < 0.3 or started is None
+            or started < echo_cancel.last_playback_ended_at() + 1.0):
+        return False
+    return _should_reprompt_low_trust("", trusted=False, text_input=False, recognition_failed=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -25853,8 +25869,19 @@ def _handle_speech_segment(
             completed = False
             return
         if not text:
-            # Empty/blank transcript — a false VAD trigger or fully-filtered audio
-            # (e.g. a Whisper hallucination loop). Nothing was actually said to Rex.
+            if _should_reprompt_rejected_audio(
+                    text, require_trusted=require_trusted, from_idle=from_idle_activation):
+                _log.info("[interaction] rejected ASR with independent voiced audio — asking to repeat")
+                _speak_blocking("I couldn't make out what you said. Please try again.", emotion="neutral")
+                _arm_low_trust_reprompt_cooldown()
+                repair_moves.note_ask_to_repeat()
+                consciousness.begin_response_wait(10.0)
+                final_executed_path = "repair.rejected_transcript"
+                suppress_memory_learning = True
+                completed = True
+                return
+            # Empty/blank transcript can be silence OR a decoder rejection.
+            # Neither justifies inventing words or storing a name.
             # If we only flipped to ACTIVE because of this segment, drop straight back
             # to IDLE instead of camping in ACTIVE until the 45s conversation idle
             # timeout. Mirrors the crosstalk path below.

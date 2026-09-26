@@ -2110,8 +2110,12 @@ def consider_initiating(
                 parts.append(chunk)
         else:
             _turn_trace.count("purpose.lean_impulse")
+            # This optional call runs between microphone captures. The normal
+            # reply timeout + SDK retries stranded listening for ~55s in the
+            # 2026-09-25 field run. Give up quickly on a stalled connection.
+            impulse_client = llm._client.with_options(max_retries=0)
             stream = llm_compat.create(
-                llm._client,
+                impulse_client,
                 model=_model(),
                 messages=messages,
                 stream=True,
@@ -2119,7 +2123,7 @@ def consider_initiating(
                     config,
                     "LEAN_IMPULSE_MENU_MAX_TOKENS" if menu_candidates else "LEAN_IMPULSE_MAX_TOKENS",
                     90 if menu_candidates else 60)),
-                timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
+                timeout=float(getattr(config, "LEAN_IMPULSE_TIMEOUT_SECS", 2.0)),
             )
             for chunk in stream:
                 try:

@@ -398,6 +398,7 @@ LEAN_CELEBRATION_MAX_UNVOICED_ATTEMPTS = 2
 # EPISODIC_RECALL_ENABLED switch + EPISODIC_RECALL_SESSION_RECAP_PROBABILITY.
 LEAN_MEMORY_MUSING_ENABLED = True
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
+LEAN_IMPULSE_TIMEOUT_SECS  = 2.0     # optional call between captures; no SDK retries
 # Lean Brain plan phase 3 (2026-09-04): instead of Python picking ONE cue by a fixed
 # priority ladder, every eligible cue (same gates, same order) is offered to the one
 # impulse call as a short menu — up to this many, one per family — and the MODEL
@@ -2359,6 +2360,9 @@ QWEN_ASR_CONTEXT_REX_LINES = 0     # vocabulary only: full Rex lines can become 
 # one beside a regurgitation rejection, because the long entity-dense clue Rex
 # had just read WAS the prompt. Costs one extra decode only on a rejection.
 ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO = _env_bool("ASR_RETRY_WITHOUT_CONTEXT_ON_ECHO", True)
+# After prompt regurgitation, temporarily decode without context instead of
+# repeating the same failed biased pass on every captured phrase.
+ASR_CONTEXT_BACKOFF_SECS = 60.0
 # Log (INFO) any Qwen3-ASR decode whose MLX_LOCK wait + decode time reaches this,
 # with the two parts separated. Field 2026-09-01 23:05:23-29: one 3s utterance took
 # 6.9s to transcribe while the speaker-ID thread finished instantly, and INFO logs
@@ -6504,6 +6508,7 @@ PHOTO_MEMORY_ENABLED = True
 PHOTO_MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "photo_memory")
 PHOTO_MEMORY_MODEL = None  # None uses VISION_MODEL.
 PHOTO_MEMORY_INTERVAL_SECS = 30.0
+PHOTO_MEMORY_SETTLE_SECS = 0.6  # hold current head pose before explicit pet captures
 PHOTO_MEMORY_REQUEST_TIMEOUT_SECS = 8.0  # each of localization + comparison
 PHOTO_MEMORY_CAPTURE_TTL_SECS = 120.0
 PHOTO_MEMORY_ANSWER_TTL_SECS = 60.0

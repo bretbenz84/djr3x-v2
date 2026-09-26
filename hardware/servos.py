@@ -11,6 +11,7 @@ import random
 import struct
 import threading
 import time
+from contextlib import contextmanager
 
 import serial
 
@@ -50,6 +51,39 @@ _voice_hold_until = 0.0
 _voice_hold_ready = 0.0
 _voice_hold_timer = None
 _voice_hold_lock = threading.RLock()
+_photo_hold = None  # (expiry, head targets); published atomically, bounded on failure
+
+
+@contextmanager
+def hold_head_for_photo(duration: float = 2.0):
+    """Hold actual gaze briefly; suppress competing animation/tracking targets.
+
+    Never center the head or restore an old pose after capture. Normal writers
+    resume after the lease. No serial work in dev mode.
+    """
+    global _photo_hold
+    if not SERVOS_ENABLED:
+        yield
+        return
+    if _program_servo_updates_blocked():
+        raise RuntimeError("Head unavailable for photo capture")
+    if _photo_hold and time.monotonic() < _photo_hold[0]:
+        raise RuntimeError("Photo capture already holds the head")
+    targets = {}
+    for name in ("neck", "headlift", "headtilt"):
+        ch = config.SERVO_CHANNELS[name]["ch"]
+        position = get_servo(ch)
+        if position is None or position <= 0:
+            raise RuntimeError("Cannot confirm head position for photo capture")
+        targets[ch] = position
+    lease = (time.monotonic() + min(3.0, max(.1, duration)), targets)
+    _photo_hold = lease
+    try:
+        set_servos(targets)
+        yield
+    finally:
+        if _photo_hold is lease:
+            _photo_hold = None
 
 
 def voice_enrollment_hold_active() -> bool:
@@ -92,6 +126,11 @@ def hold_voice_enrollment_mic(duration: float) -> float:
 
 
 def _voice_hold_position(channel, position):
+    # Shared by public setters, direct animation wire writes and proprioception.
+    lease = _photo_hold
+    if (lease and time.monotonic() < lease[0] and not _program_servo_updates_blocked()
+            and channel in lease[1]):
+        return lease[1][channel]
     cfg = config.SERVO_CHANNELS['heroarm']
     if channel == cfg['ch'] and voice_enrollment_hold_active():
         return (cfg['min'] + cfg['max']) // 2

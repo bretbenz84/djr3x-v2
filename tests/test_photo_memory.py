@@ -42,7 +42,7 @@ class PhotoCase(unittest.TestCase):
         return token
 
     def located(self):
-        return {"usable": True, "box": [0, 0, 1, 1]}
+        return {"usable": True, "target_count": 1, "recognition_ready": True, "box": [0, 0, 1, 1]}
 
 
 class AlbumTests(PhotoCase):
@@ -119,15 +119,54 @@ class LearningTests(PhotoCase):
 
 
 class ComparisonTests(PhotoCase):
-    def test_openai_bounds_crop_real_pixels(self):
+    def test_partial_view_can_be_taught_but_cannot_identify(self):
+        located = {**self.located(), "recognition_ready": False,
+                   "reason": "One dog held by a person; face turned away"}
+        with mock.patch.object(PM, "_request", return_value=located):
+            teaching = PM._analyze(self.frame, self.record, "animal", compare=False)
+            recognition = PM._analyze(self.frame, self.record, "animal", compare=True)
+        self.assertTrue(teaching["jpeg"])
+        self.assertFalse(teaching["recognition_ready"])
+        self.assertEqual(recognition["status"], "unusable")
+
+    def test_multiple_or_missing_target_count_cannot_pass_usable_flag(self):
+        for count in (None, 0, 2):
+            with self.subTest(count=count), mock.patch.object(PM, "_request", return_value={
+                    **self.located(), "target_count": count}):
+                self.assertEqual(PM._analyze(self.frame, self.record, "animal", compare=False),
+                                 {"status": "unusable"})
+
+    def test_padded_view_preserves_original_pixels(self):
         from PIL import Image
         import io
         with mock.patch.object(PM, "_request", return_value=self.located()):
             result = PM._analyze(self.frame, self.record, "animal")
         image = Image.open(io.BytesIO(result["jpeg"]))
-        self.assertEqual(image.size, (150, 200))
+        self.assertEqual(image.size, (250, 200))
         self.assertEqual(image.getpixel((75, 100)), (0, 0, 0))
+        self.assertEqual(image.getpixel((220, 100)), (255, 255, 255))
         self.assertFalse((Path(self.temp.name) / "album.json").exists())
+
+    def test_tight_model_bounds_cannot_recrop_reference(self):
+        from PIL import Image
+        import io
+        located = {"usable": True, "target_count": 1, "recognition_ready": True, "box": [.2, .2, .6, .8]}
+        with mock.patch.object(PM, "_request", return_value=located) as api:
+            result = PM._analyze(self.frame, self.record, "animal", compare=False)
+        self.assertEqual(Image.open(io.BytesIO(result["jpeg"])).size, (250, 200))
+        self.assertEqual(result["jpeg"], api.call_args.args[1][0])
+
+    def test_padding_at_frame_edge_clamps_without_wrapping(self):
+        view = PM._candidate_crop(self.frame, (250, 140, 50, 60))
+        self.assertEqual(view.shape[:2], (90, 80))
+        self.assertTrue(np.all(view == 255))
+
+    def test_padded_multiple_subjects_cannot_be_saved(self):
+        with mock.patch.object(PM, "_request", return_value={
+                "usable": False, "reason": "Two animals in expanded view"}):
+            result = PM._analyze(self.frame, self.record, "animal", compare=False)
+        self.assertEqual(result["status"], "unusable")
+        self.assertNotIn("jpeg", result)
 
     def test_matching_never_self_trains(self):
         ref = album.save(b"reference", name="Max", kind="animal", label="dog", owner_id=1)
@@ -154,7 +193,7 @@ class ComparisonTests(PhotoCase):
     def test_invalid_crops_and_multiple_subjects_fail_closed(self):
         for box in [[0, 0, 0, 1], [0, 0, float("nan"), 1], [-1, 0, 1, 1]]:
             with self.subTest(box=box), mock.patch.object(
-                    PM, "_request", return_value={"usable": True, "box": box}):
+                    PM, "_request", return_value={"usable": True, "target_count": 1, "recognition_ready": True, "box": box}):
                 with self.assertRaises(ValueError):
                     PM._analyze(self.frame, self.record, "animal")
         with mock.patch.object(PM, "_request", return_value={"usable": False}):
@@ -162,9 +201,20 @@ class ComparisonTests(PhotoCase):
 
 
 class PetCommandTests(PhotoCase):
+    def test_human_label_saves_partial_view_with_honest_acknowledgement(self):
+        from vision import camera, animal_detector
+        with mock.patch.object(camera, "capture_pet_still", return_value=self.frame), \
+             mock.patch.object(animal_detector, "detect_animals", return_value=[self.record]), \
+             mock.patch.object(PM, "_request", return_value={
+                 **self.located(), "recognition_ready": False}):
+            line = PM.pet_command("This is my dog Max.", owner_id=1, trusted=True)
+        self.assertIn("saved", line)
+        self.assertIn("clearer view", line)
+        self.assertEqual(album.references("animal", "dog")[0]["name"], "Max")
+
     def run_command(self, text, animals=None, results=None, trusted=True):
         from vision import camera, animal_detector
-        with mock.patch.object(camera, "get_frame", return_value=self.frame), \
+        with mock.patch.object(camera, "capture_pet_still", return_value=self.frame), \
              mock.patch.object(animal_detector, "detect_animals", return_value=animals if animals is not None else [self.record]), \
              mock.patch.object(PM, "_analyze", side_effect=results or [
                  {"status": "unknown", "jpeg": b"new photo", "kind": "animal", "label": "dog"}]):
@@ -325,7 +375,7 @@ class IntegrationTests(PhotoCase):
             fixture.stack.enter_context(mock.patch.object(I, attr, value))
         if direct:
             from vision import camera, animal_detector
-            fixture.stack.enter_context(mock.patch.object(camera, "get_frame", return_value=self.frame))
+            fixture.stack.enter_context(mock.patch.object(camera, "capture_pet_still", return_value=self.frame))
             fixture.stack.enter_context(mock.patch.object(animal_detector, "detect_animals", return_value=[self.record]))
             observed = {"status": "unknown", "jpeg": b"fresh photo", "label": "dog", "kind": "animal"}
             if query:

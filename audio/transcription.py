@@ -72,6 +72,7 @@ def _get_qwen_model():
 # Folsom anymore" decoded as "like falsum" — so the trip cancellation never
 # reached the memory layer). Static vocab (names/places) rides along.
 _context_lock = threading.Lock()
+_context_backoff_until = 0.0
 _recent_rex_lines: "deque[str]" = deque(maxlen=4)
 
 
@@ -89,6 +90,9 @@ def _asr_context_prompt() -> "str | None":
     """Build the Qwen3-ASR biasing context, or None when disabled/empty."""
     if not bool(getattr(config, "QWEN_ASR_CONTEXT_BIAS_ENABLED", True)):
         return None
+    with _context_lock:
+        if time.monotonic() < _context_backoff_until:
+            return None
     vocab = [str(v) for v in getattr(config, "QWEN_ASR_CONTEXT_VOCAB", ()) if v]
     n_lines = int(getattr(config, "QWEN_ASR_CONTEXT_REX_LINES", 0))
     with _context_lock:
@@ -575,12 +579,13 @@ class Transcript(str):
     backend: str = "none"
 
     def __new__(cls, text: str, *, avg_logprob=None, no_speech_prob=None,
-                confident: bool = True, backend: str = "none"):
+                confident: bool = True, backend: str = "none", rejection_reason: str = ""):
         obj = super().__new__(cls, text)
         obj.avg_logprob = avg_logprob
         obj.no_speech_prob = no_speech_prob
         obj.confident = bool(confident)
         obj.backend = backend
+        obj.rejection_reason = rejection_reason
         return obj
 
 
@@ -629,6 +634,7 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
     a Transcript (a str) carrying Whisper's decode confidence — see that class.
     """
     raw = ""
+    rejection_reason = ""
     backend = "none"
     avg_logprob = no_speech_prob = None
     local_decoded_ok = False
@@ -647,9 +653,16 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
                 elif _impossible_speaking_rate(raw, duration):
                     reject_reason = "impossible-rate"
             if reject_reason:
-                # ECHO-CLASS: the words the biased decoder produced were REX'S
-                # OWN, so his voice is provably in this audio and a second decode
-                # of it is a second look at his residual. Field 2026-08-27
+                rejection_reason = reject_reason
+                if reject_reason == "context-echo":
+                    global _context_backoff_until
+                    with _context_lock:
+                        _context_backoff_until = time.monotonic() + float(
+                            getattr(config, "ASR_CONTEXT_BACKOFF_SECS", 60.0))
+                # ECHO-CLASS: matching Rex's words OR the biasing prompt requires
+                # a trusted retry. Prompt regurgitation alone does NOT prove Rex
+                # spoke in this audio: it can also be a failed human decode.
+                # Preserve that failure separately from true silence. Field 2026-08-27
                 # 13:34:09 — the seam after "Ready to go. Statistically, one of us
                 # is about to say something interesting." was rejected at 16.6
                 # wps, the unbiased retry read the same residue as a bare "Okay."
@@ -695,7 +708,7 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
                         # me what you got me." -0.55) that he then answered.
                         logger.info(
                             "[transcription] unbiased retry DISCARDED — the "
-                            "rejected decode (%s) was Rex's own voice and the "
+                            "rejected decode (%s) matched context/echo text and the "
                             "retry is low-trust (avg_logprob=%s): %r",
                             reject_reason,
                             "n/a" if retry_logprob is None
@@ -763,9 +776,13 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
         # call per silence. The fallback is for a BROKEN local path only.
         logger.info(
             "[transcription] EMPTY result — segment dropped | backend=%s | "
-            "local decoded silence; API fallback skipped", backend,
+            "reason=%s duration=%.2fs rms=%.6f peak=%.6f; API fallback skipped",
+            backend, rejection_reason or "no_text",
+            len(audio_array) / float(config.AUDIO_SAMPLE_RATE),
+            float(np.sqrt(np.mean(np.square(audio_array)))) if len(audio_array) else 0.0,
+            float(np.max(np.abs(audio_array))) if len(audio_array) else 0.0,
         )
-        return Transcript("", backend=backend)
+        return Transcript("", backend=backend, confident=False, rejection_reason=rejection_reason)
 
     if not raw:
         try:

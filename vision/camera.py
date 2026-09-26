@@ -321,6 +321,30 @@ def capture_still() -> Optional[np.ndarray]:
         })
 
 
+def capture_pet_still() -> Optional[np.ndarray]:
+    """Hold current gaze and return only a frame acquired after settling.
+
+    Release the head before detection/network work. A stopped camera must not
+    supply a stale pre-turn image as a successful still capture.
+    """
+    if not CAMERA_ENABLED:
+        return None
+    from hardware import servos
+    settle = min(1.5, max(0.0, float(getattr(config, "PHOTO_MEMORY_SETTLE_SECS", .6))))
+    with servos.hold_head_for_photo(settle + 1.0):
+        time.sleep(settle)
+        ready = time.monotonic()
+        deadline = ready + .8
+        while time.monotonic() < deadline:
+            with _frame_lock:
+                if _frame is not None and _last_frame_at is not None and _last_frame_at > ready:
+                    _log.info("Pet still captured after %.2fs head settle", settle)
+                    return _frame.copy()
+            time.sleep(.02)
+    _log.warning("Pet still unavailable: no fresh frame after head settle")
+    return None
+
+
 def capture_current_gaze(settle_secs: float = 0.15) -> Optional[np.ndarray]:
     """
     Capture a frame from Rex's current head/gaze direction.

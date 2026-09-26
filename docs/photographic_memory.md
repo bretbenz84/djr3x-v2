@@ -2,9 +2,21 @@
 
 Rex learns individual pets from human-labelled photographs. The local detector
 still supplies animal detections. With `PHOTO_MEMORY_ENABLED = True` (default),
-a background worker copies the detector crop, asks OpenAI to validate and refine
-its bounding box, and crops the **original camera pixels** locally. No generated
+a background worker copies a padded detector view, asks OpenAI to validate its
+subject and identifying detail, and retains the **original camera pixels** locally. No generated
 or retouched animal image is used as a reference.
+
+The view includes a margin on every side equal to half the detection's longest
+dimension, clipped at the camera frame edges. OpenAI's tighter subject bounds
+are validated but do not trim the saved view again. This preserves heads, ears,
+body markings and surrounding context. Expanded views with multiple animals
+are rejected; people holding a pet are not additional animal targets. Explicit
+teaching can save a partial view of one unambiguous real animal even when its
+individual markings are not clear enough for recognition. Rex acknowledges the
+save and asks for a clearer face view; recognition still abstains on poor detail.
+Comparison logs include match scores and evidence. Existing tight
+references cannot be expanded retroactively; introduce each pet again to add a
+new, wider view.
 
 Rex compares a fresh crop with the saved photographs. A confident match says
 “Oh hey, it's Max again!” An uncertain match asks “I'm not sure what this dog's
@@ -16,6 +28,12 @@ reply. An unrelated conversation cannot label the photo.
 
 You can also introduce a pet without waiting for Rex to ask: “This is my dog
 Max.” Rex captures a fresh image and explicitly acknowledges a successful save.
+Explicit pet teaching and identity questions hold the current neck/lift/tilt
+positions for `PHOTO_MEMORY_SETTLE_SECS` (0.6 seconds), then wait up to 0.8 seconds
+for a newly arrived camera frame. Tracking/animation target writes are held at
+the servo layer. The head is released before detection and cloud comparison,
+including on failure; a stale camera buffer cannot serve as the new still.
+Ambient background observations continue using detector frames.
 “This is Toby” works when Toby is already a known pet in your facts or album.
 “What dog do you see?”, “Which dog is this?” and “Do you recognize this dog?”
 now perform a fresh album comparison, including separate crops for up to three

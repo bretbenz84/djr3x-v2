@@ -4,6 +4,53 @@ This file is a compact handoff for future AI/development sessions. It explains w
 
 ## Photographic pet/object memory (2026-09-25)
 
+21:26 field run saved Max; a background comparison recognized him at .95/.05,
+while the direct question's separate view was rejected for occlusion. Later
+background imagery was also blurred. Motion is plausible, not proven as sole
+cause. Explicit pet requests now use camera.capture_pet_still: briefly lease
+actual neck/lift/tilt positions at the servo target layer, wait .6s, then require
+a fresh post-settle camera frame within .8s. Release before detection/API work,
+finally on error, with a bounded lease. Ambient observations remain unchanged.
+Tests pet_still/photo_memory/voice_learning run with hardware/network blocked.
+
+20:59 field run: all three Max introductions decoded. First blocked on unresolved
+speaker, next two failed image validation citing human holders/multiple subjects
+and occlusion. Album stayed empty. Validation now explicitly counts only animal
+targets, excluding people, and separates `usable`/`target_count` from
+`recognition_ready`. Explicit teaching accepts one localizable real pet with a
+partial view and acknowledges that a clearer face view would help; comparison
+still requires identifying detail. No relaxation of speaker trust or multiple-pet
+ambiguity. Regression coverage includes the full explicit-save path.
+
+20:48 field run saved Toby and Max (one JPEG each), but both later comparisons
+abstained. The references are overly tight: Toby is dark/blurred, Max has a
+partially clipped head. Scores were not logged, so the precise comparison
+rejection cannot be reconstructed. Photo capture now expands detector bounds
+by half their longest dimension on each side and keeps that entire original-pixel
+view after model validation; it no longer crops again to the model's tight box.
+Both ambient and explicit capture use this path. The validation prompt requires
+identifying detail; expanded views with multiple animals still abstain. Match
+scores/evidence are logged. Existing photos are preserved; reintroduce each pet
+to add a wider reference. Isolated photo_memory regressions cover retained
+pixels, tight model bounds, edge clamping and multi-subject rejection.
+
+20:35 field run: no pet introduction reached decoded text and no photos exist.
+Qwen repeatedly emitted its context prompt, then failed the unbiased retry;
+some captures contained little voiced audio, and a background photo call timed
+out. The logs cannot establish the microphone/AEC cause without retained audio.
+Separately, the synchronous optional lean impulse stalled between microphone
+captures: cues at 20:38:06, then PASS at 20:39:01 after OpenAI retries. Its cloud
+request now uses a 2-second network timeout and zero SDK retries, rather than
+the normal 18-second reply timeout with retries. This reduces stalled-network
+listening gaps; generation still runs synchronously between captures.
+ASR now retains `rejection_reason` on empty Transcript values (including through
+`_process_audio`), logs duration/RMS/peak, and pauses context bias for 60 seconds
+after regurgitation. Rejected turns can ask for a repeat only with substantial
+independently voiced audio, outside playback/tail, in an active exchange, subject
+to existing cooldown/phantom-audio caps. No rejected words become names or facts.
+Regression modules: asr_rejected_turns, lean_impulse_menu. This is failure recovery/diagnostics, not
+proof that the physical hearing problem is resolved.
+
 20:11 field run: no photos were saved. Explicit “This is my dog Max” went to
 legacy pet facts; “What dog do you see?” went to generic scene description.
 Both now have an early photo-memory path before introductions/tool routing:
