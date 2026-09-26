@@ -409,15 +409,24 @@ person introductions briefly use the measured level forward extension.
   This takes priority over mood, Pride, and speech poses, then returns to the
   current mood. A bent-elbow rest bridge is used when a direct transition fails
   the independent-joint clearance check. Callbacks never start/recover a worker.
-- **Base movement interlock:** host-issued drive, turn, move, approach and wheel
-  commands wait for the arm to retract through tuck to park. Retraction uses its
+- **Base movement interlock:** straight reverse (`move` with negative distance or
+  `drive` with negative linear and zero angular velocity) holds the current arm
+  pose without retracting. Turns, arcs (including reverse arcs), and wheel jogs
+  also skip retraction when all eight ToF distances exceed **3 feet (914.4 mm)**
+  in telemetry less than 0.5 seconds old. A nearby return in any direction,
+  missing/error reading, or stale telemetry requires retraction. Forward-only
+  travel and legacy approach commands retain retraction. Clearance is rechecked
+  after the worker holds the arm and before sending the base command.
+  Required retraction goes through tuck to park and uses its
   own brisk profile (`THROTTLE_RETRACT_*`): 0.9 seconds requested per segment,
   speed caps 30/70/70 and acceleration caps 6/12/12, followed by 0.5 seconds settling.
   The Maestro reports output pulses, **not actual joint positions**; a stalled
   servo cannot be detected by this guard. Missing readback, faults or a missing
   worker block movement when the throttle arm is enabled. Speech and mood cannot
-  extend the arm during travel. Fresh post-command idle telemetry releases the
-  hold; stale telemetry or a lost base link keeps it parked. Stop/estop and zero
+  extend the arm during travel, even when parking is skipped. Fresh post-command
+  idle telemetry releases the hold; stale telemetry or a lost base link keeps
+  the held pose. This is a pre-command clearance check, not continuous arm
+  collision monitoring. Stop/estop and zero
   velocity commands bypass the wait and cancel pending movement. ESP32-local
   gamepad commands bypass the Mac and are outside this host-side interlock.
 - **Sleep/shutdown:** head and throttle arm park concurrently. The head latches as

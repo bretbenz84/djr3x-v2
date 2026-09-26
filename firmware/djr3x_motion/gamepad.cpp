@@ -14,6 +14,7 @@
 //   L3 (click) : toggle surface mode (hardwood <-> carpet)
 //   B          : E-STOP (always honored)
 //   Start      : clear e-stop + return control to AUTO
+//   L1+R1 hold : with sticks centered, assert physically unplugged after 2 seconds
 //   R3 (click) : toggle SENSOR-BYPASS mode (owner spec 2026-07-16). While ON, the
 //                RIGHT stick drives with ALL ToF gating off (for escaping a stuck
 //                block) and the left stick is ignored; click R3 again to exit.
@@ -24,6 +25,8 @@
 #include <math.h>
 #include "context.h"
 #include "control.h"
+#include "battery.h"
+#include "gamepad_unplug.h"
 #include "calib.h"
 #include "proto_io.h"   // emit_event_kv — forward action-button presses to the Mac
 
@@ -41,6 +44,7 @@ static inline float gp_deg2rad(float d) { return d * (float)M_PI / 180.0f; }
 static ControllerPtr s_ctl = nullptr;     // the one pad we drive from
 static bool s_prev_b = false;
 static bool s_prev_start = false;
+static GamepadUnplugHold s_unplug_hold;
 static bool s_bypass = false;             // R3-toggled sensor-bypass (right-stick drive)
 static uint8_t s_prev_dpad = 0;           // D-pad rising-edge state (heading-turn triggers)
 static bool s_prev_l3 = false;            // left-stick-click rising edge (surface-mode toggle)
@@ -77,6 +81,7 @@ static void onConnect(ControllerPtr c) {
 static void onDisconnect(ControllerPtr c) {
   if (s_ctl == c) {
     s_ctl = nullptr;
+    s_unplug_hold = GamepadUnplugHold();
     s_bypass = false;                 // bypass NEVER survives a disconnect
     ctl_set_full_override(false);
     s_carpet_mode = false;    // a reconnected pad starts in HARDWOOD (gentler default)
@@ -200,6 +205,7 @@ void gamepad_tick() {
   BP32.update();
   ControllerPtr c = s_ctl;
   if (!c || !c->isConnected() || !c->isGamepad()) {
+    s_unplug_hold = GamepadUnplugHold();
     LOCK_STATE(); g_ctx.gp_live.connected = false; UNLOCK_STATE();  // GUI: no pad
     maybe_autoreturn();
     return;
@@ -209,6 +215,34 @@ void gamepad_tick() {
   bool b = c->b();
   if (b && !s_prev_b) ctl_estop(0);
   s_prev_b = b;
+
+  // After physically unplugging: hold L1+R1 for two seconds with both sticks
+  // centered. This is the operator's cable-off declaration (same as chg_assert),
+  // never inferred from ordinary drive input. Suppress motion and Start while
+  // the chord is held; preserve estop/fault, cancel queued motion and keep MANUAL.
+  const bool unplug_chord = c->l1() && c->r1();
+  const bool unplug_neutral = !b && !c->miscStart() && !c->dpad() &&
+      stick_norm(c->axisX()) == 0 && stick_norm(c->axisY()) == 0 &&
+      stick_norm(c->axisRX()) == 0 && stick_norm(c->axisRY()) == 0;
+  const bool unplug_request = s_unplug_hold.step(unplug_chord, unplug_neutral, millis());
+  if (unplug_chord) {
+    ctl_stop(0);
+    s_bypass = false;
+    ctl_set_full_override(false);
+    LOCK_STATE();
+    g_ctx.owner = OWNER_MANUAL;
+    g_ctx.last_manual_input_ms = millis();
+    UNLOCK_STATE();
+    s_prev_start = c->miscStart();
+    s_prev_dpad = c->dpad();
+    s_prev_l3 = c->thumbL();
+    s_prev_r3 = c->thumbR();
+    if (unplug_request && battery_gauge_available()) {
+      battery_request_charge_assert(false);
+      emit_log("info", "gamepad: operator asserted charger unplugged");
+    }
+    return;
+  }
 
   // Start = clear any e-stop/fault + hand control back to AUTO (rising edge).
   bool start = c->miscStart();

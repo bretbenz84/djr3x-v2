@@ -14,6 +14,7 @@ intelligence/motion_controller.py; this module is just the pipe.
 
 import json
 import logging
+import math
 import threading
 import time
 
@@ -354,6 +355,33 @@ def _next_seq() -> int:
         return _seq
 
 
+def _throttle_retraction_required(obj: dict) -> bool:
+    """Only straight reverse or a freshly clear turning envelope can skip park."""
+    try:
+        cmd = obj.get('cmd')
+        lin = float(obj.get('lin', 0))
+        ang = float(obj.get('ang', 0))
+        dist = float(obj.get('dist', 0))
+        if not all(math.isfinite(v) for v in (lin, ang, dist)):
+            return True
+        if (cmd == 'move' and dist < 0) or (cmd == 'drive' and lin < 0 and ang == 0):
+            return False
+        if cmd not in {'turn', 'wheel'} and not (cmd == 'drive' and ang != 0):
+            return True
+        snapshot = telemetry() or {}
+        age = time.monotonic() - float(snapshot.get('rx_monotonic', 0))
+        if not 0 <= age < config.THROTTLE_CLEARANCE_MAX_AGE_SECS:
+            return True
+        ranges = snapshot.get('tof_mm') or {}
+        for sensor in ('fl', 'fr', 'lf', 'lb', 'rf', 'rb', 'rl', 'rr'):
+            distance = float(ranges[sensor])
+            if not math.isfinite(distance) or distance <= config.THROTTLE_TURN_CLEARANCE_MM:
+                return True
+        return False
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
 def send(obj: dict) -> "int | None":
     """Interlock every host movement command; stop/estop never wait for the arm."""
     global _stop_generation
@@ -371,9 +399,14 @@ def send(obj: dict) -> "int | None":
             return None
         from sequences import throttle_arm
         try:
-            if not throttle_arm.prepare_base_motion():
+            retract = _throttle_retraction_required(obj)
+            if not throttle_arm.prepare_base_motion(retract=retract):
                 _log.warning('Base command %s blocked: throttle park command/readback incomplete', cmd)
                 return None
+            # The worker may have needed time to yield an in-progress gesture.
+            if not retract and _throttle_retraction_required(obj):
+                if not throttle_arm.prepare_base_motion(retract=True):
+                    return None
         except Exception:
             _log.warning('Base command blocked: throttle retraction failed', exc_info=True)
             return None

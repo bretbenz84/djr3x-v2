@@ -268,6 +268,15 @@ ESP32 has enough usable GPIO for this; lay out PWM and interrupt pins first.
 | **"turn left/right"** | Spin in place a default step (e.g. 45–90°, configurable) or a stated angle; closed-loop on encoders. The HOST swing check (`intelligence/motion_swing.py`) shrinks or refuses the angle when the ring/arms would sweep into a ToF return — the firmware itself does not gate spins. |
 | **"move back"** | Reverse a default/stated distance; **gated by the rear ToF** — slow then stop if something's behind. |
 | **"move forward"/"go"** | Drive forward a default/stated distance; front ToF gated. |
+
+The host throttle-arm interlock holds the current pose for straight reverse.
+For turns, angular `drive` commands (arcs), and wheel jogs, it skips parking only
+when all eight `tof_mm` readings exceed 914.4 mm (3 feet) and telemetry is under
+0.5 seconds old. Nearby, missing, invalid, or stale readings require the existing
+tuck → park sequence and settling delay. Forward-only motion still retracts.
+The arm worker suspends gestures until fresh post-command idle telemetry for
+both parked and unparked holds. These checks supplement the swing and travel
+gates; they do not change firmware obstacle handling or ESP32-local gamepad control.
 | **"stop"** | Immediate controlled stop (always honored, highest priority). |
 | **"come here" / "come over here" / "come to me"** | Acquire the caller's visible face before any voice/radar search turn, center the head and align from the face box, then advance with `MOTION_COME_REQUEST_STOP_AT_M` clearance (currently 1.3 m). A nearer obstacle stops him first. |
 

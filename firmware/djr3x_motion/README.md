@@ -306,7 +306,15 @@ remembers the bond for next time.
 | **L1 (hold) + D-pad** | **spin to an absolute heading** (encoder test): Up=0°, Left=+90° (CCW), Down=180°, Right=−90° (CW) |
 | **B** | **E-STOP** (always honored) |
 | Start | clear e-stop + return control to AUTO |
-| Hold **both** triggers (L2+R2) | FULL-OVERRIDE: bypass ToF gating (nudge through tight spots) |
+| **L1 + R1 (hold 2 seconds)** | After physically removing the charger cable, declare **unplugged** with both sticks centered and D-pad/Start/B released. The next battery tick (up to 1 second later) releases the charger lock if fresh readings permit it. Release the shoulders, then drive. Works with the Mac app asleep. |
+| **R3 (click right stick)** | Toggle SENSOR-BYPASS: right stick drives with ToF gating off; left stick is ignored until toggled off. Does not bypass the charger lock. |
+
+The unplug shortcut is an explicit operator declaration, like saying “you're
+unplugged”; only use it after removing the cable. It cancels queued movement,
+keeps MANUAL ownership, and preserves e-stop/fault. Fresh sensor readings showing
+charging current, charger voltage, or a failed read refuse release; release and
+repeat the hold to retry. The automatic 90-second discharge guard remains because
+startup load once mimicked an unplug while the cable was still attached.
 
 **Rumble feedback** (`GAMEPAD_RUMBLE_*` in `calib.h`, master `GAMEPAD_RUMBLE_ENABLED`):
 the pad is a tactile echo of the collision avoidance — a **light buzz** entering the

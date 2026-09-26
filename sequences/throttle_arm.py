@@ -235,6 +235,7 @@ class Controller:
         self.speech_expression = None
         self.speech_expression_until = 0.0
         self.base_hold = False
+        self.base_retract = False
         self.base_ready = threading.Event()
         self.base_seq = None
         self.base_sent_at = None
@@ -248,6 +249,8 @@ class Controller:
 
     def _interrupted(self, parking):
         if self.stop_event.is_set():
+            return True
+        if not parking and self.base_hold:
             return True
         if not parking and not servos._automatic_motion_allowed():
             self.park_event.set()
@@ -388,9 +391,12 @@ class Controller:
                     base_hold = self.base_hold
                 if base_hold:
                     if not self.base_ready.is_set():
-                        self._park(for_base=True)
-                        if not self.parked:
-                            return
+                        if self.base_retract:
+                            self._park(for_base=True)
+                            if not self.parked:
+                                return
+                        else:
+                            servos.hold_throttle_pose(self.connection)
                         self.base_ready.set()
                     from hardware import motion
                     telemetry = motion.telemetry() or {}
@@ -412,8 +418,9 @@ class Controller:
                     if base_hold:
                         self.stop_event.wait(0.1)
                         continue
+                    resume = STARTUP if self.parked else (REST,)
                     self.parked = False
-                    for target in STARTUP:
+                    for target in resume:
                         if not self.move(target, 'STARTUP', config.THROTTLE_STARTUP_MOVE_SECS):
                             break
                     self.last_expression = None
@@ -577,14 +584,20 @@ def speech_level(level):
             controller.cadence.level(level, time.monotonic())
 
 
-def prepare_base_motion(timeout=30.0):
-    """Reserve a parked arm before a base command. Fail closed if unavailable."""
+def prepare_base_motion(timeout=30.0, *, retract=True):
+    """Reserve a parked or stationary arm before a base command; fail closed."""
     if not config.THROTTLE_ARM_ENABLED:
         return True
     controller = _controller
     if controller is None or controller.done.is_set() or controller.stop_event.is_set():
         return False
     with controller.lock:
+        if not controller.base_hold:
+            controller.base_retract = retract
+            controller.base_ready.clear()
+        elif retract and not controller.base_retract:
+            controller.base_retract = True
+            controller.base_ready.clear()
         controller.base_hold = True
         controller.pose_request = None
         controller.pose_until = None
@@ -598,8 +611,11 @@ def prepare_base_motion(timeout=30.0):
         if controller.base_ready.wait(0.1):
             try:
                 actual = servos.read_throttle_pose(controller.connection)
+                limits = {cfg['ch']: cfg for cfg in config.THROTTLE_SERVO_CHANNELS.values()}
+                validate_pose(actual, limits)
                 return (not servos.throttle_motion_blocked(parking=True)
-                        and all(abs(actual[ch] - PARK[ch]) <= 2 for ch in CHANNELS))
+                        and (not controller.base_retract
+                             or all(abs(actual[ch] - PARK[ch]) <= 2 for ch in CHANNELS)))
             except Exception:
                 return False
     return False

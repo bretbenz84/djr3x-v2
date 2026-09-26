@@ -151,8 +151,10 @@ bool battery_gauge_available() {
 void battery_request_mark_full() { s_mark_full_req = true; }
 
 void battery_request_charge_assert(bool on) {
+  LOCK_STATE();
   s_chg_assert_on = on;      // value BEFORE arming (same ordering as batt_soc)
   s_chg_assert_req = true;
+  UNLOCK_STATE();
 }
 
 void battery_request_set_soc(float pct) {
@@ -169,22 +171,28 @@ void battery_tick() {
   // shunt path) — a build can have either wired without the other, so an
   // unwired VBUS must not block the current read (it used to early-return here).
   bool have_mv = false;
+  float current_mv = -1.0f;
   uint16_t raw = 0;
   if (ina_read16(REG_BUS, raw)) {          // transient bus error: keep last EMA
     float mv = raw * 1.25f;
     if (mv >= 1000.0f) {                   // VBUS unwired/floating — don't report garbage
+      current_mv = mv;
       s_mv_ema = (s_mv_ema < 0.0f) ? mv : (0.8f * s_mv_ema + 0.2f * mv);
       have_mv = true;
     }
   }
 
 #if BATT_SHUNT_MICROOHM > 0
+  bool have_ma = false;
+  float current_ma = 0.0f;
   uint16_t sraw = 0;
   if (ina_read16(REG_SHUNT, sraw)) {
     // 2.5 uV/LSB across the shunt; I = V/R. Signed register; BATT_CURRENT_SIGN
     // maps the as-built sense orientation onto "+ = discharging" (§6.1).
     float uv = (int16_t)sraw * 2.5f;
     float ma = (float)BATT_CURRENT_SIGN * uv * 1000.0f / (float)BATT_SHUNT_MICROOHM;
+    current_ma = ma;
+    have_ma = true;
     s_ma_ema = 0.8f * s_ma_ema + 0.2f * ma;
   }
 #endif
@@ -290,15 +298,28 @@ void battery_tick() {
   // field 2026-08-07, the flinch-on-the-cord rollback). Locking is always
   // accepted. Unlocking is sanity-checked: with definite charge current
   // flowing in, the cable is demonstrably attached and the word is refused.
-  if (s_chg_assert_req) {
-    s_chg_assert_req = false;
-    const bool want = s_chg_assert_on;
+  LOCK_STATE();
+  const bool charge_assert_req = s_chg_assert_req;
+  const bool want = s_chg_assert_on;
+  s_chg_assert_req = false;
+  UNLOCK_STATE();
+  if (charge_assert_req) {
     if (want != s_charging) {
-      if (!want && s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA) {
-        emit_log("warn", "battery: unplug asserted but charge current is "
-                         "flowing - keeping drive locked");
+      // Use this tick's readings: the display EMA retains pre-unplug charging
+      // current for seconds. Missing readings must never validate an unlock.
+      if (!want && (!have_ma || !have_mv ||
+                    current_ma <= -(float)BATT_CHARGE_DETECT_MA ||
+                    current_mv >= (float)BATT_CHARGE_DETECT_MV)) {
+        emit_log("warn", "battery: unplug assertion refused - charger evidence "
+                         "or missing battery sample; keeping drive locked");
       } else {
         s_charging = want;
+        if (!want) {
+          // Retire pre-unplug history so automatic detection cannot re-latch
+          // from the old charger's smoothed voltage/current on following ticks.
+          s_mv_ema = current_mv;
+          s_ma_ema = current_ma;
+        }
         s_chg_ticks = 0;
         s_prefs.putBool("chg", s_charging);
         emit_event_kv("charging", "state", s_charging ? "on" : "off");
@@ -330,7 +351,8 @@ void battery_tick() {
   // moment charger current catches back up to the load, net flow returns to ~0
   // and the consecutive counter resets. Only a genuine unplug keeps the pack
   // sourcing the electronics for minutes on end.
-  const bool discharge_proof = s_ma_ema >= (float)BATT_CHARGE_EXIT_DISCHARGE_MA;
+  const bool discharge_proof = have_ma &&
+      s_ma_ema >= (float)BATT_CHARGE_EXIT_DISCHARGE_MA;
   const bool chg_now = s_charging
       ? !discharge_proof
       : (charger_voltage_enter || s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA);

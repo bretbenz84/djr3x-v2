@@ -3202,8 +3202,12 @@ base turn). Three things the run exposed, all host-side:
   11:45:15. The host grace now applies only when the last positive reading came
   from the VOLTAGE backstop; a firmware-flag drop releases at once
   (`MOTION_CHARGING_FW_RELEASE_GRACE_SECS`, 0). The 90 s itself is firmware and
-  unflashed by design — the fast path remains SAYING "you're unplugged"
-  (`chg_assert`, 2026-08-07).
+  unflashed by design at that time — the fast path was SAYING "you're unplugged"
+  (`chg_assert`, 2026-08-07). Firmware 0.2.3 adds a direct controller equivalent:
+  after removing the cable, hold L1+R1 for 2 seconds with both sticks centered
+  and D-pad/Start/B released, then release the shoulders to drive. Fresh battery
+  readings must permit the assertion; it applies on the next 1 Hz tick without
+  waiting for old EMA history. The 90-second automatic guard remains unchanged.
 - **A transcribed "Hey Rex" never turned him.** 11:44:45, "Hey Rex" from +168°
   arrived as a transcript (fast-acked "I'm listening"), not as a wake-model
   detection, and only the model path had the reflex. The heard-turn hook

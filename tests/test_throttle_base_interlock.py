@@ -1,5 +1,6 @@
 """Base/arm ordering and failure tests, with no physical I/O."""
 import json
+import time
 import unittest
 from unittest import mock
 
@@ -21,7 +22,7 @@ class TransportTest(unittest.TestCase):
     def test_all_moving_commands_wait_for_park(self):
         for cmd in ('turn', 'move', 'come', 'drive', 'wheel'):
             motion._ser.reset_mock()
-            def prepared():
+            def prepared(**kwargs):
                 motion._ser.write.assert_not_called()
                 return True
             arm.prepare_base_motion.side_effect = prepared
@@ -37,16 +38,60 @@ class TransportTest(unittest.TestCase):
             self.assertIsNone(motion.send({'cmd': 'turn', 'deg': 90}))
             motion._ser.write.assert_not_called()
 
+    def test_clearance_is_rechecked_before_sending(self):
+        with mock.patch.object(motion, '_throttle_retraction_required', side_effect=[False, True]):
+            self.assertIsNotNone(motion.send({'cmd': 'turn', 'deg': 90}))
+        self.assertEqual(arm.prepare_base_motion.call_args_list,
+                         [mock.call(retract=False), mock.call(retract=True)])
+
+    def test_reverse_transport_only_requests_hold(self):
+        self.assertIsNotNone(motion.send({'cmd': 'move', 'dist': -.3}))
+        arm.prepare_base_motion.assert_called_once_with(retract=False)
+
     def test_stops_bypass_guard_and_cancel_pending_motion(self):
         for obj in ({'cmd': 'stop'}, {'cmd': 'estop'}, {'cmd': 'drive', 'lin': 0, 'ang': 0}):
             motion._ser.reset_mock()
-            arm.prepare_base_motion.side_effect = lambda: (motion.send(obj), True)[1]
+            arm.prepare_base_motion.side_effect = lambda **kwargs: (motion.send(obj), True)[1]
             self.assertIsNone(motion.send({'cmd': 'turn', 'deg': 90}))
             self.assertEqual(motion._ser.write.call_count, 1)
             self.assertEqual(json.loads(motion._ser.write.call_args.args[0])['cmd'], obj['cmd'])
 
 
 class ArmInterlockTest(runtime.RuntimeTest):
+    def test_unparked_hold_resumes_without_tuck_or_park(self):
+        self.port.pose = dict(arm.REST)
+        self.assertTrue(arm.start())
+        self.assertTrue(arm.prepare_base_motion(timeout=3, retract=False))
+        targets = []
+        self.port.on_target = lambda p: targets.append(p)
+        arm.base_motion_sent(42)
+        with arm._controller.lock:
+            arm._controller.base_sent_at = time.monotonic() - 1
+        with mock.patch('hardware.motion.telemetry', side_effect=lambda: {
+                'state': 'idle', 'owner': 'auto', 'cmd_seq': 42,
+                'rx_monotonic': time.monotonic()}):
+            deadline = time.monotonic() + 2
+            while not targets and time.monotonic() < deadline:
+                arm._controller.stop_event.wait(.02)
+        self.assertTrue(targets)
+        self.assertEqual(targets[0], arm.REST)
+        self.assertNotIn(arm.TUCK, targets)
+        self.assertNotIn(arm.PARK, targets)
+
+    def test_clear_motion_holds_without_parking_and_can_upgrade(self):
+        self.port.pose = dict(arm.REST)
+        self.assertTrue(arm.start())
+        self.assertTrue(arm.prepare_base_motion(timeout=3, retract=False))
+        held = dict(self.port.pose)
+        self.assertEqual(held, arm.REST)
+        arm.speech_start()
+        arm.introduction()
+        arm._controller.stop_event.wait(.2)
+        self.assertEqual(self.port.pose, held)
+        self.assertFalse(arm._controller.base_retract)
+        self.assertTrue(arm.prepare_base_motion(timeout=3, retract=True))
+        self.assertEqual(self.port.pose, arm.PARK)
+
     def test_worker_retracts_and_holds_during_speech(self):
         self.assertTrue(arm.start())
         self.assertTrue(arm.prepare_base_motion(timeout=3))
@@ -103,3 +148,40 @@ class ArmInterlockTest(runtime.RuntimeTest):
         self.assertFalse(arm.prepare_base_motion(timeout=.01))
         with mock.patch.object(config, 'THROTTLE_ARM_ENABLED', False):
             self.assertTrue(arm.prepare_base_motion())
+
+
+class ClearanceTest(unittest.TestCase):
+    def setUp(self):
+        self.snapshot = {'rx_monotonic': time.monotonic(),
+                         'tof_mm': dict.fromkeys(('fl', 'fr', 'lf', 'lb', 'rf', 'rb', 'rl', 'rr'), 1200)}
+        patch = mock.patch.object(motion, 'telemetry', side_effect=lambda: self.snapshot)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_clear_turns_arcs_and_wheel_jogs_skip_retraction(self):
+        for cmd in ({'cmd': 'turn', 'deg': -90}, {'cmd': 'turn', 'deg': 90},
+                    {'cmd': 'drive', 'lin': -.2, 'ang': .1}, {'cmd': 'wheel'}):
+            self.assertFalse(motion._throttle_retraction_required(cmd))
+
+    def test_every_direction_and_invalid_reading_requires_retraction(self):
+        for sensor in self.snapshot['tof_mm']:
+            for distance in (0, 300, 914, 914.4, -1, None, float('nan'), float('inf')):
+                with self.subTest(sensor=sensor, distance=distance):
+                    self.snapshot['tof_mm'][sensor] = distance
+                    self.assertTrue(motion._throttle_retraction_required({'cmd': 'turn'}))
+            self.snapshot['tof_mm'][sensor] = 915
+        self.assertFalse(motion._throttle_retraction_required({'cmd': 'turn'}))
+
+    def test_stale_missing_and_partial_telemetry_retract(self):
+        for snapshot in (None, {}, {'rx_monotonic': time.monotonic(), 'tof_mm': {'fl': 4000}},
+                         {**self.snapshot, 'rx_monotonic': time.monotonic() - 1}):
+            self.snapshot = snapshot
+            self.assertTrue(motion._throttle_retraction_required({'cmd': 'turn'}))
+
+    def test_straight_reverse_skips_even_when_blind_but_forward_retracts(self):
+        self.snapshot = None
+        for cmd in ({'cmd': 'move', 'dist': -.3}, {'cmd': 'drive', 'lin': -.2, 'ang': 0}):
+            self.assertFalse(motion._throttle_retraction_required(cmd))
+        for cmd in ({'cmd': 'move', 'dist': .3}, {'cmd': 'drive', 'lin': .2},
+                    {'cmd': 'drive', 'lin': -.2, 'ang': .01}, {'cmd': 'come'}):
+            self.assertTrue(motion._throttle_retraction_required(cmd))

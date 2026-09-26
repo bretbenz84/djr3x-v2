@@ -49,6 +49,7 @@ void battery_request_set_soc(float pct);
 // Host command "chg_assert": the operator states the cable is on/off — the
 // escape hatch for charger states the gauge cannot measure (a finished supply
 // at ~0 mA on a full pack reads identical to unplugged). Locking is always
-// applied; unlocking is refused while definite charge current is flowing in.
+// applied; unlocking requires fresh current/voltage samples without definite
+// charge current or charger voltage. Also used by the L1+R1 gamepad shortcut.
 // Applied by the next 1 Hz battery_tick, persisted like the detected latch.
 void battery_request_charge_assert(bool on);
