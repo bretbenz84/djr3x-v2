@@ -27800,18 +27800,30 @@ def _handle_speech_segment(
         # logic can interpret "That's Max" as a new human standing nearby.
         from vision import photo_memory
         photo_frame = dialogue_act.active_frame(person_id=person_id)
-        if (getattr(photo_frame, "source", "") == "world.animal_arrival"
-                and photo_memory.pending_answer(text) and not game_conversation_lock):
-            photo_line = _photo_memory_takeover(
-                text, person_id=person_id,
-                trusted=bool(transcript_trusted) and not _turn_speaker_uncertain(),
-                answering_animal=True,
-            )
+        photo_answer = (getattr(photo_frame, "source", "") == "world.animal_arrival"
+                        and photo_memory.pending_answer(text))
+        photo_line = None
+        if not game_conversation_lock and not photo_answer:
+            photo_line = photo_memory.pet_command(
+                text, owner_id=person_id,
+                trusted=bool(transcript_trusted) and not _turn_speaker_uncertain())
+            if photo_line is not None:
+                delivered = _speak_blocking(photo_line, emotion="happy", log_text=False)
+                if delivered:
+                    photo_memory.arm_question(getattr(photo_line, "observation", None))
+        if (photo_answer or photo_line is not None) and not game_conversation_lock:
+            if photo_answer:
+                photo_line = _photo_memory_takeover(
+                    text, person_id=person_id,
+                    trusted=bool(transcript_trusted) and not _turn_speaker_uncertain(),
+                    answering_animal=True,
+                )
             if photo_line is None:
                 photo_line = "I couldn't confidently hear who said that. Please tell me the pet's name again."
                 _speak_blocking(photo_line, emotion="neutral", log_text=False)
-            else:
+            elif photo_answer:
                 dialogue_act.answer_frame(photo_frame, person_id, trusted=True)
+            photo_line = str(photo_line)
             _record_heard_turn_once()
             conv_memory.add_to_transcript("Rex", photo_line)
             conv_log.log_rex(photo_line)

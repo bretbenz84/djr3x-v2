@@ -14,7 +14,16 @@ human's answer, never a guess from household pet facts. “No, that's Toby” ca
 correct a recent animal greeting when its conversation frame still owns the
 reply. An unrelated conversation cannot label the photo.
 
-Show one animal at a time for now. Multiple detections or multiple subjects in
+You can also introduce a pet without waiting for Rex to ask: “This is my dog
+Max.” Rex captures a fresh image and explicitly acknowledges a successful save.
+“This is Toby” works when Toby is already a known pet in your facts or album.
+“What dog do you see?”, “Which dog is this?” and “Do you recognize this dog?”
+now perform a fresh album comparison, including separate crops for up to three
+visible animals. They do not guess from names mentioned in the conversation.
+If one unknown animal is visible, the reply asks its name and binds your answer
+to that exact image.
+
+Show one animal at a time for teaching. Multiple detections or multiple subjects in
 a crop abstain; seeing a second animal invalidates an outstanding singular photo
 question. A blurry, tiny or occluded subject, failed API request, missing reference
 file, or oversized gallery falls back to an unnamed reaction. Existing animal

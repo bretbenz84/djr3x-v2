@@ -4,6 +4,17 @@ This file is a compact handoff for future AI/development sessions. It explains w
 
 ## Photographic pet/object memory (2026-09-25)
 
+20:11 field run: no photos were saved. Explicit “This is my dog Max” went to
+legacy pet facts; “What dog do you see?” went to generic scene description.
+Both now have an early photo-memory path before introductions/tool routing:
+explicit species introductions capture/validate/save a fresh image; a bare
+known-pet introduction also works. Identity questions compare fresh animal crops
+with references (up to three animals) and abstain on duplicate identity matches.
+Teaching multiple visible animals asks for one, explicitly saying no photo was
+saved. Crop validation permits hands/laps around a held animal and logs rejection
+reasons. Regression tests replay the exact introduction/question through the
+speech handler. No old session photos were recovered or retroactively labelled.
+
 `vision/photo_memory.py` validates/refines local detector crops through OpenAI,
 then compares original pixels with `memory/photo_album.py` human-labelled JPEGs.
 `data/photo_memory/` is gitignored; atomic album index, three views per identity,

@@ -27,6 +27,9 @@ class PhotoCase(unittest.TestCase):
             self.addCleanup(patch.stop)
         PM.reset()
         self.addCleanup(PM.reset)
+        fact_patch = mock.patch("memory.facts.add_fact")
+        fact_patch.start()
+        self.addCleanup(fact_patch.stop)
         self.frame = np.zeros((200, 300, 3), dtype=np.uint8)
         self.frame[:, 150:] = 255
         self.record = {"species": "dog", "box": (0, 0, 150, 200)}
@@ -158,6 +161,64 @@ class ComparisonTests(PhotoCase):
             self.assertEqual(PM._analyze(self.frame, self.record, "animal")["status"], "unusable")
 
 
+class PetCommandTests(PhotoCase):
+    def run_command(self, text, animals=None, results=None, trusted=True):
+        from vision import camera, animal_detector
+        with mock.patch.object(camera, "get_frame", return_value=self.frame), \
+             mock.patch.object(animal_detector, "detect_animals", return_value=animals if animals is not None else [self.record]), \
+             mock.patch.object(PM, "_analyze", side_effect=results or [
+                 {"status": "unknown", "jpeg": b"new photo", "kind": "animal", "label": "dog"}]):
+            return PM.pet_command(text, owner_id=1, trusted=trusted)
+
+    def test_known_pet_bare_introduction_saves_toby(self):
+        from memory import facts
+        with mock.patch.object(facts, "get_pets", return_value=[{"name": "Toby", "species": "dog"}]):
+            self.assertIn("saved", self.run_command("This is Toby."))
+        self.assertEqual(album.references("animal", "dog")[0]["name"], "Toby")
+
+    def test_two_visible_dogs_do_not_get_one_names_photo(self):
+        line = self.run_command("This is my dog Max.", animals=[self.record, self.record])
+        self.assertIn("haven't saved", line)
+        self.assertEqual(album.references("animal", "dog"), [])
+
+    def test_query_identifies_each_dog_and_rejects_duplicate_identity(self):
+        for second, expected in [("toby", "Toby"), ("max", "not sure")]:
+            with self.subTest(second=second):
+                line = self.run_command("What dogs do you see?", animals=[self.record, self.record], results=[
+                    {"status": "recognized", "name": "Max", "identity_id": "max"},
+                    {"status": "recognized", "name": "Toby", "identity_id": second},
+                ])
+                self.assertIn(expected, line)
+                if second == "max":
+                    self.assertNotIn("recognize", line)
+
+    def test_unknown_query_arms_only_after_delivery(self):
+        line = self.run_command("What dog do you see?")
+        self.assertIn("Can you tell me", line)
+        self.assertIsNone(PM._pending)
+        self.assertTrue(PM.arm_question(line.observation))
+        self.assertEqual(PM.answer("Max", owner_id=1, trusted=True), "Max")
+
+    def test_untrusted_introduction_cannot_save(self):
+        self.assertIn("haven't saved", self.run_command("This is my dog Max.", trusted=False))
+        self.assertEqual(album.references("animal", "dog"), [])
+
+    def test_unclear_photo_does_not_claim_saved(self):
+        line = self.run_command("This is my dog Max.", results=[{"status": "unusable"}])
+        self.assertIn("clearer view", line)
+        self.assertEqual(album.references("animal", "dog"), [])
+
+    def test_new_introduction_retires_previous_photo_question(self):
+        PM.arm_question(self.capture())
+        self.assertIn("saved", self.run_command("This is my dog Max."))
+        self.assertIsNone(PM._pending)
+
+    def test_human_introduction_is_not_claimed_as_pet(self):
+        from memory import facts
+        with mock.patch.object(facts, "get_pets", return_value=[]):
+            self.assertIsNone(self.run_command("This is Jeremy."))
+
+
 class WorkerTests(PhotoCase):
     def test_api_failure_finishes_worker_without_writing_album(self):
         with mock.patch.object(PM, "_analyze", side_effect=TimeoutError("offline")):
@@ -236,7 +297,13 @@ class IntegrationTests(PhotoCase):
     def test_pet_answer_with_unknown_human_visible_never_enrolls_human(self):
         self._speech_answer("That's Max.", unknown_face=True)
 
-    def _speech_answer(self, text, unknown_face=False):
+    def test_logged_unprompted_dog_introduction_saves_in_speech_pipeline(self):
+        self._speech_answer("This is my dog Max.", direct=True)
+
+    def test_logged_identity_question_uses_album_in_speech_pipeline(self):
+        self._speech_answer("What dog do you see?", direct=True, query=True)
+
+    def _speech_answer(self, text, unknown_face=False, direct=False, query=False):
         # Reuse the audio/identity fixture, not a mock of the speech handler.
         from tests.test_voice_learning import RuntimeTests, face
         from intelligence import dialogue_act, conversation_state
@@ -256,11 +323,21 @@ class IntegrationTests(PhotoCase):
                             "_identity_prompt_until": fixture.now + 30 if unknown_face else 0.,
                             "_pending_onboarding": None}.items():
             fixture.stack.enter_context(mock.patch.object(I, attr, value))
-        token = self.capture()
-        PM.arm_question(token)
-        question = dialogue_act.note_rex_turn("What is this dog's name?", source="world.animal_arrival",
-                                             target_person_id=1, expected_reply_types=["answer"])
-        question.created_at = fixture.now
+        if direct:
+            from vision import camera, animal_detector
+            fixture.stack.enter_context(mock.patch.object(camera, "get_frame", return_value=self.frame))
+            fixture.stack.enter_context(mock.patch.object(animal_detector, "detect_animals", return_value=[self.record]))
+            observed = {"status": "unknown", "jpeg": b"fresh photo", "label": "dog", "kind": "animal"}
+            if query:
+                ref = album.save(b"reference", name="Max", kind="animal", label="dog", owner_id=1)
+                observed.update(status="recognized", name="Max", identity_id=ref["id"])
+            fixture.stack.enter_context(mock.patch.object(PM, "_analyze", return_value=observed))
+        else:
+            token = self.capture()
+            PM.arm_question(token)
+            question = dialogue_act.note_rex_turn("What is this dog's name?", source="world.animal_arrival",
+                                                 target_person_id=1, expected_reply_types=["answer"])
+            question.created_at = fixture.now
         audio = fixture.prepare(mouth=None)
         I._utterance_observations['faces'] = I._utterance_observations.pop('visual')
         with mock.patch.object(I, "_enroll_new_person") as enroll:
@@ -271,7 +348,10 @@ class IntegrationTests(PhotoCase):
                          (I._speak_blocking.call_args_list, I._current_turn_speaker_evidence,
                           dialogue_act.frames_snapshot(), PM._pending))
         enroll.assert_not_called()
-        self.assertTrue(any("saved" in c.args[0] for c in I._speak_blocking.call_args_list))
+        if direct:
+            I._reply_token_stream.assert_not_called()
+        self.assertTrue(any(("recognize Max" if query else "saved") in c.args[0]
+                            for c in I._speak_blocking.call_args_list))
 
     def test_named_reaction_uses_photo_not_species_confirmation(self):
         from intelligence import consciousness as C
