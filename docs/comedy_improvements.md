@@ -575,8 +575,10 @@ Sulk-after-flop deferred. Tests: `tests/test_humor_actions.py`
 **Camera calibration update (2026-09-25):** The relocated camera is clear down to
 **1275 µs / 5100 q-µs**. Sustained suspicion, anger and offense, angry speech, and
 suspicion/anger beats now use this lower limit. Relaxed speech stays at or above
-1500 µs, and neutral idle visor motion drifts ±45 µs around 1640 µs over seven
-seconds. Mood decay blends back toward neutral. Both lower-corner object/animal
+1385 µs, and neutral idle visor motion drifts ±45 µs around 1525 µs over seven
+seconds. Surprise/shock retains its wide-open 1744 µs expression while other
+relaxed moods are shifted down 115 µs. Camera captures use 1680 µs.
+Mood decay blends back toward neutral. Both lower-corner object/animal
 exclusion zones are removed. Sleep/privacy still close the visor; the ordinary
 visor-peek beat now stays open enough to preserve vision. Earlier calibration
 values below describe the previous camera placement.

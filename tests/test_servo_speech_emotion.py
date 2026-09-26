@@ -63,7 +63,7 @@ class ServoSpeechEmotionTests(unittest.TestCase):
 
 
 class SpeechVisorFloorTests(unittest.TestCase):
-    """The talking visor may dip to VISOR_SPEECH_FLOOR_QUS (1500 us).
+    """The talking visor may dip to VISOR_SPEECH_FLOOR_QUS (1385 us).
 
     Its floor used to be the visor's own neutral (1640 us), which sat above six of
     the ten emotion visor_open_floor_frac values and flattened them all to a single
@@ -102,7 +102,7 @@ class SpeechVisorFloorTests(unittest.TestCase):
         from hardware import servos
 
         floor = int(config.VISOR_SPEECH_FLOOR_QUS)
-        self.assertEqual(floor, 6000)                                   # 1500 us
+        self.assertEqual(floor, 5540)                                   # 1385 us
         self.assertLess(floor, int(config.SERVO_CHANNELS["visor"]["neutral"]))
 
         neutral = int(config.SERVO_CHANNELS["visor"]["neutral"])
@@ -118,7 +118,9 @@ class SpeechVisorFloorTests(unittest.TestCase):
         import config
         from hardware import servos
 
-        target = self._visor_target(servos, {"visor_open_floor_frac": 0.92})
+        from intelligence import emotion_orchestrator
+        target = self._visor_target(servos, emotion_orchestrator.frame_for_emotion("shocked").speech_motion)
+        self.assertGreaterEqual(target, 6700)
         # frac 0.92 lands above the speech floor, so the emotion's own frac wins and
         # the visor stays open — the floor never drags an expressive emotion down.
         self.assertGreater(target, int(config.SERVO_CHANNELS["visor"]["neutral"]))
@@ -138,6 +140,7 @@ class SpeechVisorFloorTests(unittest.TestCase):
         visor_cfg = config.SERVO_CHANNELS["visor"]
         target = camera._visor_capture_target(visor_cfg)
         # A picture must never be taken through the expressive floor.
+        self.assertEqual(target, 1680 * 4)
         self.assertGreaterEqual(target, int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS))
         self.assertGreater(target, int(config.VISOR_SPEECH_FLOOR_QUS))
         self.assertEqual(int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS), 5100)   # 1275 us

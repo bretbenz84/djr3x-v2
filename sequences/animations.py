@@ -87,9 +87,9 @@ HEADTILT_SLIGHT_DOWN = 4700
 # Ch 3 — Visor: higher = more open; 1275 µs is the camera-clear squint.
 VISOR_CLOSED  = 4544   # sleep / privacy — covers camera lens
 VISOR_SQUINT  = int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS)
-VISOR_HALF    = 6400   # default resting open — clear of camera lens
-VISOR_NEUTRAL = 6000
-VISOR_OPEN    = 6976   # max — required before any camera capture
+VISOR_HALF    = 5940   # default resting open — clear of camera lens
+VISOR_NEUTRAL = int(config.SERVO_CHANNELS["visor"]["neutral"])
+VISOR_OPEN    = 6976   # max — wide-eyed surprise
 
 # Ch 4 — Elbow: 6300–7424, neutral 6720. Higher value = arm lifted UP, lower =
 # arm hanging down (headtilt is the only inverted channel on the droid; see the

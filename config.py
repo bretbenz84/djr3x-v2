@@ -2695,10 +2695,12 @@ SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS = 0.35
 SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS = 0.75
 SERVO_SPEECH_HAND_DIVISOR = 3
 # Camera repositioned 2026-09-25: 1275 µs is the lowest lens-clear position.
-# Ordinary speech stays relaxed at 1500 µs; angry speech explicitly requests the
+# Ordinary speech stays relaxed at 1385 µs; angry speech explicitly requests the
 # lower expressive floor. Sleep/privacy retain the physical closed position.
 VISOR_CAMERA_CLEAR_FLOOR_QUS = 5100
-VISOR_SPEECH_FLOOR_QUS = 6000
+VISOR_CAMERA_CAPTURE_QUS = 6720  # 1680 µs capture pose; surprise may open further
+VISOR_SPEECH_FLOOR_QUS = 5540
+VISOR_SPEECH_OFFSET_QUS = -460  # shift ordinary speech down with the 115 µs neutral change
 SERVO_IDLE_VISOR_ENABLED = True
 SERVO_IDLE_VISOR_AMPLITUDE_QUS = 180  # ±45 µs around neutral; no idle squint
 SERVO_IDLE_VISOR_PERIOD_SECS = 7.0
@@ -2763,7 +2765,7 @@ SERVO_CHANNELS = {
     # driven to.
     "headlift": {"ch": 1, "min": 2600, "max": 7744, "neutral": 3600},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
-    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — relaxed open expression
+    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6100},  # 1525 µs — relaxed open expression
     # A higher value lifts the arm, so the MIN end is the arm hanging down —
     # rest = 6300, the lowest value the limits allow. Powered down the servo is
     # limp and the arm falls to exactly there, so parking and starting here is
@@ -2984,7 +2986,7 @@ CAMERA_POSE_SETTLE_SECS = 0.5
 DIRECTED_LOOK_SETTLE_SECS = 0.22
 # After turning to the commanded direction, hold this long before snapping the photo so
 # BOTH the neck and the visor servo reach their targets. capture_current_gaze
-# reasserts the fully open capture pose across this window. The relocated camera
+# reasserts the configured capture pose across this window. The relocated camera
 # also stays clear during ordinary speech, emotional squints, and idle motion.
 DIRECTED_LOOK_CAPTURE_SETTLE_SECS = 1.5
 DIRECTED_LOOK_STEP_QUS = 160

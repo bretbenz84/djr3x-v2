@@ -1234,21 +1234,24 @@ def speech_reactive_move(intensity: float) -> None:
     # jitter too, so a negative random offset cannot cross the camera boundary.
     visor_hard_floor = max(
         _get_config_int("VISOR_CAMERA_CLEAR_FLOOR_QUS", 5100),
-        int(_motion_float(motion, "visor_floor_qus", _get_config_int("VISOR_SPEECH_FLOOR_QUS", 6000))),
+        int(_motion_float(motion, "visor_floor_qus", _get_config_int("VISOR_SPEECH_FLOOR_QUS", 5540))),
     )
+    visor_offset = int(_motion_float(
+        motion, "visor_offset_qus", _get_config_int("VISOR_SPEECH_OFFSET_QUS", -460)))
+    visor_ceiling = min(visor_cfg["max"], max(visor_hard_floor, visor_cfg["max"] + visor_offset))
     visor_open_floor = max(
         visor_hard_floor,
-        int(visor_cfg["min"] + (visor_cfg["max"] - visor_cfg["min"]) * visor_floor_frac),
+        int(visor_cfg["min"] + (visor_cfg["max"] - visor_cfg["min"]) * visor_floor_frac) + visor_offset,
     )
     visor_wave = 0.5 + 0.5 * math.sin(now * 8.0)
     visor_swing = int(
-        (visor_cfg["max"] - visor_open_floor)
+        (visor_ceiling - visor_open_floor)
         * (0.35 + 0.40 * expressive_intensity)
         * _motion_float(motion, "visor_swing_mult", 1.0)
     )
     targets[visor_ch] = _clamp(
         visor_ch,
-        max(visor_hard_floor, int(visor_open_floor + visor_wave * visor_swing) + random.randint(-45, 45)),
+        max(visor_hard_floor, min(visor_ceiling, int(visor_open_floor + visor_wave * visor_swing) + random.randint(-45, 45))),
     )
 
     elbow_lo, elbow_hi = config.SERVO_CHANNELS["elbow"]["min"], config.SERVO_CHANNELS["elbow"]["max"]

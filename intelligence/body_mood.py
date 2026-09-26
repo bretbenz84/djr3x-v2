@@ -50,26 +50,25 @@ def visor_lens_clear_floor() -> int:
 #   visor:    higher = more open (lens-clear floor 5100, max 6976); None = don't command
 # Magnitudes are tuned "medium / playful": clearly readable, not constant motion.
 _MOOD_POSE: dict[str, tuple[int, int, Optional[int]]] = {
-    "proud":      (700, -180, 6976),   # head high, chin up, visor at MAX — praise
-                                       # opens the visor all the way (was 6900)
-    "giddy":      (650, -120, 6976),   # bouncy, visor wide open
-    "amused":     (520, -110, 6850),
-    "happy":      (450,  -90, 6700),
+    "proud":      (700, -180, 6516),   # head high, chin up, pleased brow lift
+    "giddy":      (650, -120, 6516),   # bouncy, pleased brow lift
+    "amused":     (520, -110, 6390),
+    "happy":      (450,  -90, 6240),
     "surprised":  (900, 0, 6976),      # head pops up, visor max — headtilt stays
                                        # parked (heavy head on the 8 mm tilt rod;
                                        # lift + visor carry the surprise)
-    "curious":    (160, 200, 6500),    # slight lift, chin down, eyes a touch narrowed
-    "thinking":   (120, 260, 6450),
+    "curious":    (160, 200, 6040),    # slight lift, chin down, eyes a touch narrowed
+    "thinking":   (120, 260, 5990),
     "suspicious": (90,  170, 5100),    # narrowed side-eye
-    "annoyed":    (-250, 120, 6400),   # slight droop, subdued visor
+    "annoyed":    (-250, 120, 5940),   # slight droop, subdued visor
     "offended":   (260, -260, 5100),   # haughty chin up, indignant — visor narrowed
                                        # to the floor (an offended squint, was open 6500)
     "angry":      (220, -200, 5100),   # alert, chin up, visor NARROWED to the floor —
                                        # a glare-squint, never an open 'glare' (was 6800).
                                        # The lens-clear floor caps it so it can't fully
                                        # cover the camera ("squint, but not blind").
-    "sad":        (-700, 260, 6400),   # droop down, chin down, subdued (lens-clear)
-    "bored":      (-450, 180, 6400),   # droop, subdued
+    "sad":        (-700, 260, 5940),   # droop down, chin down, subdued (lens-clear)
+    "bored":      (-450, 180, 5940),   # droop, subdued
     "neutral":    (0, 0, None),
 }
 
@@ -317,7 +316,7 @@ def idle_visor_target(now: float) -> Optional[int]:
     amplitude = max(0, int(getattr(config, "SERVO_IDLE_VISOR_AMPLITUDE_QUS", 180)))
     period = max(1.0, float(getattr(config, "SERVO_IDLE_VISOR_PERIOD_SECS", 7.0)))
     target = int(cfg["neutral"]) + amplitude * math.sin(math.tau * now / period)
-    return max(6000, visor_lens_clear_floor(), int(cfg["min"]),
+    return max(int(config.VISOR_SPEECH_FLOOR_QUS), visor_lens_clear_floor(), int(cfg["min"]),
                min(int(cfg["max"]), int(round(target))))
 
 

@@ -175,6 +175,7 @@ _PROFILES: dict[str, dict[str, Any]] = {
             "lift_bias_qus": 260.0,
             "tilt_bias_qus": -120.0,
             "visor_open_floor_frac": 0.92,
+            "visor_offset_qus": 0.0,  # surprise keeps its full wide-eyed range
             "visor_swing_mult": 0.80,
             "head_speed_mult": 1.35,
             "arm_speed_mult": 1.05,
@@ -224,6 +225,7 @@ _PROFILES: dict[str, dict[str, Any]] = {
             "tilt_bias_qus": 140.0,
             "visor_open_floor_frac": 0.20,
             "visor_floor_qus": 5100.0,
+            "visor_offset_qus": 0.0,  # preserve the calibrated emotional squint
             "visor_swing_mult": 0.55,
             "head_speed_mult": 1.45,
             "arm_speed_mult": 1.25,

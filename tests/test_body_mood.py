@@ -140,16 +140,17 @@ class BodyMoodStateTest(unittest.TestCase):
             body_mood.set_mood(mood, intensity=1.0, ttl=10)
             self.assertEqual(body_mood.visor_target(), 5100)
             self._t[0] += 5
-            self.assertAlmostEqual(body_mood.visor_target(), (5100 + 6560) / 2, delta=2)
+            self.assertAlmostEqual(body_mood.visor_target(), (5100 + 6100) / 2, delta=2)
         for mood in ("sad", "bored", "thinking", "happy"):
             body_mood.clear()
             body_mood.set_mood(mood, intensity=1.0, ttl=10)
-            self.assertGreaterEqual(body_mood.visor_target(), 6000)
+            self.assertGreaterEqual(body_mood.visor_target(), 5540)
 
     def test_idle_visor_drifts_in_relaxed_range(self):
         targets = [body_mood.idle_visor_target(t / 10) for t in range(140)]
         self.assertGreater(max(targets) - min(targets), 300)
-        self.assertGreaterEqual(min(targets), 6000)
+        self.assertEqual(min(targets), 5920)
+        self.assertEqual(max(targets), 6280)
         self.assertLessEqual(max(targets), config.SERVO_CHANNELS["visor"]["max"])
         self.assertLess(max(abs(a - b) for a, b in zip(targets, targets[1:])), 20)
         with mock.patch.object(config, "SERVO_IDLE_VISOR_ENABLED", False):
@@ -335,7 +336,7 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
         set_servo.assert_called_once()
         ch, pos = set_servo.call_args.args[0], set_servo.call_args.args[1]
         self.assertEqual(ch, visor_ch)
-        self.assertGreaterEqual(pos, 6400)  # lens-clear
+        self.assertGreaterEqual(pos, 6100)  # proud opens above neutral
 
     def test_visor_not_touched_during_speech(self):
         from intelligence import consciousness as c

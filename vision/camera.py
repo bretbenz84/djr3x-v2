@@ -274,18 +274,19 @@ def wait_for_frame(timeout_secs: float = 2.0) -> bool:
 def _visor_capture_target(visor_cfg: dict) -> int:
     """How far to open the visor before a deliberate capture.
 
-    Use the channel max for deliberate captures, above the calibrated 1275 µs
+    Use 1680 µs for deliberate captures, above the calibrated 1275 µs
     lens-clear boundary. Normal emotional squints are now also camera-clear.
     """
     clear_floor = int(getattr(config, "VISOR_CAMERA_CLEAR_FLOOR_QUS", 5100))
-    return max(int(visor_cfg["max"]), clear_floor)
+    target = int(getattr(config, "VISOR_CAMERA_CAPTURE_QUS", 6720))
+    return min(int(visor_cfg["max"]), max(int(visor_cfg["min"]), clear_floor, target))
 
 
 def capture_still() -> Optional[np.ndarray]:
     """
     High-quality single capture for face enrollment and vision queries.
 
-    Raises the visor to its maximum position, centers the neck, waits
+    Moves the visor to its capture position, centers the neck, waits
     CAMERA_POSE_SETTLE_SECS for servos to settle, then returns a frame.
     Servo positions are restored in a finally block regardless of outcome.
 
@@ -339,7 +340,7 @@ def capture_current_gaze(settle_secs: float = 0.15) -> Optional[np.ndarray]:
     visor_before = servos.get_servo(visor_cfg["ch"]) or visor_cfg["neutral"]
 
     try:
-        # Reassert the fully open capture pose throughout the settle. Everyday
+        # Reassert the configured capture pose throughout the settle. Everyday
         # speech/mood/idle positions are also lens-clear with the relocated camera.
         deadline = time.monotonic() + max(0.0, float(settle_secs))
         while True:
