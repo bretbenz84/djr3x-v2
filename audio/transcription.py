@@ -607,8 +607,9 @@ def _is_confident(avg_logprob, no_speech_prob, backend: str = "mlx_whisper") -> 
 
     Deliberately permissive: the far-field SNR here is 13-15 dB and genuine
     speech routinely scores poorly, so a strict gate would make Rex deaf. A
-    failing turn is still heard, replied to, and acted on — it just doesn't
-    become a durable fact, a person's name, or a room.
+    failing turn cannot become a durable fact, a person's name, or a room.
+    Interaction separately rejects uncertain short fragments and playback
+    residuals, and may ask for clarification on longer uncertain turns.
 
     The floor is backend-specific — Whisper's avg_logprob and Qwen3's mean
     token logprob live on different scales (Qwen3 at temperature 0 is far more
@@ -849,8 +850,8 @@ def transcribe(audio_array: np.ndarray) -> "Transcript":
     )
     if not confident:
         logger.info(
-            "[transcription] LOW CONFIDENCE — Rex will answer this but not learn "
-            "from it (no facts, no names, no rooms): %r", cleaned,
+            "[transcription] LOW CONFIDENCE — pending interaction acceptance; "
+            "memory learning disabled (no facts, no names, no rooms): %r", cleaned,
         )
     return Transcript(cleaned, avg_logprob=avg_logprob, no_speech_prob=no_speech_prob,
                       confident=confident, backend=backend)

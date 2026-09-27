@@ -12,7 +12,7 @@ MODULES = (
     "dev_mac_identity_room greeting_reply_identity person_reference_identity impersonation_recordings field_2026_09_07_handoffs place_recognition place_questions "
     "campplus voice_backend voice_signatures speaker_id_margin identity_instrumentation voice_learning voiceless_face_wins dual_intro intro_misread_guards "
     "conversation_arc lean_context_state speech_generations delivery_contract "
-    "optional_local_work turn_coordinator runtime_report gap_speech "
+    "optional_local_work turn_coordinator runtime_report gap_speech phantom_audio_acceptance low_trust_reprompt "
     "action_results_and_attribution memory_semantic memory_unified_retrieval "
     "semantic_breaker_and_motion_vocab streaming_tts two_chunk_tts turn_trace "
     "addressee lean_impulse_menu production_replay restructure_ownership llm_compat "

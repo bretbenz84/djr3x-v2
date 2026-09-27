@@ -25613,14 +25613,49 @@ def _arm_low_trust_reprompt_cooldown() -> None:
     _last_low_trust_reprompt_at = time.monotonic()
 
 
+def _audio_acceptance_rejection(text, *, trusted, text_input, under_playback,
+                                speaker_id, speaker_score, speaker_margin,
+                                required_margin):
+    """Reject phantom turns before attribution, history, routing, or replies.
+
+    Decoder confidence is not evidence that a human spoke over playback.
+    Short uncertain content is also not automatically an acknowledgment.
+    """
+    if text_input:
+        return None
+    words = re.findall(r"[a-z0-9']+", str(text).lower())
+    # Preserve the existing conservative stop handling even with weak audio.
+    if len(words) <= 5 and set(words) & {"stop", "halt", "freeze", "whoa"}:
+        return None
+    if under_playback:
+        if not trusted:
+            return "untrusted_under_playback"
+        if (speaker_id is None
+                or speaker_score < float(getattr(config, "PLAYBACK_HUMAN_VOICE_MIN_SCORE", 0.65))
+                or speaker_margin < required_margin):
+            return "uncorroborated_under_playback"
+    if trusted or len(words) >= int(getattr(config, "LOW_TRUST_REPROMPT_MIN_WORDS", 3)):
+        return None
+    if " ".join(words) in {
+        "ok", "okay", "yeah", "yes", "yep", "no", "nope", "sure", "right",
+        "alright", "all right", "thanks", "thank you", "sorry", "i'm sorry",
+        "uh huh", "mm hmm",
+    }:
+        return None
+    # Games own short clue/answer handling; explicit motion has its own gates.
+    if _game_suppresses_conversation() or _eager_motion_transcript_matches(str(text)):
+        return None
+    return "uncertain_short_fragment"
+
+
 def _should_reprompt_low_trust(text: str, *, trusted: bool, text_input: bool,
                               recognition_failed: bool = False) -> bool:
     """True when the human move for THIS turn is asking to repeat, not replying.
 
     Gates, in order of intent:
       * only genuine low-trust AUDIO turns (typed text is never garbled);
-      * 3+ words — short backchannels ("Okay.", "Yeah.") routinely score under
-        the floor and a reprompt there is worse than a nod;
+      * 3+ words — short uncertain content is rejected by audio acceptance;
+        recognized backchannels ("Okay.", "Yeah.") do not need a reprompt;
       * once per exchange — if the repeat ALSO scores low, engage best-effort
         rather than looping "what?" at them (memory learning stays suppressed);
       * never during a game (the game flow owns its own answer handling);
@@ -25754,9 +25789,9 @@ def _handle_speech_segment(
 ) -> None:
     """Full processing pipeline for one detected speech segment in ACTIVE state.
 
-    require_trusted: drop the turn when the decode falls below the trust floor.
-    Set only by the gap-speech catch-up for a slice cut from under Rex's own
-    playback — see that call site."""
+    require_trusted: audio overlaps Rex's playback; require both a trusted
+    decode and an unambiguous human voice match. Set by catch-up and concurrent
+    reply capture."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _pending_introduction, _pending_intro_followup
     global _pending_common_first_name_identity
@@ -25828,8 +25863,8 @@ def _handle_speech_segment(
         # Whisper's own decode confidence for THIS turn. Captured here, once, into a
         # plain local: `text` is a Transcript (a str subclass) but every .strip() /
         # .lower() downstream returns a bare str and silently drops the attribute.
-        # False means Rex answers normally but must not LEARN from the turn — no
-        # stored facts, no person names, no room names. See audio/transcription.py.
+        # False suppresses learning and feeds the audio acceptance/clarification
+        # gates below. See audio/transcription.py.
         transcript_trusted = True
         # Publish the default before the branch, not only on the audio path. The
         # context var lives on the interaction-loop thread and is never reset per
@@ -25860,13 +25895,11 @@ def _handle_speech_segment(
             transcript_trusted = bool(getattr(text, "confident", True))
             _transcript_trusted.set(transcript_trusted)
             if not transcript_trusted:
-                # Whisper was guessing. Answer the human normally — being briefly
-                # forgetful is recoverable, mishearing them into a permanent "fact"
-                # is not (field 2026-07-25: "wine" -> "I'm going to split it.", which
-                # became an episode and then a proactive question).
+                # The decoder was guessing. Do not learn from this turn, even
+                # if audio acceptance permits a best-effort response below.
                 suppress_memory_learning = True
-                _log.info("[interaction] low-confidence transcript — replying but not "
-                          "learning from this turn: %r", str(text))
+                _log.info("[interaction] low-confidence transcript — pending audio "
+                          "acceptance; memory learning disabled: %r", str(text))
             transcript_ready_at = time.monotonic()
             _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
 
@@ -25908,20 +25941,20 @@ def _handle_speech_segment(
                     pass
             return
 
-        if require_trusted and not transcript_trusted:
-            # Only the gap-speech catch-up sets this, and only for a slice cut
-            # from under Rex's own playback: a decode the model does not believe,
-            # pulled out of audio whose loudest content is his own voice, is
-            # residual — not a person. Answering it is self-sustaining (field
-            # 2026-08-27 13:34: "Okay what, exactly?" then "Sorry, one more
-            # time?" then another recovery, all of it Rex talking to Rex).
-            _capture_outcome("gap_catchup_untrusted_under_playback")
-            _log.info(
-                "[gap_speech] dropped an untrusted recovery from under Rex's own "
-                "playback (residual, not a person): %r", str(text),
-            )
-            final_executed_path = "ignored.untrusted_under_playback"
+        rejection = _audio_acceptance_rejection(
+            text, trusted=transcript_trusted, text_input=text_input,
+            under_playback=require_trusted, speaker_id=raw_best_id,
+            speaker_score=speaker_score, speaker_margin=speaker_margin,
+            required_margin=required_margin,
+        )
+        if rejection:
+            _capture_outcome(rejection)
+            _log.info("[audio_acceptance] dropped %s score=%.3f margin=%.3f: %r",
+                      rejection, speaker_score, speaker_margin, str(text))
+            final_executed_path = "ignored." + rejection
             completed = False
+            if from_idle_activation:
+                state_module.set_state(State.IDLE)
             return
 
         character_trace = _new_character_loop_trace(

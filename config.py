@@ -199,9 +199,10 @@ WHISPER_TEMPERATURE = 0.0              # Deterministic decode avoids slow retry 
 # mined for proactive questions days later. avg_logprob / no_speech_prob are the
 # only signal that separates those from real speech, and they were unused.
 #
-# These are LEARNING gates, not hearing gates. A turn below them is still heard,
-# answered and acted on — it just cannot become a stored fact, a person's name,
-# or a room. That asymmetry is deliberate: far-field SNR here is 13-15 dB, so
+# These are primarily LEARNING gates. Interaction also uses this trust verdict
+# to reject uncertain short fragments and playback residuals, or clarify longer
+# turns. A low-trust turn cannot become a stored fact, a person's name, or a room.
+# Far-field SNR here is 13-15 dB, so
 # genuine speech scores badly often enough that a hearing gate would make Rex
 # deaf (see the far-field measurements from 2026-07-24). Being occasionally
 # forgetful is recoverable; confidently remembering things you never said is not.
@@ -216,12 +217,15 @@ WHISPER_CONDITION_ON_PREVIOUS_TEXT = False
 # (-0.62) got a line about ethics. A person who half-hears a sentence says
 # "sorry, what?" and gets the real one. So: ask to repeat, once — if the repeat
 # is ALSO low-trust, engage best-effort rather than looping "what?" at them.
-# Short backchannels ("Okay.", "Yeah.") skip this — a reprompt there is worse
-# than a nod — and explicit motion/stop commands always execute rather than
-# stall on a clarifying question.
+# Recognized short backchannels ("Okay.", "Yeah.") skip this. Other uncertain
+# short fragments are silently rejected before routing; explicit motion commands
+# keep their existing gates, and stop requests bypass audio acceptance.
 LOW_TRUST_REPROMPT_ENABLED = True
-LOW_TRUST_REPROMPT_MIN_WORDS = 3        # fewer words = backchannel, just answer
+LOW_TRUST_REPROMPT_MIN_WORDS = 3        # shorter uncertain content is dropped; known acknowledgments pass
 LOW_TRUST_REPROMPT_COOLDOWN_SECS = 120.0  # one "sorry, what?" per exchange, max
+# Playback-overlap captures need independent human voice evidence, even when
+# ASR is confident. A visible face cannot corroborate speech over Rex's voice.
+PLAYBACK_HUMAN_VOICE_MIN_SCORE = 0.65
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 
