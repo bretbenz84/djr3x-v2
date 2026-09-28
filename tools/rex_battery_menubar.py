@@ -637,7 +637,14 @@ def _send_chest_command(cmd: str) -> bool:
         time.sleep(2.0)  # Nano/CH340 resets on open; wait out its bootloader
         ser.write((cmd + "\n").encode("ascii"))
         ser.flush()
-        log.info("Chest Arduino: sent %s.", cmd)
+        # A slow bootloader can swallow the first line (field 2026-09-27: CHARGE
+        # "sent" after a V3 handoff, chest stayed dark). Repeat once on the same
+        # open, so no second reset; CHARGE is idempotent (the intro sweep only
+        # plays when entering charge mode).
+        time.sleep(2.5)
+        ser.write((cmd + "\n").encode("ascii"))
+        ser.flush()
+        log.info("Chest Arduino: sent %s (twice).", cmd)
         return True
     except Exception as exc:
         log.warning("Chest Arduino write failed (%s).", exc)
