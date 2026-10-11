@@ -48,7 +48,7 @@ _DEFAULTS = {
             # decodes the pair into the pitch/tilt published beside it.
             "head_left": 5832,
             "head_right": 6480,
-            "visor": 5120,          # Inverted servo: 5120 is awake / up.
+            "visor": 5732,          # Inverted servo: 1433 µs neutral open point.
             "elbow": 6720,
             "hand": 6000,
             "pokerarm": 6000,

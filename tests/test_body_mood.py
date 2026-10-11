@@ -132,7 +132,7 @@ class BodyMoodStateTest(unittest.TestCase):
         # EDGE is the highest pulse a mood may reach; the interpolation must never pass it.
         edge = body_mood.visor_camera_clear_max()
         self.assertEqual(edge, int(config.BODY_MOOD_VISOR_CAMERA_CLEAR_QUS))
-        self.assertEqual(edge, 5520)
+        self.assertEqual(edge, int(config.SERVO_CHANNELS["visor"]["neutral"]) + 400)
         self.assertFalse(hasattr(body_mood, "visor_lens_clear_floor"))
         for m in ("proud", "giddy", "sad", "bored", "annoyed", "suspicious", "surprised", "angry"):
             for inten in (1.0, 0.6, 0.26):
@@ -155,8 +155,8 @@ class BodyMoodStateTest(unittest.TestCase):
         self.assertLess(body_mood.visor_target(), edge)
 
     def test_squint_relaxes_toward_neutral_as_emotion_decays(self):
-        neutral = int(config.SERVO_CHANNELS["visor"]["neutral"])   # 5120, awake
-        edge = body_mood.visor_camera_clear_max()                  # 5520
+        neutral = int(config.SERVO_CHANNELS["visor"]["neutral"])   # 5732, neutral open (1433 us)
+        edge = body_mood.visor_camera_clear_max()                  # neutral + 400
         for mood in ("angry", "suspicious", "offended"):
             body_mood.clear()
             body_mood.set_mood(mood, intensity=1.0, ttl=10)
@@ -183,7 +183,8 @@ class BodyMoodStateTest(unittest.TestCase):
 
     def test_idle_visor_drifts_in_relaxed_range(self):
         low, high = (int(v) for v in config.SERVO_IDLE_VISOR_RANGE_QUS)
-        self.assertEqual((low, high), (4770, 5470))
+        neutral = int(config.VISOR_NEUTRAL_QUS)          # 1433 us neutral open point
+        self.assertEqual((low, high), (neutral - 350, neutral + 350))
         targets = [body_mood.idle_visor_target(t / 10) for t in range(140)]
         self.assertGreater(max(targets) - min(targets), 300)
         self.assertEqual(min(targets), low)
@@ -403,7 +404,7 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
         set_servo.assert_called_once()
         ch, pos = set_servo.call_args.args[0], set_servo.call_args.args[1]
         self.assertEqual(ch, visor_ch)
-        # Inverted visor: proud OPENS it, i.e. a lower pulse than the awake neutral (5120).
+        # Inverted visor: proud OPENS it, i.e. a lower pulse than the neutral open point.
         self.assertLess(pos, int(config.SERVO_CHANNELS["visor"]["neutral"]))
         self.assertGreaterEqual(pos, int(config.SERVO_CHANNELS["visor"]["min"]))
 
@@ -461,7 +462,7 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
         servo = self._servo()
         visor_ch = int(config.SERVO_CHANNELS["visor"]["ch"])
         edge = int(body_mood.visor_camera_clear_max())
-        self.assertEqual(edge, 5520)
+        self.assertEqual(edge, int(config.VISOR_CAMERA_CLEAR_MAX_QUS))
         relaxed = int(config.SERVO_CHANNELS["visor"]["neutral"])
         breathing = mock.Mock()
         patches = [
@@ -504,6 +505,34 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
             for p in reversed(patches):
                 p.stop()
 
+
+
+class VisorCalibrationTest(unittest.TestCase):
+    """Owner's Maestro readings, 2026-10-11: neutral open 1433 us, surprise 1136 us."""
+
+    def test_neutral_and_surprise_are_the_owner_readings(self):
+        self.assertEqual(config.SERVO_CHANNELS["visor"]["neutral"], 1433 * 4)
+        self.assertEqual(config.VISOR_NEUTRAL_QUS, 1433 * 4)
+        self.assertEqual(config.VISOR_SURPRISE_QUS, 1136 * 4)
+        # Surprise is the channel's own top-of-travel limit: nothing was widened.
+        self.assertEqual(config.VISOR_SURPRISE_QUS, config.SERVO_CHANNELS["visor"]["min"])
+
+    def test_surprised_mood_throws_the_visor_to_the_surprise_pose(self):
+        body_mood.clear()
+        body_mood.set_mood("surprised", intensity=1.0, ttl=60)
+        self.assertEqual(body_mood.visor_target(), 1136 * 4)
+        body_mood.clear()
+
+    def test_derived_poses_sit_around_the_neutral(self):
+        neutral = config.VISOR_NEUTRAL_QUS
+        low, high = config.VISOR_SPEECH_RANGE_QUS
+        self.assertLess(low, neutral)
+        self.assertGreater(high, neutral)                            # a squint lowers it past neutral
+        self.assertEqual(high, config.VISOR_CAMERA_CLEAR_MAX_QUS)
+        self.assertLess(config.VISOR_CAMERA_CAPTURE_QUS, neutral)    # captures lift it
+        idle_low, idle_high = config.SERVO_IDLE_VISOR_RANGE_QUS
+        self.assertTrue(idle_low < neutral < idle_high <= config.VISOR_CAMERA_CLEAR_MAX_QUS)
+        self.assertEqual(config.VISOR_UP_QUS, neutral)
 
 if __name__ == "__main__":
     unittest.main()

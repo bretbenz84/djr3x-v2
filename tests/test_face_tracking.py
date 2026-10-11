@@ -19,7 +19,7 @@ def _level_positions(neck=6000, lift=6000, pitch=0.0, tilt=0.0):
         "headlift": lift,
         "head_left": pair[head_pose.HEAD_LEFT_CH],
         "head_right": pair[head_pose.HEAD_RIGHT_CH],
-        "visor": 5120,
+        "visor": 5732,
         "elbow": 6720,
         "hand": 6000,
         "pokerarm": 6000,
@@ -732,7 +732,6 @@ class FaceTrackingTests(unittest.TestCase):
             deeper = c._speaker_gaze_search_targets(0.0, 1.0, tilt=0.0)
         self.assertAlmostEqual(_decoded_head(down)[0], -frac, delta=0.01)
         self.assertEqual(down[visor_ch], int(c.config.VISOR_CAMERA_CAPTURE_QUS))
-        self.assertEqual(down[visor_ch], 4800)
         self.assertNotEqual(down[visor_ch], int(c.config.SERVO_CHANNELS["visor"]["max"]))
         self.assertAlmostEqual(_decoded_head(left)[1], -c.SEARCH_TILT, delta=0.01)
         self.assertAlmostEqual(_decoded_head(right)[1], c.SEARCH_TILT, delta=0.01)

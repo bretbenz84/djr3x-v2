@@ -83,9 +83,12 @@ class BodyBeatAnimationTest(unittest.TestCase):
 
     def test_visor_squint_reaches_camera_clear_boundary(self):
         # Inverted visor (October 10): a squint LOWERS the visor, i.e. a HIGHER pulse,
-        # down to the mirrored camera-clear edge (1380 us) and never past it.
+        # down to the camera-clear edge (neutral +400, still a guess) and never past it.
         from sequences import animations
-        self.assertEqual(animations.VISOR_SQUINT, 1380 * 4)
+        self.assertEqual(animations.VISOR_SQUINT, animations.VISOR_NEUTRAL + 400)
+        # Owner's readings (2026-10-11): neutral open 1433 us, surprise 1136 us.
+        self.assertEqual(animations.VISOR_NEUTRAL, 1433 * 4)
+        self.assertEqual(animations.VISOR_OPEN, 1136 * 4)
         self.assertGreater(animations.VISOR_SQUINT, animations.VISOR_NEUTRAL)
         self.assertLess(animations.VISOR_SQUINT, animations.VISOR_CLOSED)
         self.assertLess(animations.VISOR_OPEN, animations.VISOR_NEUTRAL)

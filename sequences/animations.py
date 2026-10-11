@@ -108,15 +108,15 @@ def _head(current: "dict[int, int] | None", pitch: "float | None" = None,
 
 
 # Ch 3 — Visor, INVERTED since October 10 2026: LOW pulses raise it, HIGH pulses lower
-# it, inside the same 4544–6976 travel. The September numbers are mirrored (11520 - x);
-# the real endpoints and the pulse where it starts to hide the camera are unread on the
-# robot, so the camera-clear edge below is a guess kept on the safe side.
-VISOR_CLOSED  = int(config.VISOR_DOWN_QUS)            # 6976 — down / park / sleep, covers the lens
-VISOR_SQUINT  = int(config.VISOR_CAMERA_CLEAR_MAX_QUS)  # 5520 — narrowed as far as the camera allows
-VISOR_HALF    = 5320   # relaxed, a touch lower than the awake position
-VISOR_NEUTRAL = int(config.SERVO_CHANNELS["visor"]["neutral"])   # 5120 — awake, up
-VISOR_OPEN    = head_pose.VISOR_WIDE                  # 4544 — thrown fully up, wide-eyed surprise
-VISOR_CAPTURE = int(config.VISOR_CAMERA_CAPTURE_QUS)  # 4800 — deliberate camera captures
+# it, inside the same 4544–6976 travel. Neutral open 1433 µs and surprise 1136 µs are the
+# owner's readings (2026-10-11); the squint edge and capture pose derive from the
+# neutral in config, and the squint edge is still a guess (camera-hiding pulse unread).
+VISOR_CLOSED  = int(config.VISOR_DOWN_QUS)              # 6976 — down / park / sleep, covers the lens
+VISOR_SQUINT  = int(config.VISOR_CAMERA_CLEAR_MAX_QUS)  # neutral +400 — narrowed as far as the camera allows
+VISOR_NEUTRAL = int(config.SERVO_CHANNELS["visor"]["neutral"])   # 5732 — awake, open (1433 µs)
+VISOR_HALF    = min(VISOR_SQUINT, VISOR_NEUTRAL + 200)  # relaxed, a touch lower than the awake position
+VISOR_OPEN    = int(config.VISOR_SURPRISE_QUS)          # 4544 — thrown fully up, wide-eyed surprise (1136 µs)
+VISOR_CAPTURE = int(config.VISOR_CAMERA_CAPTURE_QUS)  # neutral -320 — deliberate camera captures
 
 # Ch 4 — Elbow: 6300–7424, neutral 6720. Higher value = arm lifted UP, lower =
 # arm hanging down (see the README's "Direction of travel" table for every

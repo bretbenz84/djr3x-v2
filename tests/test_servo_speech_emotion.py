@@ -65,8 +65,8 @@ class ServoSpeechEmotionTests(unittest.TestCase):
 class SpeechVisorBandTests(unittest.TestCase):
     """The talking visor lives inside VISOR_SPEECH_RANGE_QUS (October 10: the servo is
     INVERTED, low pulses are up). An emotion's open fraction sets how far up its
-    resting point sits between the camera-clear down edge (5520) and the fully
-    expressive up edge (4880); the wave opens it further from there. A squint goes
+    resting point sits between the camera-clear down edge (neutral +400) and the fully
+    expressive up edge (neutral -240); the wave opens it further from there. A squint goes
     DOWN to the camera-clear edge and never past it.
     """
 
@@ -101,7 +101,8 @@ class SpeechVisorBandTests(unittest.TestCase):
         from hardware import servos
 
         up_edge, down_edge = config.VISOR_SPEECH_RANGE_QUS
-        self.assertEqual((up_edge, down_edge), (4880, 5520))
+        neutral_open = int(config.VISOR_NEUTRAL_QUS)                     # 1433 us
+        self.assertEqual((up_edge, down_edge), (neutral_open - 240, neutral_open + 400))
         neutral = int(config.SERVO_CHANNELS["visor"]["neutral"])
         # A brooding emotion (frac 0.35, narrow swing) sits LOWER than the awake visor
         # (a higher pulse on the inverted servo) but never past the camera-clear edge.
@@ -130,7 +131,6 @@ class SpeechVisorBandTests(unittest.TestCase):
         with mock.patch.object(servos.math, "sin", return_value=-1):
             target = self._visor_target(servos, motion, jitter=45)
         self.assertEqual(target, int(config.VISOR_CAMERA_CLEAR_MAX_QUS))
-        self.assertEqual(target, 5520)
 
     def test_a_capture_lifts_the_visor_above_the_speaking_band(self):
         import config
@@ -140,10 +140,10 @@ class SpeechVisorBandTests(unittest.TestCase):
         target = camera._visor_capture_target(visor_cfg)
         # A picture must never be taken through the expressive band (inverted: a
         # LOWER pulse is further up).
-        self.assertEqual(target, 1200 * 4)
+        self.assertEqual(target, int(config.VISOR_NEUTRAL_QUS) - 320)
         self.assertLess(target, int(config.VISOR_CAMERA_CLEAR_MAX_QUS))
         self.assertLess(target, int(config.VISOR_SPEECH_RANGE_QUS[0]))
-        self.assertEqual(int(config.VISOR_CAMERA_CLEAR_MAX_QUS), 5520)   # 1380 us, mirrored
+        self.assertEqual(int(config.VISOR_CAMERA_CLEAR_MAX_QUS), int(config.VISOR_NEUTRAL_QUS) + 400)
 
 
 if __name__ == "__main__":

@@ -161,7 +161,7 @@ the visor or the poker arm. The head is TWO servos (channels 2 and 11) commanded
 as a pitch and a tilt through `hardware/head_pose.head_pulses`; `hardware/servos.py`
 raises ValueError on a lone head channel or a pair outside the linkage's envelope, so a
 test fixture that writes `{2: x}` alone is a bug in the fixture. There is no
-`"headtilt"` channel any more. The visor is inverted (low pulse = up; 5120 awake, 6976
+`"headtilt"` channel any more. The visor is inverted (low pulse = up; neutral open 1433 µs = 5732, surprise 1136 µs = 4544, 6976
 down). The poker elbow/wrist (12/13) move only through `servos.move_poker`, staged under
 the clearance ceiling. Run `venv/bin/python tools/run_lean_checks.py head_pose
 servo_head_pair body_beats directed_look listening_motion servo_speech_emotion` after

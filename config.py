@@ -2710,19 +2710,41 @@ SERVO_SPEECH_HEAD_PAIR_ACCELERATION = 6
 SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS = 0.35
 SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS = 0.75
 SERVO_SPEECH_HAND_DIVISOR = 3
-# Visor, October 10 2026: the servo now runs INVERTED — low pulses raise the visor,
-# high pulses lower it. The September calibration is mirrored inside the same
-# 4544-6976 travel. Up/awake 5120, down/park 6976, speaking inside 4880-5520 (5520
-# is the mirrored camera-hiding edge). Deliberate captures lift it to 4800. The real
-# endpoints and the pulse where it starts to hide the camera are UNREAD on the
-# robot: the mirroring is a guess until the owner measures them.
-VISOR_UP_QUS = 5120
-VISOR_DOWN_QUS = 6976
-VISOR_CAMERA_CLEAR_MAX_QUS = 5520    # lowest the visor may sit while the camera must see
-VISOR_CAMERA_CAPTURE_QUS = 4800      # 1200 µs capture pose; surprise may open further
-VISOR_SPEECH_RANGE_QUS = (4880, 5520)
+# Visor, inverted since October 10 2026: LOW pulses raise the visor, HIGH pulses
+# lower it, inside the 4544-6976 travel.
+#
+# Owner's Maestro readings (2026-10-11): the NEUTRAL OPEN point is 1433 us and the
+# SURPRISE position is 1136 us (= the channel's own top-of-travel limit, 4544). Every
+# other visor pose is DERIVED from the neutral below, keeping the spacing the V3 port
+# used around its old 5120 guess, so moving the neutral moves them all together:
+#   speaking band      neutral -240 .. +400   (open a little more, squint a little)
+#   camera-clear edge  neutral +400           (the lowest the visor may sit while the
+#                                              camera must see — STILL A GUESS: the
+#                                              pulse where it starts to hide the camera
+#                                              is unread)
+#   deliberate capture neutral -320           (lifted above the resting point)
+#   idle drift         neutral -350 .. +350   (half-blinks dip to the clear edge)
+# Down/park stays 6976.
+VISOR_NEUTRAL_QUS = 1433 * 4         # 5732 — awake, open; startup target and idle centre
+VISOR_SURPRISE_QUS = 1136 * 4        # 4544 — thrown fully up, wide-eyed surprise
+VISOR_DOWN_QUS = 6976                # 1744 us — down / park / sleep
+
+
+def _derive_visor_calibration(neutral: int) -> None:
+    """Set every neutral-relative visor pose from the neutral open point."""
+    global VISOR_UP_QUS, VISOR_CAMERA_CLEAR_MAX_QUS, VISOR_CAMERA_CAPTURE_QUS
+    global VISOR_SPEECH_RANGE_QUS, SERVO_IDLE_VISOR_RANGE_QUS
+    lo, hi = VISOR_SURPRISE_QUS, VISOR_DOWN_QUS
+    clamp = lambda v: max(lo, min(hi, int(v)))
+    VISOR_UP_QUS = clamp(neutral)                        # the awake "visor up" pose
+    VISOR_CAMERA_CLEAR_MAX_QUS = clamp(neutral + 400)
+    VISOR_CAMERA_CAPTURE_QUS = clamp(neutral - 320)
+    VISOR_SPEECH_RANGE_QUS = (clamp(neutral - 240), VISOR_CAMERA_CLEAR_MAX_QUS)
+    SERVO_IDLE_VISOR_RANGE_QUS = (clamp(neutral - 350), min(clamp(neutral + 350), VISOR_CAMERA_CLEAR_MAX_QUS))
+
+
+_derive_visor_calibration(VISOR_NEUTRAL_QUS)
 SERVO_IDLE_VISOR_ENABLED = True
-SERVO_IDLE_VISOR_RANGE_QUS = (4770, 5470)   # slow idle drift around the awake 5120
 SERVO_IDLE_VISOR_PERIOD_SECS = 7.0
 # Pokerarm sways back and forth while speaking on a SLOWER cadence than the hero arm
 # (which re-targets every update frame) — a slow, deliberate beat, yet far livelier
@@ -2803,8 +2825,9 @@ SERVO_CHANNELS = {
     # head hangs with the power off.
     "head_left":  {"ch": 2,  "min": 4032, "max": 8128, "neutral": 5832, "rest": 4052},
     "head_right": {"ch": 11, "min": 5248, "max": 7616, "neutral": 6480, "rest": 7616},
-    # Inverted since October 10: neutral is the awake "visor up" pulse (1280 µs).
-    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 5120},
+    # Inverted since October 10: neutral is the owner's neutral OPEN point (1433 µs,
+    # read 2026-10-11); min 4544 (1136 µs) is fully up, the surprise pose.
+    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": VISOR_NEUTRAL_QUS},
     # A higher value lifts the arm, so the MIN end is the arm hanging down —
     # rest = 6300, the lowest value the limits allow. Powered down the servo is
     # limp and the arm falls to exactly there, so parking and starting here is
@@ -2937,6 +2960,10 @@ def _apply_servo_env_overrides() -> None:
 
 
 _apply_servo_env_overrides()
+# A SERVO_VISOR_NEUTRAL_US override in .env moves the derived visor poses with it.
+if SERVO_CHANNELS["visor"]["neutral"] != VISOR_NEUTRAL_QUS:
+    VISOR_NEUTRAL_QUS = int(SERVO_CHANNELS["visor"]["neutral"])
+    _derive_visor_calibration(VISOR_NEUTRAL_QUS)
 
 
 def _throttle_startup_settings() -> tuple[bool, int | None]:

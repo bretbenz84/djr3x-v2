@@ -90,7 +90,7 @@ _SERVO_DEFAULTS: dict[str, dict[str, int]] = {
     "headlift":   {"ch": 1,  "min": 2600, "max": 7744, "neutral": 3600},  # min 650 us; level 900 us
     "head_left":  {"ch": 2,  "min": 4032, "max": 8128, "neutral": 5832},  # 1008-2032 us; level 1458 us
     "head_right": {"ch": 11, "min": 5248, "max": 7616, "neutral": 6480},  # 1312-1904 us; level 1620 us
-    "visor":      {"ch": 3,  "min": 4544, "max": 6976, "neutral": 4960},  # inverted: 1240 us is up/open
+    "visor":      {"ch": 3,  "min": 4544, "max": 6976, "neutral": 5732},  # inverted: 1433 us neutral open, 1136 us surprise
     "elbow":      {"ch": 4,  "min": 6300, "max": 7424, "neutral": 6720},  # 7424 = the Maestro's own stored channel limit (1856 us)
     "hand":       {"ch": 5,  "min": 1984, "max": 9984, "neutral": 6000},
     "pokerarm":   {"ch": 6,  "min": 3968, "max": 8000, "neutral": 6000},

@@ -24,9 +24,9 @@ the wrist meets the arm and the elbow's ceiling falls. Pairs above the measured 
 are refused, and every move between two clear poses is staged one joint at a time
 (:func:`poker_route`) so the ceiling is never crossed on the way.
 
-THE VISOR (3) now runs inverted: low pulses raise it, high pulses lower it. The old
-September calibration is mirrored inside the same 4544-6976 travel. The real endpoints and
-the pulse where it starts to hide the camera are still unread on the robot.
+THE VISOR (3) now runs inverted: low pulses raise it, high pulses lower it. Its neutral open
+point is 1433 us and surprise 1136 us (owner, 2026-10-11); the other visor poses derive from
+the neutral in config. The pulse where it starts to hide the camera is still unread.
 """
 
 from __future__ import annotations
@@ -376,14 +376,15 @@ def poker_route(start: Mapping[int, int], target: Mapping[int, int]) -> list[dic
 
 
 # ── Visor (3), inverted: low pulses up, high pulses down ──────────────────────
-# Mirrors of the September calibration inside the same travel; the real endpoints and the
-# camera-hiding pulse still need console readings.
-VISOR_UP = 5120                   # Awake, open: the startup target and the idle centre.
-VISOR_DOWN = 6976                 # Down / park (the old closed position mirrored).
-VISOR_SPEECH = (4880, 5520)       # Expressive range while speaking, clear of the camera.
-VISOR_IDLE = (4770, 5470)         # Idle drift; an occasional half-blink dips to VISOR_SPEECH[1].
-VISOR_CAMERA_CLEAR_MAX = 5520     # Highest (lowest-visor) pulse the camera is believed clear at.
-VISOR_WIDE = 4544                 # Thrown fully up (wide-eyed).
+# Read from config, where they derive from the owner's neutral open point (1433 us) and
+# surprise position (1136 us); see config.VISOR_NEUTRAL_QUS. The camera-clear edge is
+# still a guess until the camera-hiding pulse is read.
+VISOR_UP = int(config.VISOR_UP_QUS)                       # Awake, open: startup target and idle centre.
+VISOR_DOWN = int(config.VISOR_DOWN_QUS)                   # Down / park.
+VISOR_SPEECH = tuple(int(v) for v in config.VISOR_SPEECH_RANGE_QUS)   # Expressive range while speaking.
+VISOR_IDLE = tuple(int(v) for v in config.SERVO_IDLE_VISOR_RANGE_QUS)  # Idle drift; half-blinks dip to VISOR_SPEECH[1].
+VISOR_CAMERA_CLEAR_MAX = int(config.VISOR_CAMERA_CLEAR_MAX_QUS)        # Lowest the visor may sit while the camera sees.
+VISOR_WIDE = int(config.VISOR_SURPRISE_QUS)               # Thrown fully up: surprise (1136 us).
 
 
 def visor_frac(pulse: int) -> float:

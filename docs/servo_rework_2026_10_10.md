@@ -18,7 +18,7 @@ Source of truth for the numbers: `hardware/head_pose.py` (geometry, pure arithme
 | 0 | neck | 1984 | 8960 | unchanged; centre 5472; low pulse looks left |
 | 1 | head_lift | 2600 | 7744 | unchanged; level 3600 |
 | 2 | head_left | 4032 (1008 µs) | 8128 (2032 µs) | NEW limits; level 5832 (1458 µs); low = head down |
-| 3 | visor | 4544 | 6976 | same travel, **inverted**: up 5120, down/park 6976, speaking 4880–5520 |
+| 3 | visor | 4544 | 6976 | same travel, **inverted**: neutral open 5732 (1433 µs), surprise 4544 (1136 µs), down/park 6976 |
 | 4 | hero_elbow | 6300 | 7424 | unchanged |
 | 5 | hero_wrist | 1984 | 9984 | unchanged |
 | 6 | poker_arm (swing) | 3968 | 8000 | unchanged |
@@ -73,11 +73,15 @@ stands when switched on); **poker_up** 1500 / 942 (45° up, hand level — the a
 ### Visor
 
 The servo runs inverted: low pulses raise it, high pulses lower it. The September
-calibration is mirrored inside the same travel: up/awake 5120 (config neutral), down/park
-6976, speaking band 4880–5520 (5520 is the mirrored camera-hiding edge, used as the
-camera-clear limit for squints), deliberate captures 4800, idle drift 4770–5470 with an
-occasional half-blink down to 5520. **The real endpoints and the pulse where the visor
-starts to hide the camera are unread; the mirroring is a guess kept on the safe side.**
+owner read two positions on 2026-10-11: the **neutral open point is 1433 µs (5732)** and the
+**surprise position is 1136 µs (4544)**, which is the channel's own top-of-travel limit.
+Down/park stays 6976. Every other visor pose derives from the neutral in `config.py`
+(`_derive_visor_calibration`), keeping the spacing the first port used: speaking band
+neutral −240 … +400 (5492–6132), camera-clear edge neutral +400 (6132, used as the limit
+for squints), deliberate captures neutral −320 (5412), idle drift neutral ±350 (5382–6082)
+with an occasional half-blink down to the edge. Mood visor targets are offsets from the
+neutral. **The pulse where the visor starts to hide the camera is still unread, so the
+camera-clear edge is a guess.**
 
 ## Behaviour (what Rex's body does)
 
@@ -87,7 +91,7 @@ starts to hide the camera are unread; the mirroring is a guess kept on the safe 
   live pulse (the program restarted with the servos powered) keeps that reading instead.
   The Maestro ignores speed limits for the first target to an off channel, so a wrong rest
   makes the joint jump; the first V3 run's assumed elbow-down rest dropped the poker arm.
-- **Startup.** Head to level (lift 3600, pair 5832 / 6480) and visor up (5120) glide
+- **Startup.** Head to level (lift 3600, pair 5832 / 6480) and visor to its neutral open point (5732, 1433 µs) glide
   together while the neck scans and the throttle unfolds; the poker arm goes from park to
   the 45° pose in clearance stages at the slow lifecycle pace (speed 12).
 - **Shutdown / sleep.** Visor down 6976, neck centre, lift 2600, head pair fully down, hero
@@ -117,14 +121,14 @@ starts to hide the camera are unread; the mirroring is a guess kept on the safe 
   the amounts; sided ones cock away from any lean already there.
 - **Talking.** The head pair sways slowly together around its anchor: pitch ±0.06 with tilt
   ±0.1 on one smooth sine (period 2.4 s), Maestro speed 20; the visor plays inside
-  4880–5520, an angry squint resting at 5520 and never past it.
+  5492–6132, an angry squint resting at the camera-clear edge (6132) and never past it.
 - **Listening.** The "mhm" nod dips the lift and pitches the pair down 0.07, keeping the cock.
 - **Idle life.** Head drift pitch ±0.03 and tilt ±0.06 per move; glances away cock 0.1–0.25
   to a random side; room scans carry a random tilt ±0.3; following a face adjusts the pitch
   (a face low in the frame pitches the head down) and keeps the tilt, settling into a gentle
   0.15–0.3 cock for 3–8 s every 10–25 s; the poker elbow/wrist wander around the 45° pose
   (elbow 5200–6800, wrist 2900–4700) in 300–900 steps through the staged move; the visor
-  idles in 4770–5470 with an occasional half-blink.
+  idles in 5382–6082 around its 1433 µs neutral with an occasional half-blink.
 - **Camera.** Both head channels count toward "the head moved, the camera view changed";
   small-move thresholds: channel 2 about 450, channel 11 about 300 q-µs
   (`head_pose.HEAD_SMALL`).
@@ -149,7 +153,8 @@ run on the robot by this work.
 **Still needs the robot (owner):**
 
 - The visor's real endpoints and the pulse where it starts to hide the camera (the
-  mirroring is a guess).
+  camera-clear edge, neutral +400, is a guess). Neutral open (1433 µs) and surprise
+  (1136 µs) are the owner's 2026-10-11 readings.
 - The shutdown timeout cause: the first V3 shutdown on the new head timed out on the
   head/visor lane with nothing parked; the Maestro silently clamping a target outside the
   range stored in its own settings looks exactly like a servo that never arrives, and the

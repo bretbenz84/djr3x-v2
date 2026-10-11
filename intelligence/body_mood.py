@@ -19,8 +19,9 @@ Design notes:
     on a face) — it never fights the face-centering controller, honoring "tracking is
     primary, mood shapes posture."
   • The visor runs INVERTED since October 10 2026 (low pulses up, high pulses down); a
-    mood target is always kept at/above the camera-clear edge (pulse <= 5520) so a mood
-    can never blind the camera Rex tracks faces with.
+    mood target is always kept at/above the camera-clear edge (config
+    VISOR_CAMERA_CLEAR_MAX_QUS, derived from the 1433 µs neutral open point) so a mood can
+    never blind the camera Rex tracks faces with.
 """
 
 from __future__ import annotations
@@ -37,8 +38,9 @@ _log = logging.getLogger(__name__)
 
 # Inverted visor (October 10 2026): LOW pulses raise it, HIGH pulses lower it. The
 # camera-clear EDGE is the highest pulse (lowest visor) a mood may reach; an angry
-# squint narrows the visor DOWN to exactly that edge, never past it.
-_VISOR_CAMERA_CLEAR_MAX_DEFAULT = 5520
+# squint narrows the visor DOWN to exactly that edge, never past it. It derives from the
+# neutral open point in config (neutral + 400 q-us) and is still a guess.
+_VISOR_CAMERA_CLEAR_MAX_DEFAULT = int(getattr(config, "VISOR_CAMERA_CLEAR_MAX_QUS", 6132))
 
 
 def visor_camera_clear_max() -> int:
@@ -48,39 +50,51 @@ def visor_camera_clear_max() -> int:
     except Exception:
         return _VISOR_CAMERA_CLEAR_MAX_DEFAULT
 
-# mood → (headlift_delta_qus, head_pitch_delta, visor_target_qus | None)
+# mood → (headlift_delta_qus, head_pitch_delta, visor)
 #   headlift: +up / -down (neutral 3600 since the 2026-08-19 gear rebuild, range 2600..7744)
 #   pitch:    fraction of the two-servo head's travel, +chin-up / -chin-down (level 0).
 #             Each value is the OLD single tilt servo's delta (in its quarter-microseconds,
 #             positive = down) converted ONCE through head_pose.pitch_from_legacy_delta
 #             (1184 = full down, 416 = full up); the old number is in the comment.
-#   visor:    INVERTED since October 10 — lower = more open, up/awake 5120, camera-clear
-#             edge 5520 (the September targets mirrored as 11520 - x, then clamped so no
-#             mood ever lowers the visor past the edge); None = don't command
+#   visor:    an OFFSET in quarter-µs from the visor's neutral open point (1433 µs, owner
+#             2026-10-11), so the moods move with it. The servo is INVERTED: a NEGATIVE
+#             offset lifts the visor (pleased, open), a positive one lowers it (subdued).
+#             VISOR_SQUINT narrows it to the camera-clear edge and never past it;
+#             VISOR_SURPRISE throws it fully up (1136 µs). None = don't command.
+#             The offsets are the September ones, measured about the old 1525 µs neutral.
 # Magnitudes are tuned "medium / playful": clearly readable, not constant motion.
-_MOOD_POSE: dict[str, tuple[int, float, Optional[int]]] = {
-    # Visor targets keep each mood's OFFSET from the awake visor (new = 5120 - (old - 6100),
-    # the September numbers measured about the old 1525 us neutral), clamped to the
-    # camera-clear edge 5520 and the fully-up 4544. A pleased mood lifts the visor (a
-    # LOWER pulse); a squint lowers it to the edge and never past it.
-    "proud":      (700, 0.43, 4704),    # head high, chin up (was tilt -180), pleased brow lift (was 6516)
-    "giddy":      (650, 0.29, 4704),    # bouncy (was -120), pleased brow lift (was 6516)
-    "amused":     (520, 0.26, 4830),    # (was -110 / 6390)
-    "happy":      (450, 0.22, 4980),    # (was -90 / 6240)
-    "surprised":  (900, 0.0, 4544),     # head pops up, visor thrown fully UP (was 6976);
+VISOR_SQUINT = "squint"
+VISOR_SURPRISE = "surprise"
+_MOOD_POSE: dict[str, tuple] = {
+    "proud":      (700, 0.43, -416),    # head high, chin up (was tilt -180), pleased brow lift (was 6516)
+    "giddy":      (650, 0.29, -416),    # bouncy (was -120), pleased brow lift (was 6516)
+    "amused":     (520, 0.26, -290),    # (was -110 / 6390)
+    "happy":      (450, 0.22, -140),    # (was -90 / 6240)
+    "surprised":  (900, 0.0, VISOR_SURPRISE),   # head pops up, visor thrown fully UP (was 6976);
                                         # the pitch stays put — lift + visor carry the surprise
-    "curious":    (160, -0.17, 5180),   # slight lift, chin down (was +200), eyes a touch narrowed (was 6040)
-    "thinking":   (120, -0.22, 5230),   # (was +260 / 5990)
-    "suspicious": (90,  -0.14, 5520),   # narrowed side-eye: squint DOWN to the camera-clear edge (was +170 / 5100)
-    "annoyed":    (-250, -0.10, 5280),  # slight droop, subdued visor (was +120 / 5940)
-    "offended":   (260, 0.63, 5520),    # haughty chin up (was -260), indignant squint to the edge (was 5100)
-    "angry":      (220, 0.48, 5520),    # alert, chin up (was -200), visor NARROWED to the edge —
+    "curious":    (160, -0.17, 60),     # slight lift, chin down (was +200), eyes a touch narrowed (was 6040)
+    "thinking":   (120, -0.22, 110),    # (was +260 / 5990)
+    "suspicious": (90,  -0.14, VISOR_SQUINT),   # narrowed side-eye (was +170 / 5100)
+    "annoyed":    (-250, -0.10, 160),   # slight droop, subdued visor (was +120 / 5940)
+    "offended":   (260, 0.63, VISOR_SQUINT),    # haughty chin up (was -260), indignant squint (was 5100)
+    "angry":      (220, 0.48, VISOR_SQUINT),    # alert, chin up (was -200), visor NARROWED to the edge —
                                         # a glare-squint, never an open 'glare'. The camera-clear
                                         # edge caps it so it can't cover the camera ("squint, but not blind").
-    "sad":        (-700, -0.22, 5280),  # droop down, chin down (was +260), subdued (was 5940)
-    "bored":      (-450, -0.15, 5280),  # droop, subdued (was +180 / 5940)
+    "sad":        (-700, -0.22, 160),   # droop down, chin down (was +260), subdued (was 5940)
+    "bored":      (-450, -0.15, 160),   # droop, subdued (was +180 / 5940)
     "neutral":    (0, 0.0, None),
 }
+
+
+def _visor_pose(spec) -> Optional[int]:
+    """The absolute visor pulse a mood's visor entry stands for, about the current neutral."""
+    if spec is None:
+        return None
+    if spec == VISOR_SURPRISE:
+        return int(getattr(config, "VISOR_SURPRISE_QUS", config.SERVO_CHANNELS["visor"]["min"]))
+    if spec == VISOR_SQUINT:
+        return visor_camera_clear_max()
+    return int(config.SERVO_CHANNELS["visor"]["neutral"]) + int(spec)
 
 # mood → an existing body-beat name (the 15 canonical beats) for an idle expression
 _MOOD_BEAT: dict[str, Optional[str]] = {
@@ -309,7 +323,8 @@ def visor_target() -> Optional[int]:
     mood, intensity = current_mood()
     if intensity < float(getattr(config, "BODY_MOOD_VISOR_MIN_INTENSITY", 0.25)):
         return None
-    _, _, target = _MOOD_POSE.get(mood, (0, 0.0, None))
+    _, _, spec = _MOOD_POSE.get(mood, (0, 0.0, None))
+    target = _visor_pose(spec)
     if target is None:
         return None
     # Interpolate from the awake resting visor toward the mood target by intensity,
@@ -327,9 +342,9 @@ def idle_visor_target(now: float) -> Optional[int]:
     cfg = config.SERVO_CHANNELS["visor"]
     neutral = int(cfg["neutral"])
     try:
-        low, high = (int(v) for v in getattr(config, "SERVO_IDLE_VISOR_RANGE_QUS", (4770, 5470)))
+        low, high = (int(v) for v in config.SERVO_IDLE_VISOR_RANGE_QUS)
     except Exception:
-        low, high = 4770, 5470
+        low = high = neutral
     low, high = max(int(cfg["min"]), min(low, high)), min(int(cfg["max"]), max(low, high))
     amplitude = max(0, min(neutral - low, high - neutral))
     period = max(1.0, float(getattr(config, "SERVO_IDLE_VISOR_PERIOD_SECS", 7.0)))
