@@ -94,10 +94,20 @@ class ThrottleMenuTest(unittest.TestCase):
     def test_all_channels_and_directions(self):
         with mock.patch.object(helper, '_read_env_file', return_value={}):
             table = helper._servos()
-        self.assertEqual([cfg['ch'] for cfg in table.values()], list(range(11)))
+        # All 14 channels (October 10 2026: head pair on 2 + 11, poker elbow/wrist on 12 + 13).
+        self.assertEqual(sorted(cfg['ch'] for cfg in table.values()), list(range(14)))
         self.assertEqual(table['throttle_shoulder']['min'], 535 * 4)
         self.assertEqual(table['throttle_shoulder']['max'], 2280 * 4)
         self.assertEqual(len(helper._THROTTLE_DIRECTIONS), 3)
+        # The owner's measured extremes are the limits; every new slider says which way it moves.
+        self.assertEqual((table['head_left']['min'], table['head_left']['max']), (1008 * 4, 2032 * 4))
+        self.assertEqual((table['head_right']['min'], table['head_right']['max']), (1312 * 4, 1904 * 4))
+        self.assertEqual((table['poker_elbow']['min'], table['poker_elbow']['max']), (864 * 4, 1920 * 4))
+        self.assertEqual((table['poker_wrist']['min'], table['poker_wrist']['max']), (496 * 4, 2486 * 4))
+        for name in ('head_left', 'head_right', 'visor', 'poker_elbow', 'poker_wrist'):
+            self.assertIn(name, helper._SLIDER_DIRECTIONS)
+        self.assertIn('up', helper._SLIDER_DIRECTIONS['visor'])
+        self.assertTrue(any('envelope' in note for note in helper._HEADER_NOTES))
 
     def test_override_limits_cannot_expand_or_be_incomplete(self):
         prefix = 'SERVO_THROTTLE_SHOULDER_'

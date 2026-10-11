@@ -201,9 +201,8 @@ class GazeConfig:
     neck_min: int = 1984
     neck_max: int = 9984
     neck_neutral: int = 6000
-    tilt_min: int = 3904
-    tilt_max: int = 5504
-    tilt_neutral: int = 4320
+    # The head's pitch is a fraction of the two-servo head's travel (hardware/head_pose),
+    # not a channel of its own, so there is no tilt geometry here any more.
     lift_min: int = 2600   # 650 us; the live value loads from SERVO_CHANNELS at init
     lift_max: int = 7744
     lift_neutral: int = 3600   # 900 us — normal talking height (2026-08-19 gear rebuild);
@@ -266,8 +265,6 @@ class GazeConfig:
             if isinstance(chans, dict):
                 inst.neck_min = int(chans["neck"]["min"]); inst.neck_max = int(chans["neck"]["max"])
                 inst.neck_neutral = int(chans["neck"]["neutral"])
-                inst.tilt_min = int(chans["headtilt"]["min"]); inst.tilt_max = int(chans["headtilt"]["max"])
-                inst.tilt_neutral = int(chans["headtilt"]["neutral"])
                 inst.lift_min = int(chans["headlift"]["min"]); inst.lift_max = int(chans["headlift"]["max"])
                 inst.lift_neutral = int(chans["headlift"]["neutral"])
         except Exception:
@@ -300,22 +297,17 @@ class GazeConfig:
         per_deg = ((self.neck_max - self.neck_min) / 2.0) / max(1e-6, self.yaw_limit_deg)
         return (qus - self.neck_neutral) / max(1e-6, per_deg)
 
-    # PITCH: headtilt is INVERTED (up = lower qus) and asymmetric (more down travel).
-    def pitch_deg_to_tilt_qus(self, deg: float) -> int:
-        if deg >= 0:  # up
-            per_deg = (self.tilt_neutral - self.tilt_min) / max(1e-6, self.pitch_up_limit_deg)
-            qus = self.tilt_neutral - deg * per_deg
-        else:  # down
-            per_deg = (self.tilt_max - self.tilt_neutral) / max(1e-6, self.pitch_down_limit_deg)
-            qus = self.tilt_neutral + (-deg) * per_deg
-        return int(round(_clamp(qus, self.tilt_min, self.tilt_max)))
+    # PITCH: degrees above level <-> the two-servo head's pitch fraction (-1 fully down,
+    # +1 fully up; hardware/head_pose). Degrees are clamped to the configured limits
+    # first, so the engine's own pitch ceiling still applies.
+    def pitch_deg_to_head_pitch(self, deg: float) -> float:
+        from hardware import head_pose
+        deg = _clamp(float(deg), -float(self.pitch_down_limit_deg), float(self.pitch_up_limit_deg))
+        return head_pose.pitch_from_degrees(deg)
 
-    def tilt_qus_to_pitch_deg(self, qus: float) -> float:
-        if qus <= self.tilt_neutral:  # up
-            per_deg = (self.tilt_neutral - self.tilt_min) / max(1e-6, self.pitch_up_limit_deg)
-            return (self.tilt_neutral - qus) / max(1e-6, per_deg)
-        per_deg = (self.tilt_max - self.tilt_neutral) / max(1e-6, self.pitch_down_limit_deg)
-        return -(qus - self.tilt_neutral) / max(1e-6, per_deg)
+    def head_pitch_to_deg(self, pitch: float) -> float:
+        from hardware import head_pose
+        return head_pose.degrees_from_pitch(_clamp(float(pitch), -1.0, 1.0))
 
     # POLE: head height as a headlift offset about neutral, anchored at rest mm.
     def pole_mm_to_lift_qus(self, mm: float) -> int:

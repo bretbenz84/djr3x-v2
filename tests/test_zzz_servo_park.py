@@ -10,8 +10,8 @@ rising smoothly (field 2026-08-11: "he's started up and jerked to these
 locations").
 
 The single test below glides every channel back to the shutdown rest pose (head
-lowered, tilt down, visor closed, neck centred, elbow at its unpowered rest, the
-other arm channels neutral) — the exact pose startup() assumes. The module name
+lowered, both head servos fully down, visor down, neck centred, elbow at its
+unpowered rest, poker elbow/wrist at their park, the other arm channels neutral) — the exact pose startup() assumes. The module name
 starts with `test_zzz` so an alphabetical per-module sweep (the standard
 full-suite runner, see CLAUDE.md) reaches it last. With no Maestro connected
 (CI, a laptop) the test SKIPS and touches nothing.
@@ -68,6 +68,11 @@ class ServoParkTest(unittest.TestCase):
             6: animations.POKERARM_NEUTRAL,
             7: animations.HEROARM_NEUTRAL,
         })
+        # The poker elbow/wrist go to their park in clearance stages (wrist first,
+        # then the elbow up) and are waited for; the rest glide together, the two
+        # head servos arriving as one.
+        poker = {ch: targets.pop(ch) for ch in (12, 13)}
+        servos.move_poker(poker[12], poker[13], speed=12, acceleration=3, block=True)
         servos.move_to(targets, step_us=50, step_delay=0.012)
 
         # Let the physical travel finish before the interpreter (and the serial

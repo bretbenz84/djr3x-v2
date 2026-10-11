@@ -36,6 +36,19 @@ BODY_BEAT_NAMES = frozenset({
     "double_take",
     "mic_drop",
     "spit_take",
+    # Two-servo head expressions (October 10 2026). The head cocks and pitches and
+    # returns exactly to where it was; nothing is held. Which feeling fits which:
+    #   head_tilt   one cock of the head and back — a question, mild interest
+    #   perplexed   the dog's double head-cock, one side then the other — something
+    #               does not add up, a word not caught
+    #   head_wiggle three quick little cocks side to side — playful, pleased, teasing
+    #   sympathetic one slow cock held with the head a touch down — sympathy,
+    #               tenderness, bad news received gently
+    # Most lines should carry none of them; the model chooses, events never do.
+    "head_tilt",
+    "perplexed",
+    "head_wiggle",
+    "sympathetic",
 })
 MOOD_POSE_NAMES = frozenset({
     "agreement",
@@ -104,6 +117,15 @@ _BODY_BEAT_ALIASES = {
     "micdrop": "mic_drop",
     "drop_the_mic": "mic_drop",
     "spittake": "spit_take",
+    "tilt": "head_tilt",
+    "head_cock": "head_tilt",
+    "cock_head": "head_tilt",
+    "tilt_head": "head_tilt",
+    "confused": "perplexed",
+    "puzzled": "perplexed",
+    "wiggle": "head_wiggle",
+    "sympathy": "sympathetic",
+    "sympathetic_tilt": "sympathetic",
 }
 
 _BODY_BEAT_FALLBACKS = {
@@ -126,6 +148,10 @@ _BODY_BEAT_FALLBACKS = {
     "double_take": "Double take. I saw that. I definitely saw that.",
     "mic_drop": "Mic drop. I'd help you up, but I'm done here.",
     "spit_take": "Spit take. Imagine the mess if I had liquids.",
+    "head_tilt": "Hm?",
+    "perplexed": "That... does not add up. Running it again.",
+    "head_wiggle": "Heh. Little wiggle. Earned it.",
+    "sympathetic": "Oh. That's a lot. I'm here.",
 }
 
 _BODY_BEAT_EMOTIONS = {
@@ -148,6 +174,10 @@ _BODY_BEAT_EMOTIONS = {
     "double_take": "excited",
     "mic_drop": "happy",
     "spit_take": "excited",
+    "head_tilt": "curious",
+    "perplexed": "curious",
+    "head_wiggle": "happy",
+    "sympathetic": "sad",
 }
 _MOOD_POSE_ALIASES = {
     "agree": "agreement",

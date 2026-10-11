@@ -310,7 +310,7 @@ class PrideFlourishTest(PrideTestCase):
             mock.patch.object(animations, "_suspend_face_tracking") as suspend,
             mock.patch.object(animations.time, "sleep"),
             mock.patch.object(
-                animations, "_current_body_pose", return_value={2: 4320, 3: 6000, 5: 6000}
+                animations, "_current_body_pose", return_value={2: 5832, 11: 6480, 3: 5120, 5: 6000}
             ),
         ):
             ok = animations.pride_flourish(async_=False)
@@ -323,16 +323,19 @@ class PrideFlourishTest(PrideTestCase):
         self.assertEqual(len(poses), 2)
 
         pose, restore = poses
-        # headtilt is the inverted channel — its MAX is "tilted down".
-        self.assertEqual(pose[2], animations.HEADTILT_DOWN)
-        self.assertEqual(pose[2], config.SERVO_CHANNELS["headtilt"]["max"])
+        # The two head servos pitch the head well down (both set, straight).
+        from hardware import head_pose
+        pitch, tilt = head_pose.head_pose({2: pose[2], 11: pose[11]})
+        self.assertAlmostEqual(pitch, animations.PITCH_DOWN, places=1)
+        self.assertAlmostEqual(tilt, 0.0, places=1)
+        # The visor is thrown fully UP (inverted servo: its MIN pulse).
         self.assertEqual(pose[3], animations.VISOR_OPEN)
-        self.assertEqual(pose[3], config.SERVO_CHANNELS["visor"]["max"])
+        self.assertEqual(pose[3], config.SERVO_CHANNELS["visor"]["min"])
         # Wrist all the way to one end of its travel, not the named HAND_RIGHT pose.
         self.assertEqual(pose[5], config.SERVO_CHANNELS["hand"]["max"])
 
         # … and then back to where the head was.
-        self.assertEqual(restore, {2: 4320, 3: 6000, 5: 6000})
+        self.assertEqual(restore, {2: 5832, 11: 6480, 3: 5120, 5: 6000})
         # Face tracking is held off for the whole thing, or it would drag the head out
         # of the pose mid-hold.
         held = suspend.call_args[0][0]
@@ -343,26 +346,28 @@ class PrideFlourishTest(PrideTestCase):
             + config.PRIDE_FLOURISH_RETURN_SECS,
         )
 
-    def test_the_three_channels_get_their_own_profiles_and_hand_them_back(self) -> None:
+    def test_the_four_channels_get_their_own_profiles_and_hand_them_back(self) -> None:
         """At the listening profile (speed 22) the wrist's 8000 q-us travel takes ~1.8 s
         — the flick would still be in flight when the hold ended."""
         servos = self.servos
         with mock.patch.object(servos, "listening_motion_active", return_value=True):
             _, _, profiles, _ = self._run()
 
-        entry = {(kind, ch): v for kind, ch, v in profiles[:6]}
+        entry = {(kind, ch): v for kind, ch, v in profiles[:8]}
         self.assertEqual(entry[("speed", 5)], config.PRIDE_FLOURISH_WRIST_ENTRY_SPEED)
         self.assertEqual(entry[("speed", 2)], config.PRIDE_FLOURISH_TILT_ENTRY_SPEED)
-        # The tilt carries a ~5 lb head on an 8 mm rod: it is the one channel here that
-        # must stay well under the wrist's numbers, going out and coming back.
+        self.assertEqual(entry[("speed", 11)], config.PRIDE_FLOURISH_TILT_ENTRY_SPEED)
+        # The two head servos carry a ~5 lb head: they must stay well under the
+        # wrist's numbers, going out and coming back.
         self.assertLess(entry[("accel", 2)], entry[("accel", 5)])
+        self.assertEqual(entry[("accel", 2)], entry[("accel", 11)])
         self.assertLess(
             config.PRIDE_FLOURISH_TILT_RETURN_ACCEL, config.PRIDE_FLOURISH_TILT_ENTRY_ACCEL
         )
 
         # Handed back to the LISTENING profile, not the default — listening motion is
         # what usually resumes, and 40/8 would leave its sines running fast all session.
-        tail = profiles[-6:]
+        tail = profiles[-8:]
         self.assertTrue(all(v == config.SERVO_LISTENING_SPEED for kind, _, v in tail if kind == "speed"))
         self.assertTrue(
             all(v == config.SERVO_LISTENING_ACCELERATION for kind, _, v in tail if kind == "accel")
@@ -405,7 +410,8 @@ class HeadGestureClaimTest(PrideTestCase):
             servos.end_head_gesture()
             servos._last_speech_move_at = 0.0
             servos.speech_reactive_move(0.8)
-            self.assertIn(servos._channel("headtilt"), captured[-1])
+            self.assertIn(servos._channel("head_left"), captured[-1])
+            self.assertIn(servos._channel("head_right"), captured[-1])
 
             servos.begin_head_gesture()
             servos._last_speech_move_at = 0.0
@@ -425,7 +431,7 @@ class HeadGestureClaimTest(PrideTestCase):
         servos._speech_active.set()
         servos._speech_emotion_frame = {}
         servos._speech_baseline = {}
-        servos.begin_head_gesture([servos._channel("headtilt"), servos._channel("visor")])
+        servos.begin_head_gesture([servos._channel("head_left"), servos._channel("visor")])
         with (
             mock.patch.object(servos, "SERVOS_ENABLED", True),
             mock.patch.object(servos, "_program_servo_updates_blocked", return_value=False),
@@ -434,7 +440,8 @@ class HeadGestureClaimTest(PrideTestCase):
             servos.end_arm_gesture()
             servos._last_speech_move_at = 0.0
             servos.speech_reactive_move(0.8)
-        self.assertNotIn(servos._channel("headtilt"), captured[-1])
+        self.assertNotIn(servos._channel("head_left"), captured[-1])
+        self.assertNotIn(servos._channel("head_right"), captured[-1])   # the pair is one unit
         self.assertNotIn(servos._channel("visor"), captured[-1])
         self.assertIn(servos._channel("neck"), captured[-1])
         self.assertIn(servos._channel("headlift"), captured[-1])
@@ -451,17 +458,19 @@ class HeadGestureClaimTest(PrideTestCase):
         ):
             servos.begin_speech_motion("neutral")
         self.assertIn(servos._channel("neck"), profiled)
-        self.assertNotIn(servos._channel("headtilt"), profiled)
+        self.assertNotIn(servos._channel("head_left"), profiled)
+        self.assertNotIn(servos._channel("head_right"), profiled)
 
     def test_a_held_pose_does_not_become_the_speech_baseline(self) -> None:
         """Speech starting mid-hold used to capture the gesture's pose as the pose to
         talk around — leaving Rex delivering the whole line staring at the floor."""
         servos = self.servos
-        tilt_ch = servos._channel("headtilt")
-        gaze = servos.config.SERVO_CHANNELS["headtilt"]["neutral"]
+        from hardware import head_pose
+        gaze = head_pose.head_pulses(0.0, 0.0)          # level
+        held = head_pose.head_pulses(-0.8, 0.0)         # the flourish's pitched-down pose
         with servos._lock:
-            servos._face_tracking_baseline[tilt_ch] = gaze
-            servos._commanded_positions[tilt_ch] = servos.config.SERVO_CHANNELS["headtilt"]["max"]
+            servos._face_tracking_baseline.update(gaze)
+            servos._commanded_positions.update(held)
         try:
             servos.begin_head_gesture()
             with (
@@ -469,7 +478,8 @@ class HeadGestureClaimTest(PrideTestCase):
                 mock.patch.object(servos, "set_breathing_emotion"),
             ):
                 servos.begin_speech_motion("neutral")
-            self.assertEqual(servos._speech_baseline[tilt_ch], gaze)
+            for ch, value in gaze.items():
+                self.assertEqual(servos._speech_baseline[ch], value)
         finally:
             servos.end_head_gesture()
             servos._speech_active.clear()

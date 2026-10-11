@@ -246,15 +246,24 @@ class MappingTest(unittest.TestCase):
         self.assertEqual(c.yaw_deg_to_neck_qus(-999), c.neck_min)  # clamped
         self.assertAlmostEqual(c.neck_qus_to_yaw_deg(c.yaw_deg_to_neck_qus(30)), 30, delta=0.5)
 
-    def test_pitch_is_inverted_and_asymmetric(self):
+    def test_pitch_maps_degrees_onto_the_head_pitch_fraction(self):
+        # The two-servo head: degrees above level -> pitch fraction (-1 down .. +1 up),
+        # asymmetric travel (25 up / 20 down) and clamped to the configured limits.
+        from hardware import head_pose
         c = self.cfg
-        self.assertEqual(c.pitch_deg_to_tilt_qus(0), c.tilt_neutral)
-        # UP (+) maps toward the LOW (min) qus end (inverted channel)
-        self.assertLess(c.pitch_deg_to_tilt_qus(20), c.tilt_neutral)
-        self.assertEqual(c.pitch_deg_to_tilt_qus(c.pitch_up_limit_deg), c.tilt_min)
-        # DOWN (-) maps toward the HIGH (max) qus end
-        self.assertGreater(c.pitch_deg_to_tilt_qus(-15), c.tilt_neutral)
-        self.assertEqual(c.pitch_deg_to_tilt_qus(-c.pitch_down_limit_deg), c.tilt_max)
+        self.assertEqual(c.pitch_deg_to_head_pitch(0), 0.0)
+        self.assertGreater(c.pitch_deg_to_head_pitch(20), 0.0)                      # UP is positive
+        self.assertAlmostEqual(c.pitch_deg_to_head_pitch(20), head_pose.pitch_from_degrees(20))
+        self.assertAlmostEqual(c.pitch_deg_to_head_pitch(c.pitch_up_limit_deg), 1.0, delta=1e-6)
+        self.assertLess(c.pitch_deg_to_head_pitch(-15), 0.0)                        # DOWN is negative
+        self.assertAlmostEqual(c.pitch_deg_to_head_pitch(-c.pitch_down_limit_deg), -1.0, delta=1e-6)
+        self.assertLessEqual(c.pitch_deg_to_head_pitch(999), 1.0)                   # clamped
+        self.assertGreaterEqual(c.pitch_deg_to_head_pitch(-999), -1.0)
+        # Round trip through the inverse.
+        self.assertAlmostEqual(c.head_pitch_to_deg(c.pitch_deg_to_head_pitch(12.0)), 12.0, delta=1e-6)
+        self.assertAlmostEqual(c.head_pitch_to_deg(c.pitch_deg_to_head_pitch(-9.0)), -9.0, delta=1e-6)
+        for stale in ("tilt_min", "tilt_max", "tilt_neutral", "pitch_deg_to_tilt_qus"):
+            self.assertFalse(hasattr(c, stale), stale)
 
     def test_pole_mapping(self):
         c = self.cfg
@@ -357,8 +366,18 @@ class LiveActuationTest(unittest.TestCase):
         import intelligence.consciousness as c
         self.c = c
         c._gaze_release()  # reset drive phase + velocity ramp state
+        c._gaze_drive.pop("cock", None)
+        from hardware import head_pose
+        level = head_pose.head_pulses(0.0, 0.0)
         c.world_state.update(
-            "self_state", {"servo_positions": {"neck": 6000, "headlift": 6000, "headtilt": 4320}}
+            "self_state", {
+                "servo_positions": {
+                    "neck": 6000, "headlift": 6000,
+                    "head_left": level[head_pose.HEAD_LEFT_CH],
+                    "head_right": level[head_pose.HEAD_RIGHT_CH],
+                },
+                "head_pose": {"pitch": 0.0, "tilt": 0.0},
+            }
         )
 
     def _mock_servo(self):
@@ -381,23 +400,66 @@ class LiveActuationTest(unittest.TestCase):
             pole_mm=45.0,            # lean-in (above rest)
             velocity="saccade", center_on=None, reason="t", segment_id=1,
         )
-        anchor = (6000, 6000, 4320)
-        # Step a handful of ticks so the ramp builds past the inclusion threshold.
-        for _ in range(5):
-            c._drive_gaze_aversion(servo, 100.0, dec, anchor)
+        anchor = (6000, 6000, 0.0, 0.0)   # (neck, lift, pitch, tilt)
+        from hardware import head_pose
+        # Step a handful of ticks so the ramp builds past the inclusion threshold; the
+        # glance-away cock is drawn once from random (to Rex's right here, 0.2).
+        with self.mock.patch.object(c.random, "choice", return_value=1.0), \
+             self.mock.patch.object(c.random, "uniform", return_value=0.2):
+            for _ in range(5):
+                c._drive_gaze_aversion(servo, 100.0, dec, anchor)
 
         servo.set_servos.assert_called()
         updates = servo.set_servos.call_args.args[0]
         neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
-        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
         # +yaw (left) raises the neck qus above the anchor.
         self.assertGreater(updates[neck_ch], 6000)
-        # DOWN pitch drives headtilt toward its HIGH (max) end (inverted channel).
-        self.assertGreater(updates[tilt_ch], 4320)
+        # DOWN pitch pitches the two-servo head down, both channels written together.
+        self.assertTrue(set(head_pose.HEAD_PAIR).issubset(updates))
+        pitch, tilt = head_pose.head_pose({ch: updates[ch] for ch in head_pose.HEAD_PAIR})
+        self.assertLess(pitch, -0.02)
+        # ...and the look-away carries a cock to the drawn side.
+        self.assertGreater(tilt, 0.02)
+        self.assertLessEqual(tilt, 0.2 + 0.01)
+        self.assertAlmostEqual(c._gaze_drive["cock"], 0.2)
         # lean-in raises headlift above the anchor.
         self.assertGreater(updates[lift_ch], 6000)
         servo.set_face_tracking_baseline.assert_called()
+        kwargs = servo.set_face_tracking_baseline.call_args.kwargs
+        self.assertLess(kwargs["pitch"], 0.0)
+        self.assertGreater(kwargs["tilt"], 0.0)
+
+    def test_gaze_return_lands_on_the_anchor_pitch_and_tilt(self):
+        # The return goes back to the anchor's pitch AND tilt exactly (a cocked anchor
+        # stays cocked), stepping the pair together until within tolerance.
+        c = self.c
+        from hardware import head_pose
+        servo = self._mock_servo()
+        c._gaze_drive.update({"phase": "returning", "anchor": (6000, 6000, 0.2, -0.15), "vel": {}})
+        reached = False
+        for _ in range(40):
+            reached = c._drive_gaze_return(servo, 100.0)
+            updates = servo.set_servos.call_args.args[0]
+            # The MagicMock does not mirror writes; feed the pose back by hand.
+            pitch, tilt = head_pose.head_pose({ch: updates[ch] for ch in head_pose.HEAD_PAIR})
+            c.world_state.update("self_state", {
+                "servo_positions": {"neck": 6000, "headlift": 6000,
+                                    "head_left": updates[head_pose.HEAD_LEFT_CH],
+                                    "head_right": updates[head_pose.HEAD_RIGHT_CH]},
+                "head_pose": {"pitch": round(pitch, 3), "tilt": round(tilt, 3)},
+            })
+            if reached:
+                break
+        self.assertTrue(reached)
+        pitch, tilt = c._current_head_pose()
+        tol = abs(head_pose.pitch_from_legacy_delta(c.config.FACE_TRACKING_NECK_MAX_STEP_QUS))
+        self.assertLessEqual(abs(pitch - 0.2), tol + 0.01)
+        self.assertLessEqual(abs(tilt - (-0.15)), tol + 0.01)
+        # Every head write was the full pair.
+        for call in servo.set_servos.call_args_list:
+            present = set(head_pose.HEAD_PAIR).intersection(call.args[0])
+            self.assertIn(present, (set(), set(head_pose.HEAD_PAIR)))
 
     def test_aversion_motion_ramps_in_softly(self):
         # The look-away accelerates from rest: per-tick neck velocity grows, then caps —

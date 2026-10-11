@@ -732,7 +732,7 @@ def _survey(sess: "_Session") -> list:
             break
         try:
             consciousness.hold_directed_gaze(view, secs=6.0)
-            animations.directed_look_pose(view)
+            animations.directed_look_pose(view, requested=False)
             frame = camera.capture_current_gaze(settle_secs=settle)
             if frame is not None:
                 out.append((view, frame))
@@ -1576,7 +1576,7 @@ def _glance(view: str) -> None:
         if str(view or "").lower() not in ("left", "right", "up", "down", "center"):
             return
         from sequences import animations
-        animations.directed_look_pose(view)
+        animations.directed_look_pose(view, requested=False)
     except Exception:
         pass
 

@@ -22,9 +22,13 @@
       -22.5,
       22.5
     ],
-    "headtilt": [
-      30,
-      -15
+    "head_pitch": [
+      -15,
+      30
+    ],
+    "head_tilt": [
+      -12,
+      12
     ],
     "visor": [
       27,
@@ -99,6 +103,12 @@
   "provisional": [
     "Lift stroke 60 mm from project gaze configuration; needs physical measurement",
     "Visor closure 27 degrees estimated from geometry; needs physical endpoint comparison",
-    "Head tilt pivot inferred at neck attachment"
+    "Head pitch pivot inferred at neck attachment; pitch angles (-15 down, +30 up) are the old single-servo estimate, unverified on the two-servo linkage",
+    "Head side-tilt roll of +/-12 degrees about head_forward is a drawing estimate; the real cock angle is unmeasured"
+  ],
+  "head_forward": [
+    0.618,
+    -0.786,
+    0
   ]
 }

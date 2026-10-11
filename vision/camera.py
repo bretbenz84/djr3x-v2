@@ -272,14 +272,16 @@ def wait_for_frame(timeout_secs: float = 2.0) -> bool:
 
 
 def _visor_capture_target(visor_cfg: dict) -> int:
-    """How far to open the visor before a deliberate capture.
+    """How far to raise the visor before a deliberate capture.
 
-    Use 1680 µs for deliberate captures, above the calibrated 1275 µs
-    lens-clear boundary. Normal emotional squints are now also camera-clear.
+    The visor servo runs inverted since October 10 2026 (LOW pulses are UP): a
+    deliberate capture lifts it to 1200 µs, well above the mirrored camera-clear
+    edge (1380 µs, the lowest the visor may sit while the camera must see). Both
+    numbers are the September calibration mirrored and still unread on the robot.
     """
-    clear_floor = int(getattr(config, "VISOR_CAMERA_CLEAR_FLOOR_QUS", 5100))
-    target = int(getattr(config, "VISOR_CAMERA_CAPTURE_QUS", 6720))
-    return min(int(visor_cfg["max"]), max(int(visor_cfg["min"]), clear_floor, target))
+    clear_edge = int(getattr(config, "VISOR_CAMERA_CLEAR_MAX_QUS", 5520))
+    target = int(getattr(config, "VISOR_CAMERA_CAPTURE_QUS", 4800))
+    return max(int(visor_cfg["min"]), min(int(visor_cfg["max"]), clear_edge, target))
 
 
 def capture_still() -> Optional[np.ndarray]:

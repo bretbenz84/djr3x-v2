@@ -12,7 +12,8 @@ class ListeningTargetsTests(unittest.TestCase):
         # Known gaze baseline (neutral head pose) so target math is predictable.
         self._neck = servos._channel("neck")
         self._lift = servos._channel("headlift")
-        self._tilt = servos._channel("headtilt")
+        self._left = servos._channel("head_left")
+        self._right = servos._channel("head_right")
         self._visor = servos._channel("visor")
         self._elbow = servos._channel("elbow")
         self._hand = servos._channel("hand")
@@ -20,7 +21,8 @@ class ListeningTargetsTests(unittest.TestCase):
         self._baseline = {
             self._neck: servos.config.SERVO_CHANNELS["neck"]["neutral"],
             self._lift: servos.config.SERVO_CHANNELS["headlift"]["neutral"],
-            self._tilt: servos.config.SERVO_CHANNELS["headtilt"]["neutral"],
+            self._left: servos.config.SERVO_CHANNELS["head_left"]["neutral"],
+            self._right: servos.config.SERVO_CHANNELS["head_right"]["neutral"],
         }
         servos._listening_session.clear()
         self.addCleanup(servos._listening_session.clear)
@@ -44,7 +46,7 @@ class ListeningTargetsTests(unittest.TestCase):
             self.servos._begin_listening_session(50.0)
             for i in range(5):
                 t = self.servos._listening_targets(50.0 + i * 0.12)
-                for ch in (self._neck, self._lift, self._tilt, self._visor,
+                for ch in (self._neck, self._lift, self._left, self._right, self._visor,
                            self._elbow, self._hand, self._hero):
                     self.assertIn(ch, t)
 
@@ -65,9 +67,9 @@ class ListeningTargetsTests(unittest.TestCase):
                         )
                 prev = t
 
-    def test_nod_dips_head_lift_down_and_tilts_down(self):
+    def test_nod_dips_head_lift_down_and_pitches_down(self):
         # Force a nod mid-flight: at the nod's midpoint the lift is well below the
-        # gaze baseline and the (inverted) tilt biases toward looking down.
+        # gaze baseline and the two head servos pitch the head slightly down together.
         with self._patch_baseline():
             self.servos._begin_listening_session(300.0)
             s = self.servos._listening_session
@@ -75,7 +77,10 @@ class ListeningTargetsTests(unittest.TestCase):
             nod_mid = 300.0 + float(self.servos.config.SERVO_LISTENING_NOD_SECS) / 2.0
             t = self.servos._listening_targets(nod_mid)
         self.assertLess(t[self._lift], self._baseline[self._lift] - 50)
-        self.assertGreater(t[self._tilt], self._baseline[self._tilt])
+        from hardware import head_pose
+        pitch, tilt = head_pose.head_pose({self._left: t[self._left], self._right: t[self._right]})
+        self.assertLess(pitch, -0.03)
+        self.assertAlmostEqual(tilt, 0.0, places=1)
 
     def test_nod_schedule_advances(self):
         # A completed nod clears its start and books the next one in the future.

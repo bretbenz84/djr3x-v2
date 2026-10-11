@@ -49,6 +49,7 @@ from gui.rex_avatar_3d import RexAvatar
 from gui.state_bridge import GUIDashboardBridge, gui_bridge
 from gui.theme import HoloPanel as ChromePanel, ServoGauge, StarfieldBackdrop
 from gui.vision_panel import VisionPanel
+from hardware import head_pose
 
 _log = logging.getLogger(__name__)
 
@@ -1111,7 +1112,8 @@ def _html(value: Any) -> str:
 
 
 class ServoPositionsPanel(QWidget):
-    _ORDER = ("neck", "headlift", "headtilt", "visor", "elbow", "hand", "pokerarm", "heroarm")
+    _ORDER = ("neck", "headlift", "head_left", "head_right", "visor", "elbow", "hand",
+              "pokerarm", "heroarm", "poker_elbow", "poker_wrist")
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1180,7 +1182,7 @@ class ServoPositionsPanel(QWidget):
             visual_row += 1
 
         layout.setColumnStretch(1, 1)
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(280)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         ws = snapshot.get("world_state") or {}
@@ -1196,14 +1198,15 @@ class ServoPositionsPanel(QWidget):
         self._apply_manual_override_ui(manual_override)
 
         self._updating_snapshot = True
+        shown = {name: int(positions.get(name, config.SERVO_CHANNELS[name]["neutral"])) for name in self._ORDER}
         for name in self._ORDER:
             cfg = config.SERVO_CHANNELS[name]
-            raw = int(positions.get(name, cfg["neutral"]))
+            raw = shown[name]
             self._sliders[name].blockSignals(True)
             self._sliders[name].setValue(max(int(cfg["min"]), min(int(cfg["max"]), raw)))
             self._sliders[name].blockSignals(False)
             self._value_labels[name].setText(str(raw))
-            self._state_labels[name].setText(_servo_state(name, raw))
+            self._state_labels[name].setText(_servo_state(name, raw, shown, self_state.get("head_pose")))
         self._updating_snapshot = False
 
     def _apply_manual_override_ui(self, enabled: bool) -> None:
@@ -1236,10 +1239,18 @@ class ServoPositionsPanel(QWidget):
         cfg = config.SERVO_CHANNELS[name]
         raw = max(int(cfg["min"]), min(int(cfg["max"]), int(value)))
         self._value_labels[name].setText(str(raw))
-        self._state_labels[name].setText(_servo_state(name, raw))
+        # The two head rows decode together, so read the partner from its slider.
+        shown = {other: int(slider.value()) for other, slider in self._sliders.items()}
+        shown[name] = raw
+        for other in ("head_left", "head_right"):
+            if other in self._state_labels:
+                self._state_labels[other].setText(_servo_state(other, shown[other], shown))
+        self._state_labels[name].setText(_servo_state(name, raw, shown))
         try:
             from hardware import servos
 
+            # servos.set_manual_servo fills in the partner of a head or poker pair
+            # from where it stands and refuses a pair the linkage cannot take.
             servos.set_manual_servo(int(cfg["ch"]), raw)
         except Exception as exc:
             _log.warning("Manual servo slider update failed for %s: %s", name, exc)
@@ -2559,15 +2570,23 @@ def _advance_demo(bridge: GUIDashboardBridge) -> None:
         phase = {
             "neck": 0.0,
             "headlift": 0.7,
-            "headtilt": 1.4,
             "visor": 2.1,
             "elbow": 3.5,
             "hand": 4.2,
             "pokerarm": 4.9,
             "heroarm": 2.8,
+            "poker_elbow": 1.4,
+            "poker_wrist": 5.6,
         }.get(name, random.random())
         norm = 0.5 + math.sin(now * 0.55 + phase) * 0.28
         servo_positions[name] = int(cfg["min"] + (cfg["max"] - cfg["min"]) * norm)
+    # The head pair is one unit: drive it through a pitch and a tilt so the demo
+    # never shows a pair the linkage cannot take.
+    demo_pitch = math.sin(now * 0.55 + 1.4) * 0.6
+    demo_tilt = math.sin(now * 0.31 + 0.8) * 0.5
+    head_pair = head_pose.head_pulses(demo_pitch, demo_tilt)
+    servo_positions["head_left"] = head_pair[head_pose.HEAD_LEFT_CH]
+    servo_positions["head_right"] = head_pair[head_pose.HEAD_RIGHT_CH]
 
     bridge.update_frame(frame)
     bridge.update_camera_stats(
@@ -2704,19 +2723,43 @@ def _servo_label(name: str) -> str:
     labels = {
         "neck": "Neck",
         "headlift": "Headlift",
-        "headtilt": "Headtilt",
+        "head_left": "Head L",
+        "head_right": "Head R",
         "visor": "Visor",
         "elbow": "Elbow",
         "hand": "Hand",
         "pokerarm": "Pokerarm",
         "heroarm": "Heroarm",
+        "poker_elbow": "Poker elbow",
+        "poker_wrist": "Poker wrist",
     }
     return f"{labels.get(name, name.title())} ({cfg['ch']})"
 
 
-def _servo_state(name: str, value: int) -> str:
+def _servo_state(name: str, value: int, positions: Optional[dict[str, int]] = None,
+                 pose: Optional[dict[str, float]] = None) -> str:
+    """Human reading of one servo row.
+
+    The visor is inverted (low pulses raise it): "Open" is head_pose.visor_frac >= .45.
+    The two head servos are one unit, so both rows show the decoded pitch/tilt of the
+    pair (from the runtime's head_pose when the snapshot carries it, else decoded from
+    the two pulses); the poker elbow/wrist read as percent of travel."""
     if name == "visor":
-        return "Open" if normalize_servo(name, value) >= 0.45 else "Closed"
+        return "Open" if head_pose.visor_frac(int(value)) >= 0.45 else "Closed"
+    if name in ("head_left", "head_right"):
+        if isinstance(pose, dict) and "pitch" in pose and "tilt" in pose:
+            pitch, tilt = float(pose["pitch"]), float(pose["tilt"])
+        else:
+            positions = positions or {}
+            if "head_left" not in positions or "head_right" not in positions:
+                return ""
+            pitch, tilt = head_pose.head_pose({
+                head_pose.HEAD_LEFT_CH: int(positions["head_left"]),
+                head_pose.HEAD_RIGHT_CH: int(positions["head_right"]),
+            })
+        return f"pitch {pitch + 0.0:+.2f} / tilt {tilt + 0.0:+.2f}".replace("-0.00", "+0.00")
+    if name in ("poker_elbow", "poker_wrist"):
+        return f"{normalize_servo(name, value) * 100:.0f}%"
     lo, hi = SPEC["limits"][name]
     position = lo + (hi-lo) * normalize_servo(name, value)
     if name == "headlift":

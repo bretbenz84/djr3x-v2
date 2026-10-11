@@ -3,12 +3,23 @@
 rex_servo_menubar.py — macOS menu bar servo console for the Pololu Maestro.
 
 A small always-on menu bar app (rumps/Cocoa, sibling of rex_battery_menubar.py)
-titled "Servo Control". The dropdown shows all 11 of Rex's servos as live sliders
-(labelled with the current position in Maestro microseconds) plus a "Restart
-Pololu" action. Slide a slider and the servo moves — the same Pololu compact
-protocol `set target` commands hardware/servos.py sends for the main GUI's
-manual sliders, just spoken directly on the wire so this app has no dependency
-on the project config (which refuses to import without API keys).
+titled "Servo Control". The dropdown shows all 14 of Rex's servos as live sliders
+(labelled with the current position in Maestro microseconds and the direction
+each end moves the joint) plus a "Restart Pololu" action. Slide a slider and the
+servo moves — the same Pololu compact protocol `set target` commands
+hardware/servos.py sends for the main GUI's manual sliders, just spoken directly
+on the wire so this app has no dependency on the project config (which refuses
+to import without API keys).
+
+THE SLIDERS ARE INDEPENDENT. Since the October 10 2026 rework the head rides on
+two servos (head_left ch2 and head_right ch11) that the robot program only ever
+commands together as a pitch and a tilt, refusing pairs the linkage cannot take;
+this console cannot enforce that envelope — move the two with care and never
+drive both to the same extreme (both fully high, for instance). The poker elbow
+(ch12) and wrist (ch13) need manual clearance like the throttle: the elbow may
+rise fully only while the wrist is at or below 1564 µs; curled further in, the
+wrist meets the arm and the elbow's ceiling falls (1894 → 1807, 2136 → 1709,
+2496 → 1597 µs). The visor servo now runs inverted (low = up).
 
 How it shares the serial port with main.py (ports are exclusive-open):
   Same dormant pattern as the battery meter. main.py holds the single-instance
@@ -71,16 +82,21 @@ _CMD_SET_ACCEL = 0x89
 _CMD_GET_POSITION = 0x90
 _CMD_GO_HOME = 0xA2
 
-# Mirror of config.SERVO_CHANNELS (q-µs). Keep in sync when the robot changes.
+# Mirror of config.SERVO_CHANNELS (q-µs), October 10 2026 calibration. Keep in sync
+# when the robot changes. Every measured extreme here is a calibrated channel limit
+# (the owner's Maestro Control Center readings x 4), not just a pose.
 _SERVO_DEFAULTS: dict[str, dict[str, int]] = {
-    "neck":     {"ch": 0, "min": 1984, "max": 8960, "neutral": 5472},
-    "headlift": {"ch": 1, "min": 2600, "max": 7744, "neutral": 6000},  # min 650 us
-    "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
-    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6560},  # 1640 µs — 6000 hid part of the camera
-    "elbow":    {"ch": 4, "min": 6300, "max": 7424, "neutral": 6720},  # 7424 = the Maestro's own stored channel limit (1856 us)
-    "hand":     {"ch": 5, "min": 1984, "max": 9984, "neutral": 6000},
-    "pokerarm": {"ch": 6, "min": 3968, "max": 8000, "neutral": 6000},
-    "heroarm":  {"ch": 7, "min": 3968, "max": 8000, "neutral": 6000},
+    "neck":       {"ch": 0,  "min": 1984, "max": 8960, "neutral": 5472},
+    "headlift":   {"ch": 1,  "min": 2600, "max": 7744, "neutral": 3600},  # min 650 us; level 900 us
+    "head_left":  {"ch": 2,  "min": 4032, "max": 8128, "neutral": 5832},  # 1008-2032 us; level 1458 us
+    "head_right": {"ch": 11, "min": 5248, "max": 7616, "neutral": 6480},  # 1312-1904 us; level 1620 us
+    "visor":      {"ch": 3,  "min": 4544, "max": 6976, "neutral": 4960},  # inverted: 1240 us is up/open
+    "elbow":      {"ch": 4,  "min": 6300, "max": 7424, "neutral": 6720},  # 7424 = the Maestro's own stored channel limit (1856 us)
+    "hand":       {"ch": 5,  "min": 1984, "max": 9984, "neutral": 6000},
+    "pokerarm":   {"ch": 6,  "min": 3968, "max": 8000, "neutral": 6000},
+    "heroarm":    {"ch": 7,  "min": 3968, "max": 8000, "neutral": 6000},
+    "poker_elbow": {"ch": 12, "min": 3456, "max": 7680, "neutral": 3456},  # 864 us down .. 1920 us up
+    "poker_wrist": {"ch": 13, "min": 1984, "max": 9944, "neutral": 5760},  # 496 down, 1440 straight, 2486 curled in
     # Neutral is only an unsent slider placeholder, never a startup command.
     "throttle_shoulder": {"ch": 8, "min": 2140, "max": 9120, "neutral": 6000,
                           "speed": 30, "acceleration": 6},
@@ -94,6 +110,20 @@ _THROTTLE_DIRECTIONS = {
     "throttle_elbow": "low ↓ / high ↑",
     "throttle_wrist": "low ↑ / high ↓",
 }
+# What each end of the new sliders does to the joint (shown in the slider label).
+_SLIDER_DIRECTIONS = {
+    **_THROTTLE_DIRECTIONS,
+    "head_left": "low = head down / high = head up",
+    "head_right": "low = head up / high = head down",
+    "visor": "low = visor up / high = visor down",
+    "poker_elbow": "low = down / high = up",
+    "poker_wrist": "low = down / high = curled in",
+}
+_HEADER_NOTES = (
+    "Sliders are independent: the head pair envelope is NOT enforced here",
+    "Head: ch2 + ch11 together pitch (opposite) or cock (same way) — never both at an extreme",
+    "Poker elbow/wrist: manual clearance (elbow fully up only with wrist ≤ 1564 µs), like the throttle",
+)
 
 
 # ── Minimal .env reading (no project config import) ────────────────────────────
@@ -656,7 +686,9 @@ def run_app() -> int:
             self._sequence_menu.add(self._play_menu)
             self._sequence_files = None
             self._record = rumps.MenuItem("Record this pose…", callback=self._record_pose)
-            menu: list = [self._status, self._sequence_menu, self._sequence_status, self._measurement, self._record, self._measurement_status, rumps.MenuItem("Throttle: manual clearance required"), None]
+            menu: list = [self._status, self._sequence_menu, self._sequence_status, self._measurement, self._record, self._measurement_status, rumps.MenuItem("Throttle: manual clearance required")]
+            menu += [rumps.MenuItem(note) for note in _HEADER_NOTES]
+            menu.append(None)
             for name, cfg in servos.items():
                 self._by_channel[cfg["ch"]] = name
                 label = rumps.MenuItem(f"{name}", callback=lambda _: None)
@@ -770,7 +802,7 @@ def run_app() -> int:
                 self._record_timer = None
 
         def _set_label(self, name: str, qus: float, state: str = "target") -> None:
-            direction = _THROTTLE_DIRECTIONS.get(name, "")
+            direction = _SLIDER_DIRECTIONS.get(name, "")
             value = f"{qus / 4.0:.2f}".rstrip("0").rstrip(".")
             reading = f"{value} µs ({state})" if state == "target" else state
             self._labels[name].title = f"ch{servos[name]['ch']} {name}: {reading} {direction}".rstrip()

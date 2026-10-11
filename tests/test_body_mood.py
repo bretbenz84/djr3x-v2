@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import config
+from hardware import head_pose
 from intelligence import body_mood, performance_plan, personality
 
 
@@ -33,7 +34,7 @@ class BodyMoodStateTest(unittest.TestCase):
         with mock.patch.object(config, "BODY_LANGUAGE_MOOD_ENABLED", False):
             self.assertFalse(body_mood.set_mood("proud"))
             self.assertEqual(body_mood.current_mood(), ("neutral", 0.0))
-            self.assertEqual(body_mood.head_bias(), (0, 0))
+            self.assertEqual(body_mood.head_bias(), (0, 0.0))
             self.assertIsNone(body_mood.visor_target())
 
     def test_canonical_mood_and_aliases(self):
@@ -89,15 +90,30 @@ class BodyMoodStateTest(unittest.TestCase):
         self.assertEqual(body_mood.current_mood()[0], "curious")
 
     def test_head_bias_signs(self):
-        # headlift: + = up; headtilt: - = chin up (inverted)
+        # headlift: + = up (qus); head pitch: a FRACTION of the two-servo head's travel,
+        # + = chin up, - = chin down (the old inverted tilt-servo sign is gone).
         body_mood.set_mood("proud", intensity=1.0, ttl=60)
-        lift, tilt = body_mood.head_bias()
+        lift, pitch = body_mood.head_bias()
         self.assertGreater(lift, 0)   # head raised
-        self.assertLess(tilt, 0)      # chin up
+        self.assertGreater(pitch, 0)  # chin up
+        self.assertLessEqual(abs(pitch), 1.0)
+        for mood in ("angry", "offended"):
+            body_mood.set_mood(mood, intensity=1.0, ttl=60)
+            self.assertGreater(body_mood.head_bias()[1], 0, mood)   # chin up
+        for mood in ("sad", "thinking"):
+            body_mood.set_mood(mood, intensity=1.0, ttl=60)
+            lift, pitch = body_mood.head_bias()
+            self.assertLess(pitch, 0, mood)                          # chin down
         body_mood.set_mood("sad", intensity=1.0, ttl=60)
-        lift, tilt = body_mood.head_bias()
-        self.assertLess(lift, 0)      # head drooped
-        self.assertGreater(tilt, 0)   # chin down
+        self.assertLess(body_mood.head_bias()[0], 0)                 # head drooped
+
+    def test_head_bias_pitch_is_the_old_tilt_delta_converted(self):
+        # Each pose's pitch is the OLD tilt-servo delta through pitch_from_legacy_delta,
+        # written once as a literal: proud was -180 (chin up), sad +260 (chin down).
+        body_mood.set_mood("proud", intensity=1.0, ttl=60)
+        self.assertAlmostEqual(body_mood.head_bias()[1], head_pose.pitch_from_legacy_delta(-180), delta=0.01)
+        body_mood.set_mood("sad", intensity=1.0, ttl=60)
+        self.assertAlmostEqual(body_mood.head_bias()[1], head_pose.pitch_from_legacy_delta(260), delta=0.01)
 
     def test_head_bias_scales_with_intensity(self):
         body_mood.set_mood("proud", intensity=1.0, ttl=60)
@@ -109,50 +125,72 @@ class BodyMoodStateTest(unittest.TestCase):
     def test_head_scale_config_zeroes_bias(self):
         body_mood.set_mood("proud", intensity=1.0, ttl=60)
         with mock.patch.object(config, "BODY_MOOD_HEAD_SCALE", 0.0):
-            self.assertEqual(body_mood.head_bias(), (0, 0))
+            self.assertEqual(body_mood.head_bias(), (0, 0.0))
 
-    def test_visor_never_below_lens_clear_floor(self):
-        floor = body_mood.visor_lens_clear_floor()
-        # Sweep moods AND intensities — the interpolation must never dip below the floor.
-        for m in ("proud", "giddy", "sad", "bored", "annoyed", "suspicious", "surprised"):
+    def test_visor_never_past_the_camera_clear_edge(self):
+        # Inverted visor: LOW pulses raise it, HIGH pulses lower it. The camera-clear
+        # EDGE is the highest pulse a mood may reach; the interpolation must never pass it.
+        edge = body_mood.visor_camera_clear_max()
+        self.assertEqual(edge, int(config.BODY_MOOD_VISOR_CAMERA_CLEAR_QUS))
+        self.assertEqual(edge, 5520)
+        self.assertFalse(hasattr(body_mood, "visor_lens_clear_floor"))
+        for m in ("proud", "giddy", "sad", "bored", "annoyed", "suspicious", "surprised", "angry"):
             for inten in (1.0, 0.6, 0.26):
                 body_mood.set_mood(m, intensity=inten, ttl=60)
                 target = body_mood.visor_target()
                 self.assertIsNotNone(target, (m, inten))
-                self.assertGreaterEqual(target, floor, (m, inten))  # lens-clear floor
-                self.assertLessEqual(target, 6976, (m, inten))      # max open
+                self.assertLessEqual(target, edge, (m, inten))        # never past the edge
+                self.assertGreaterEqual(target, int(config.SERVO_CHANNELS["visor"]["min"]), (m, inten))
 
-    def test_anger_and_offense_narrow_the_visor_to_the_floor(self):
-        # Insult/anger reads as a SQUINT: the visor narrows to the lens-clear floor
-        # (the most-closed safe position), never an open "glare". Regression guard —
-        # "angry" used to OPEN the visor to 6800 and "offended" to 6500.
-        floor = body_mood.visor_lens_clear_floor()
-        for m in ("offended", "angry", "insulted", "mad"):
+    def test_anger_and_offense_narrow_the_visor_to_the_edge(self):
+        # Insult/anger reads as a SQUINT: the visor lowers to exactly the camera-clear
+        # edge (the most-closed safe position), never an open "glare".
+        edge = body_mood.visor_camera_clear_max()
+        for m in ("offended", "angry", "insulted", "mad", "suspicious"):
             body_mood.set_mood(m, intensity=1.0, ttl=60)
-            self.assertEqual(body_mood.visor_target(), floor, m)
-        # A positive mood still opens it well above the floor (proves the contrast).
+            self.assertEqual(body_mood.visor_target(), edge, m)
+        # A positive mood opens it (a LOWER pulse than the awake neutral) — the contrast.
         body_mood.set_mood("proud", intensity=1.0, ttl=60)
-        self.assertGreater(body_mood.visor_target(), floor)
+        self.assertLess(body_mood.visor_target(), int(config.SERVO_CHANNELS["visor"]["neutral"]))
+        self.assertLess(body_mood.visor_target(), edge)
 
     def test_squint_relaxes_toward_neutral_as_emotion_decays(self):
+        neutral = int(config.SERVO_CHANNELS["visor"]["neutral"])   # 5120, awake
+        edge = body_mood.visor_camera_clear_max()                  # 5520
         for mood in ("angry", "suspicious", "offended"):
             body_mood.clear()
             body_mood.set_mood(mood, intensity=1.0, ttl=10)
-            self.assertEqual(body_mood.visor_target(), 5100)
+            self.assertEqual(body_mood.visor_target(), edge)
             self._t[0] += 5
-            self.assertAlmostEqual(body_mood.visor_target(), (5100 + 6100) / 2, delta=2)
-        for mood in ("sad", "bored", "thinking", "happy"):
+            self.assertAlmostEqual(body_mood.visor_target(), (neutral + edge) / 2, delta=2)
+        # Subdued moods lower the visor from the awake neutral but never past the edge;
+        # a pleased mood lifts it (a LOWER pulse on the inverted servo). Each keeps its
+        # September offset from the awake visor.
+        for mood in ("sad", "bored", "thinking"):
             body_mood.clear()
             body_mood.set_mood(mood, intensity=1.0, ttl=10)
-            self.assertGreaterEqual(body_mood.visor_target(), 5540)
+            self.assertGreater(body_mood.visor_target(), neutral)
+            self.assertLess(body_mood.visor_target(), edge)
+        for mood in ("happy", "proud"):
+            body_mood.clear()
+            body_mood.set_mood(mood, intensity=1.0, ttl=10)
+            self.assertLess(body_mood.visor_target(), neutral)
+            self.assertGreaterEqual(body_mood.visor_target(), int(config.SERVO_CHANNELS["visor"]["min"]))
+        # Surprise throws it fully UP (the visor's lowest pulse).
+        body_mood.clear()
+        body_mood.set_mood("surprised", intensity=1.0, ttl=10)
+        self.assertEqual(body_mood.visor_target(), int(config.SERVO_CHANNELS["visor"]["min"]))
 
     def test_idle_visor_drifts_in_relaxed_range(self):
+        low, high = (int(v) for v in config.SERVO_IDLE_VISOR_RANGE_QUS)
+        self.assertEqual((low, high), (4770, 5470))
         targets = [body_mood.idle_visor_target(t / 10) for t in range(140)]
         self.assertGreater(max(targets) - min(targets), 300)
-        self.assertEqual(min(targets), 5920)
-        self.assertEqual(max(targets), 6280)
-        self.assertLessEqual(max(targets), config.SERVO_CHANNELS["visor"]["max"])
-        self.assertLess(max(abs(a - b) for a, b in zip(targets, targets[1:])), 20)
+        self.assertEqual(min(targets), low)
+        self.assertEqual(max(targets), high)
+        self.assertLessEqual(max(targets), body_mood.visor_camera_clear_max())
+        # Smooth: a 7 s period over a 350 q-us amplitude moves ~31 q-us per 0.1 s at most.
+        self.assertLess(max(abs(a - b) for a, b in zip(targets, targets[1:])), 40)
         with mock.patch.object(config, "SERVO_IDLE_VISOR_ENABLED", False):
             self.assertIsNone(body_mood.idle_visor_target(1.0))
 
@@ -253,16 +291,45 @@ class ConsciousnessMoodRestBiasTest(unittest.TestCase):
         from intelligence import consciousness as c
         body_mood.set_mood("proud", intensity=1.0, ttl=60)
         with mock.patch.object(config, "BODY_LANGUAGE_MOOD_ENABLED", False):
-            self.assertEqual(c._mood_rest_bias(), (0, 0))
+            self.assertEqual(c._mood_rest_bias(), (0, 0.0))
 
     def test_rest_bias_clamped_to_config_offsets(self):
         from intelligence import consciousness as c
-        # Force an absurdly large head bias; _mood_rest_bias must clamp it.
-        with mock.patch.object(body_mood, "head_bias", return_value=(99999, -99999)):
+        # Force an absurdly large head bias; _mood_rest_bias must clamp it. The pitch
+        # clamp knob is still the old tilt servo's q-us (320) converted to a pitch magnitude.
+        with mock.patch.object(body_mood, "head_bias", return_value=(99999, -99.0)):
             with mock.patch.object(body_mood, "enabled", return_value=True):
-                lift, tilt = c._mood_rest_bias()
+                lift, pitch = c._mood_rest_bias()
         self.assertEqual(lift, int(config.BODY_MOOD_REST_MAX_LIFT_OFFSET_QUS))
-        self.assertEqual(tilt, -int(config.BODY_MOOD_REST_MAX_TILT_OFFSET_QUS))
+        max_pitch = abs(head_pose.pitch_from_legacy_delta(config.BODY_MOOD_REST_MAX_TILT_OFFSET_QUS))
+        self.assertAlmostEqual(pitch, -max_pitch, delta=1e-6)
+        self.assertAlmostEqual(max_pitch, 0.27, delta=0.01)
+        with mock.patch.object(body_mood, "head_bias", return_value=(0, 99.0)):
+            with mock.patch.object(body_mood, "enabled", return_value=True):
+                self.assertAlmostEqual(c._mood_rest_bias()[1], max_pitch, delta=1e-6)
+
+    def test_rest_return_pitches_the_head_pair_with_the_mood(self):
+        # A proud mood (chin up) composes onto the rest pitch: the rest return writes
+        # BOTH head servos together, one capped step toward the biased pitch.
+        from intelligence import consciousness as c
+        body_mood.set_mood("proud", intensity=1.0, ttl=60)
+        servo = mock.Mock()
+        servo.manual_override_enabled.return_value = False
+        servo.speech_motion_active.return_value = False
+        servo.listening_motion_active.return_value = False
+        with mock.patch.object(c, "_current_head_pose", return_value=(0.0, 0.0)), \
+             mock.patch.object(c, "_current_head_pulses", return_value=head_pose.head_pulses(0.0, 0.0)):
+            self.assertTrue(c._step_adaptive_head_rest_return(servo, now=1000.0, lost_age_secs=5.0))
+        updates = servo.set_servos.call_args.args[0]
+        self.assertTrue(set(head_pose.HEAD_PAIR).issubset(updates))
+        pitch, tilt = head_pose.head_pose({ch: updates[ch] for ch in head_pose.HEAD_PAIR})
+        step = abs(head_pose.pitch_from_legacy_delta(config.FACE_TRACKING_REST_RETURN_MAX_STEP_QUS))
+        self.assertGreater(pitch, 0.0)
+        self.assertAlmostEqual(pitch, step, delta=0.01)
+        self.assertAlmostEqual(tilt, 0.0, delta=0.01)
+        kwargs = servo.set_face_tracking_baseline.call_args.kwargs
+        self.assertAlmostEqual(kwargs["pitch"], step, delta=1e-6)
+        self.assertEqual(kwargs["tilt"], 0.0)
 
     def test_rest_return_composes_mood_bias_into_head_target(self):
         from intelligence import consciousness as c
@@ -336,7 +403,9 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
         set_servo.assert_called_once()
         ch, pos = set_servo.call_args.args[0], set_servo.call_args.args[1]
         self.assertEqual(ch, visor_ch)
-        self.assertGreaterEqual(pos, 6100)  # proud opens above neutral
+        # Inverted visor: proud OPENS it, i.e. a lower pulse than the awake neutral (5120).
+        self.assertLess(pos, int(config.SERVO_CHANNELS["visor"]["neutral"]))
+        self.assertGreaterEqual(pos, int(config.SERVO_CHANNELS["visor"]["min"]))
 
     def test_visor_not_touched_during_speech(self):
         from intelligence import consciousness as c
@@ -391,8 +460,8 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
         from intelligence import consciousness as c
         servo = self._servo()
         visor_ch = int(config.SERVO_CHANNELS["visor"]["ch"])
-        floor = int(body_mood.visor_lens_clear_floor())
-        self.assertEqual(floor, 5100)
+        edge = int(body_mood.visor_camera_clear_max())
+        self.assertEqual(edge, 5520)
         relaxed = int(config.SERVO_CHANNELS["visor"]["neutral"])
         breathing = mock.Mock()
         patches = [
@@ -414,7 +483,7 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
                 c._step_mood_expression({}, mock.Mock())
                 self.assertTrue(c._mood_owns_visor)
                 pos = set_servo.call_args.args[1]
-                self.assertGreaterEqual(pos, floor)          # never below the lens floor
+                self.assertLessEqual(pos, edge)              # never past the camera-clear edge
             breathing.assert_any_call("excited")
             breathing.reset_mock()
             # Tick 2: mood gone → relaxed idle, with breathing returned to neutral.
@@ -422,7 +491,7 @@ class ConsciousnessMoodExpressionTest(unittest.TestCase):
             with mock.patch("hardware.servos.set_servo") as set_servo:
                 c._step_mood_expression({}, mock.Mock())
                 set_servo.assert_called_once_with(visor_ch, relaxed)
-                self.assertGreaterEqual(set_servo.call_args.args[1], floor)
+                self.assertLessEqual(set_servo.call_args.args[1], edge)
                 self.assertFalse(c._mood_owns_visor)
             breathing.assert_called_once_with("neutral")
             breathing.reset_mock()

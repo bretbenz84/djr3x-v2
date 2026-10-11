@@ -62,20 +62,19 @@ class ServoSpeechEmotionTests(unittest.TestCase):
             servos._speech_emotion_frame = {}
 
 
-class SpeechVisorFloorTests(unittest.TestCase):
-    """The talking visor may dip to VISOR_SPEECH_FLOOR_QUS (1385 us).
-
-    Its floor used to be the visor's own neutral (1640 us), which sat above six of
-    the ten emotion visor_open_floor_frac values and flattened them all to a single
-    opening — the visor barely moved while Rex talked.
+class SpeechVisorBandTests(unittest.TestCase):
+    """The talking visor lives inside VISOR_SPEECH_RANGE_QUS (October 10: the servo is
+    INVERTED, low pulses are up). An emotion's open fraction sets how far up its
+    resting point sits between the camera-clear down edge (5520) and the fully
+    expressive up edge (4880); the wave opens it further from there. A squint goes
+    DOWN to the camera-clear edge and never past it.
     """
 
-    def _visor_target(self, servos, speech_motion, intensity=0.5):
+    def _visor_target(self, servos, speech_motion, intensity=0.5, jitter=-45):
         """One talking frame's visor target for a given emotion motion profile.
 
-        The per-frame jitter is pinned to its negative extreme to check the clamp; the
-        visor wave still rides the wall clock, so the target lands somewhere in
-        [floor, floor + swing] — which is what these tests bound.
+        The per-frame jitter is pinned to one extreme to check the clamp; the visor
+        wave still rides the wall clock, so the target lands somewhere in the band.
         """
         captured = []
         try:
@@ -87,7 +86,7 @@ class SpeechVisorFloorTests(unittest.TestCase):
             with (
                 mock.patch.object(servos, "SERVOS_ENABLED", True),
                 mock.patch.object(servos, "_program_servo_updates_blocked", return_value=False),
-                mock.patch.object(servos.random, "randint", return_value=-45),
+                mock.patch.object(servos.random, "randint", return_value=jitter),
                 mock.patch.object(servos, "set_servos", side_effect=lambda t: captured.append(dict(t))),
             ):
                 servos.speech_reactive_move(intensity)
@@ -97,53 +96,54 @@ class SpeechVisorFloorTests(unittest.TestCase):
             servos._speech_emotion_frame = {}
             servos._speech_baseline = {}
 
-    def test_a_subdued_emotion_reaches_the_speech_floor(self):
+    def test_a_subdued_emotion_sits_low_in_the_band(self):
         import config
         from hardware import servos
 
-        floor = int(config.VISOR_SPEECH_FLOOR_QUS)
-        self.assertEqual(floor, 5540)                                   # 1385 us
-        self.assertLess(floor, int(config.SERVO_CHANNELS["visor"]["neutral"]))
-
+        up_edge, down_edge = config.VISOR_SPEECH_RANGE_QUS
+        self.assertEqual((up_edge, down_edge), (4880, 5520))
         neutral = int(config.SERVO_CHANNELS["visor"]["neutral"])
-        # A brooding emotion (frac 0.35, narrow swing) rides the floor: the whole
-        # band now sits BELOW the old neutral floor, which is the point.
+        # A brooding emotion (frac 0.35, narrow swing) sits LOWER than the awake visor
+        # (a higher pulse on the inverted servo) but never past the camera-clear edge.
         target = self._visor_target(
             servos, {"visor_open_floor_frac": 0.35, "visor_swing_mult": 0.30}
         )
-        self.assertGreaterEqual(target, floor)
-        self.assertLess(target, neutral - 200)
+        self.assertLessEqual(target, down_edge)
+        self.assertGreater(target, neutral)
 
-    def test_a_wide_eyed_emotion_still_floors_well_above_it(self):
+    def test_a_wide_eyed_emotion_rides_high_in_the_band(self):
         import config
         from hardware import servos
 
         from intelligence import emotion_orchestrator
         target = self._visor_target(servos, emotion_orchestrator.frame_for_emotion("shocked").speech_motion)
-        self.assertGreaterEqual(target, 6700)
-        # frac 0.92 lands above the speech floor, so the emotion's own frac wins and
-        # the visor stays open — the floor never drags an expressive emotion down.
-        self.assertGreater(target, int(config.SERVO_CHANNELS["visor"]["neutral"]))
+        up_edge, _ = config.VISOR_SPEECH_RANGE_QUS
+        self.assertGreaterEqual(target, up_edge)
+        # frac 0.92 opens it well above the awake position (a LOWER pulse).
+        self.assertLess(target, int(config.SERVO_CHANNELS["visor"]["neutral"]))
 
-    def test_angry_speech_reaches_camera_floor_even_with_negative_jitter(self):
+    def test_angry_squint_reaches_the_camera_clear_edge_and_not_past_it(self):
+        import config
         from hardware import servos
         from intelligence import emotion_orchestrator
         motion = emotion_orchestrator.frame_for_emotion("angry").speech_motion
         with mock.patch.object(servos.math, "sin", return_value=-1):
-            target = self._visor_target(servos, motion)
-        self.assertEqual(target, 5100)
+            target = self._visor_target(servos, motion, jitter=45)
+        self.assertEqual(target, int(config.VISOR_CAMERA_CLEAR_MAX_QUS))
+        self.assertEqual(target, 5520)
 
-    def test_a_capture_opens_the_visor_above_the_camera_clear_floor(self):
+    def test_a_capture_lifts_the_visor_above_the_speaking_band(self):
         import config
         from vision import camera
 
         visor_cfg = config.SERVO_CHANNELS["visor"]
         target = camera._visor_capture_target(visor_cfg)
-        # A picture must never be taken through the expressive floor.
-        self.assertEqual(target, 1680 * 4)
-        self.assertGreaterEqual(target, int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS))
-        self.assertGreater(target, int(config.VISOR_SPEECH_FLOOR_QUS))
-        self.assertEqual(int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS), 5100)   # 1275 us
+        # A picture must never be taken through the expressive band (inverted: a
+        # LOWER pulse is further up).
+        self.assertEqual(target, 1200 * 4)
+        self.assertLess(target, int(config.VISOR_CAMERA_CLEAR_MAX_QUS))
+        self.assertLess(target, int(config.VISOR_SPEECH_RANGE_QUS[0]))
+        self.assertEqual(int(config.VISOR_CAMERA_CLEAR_MAX_QUS), 5520)   # 1380 us, mirrored
 
 
 if __name__ == "__main__":

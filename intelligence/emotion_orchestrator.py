@@ -175,7 +175,6 @@ _PROFILES: dict[str, dict[str, Any]] = {
             "lift_bias_qus": 260.0,
             "tilt_bias_qus": -120.0,
             "visor_open_floor_frac": 0.92,
-            "visor_offset_qus": 0.0,  # surprise keeps its full wide-eyed range
             "visor_swing_mult": 0.80,
             "head_speed_mult": 1.35,
             "arm_speed_mult": 1.05,
@@ -223,9 +222,10 @@ _PROFILES: dict[str, dict[str, Any]] = {
             "hand_amp_mult": 0.80,
             "lift_bias_qus": 90.0,
             "tilt_bias_qus": 140.0,
-            "visor_open_floor_frac": 0.20,
-            "visor_floor_qus": 5100.0,
-            "visor_offset_qus": 0.0,  # preserve the calibrated emotional squint
+            # The angry squint: the visor's resting point is the camera-clear edge
+            # itself (inverted servo since October 10: the LOWEST the visor may sit),
+            # the wave opening it a little from there and never past it.
+            "visor_open_floor_frac": 0.0,
             "visor_swing_mult": 0.55,
             "head_speed_mult": 1.45,
             "arm_speed_mult": 1.25,

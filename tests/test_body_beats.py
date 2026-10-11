@@ -18,7 +18,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
         snapshot = {
             0: animations.NECK_CENTER,
             1: animations.HEADLIFT_NEUTRAL,
-            2: animations.HEADTILT_NEUTRAL,
+            **animations.HEAD_LEVEL_PAIR,
             3: animations.VISOR_HALF,
             4: animations.ELBOW_NEUTRAL,
             5: animations.HAND_NEUTRAL,
@@ -44,7 +44,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
 
         self.assertEqual(animations.NECK_CENTER, expected_midpoint)
 
-    def test_offended_recoil_uses_inverted_upward_headtilt(self):
+    def test_offended_recoil_pitches_the_head_up_on_both_servos(self):
         from sequences import animations
 
         moves = []
@@ -55,7 +55,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
         snapshot = {
             0: animations.NECK_CENTER,
             1: animations.HEADLIFT_NEUTRAL,
-            2: animations.HEADTILT_NEUTRAL,
+            **animations.HEAD_LEVEL_PAIR,
             3: animations.VISOR_HALF,
             4: animations.ELBOW_NEUTRAL,
             5: animations.HAND_NEUTRAL,
@@ -75,15 +75,20 @@ class BodyBeatAnimationTest(unittest.TestCase):
 
         first_move = moves[0]
         self.assertEqual(first_move[1], animations.HEADLIFT_HIGH)
-        self.assertEqual(first_move[2], animations.HEADTILT_UP)
-        self.assertLess(first_move[2], animations.HEADTILT_NEUTRAL)
+        from hardware import head_pose
+        pitch, tilt = head_pose.head_pose({2: first_move[2], 11: first_move[11]})
+        self.assertAlmostEqual(pitch, animations.PITCH_UP, places=1)   # chin up
+        self.assertAlmostEqual(tilt, 0.0, places=1)                      # the cock is kept (straight)
         self.assertEqual(first_move[3], animations.VISOR_OPEN)
 
     def test_visor_squint_reaches_camera_clear_boundary(self):
+        # Inverted visor (October 10): a squint LOWERS the visor, i.e. a HIGHER pulse,
+        # down to the mirrored camera-clear edge (1380 us) and never past it.
         from sequences import animations
-        self.assertEqual(animations.VISOR_SQUINT, 1275 * 4)
-        self.assertLess(animations.VISOR_SQUINT, animations.VISOR_NEUTRAL)
-        self.assertGreater(animations.VISOR_SQUINT, animations.VISOR_CLOSED)
+        self.assertEqual(animations.VISOR_SQUINT, 1380 * 4)
+        self.assertGreater(animations.VISOR_SQUINT, animations.VISOR_NEUTRAL)
+        self.assertLess(animations.VISOR_SQUINT, animations.VISOR_CLOSED)
+        self.assertLess(animations.VISOR_OPEN, animations.VISOR_NEUTRAL)
 
     def test_anger_flash_drops_visor_over_the_eyes(self):
         # The beat insults route to (anger_flash) must drop the visor DOWN to the
@@ -98,7 +103,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
         snapshot = {
             0: animations.NECK_CENTER,
             1: animations.HEADLIFT_NEUTRAL,
-            2: animations.HEADTILT_NEUTRAL,
+            **animations.HEAD_LEVEL_PAIR,
             3: animations.VISOR_HALF,
             4: animations.ELBOW_NEUTRAL,
             5: animations.HAND_NEUTRAL,
@@ -118,7 +123,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
 
         first_move = moves[0]
         self.assertEqual(first_move[3], animations.VISOR_SQUINT)        # visor dropped to the squint
-        self.assertLess(first_move[3], animations.VISOR_HALF)           # below the lens-clear floor
+        self.assertGreater(first_move[3], animations.VISOR_HALF)        # lower than relaxed (inverted servo)
 
     def test_named_body_beats_are_registered(self):
         from sequences import animations
@@ -145,6 +150,10 @@ class BodyBeatAnimationTest(unittest.TestCase):
                 "double_take",
                 "mic_drop",
                 "spit_take",
+                "head_tilt",
+                "perplexed",
+                "head_wiggle",
+                "sympathetic",
             },
         )
 
@@ -159,7 +168,7 @@ class BodyBeatAnimationTest(unittest.TestCase):
         snapshot = {
             0: animations.NECK_CENTER,
             1: animations.HEADLIFT_NEUTRAL,
-            2: animations.HEADTILT_NEUTRAL,
+            **animations.HEAD_LEVEL_PAIR,
             3: animations.VISOR_HALF,
         }
 
@@ -173,8 +182,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
 
         first_move = moves[0]
         self.assertEqual(first_move[1], animations.HEADLIFT_HIGH)
-        # The heavy head must NOT be whipped on the tilt rod for surprise — the
-        # pop is expressed by full lift + full visor with the headtilt parked.
+        # The heavy head is not whipped for surprise — the pop is expressed by full
+        # lift + the visor thrown fully up, the head pair staying where it was.
         self.assertNotIn(2, first_move)
         self.assertEqual(first_move[3], animations.VISOR_OPEN)
 
@@ -340,8 +349,9 @@ class BodyBeatAnimationTest(unittest.TestCase):
             moves[1],
             {
                 0: animations.NECK_CENTER,
-                1: animations.HEADLIFT_FLOOR,
-                2: animations.HEADTILT_DOWN,
+                1: animations.SHUTDOWN_REST_POSE[1],
+                2: animations.HEAD_DOWN_PAIR[2],
+                11: animations.HEAD_DOWN_PAIR[11],
                 # Re-asserted so a racing end_speech_motion can't leave it open
                 # (field 2026-08-13).
                 3: animations.VISOR_CLOSED,
@@ -372,21 +382,26 @@ class BodyBeatAnimationTest(unittest.TestCase):
             animations.shutdown()
 
         stop_breathing.assert_called_once()
-        # Visor, neck, head-lift, head-tilt and the elbow all travel together in ONE
-        # move_to so the droid powers down in a single motion (not visor→tilt→lift).
-        # The elbow lands at ELBOW_REST — where the limp arm falls once the power is
-        # off — so the next cold boot's first elbow target matches the arm.
+        # Visor, neck, head-lift, both head servos and the elbow all travel together
+        # in ONE move_to so the droid powers down in a single motion. The elbow lands
+        # at ELBOW_REST — where the limp arm falls once the power is off — so the next
+        # cold boot's first elbow target matches the arm; the head pair lands fully
+        # down (the owner's 1013/1904 us reading). The poker arm parks on its own
+        # staged thread (move_poker), not in this glide.
         self.assertEqual(len(moves), 1)
         self.assertEqual(
             moves[0],
             {
                 3: animations.VISOR_CLOSED,
                 0: expected_midpoint,
-                1: animations.HEADLIFT_FLOOR,
-                2: animations.HEADTILT_DOWN,
+                1: animations.SHUTDOWN_REST_POSE[1],
+                2: animations.HEAD_DOWN_PAIR[2],
+                11: animations.HEAD_DOWN_PAIR[11],
                 4: animations.ELBOW_REST,
             },
         )
+        self.assertEqual(moves[0][3], 6976)                   # visor DOWN (inverted servo)
+        self.assertEqual((moves[0][2], moves[0][11]), (4052, 7616))
         # Shutdown fades the LEDs out (lifelike power-down), not an instant off.
         head_fade_off.assert_called_once()
         chest_fade_off.assert_called_once()
@@ -407,8 +422,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
         move_to.assert_called_once_with(
             {
                 1: animations.HEADLIFT_NEUTRAL,
-                2: animations.HEADTILT_NEUTRAL,
-                3: animations.VISOR_HALF,
+                **animations.HEAD_LEVEL_PAIR,
+                3: animations.VISOR_NEUTRAL,
             },
             step_us=35,
             step_delay=0.02,
@@ -424,9 +439,9 @@ class BodyBeatAnimationTest(unittest.TestCase):
         from sequences import animations
 
         first = self._play_and_capture("eye_roll")[0]
-        self.assertEqual(first[3], animations.VISOR_OPEN)       # brow-lift
-        self.assertEqual(first[2], animations.HEADTILT_UP)      # look up
-        self.assertLess(first[2], animations.HEADTILT_NEUTRAL)  # (inverted: up = lower value)
+        self.assertEqual(first[3], animations.VISOR_OPEN)       # brow-lift (visor thrown up)
+        from hardware import head_pose
+        self.assertAlmostEqual(head_pose.head_pose({2: first[2], 11: first[11]})[0], animations.PITCH_UP, places=1)
 
     def test_double_take_glances_away_then_snaps_back_with_visor_pop(self):
         from sequences import animations
@@ -528,9 +543,18 @@ class ElbowUnpoweredRestTest(unittest.TestCase):
             for raw in fake.writes
             if raw[0] == 0x84   # Set Target
         ]
-        # Exactly one target on connect: the elbow, at gravity's own position. Any
-        # other first target would be a snap from wherever the limp arm fell.
-        self.assertEqual(targets, [(4, config.servo_rest_position("elbow"))])
+        # The first targets on connect are the unpowered rests of every weight-loaded
+        # channel that reads OFF (the fake board answers nothing, so all of them): the
+        # hero elbow at gravity's position, the head pair fully down, the poker
+        # elbow/wrist at their park. Any other first target would be a snap from
+        # wherever the limp joint fell.
+        self.assertEqual(dict(targets), {
+            4: config.servo_rest_position("elbow"),
+            2: config.servo_rest_position("head_left"),
+            11: config.servo_rest_position("head_right"),
+            12: config.servo_rest_position("poker_elbow"),
+            13: config.servo_rest_position("poker_wrist"),
+        })
         # ...and it lands AFTER the speed/acceleration profile, so every later move
         # is ramped from a position the Maestro and the arm agree on.
         self.assertEqual(fake.writes[-1][0], 0x84)

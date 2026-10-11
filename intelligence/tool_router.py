@@ -143,7 +143,12 @@ _TOOL_DEFS: dict[str, tuple[str, dict, list]] = {
     # that declines rather than performing the default.
     "performance.body_beat": (
         "A request for ONE named physical gesture — pick a beat from the enum, "
-        "and if nothing listed fits, call no tool rather than inventing a name.",
+        "and if nothing listed fits, call no tool rather than inventing a name. "
+        "The head can cock to a side now: head_tilt (one cock, a question or mild "
+        "interest), perplexed (the dog's double cock, something does not add up), "
+        "head_wiggle (three quick cocks, playful), sympathetic (one slow cock held, "
+        "head a touch down, tenderness or bad news). Use them sparingly; most lines "
+        "carry no gesture.",
         {"body_beat": {"type": "string", "enum": _BODY_BEATS,
                        "description": "the beat to perform"}},
         ["body_beat"]),

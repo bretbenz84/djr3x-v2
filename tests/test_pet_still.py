@@ -22,7 +22,7 @@ class HeadHoldTests(unittest.TestCase):
         ):
             self.stack.enter_context(patch)
         self.positions = {config.SERVO_CHANNELS[n]["ch"]: config.SERVO_CHANNELS[n]["neutral"]
-                          for n in ("neck", "headlift", "headtilt")}
+                          for n in ("neck", "headlift", "head_left", "head_right")}
         self.stack.enter_context(mock.patch.object(S, "get_servo", side_effect=self.positions.get))
         self.wire = self.stack.enter_context(mock.patch.object(S, "_send_command_locked", return_value=True))
 

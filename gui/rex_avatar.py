@@ -21,10 +21,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
 import config
+from gui.avatar_rig import pitch_norm, tilt_norm
+from hardware import head_pose
 
 
 def normalize_servo(channel_or_name, value) -> float:
-    """Normalize a servo value to 0.0..1.0 using config.SERVO_CHANNELS."""
+    """Normalize a servo value to 0.0..1.0 using config.SERVO_CHANNELS.
+
+    The visor servo runs inverted since the October 10 2026 rework (low pulses raise
+    it), so its norm is ``head_pose.visor_frac``: 0 stays "closed over the lens" and 1
+    "fully up", exactly what the rig and the dashboard have always meant by it."""
     name = _servo_name(channel_or_name)
     if name is None:
         return 0.5
@@ -37,7 +43,32 @@ def normalize_servo(channel_or_name, value) -> float:
         raw = float(value)
     except (TypeError, ValueError):
         raw = float(cfg["neutral"])
+    if name == "visor":
+        return head_pose.visor_frac(int(round(raw)))
     return max(0.0, min(1.0, (raw - lo) / (hi - lo)))
+
+
+def head_norms(positions, pose=None) -> dict[str, float]:
+    """The rig's ``head_pitch`` / ``head_tilt`` norms for a reported head.
+
+    ``pose`` is the runtime's decoded ``self_state["head_pose"]`` when it has one;
+    otherwise the two head pulses (by servo name) are decoded here with
+    ``head_pose.head_pose``. Returns {} when neither is available, so a caller keeps
+    whatever it was showing (the boot pose must not snap to level)."""
+    if isinstance(pose, dict) and "pitch" in pose and "tilt" in pose:
+        return {"head_pitch": pitch_norm(pose["pitch"]), "head_tilt": tilt_norm(pose["tilt"])}
+    positions = positions or {}
+    if "head_left" in positions and "head_right" in positions:
+        try:
+            pair = {
+                head_pose.HEAD_LEFT_CH: int(positions["head_left"]),
+                head_pose.HEAD_RIGHT_CH: int(positions["head_right"]),
+            }
+        except (TypeError, ValueError):
+            return {}
+        pitch, tilt = head_pose.head_pose(pair)
+        return {"head_pitch": pitch_norm(pitch), "head_tilt": tilt_norm(tilt)}
+    return {}
 
 
 class RexAvatar(QWidget):
@@ -106,6 +137,8 @@ class RexAvatar(QWidget):
         for name in config.SERVO_CHANNELS:
             if name in positions:
                 self._target[name] = normalize_servo(name, positions[name])
+        # The rig draws the head from a pitch and a tilt, not from the two servos.
+        self._target.update(head_norms(positions, self_state.get("head_pose")))
         eye_state = snapshot.get("head_led_state") or {}
         if eye_state:
             self._eye_state.update(eye_state)
@@ -296,15 +329,18 @@ def chest_render_state(state: dict[str, Any], now: float) -> dict[str, Any]:
 
 
 def _neutral_norms() -> dict[str, float]:
-    return {
+    norms = {
         name: normalize_servo(name, cfg["neutral"])
         for name, cfg in config.SERVO_CHANNELS.items()
     }
+    norms.update(head_norms({name: cfg["neutral"] for name, cfg in config.SERVO_CHANNELS.items()}))
+    return norms
 
 
 def _boot_norms() -> dict[str, float]:
     """Powered-off pose: neutral everywhere except the visor, which is rolled fully
-    down over the face (servo min → norm 0.0) exactly like the real robot at rest."""
+    down over the face (norm 0.0 — the servo's MAX pulse since it runs inverted)
+    exactly like the real robot at rest."""
     norms = _neutral_norms()
     norms["visor"] = 0.0
     return norms

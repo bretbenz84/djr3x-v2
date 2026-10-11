@@ -3,6 +3,13 @@ Pololu Maestro Mini 18 servo controller.
 
 All operations are no-ops (with a debug log) when SERVOS_ENABLED is False.
 Channel numbers, limits, and neutral positions come from config.py.
+
+October 10 2026 rework (see hardware/head_pose.py): the head rides on TWO servos
+(channels 2 and 11) that must always be commanded together as a pitch and a tilt,
+the poker arm has a coupled elbow/wrist pair (12/13) with a measured clearance
+ceiling that is moved in stages, and the visor runs inverted. Every public write
+in this module refuses a lone head or poker channel, and a head pair that no
+pitch/tilt explains, before anything reaches the wire.
 """
 
 import logging
@@ -16,7 +23,7 @@ from contextlib import contextmanager
 import serial
 
 import config
-from hardware import throttle_motion
+from hardware import head_pose, throttle_motion
 from utils.config_loader import MAESTRO_PORT, SERVOS_ENABLED
 
 _log = logging.getLogger(__name__)
@@ -27,6 +34,9 @@ _CMD_SET_SPEED = 0x87
 _CMD_SET_ACCEL = 0x89
 _CMD_GET_POSITION = 0x90
 
+HEAD_PAIR = head_pose.HEAD_PAIR
+POKER_PAIR = head_pose.POKER_PAIR
+
 _ser: "serial.Serial | None" = None
 _lock = threading.Lock()
 _CHANNEL_TO_NAME = {
@@ -35,11 +45,16 @@ _CHANNEL_TO_NAME = {
 }
 _ALL_CHANNELS = sorted(_CHANNEL_TO_NAME)
 _commanded_positions: dict[int, int] = {
-    # A channel with an unpowered "rest" (the elbow) starts there, not at neutral:
-    # with the robot powered off that is physically where it is.
+    # A channel with an unpowered "rest" (the elbow, the head pair, the poker
+    # elbow/wrist) starts there, not at neutral: with the robot powered off that
+    # is physically where it is.
     cfg["ch"]: cfg.get("rest", cfg["neutral"])
     for cfg in config.SERVO_CHANNELS.values()
 }
+# The staged poker elbow/wrist move runs on its own thread when a caller cannot
+# wait; one at a time, and a newer request supersedes an older one.
+_poker_lock = threading.Lock()
+_poker_generation = 0
 _last_reconnect_attempt_at = 0.0
 _manual_override = threading.Event()
 _shutdown_latch = threading.Event()   # power-down pose reached — servos frozen
@@ -70,7 +85,7 @@ def hold_head_for_photo(duration: float = 2.0):
     if _photo_hold and time.monotonic() < _photo_hold[0]:
         raise RuntimeError("Photo capture already holds the head")
     targets = {}
-    for name in ("neck", "headlift", "headtilt"):
+    for name in ("neck", "headlift", "head_left", "head_right"):
         ch = config.SERVO_CHANNELS[name]["ch"]
         position = get_servo(ch)
         if position is None or position <= 0:
@@ -186,7 +201,12 @@ def begin_head_gesture(channels: "list[int] | tuple[int, ...] | None" = None) ->
     """
     global _scripted_head_channels
     selected = config.HEAD_CHANNELS if channels is None else channels
-    _scripted_head_channels = {int(ch) for ch in selected}
+    owned = {int(ch) for ch in selected}
+    # The two head servos are one unit: holding one holds the other, or the next
+    # talking tick would write a lone channel and be refused.
+    if owned.intersection(HEAD_PAIR):
+        owned.update(HEAD_PAIR)
+    _scripted_head_channels = owned
     _scripted_head_gesture.set()
 
 
@@ -275,11 +295,33 @@ def _channel(name: str) -> int:
     return int(config.SERVO_CHANNELS[name]["ch"])
 
 
+def _channel_neutral(channel: int) -> int:
+    cfg = _channel_cfg(channel)
+    return int(cfg["neutral"]) if cfg else 6000
+
+
 def _clamp(channel: int, position: int) -> int:
     cfg = _channel_cfg(channel)
     if cfg is None:
         return position
     return max(cfg["min"], min(cfg["max"], position))
+
+
+def _validate_pairs(targets: "dict[int, int]") -> None:
+    """Refuse a lone head or poker channel, a head pair outside the linkage's
+    envelope, or a poker pair above its clearance ceiling. Raises ValueError."""
+    head_pose.validate_head_pair(targets)
+    head_pose.validate_poker_pair(targets)
+
+
+def _complete_poker_pair(targets: "dict[int, int]") -> "dict[int, int]":
+    """A lone poker elbow or wrist takes its partner from the current command."""
+    present = set(POKER_PAIR).intersection(targets)
+    if present and present != set(POKER_PAIR):
+        with _lock:
+            for ch in POKER_PAIR:
+                targets.setdefault(ch, int(_commanded_positions.get(ch, _channel_neutral(ch))))
+    return targets
 
 
 def _encode(cmd: int, channel: int, value: int) -> bytes:
@@ -359,42 +401,74 @@ def _automatic_motion_allowed() -> bool:
 
 
 def _default_head_pose() -> dict[int, int]:
-    return {
+    """Neck and lift at neutral, the head pair level and straight."""
+    pose = {
         _channel("neck"): config.SERVO_CHANNELS["neck"]["neutral"],
         _channel("headlift"): config.SERVO_CHANNELS["headlift"]["neutral"],
-        _channel("headtilt"): config.SERVO_CHANNELS["headtilt"]["neutral"],
     }
+    pose.update(head_pose.head_pulses(0.0, 0.0))
+    return pose
 
 
 _face_tracking_baseline.update(_default_head_pose())
 
 
+def _head_pair_pose(positions: "dict") -> "tuple[float, float]":
+    """(pitch, tilt) of a name-keyed or channel-keyed position mapping; level and
+    straight when the pair is not fully known."""
+    pair = {}
+    for ch in HEAD_PAIR:
+        value = positions.get(ch, positions.get(_CHANNEL_TO_NAME.get(ch)))
+        if value is None:
+            return 0.0, 0.0
+        pair[ch] = int(value)
+    try:
+        return head_pose.head_pose(pair)
+    except Exception:
+        return 0.0, 0.0
+
+
+def commanded_positions() -> "dict[int, int]":
+    """A copy of the last pulse commanded (or read back at connect) per channel."""
+    with _lock:
+        return dict(_commanded_positions)
+
+
+def commanded_head_pose() -> "tuple[float, float]":
+    """The (pitch, tilt) the head pair was last commanded to."""
+    with _lock:
+        pair = {ch: _commanded_positions.get(ch) for ch in HEAD_PAIR}
+    return _head_pair_pose(pair)
+
+
 def _derive_body_state(positions: dict) -> str:
     neck_cfg = config.SERVO_CHANNELS["neck"]
     lift_cfg = config.SERVO_CHANNELS["headlift"]
-    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
 
     neck = positions.get("neck", neck_cfg["neutral"])
     lift = positions.get("headlift", lift_cfg["neutral"])
-    tilt = positions.get("headtilt", tilt_cfg["neutral"])
+    pitch, _tilt = _head_pair_pose(positions)
 
     neck_dead = 450
     lift_dead = 450
-    tilt_dead = 250
+    pitch_dead = 0.25
     if neck <= neck_cfg["neutral"] - neck_dead:
         return "looking_left"
     if neck >= neck_cfg["neutral"] + neck_dead:
         return "looking_right"
-    # Headtilt is inverted: lower value = looking up, higher value = looking down.
-    if lift >= lift_cfg["neutral"] + lift_dead or tilt <= tilt_cfg["neutral"] - tilt_dead:
+    if lift >= lift_cfg["neutral"] + lift_dead or pitch >= pitch_dead:
         return "looking_up"
-    if lift <= lift_cfg["neutral"] - lift_dead or tilt >= tilt_cfg["neutral"] + tilt_dead:
+    if lift <= lift_cfg["neutral"] - lift_dead or pitch <= -pitch_dead:
         return "looking_down"
     return "neutral"
 
 
 def _record_servo_positions(channel_dict: "dict[int, int]") -> None:
-    """Mirror commanded servo positions into WorldState proprioception."""
+    """Mirror commanded servo positions into WorldState proprioception.
+
+    Besides the raw pulses by channel name, publishes ``self_state["head_pose"]``
+    (pitch and tilt of the two-servo head) so behaviour code never has to read the
+    two head channels and fit them itself."""
     channel_dict = {ch: _voice_hold_position(ch, pos) for ch, pos in channel_dict.items()}
     updates = {
         _CHANNEL_TO_NAME[ch]: _clamp(ch, int(pos))
@@ -411,6 +485,8 @@ def _record_servo_positions(channel_dict: "dict[int, int]") -> None:
         positions.update(updates)
         self_state["servo_positions"] = positions
         self_state["body_state"] = _derive_body_state(positions)
+        pitch, tilt = _head_pair_pose(positions)
+        self_state["head_pose"] = {"pitch": round(pitch, 3), "tilt": round(tilt, 3)}
         world_state.update("self_state", self_state)
     except Exception as exc:
         _log.debug("servo proprioception update failed: %s", exc)
@@ -520,18 +596,29 @@ def set_manual_servo(channel: int, position: int) -> bool:
         return False
     channel = int(channel)
     _require_independent_channels([channel])
-    position = _clamp(channel, int(position))
+    targets = {channel: _clamp(channel, int(position))}
+    # The GUI drives one slider at a time, but the head servos and the poker
+    # elbow/wrist only ever move as pairs: fill the partner from where it is and
+    # refuse a pair the linkage cannot take, rather than driving one servo alone.
+    for pair in (HEAD_PAIR, POKER_PAIR):
+        if channel in pair:
+            with _lock:
+                for other in pair:
+                    targets.setdefault(other, int(_commanded_positions.get(other, _channel_neutral(other))))
+    try:
+        _validate_pairs(targets)
+    except ValueError as exc:
+        _log.warning("manual servo move refused: %s", exc)
+        return False
     with _lock:
         if SERVOS_ENABLED:
-            _send_set_target(channel, position)
-        _remember_positions({channel: position})
-        if channel in {
-            _channel("neck"),
-            _channel("headlift"),
-            _channel("headtilt"),
-        }:
-            _face_tracking_baseline[channel] = position
-    _record_servo_positions({channel: position})
+            for ch, pos in targets.items():
+                _send_set_target(ch, pos)
+        _remember_positions(targets)
+        for ch, pos in targets.items():
+            if ch in (_channel("neck"), _channel("headlift"), *HEAD_PAIR):
+                _face_tracking_baseline[ch] = pos
+    _record_servo_positions(targets)
     return True
 
 
@@ -633,35 +720,66 @@ def _apply_startup_motion_profile_locked() -> None:
         _send_command_locked(_encode(_CMD_SET_SPEED, channel, max(0, default_speed)))
 
 
+def _read_position_locked(channel: int) -> "int | None":
+    """GET POSITION under the caller's lock; None when the link cannot answer."""
+    if not _send_command_locked(bytes([_CMD_GET_POSITION, channel])):
+        return None
+    if _ser is None or not getattr(_ser, "is_open", False):
+        return None
+    try:
+        data = _ser.read(2)
+    except Exception:
+        return None
+    if not data or len(data) < 2:
+        return None
+    return struct.unpack("<H", data)[0]
+
+
 def _assert_startup_rest_pose_locked() -> dict[int, int]:
-    """Command gravity's own pose on weight-loaded channels, first thing.
+    """Command gravity's own pose on weight-loaded channels that are OFF, first thing.
 
-    With the robot fully powered off every servo goes limp and the arm falls,
-    landing the ELBOW at config's "rest". The Maestro's speed/acceleration
-    limits ramp the pulse it SENDS, not the shaft it can't
-    see: after a cold boot the channel is off (a position read returns 0), so
-    whatever target is commanded first is a step change the servo chases at full
-    torque, from wherever the arm actually fell. That is the violent elbow jerk
-    on startup (field 2026-08-22).
+    With the robot fully powered off every servo goes limp: the hero arm falls to
+    its elbow "rest", the head hangs fully down on its two servos, and the poker
+    arm stands at its park. The Maestro's speed/acceleration limits ramp the pulse
+    it SENDS, not the shaft it can't see: after a cold boot the channel is off (a
+    position read returns 0), so whatever target is commanded first is a step
+    change the servo chases at full torque, from wherever the joint actually is.
+    That is the violent elbow jerk on startup (field 2026-08-22) and the poker arm
+    dropping at the first October 10 start (an assumed elbow-down rest).
 
-    So the first thing we ever say to that channel is "stay where you are."
-    Every later move then ramps from a position the Maestro and the physical arm
-    agree on. Returns the pose commanded, for the caller to mirror into
-    proprioception outside the lock.
+    So the first thing we ever say to an off channel is "stay where you are."
+    Every later move then ramps from a position the Maestro and the physical joint
+    agree on. A channel that still reads a live pulse (the program restarted with
+    the servos powered) keeps that reading instead — commanding its rest would be
+    the very jump this avoids. Returns the pose commanded, for the caller to mirror
+    into proprioception outside the lock.
     """
-    pose = {
-        int(cfg["ch"]): _clamp(int(cfg["ch"]), int(cfg["rest"]))
-        for cfg in config.SERVO_CHANNELS.values()
-        if "rest" in cfg
-    }
+    pose: dict[int, int] = {}
+    live: dict[int, int] = {}
+    for cfg in config.SERVO_CHANNELS.values():
+        if "rest" not in cfg:
+            continue
+        channel = int(cfg["ch"])
+        reading = _read_position_locked(channel)
+        if reading:
+            live[channel] = _clamp(channel, int(reading))
+        else:
+            pose[channel] = _clamp(channel, int(cfg["rest"]))
     for channel, position in pose.items():
         _send_set_target(channel, position)
     _remember_positions(pose)
+    _remember_positions(live)
     if pose:
         _log.info(
-            "Startup rest pose asserted (unpowered-rest channels): %s",
+            "Startup rest pose asserted (off channels): %s",
             ", ".join(f"{_CHANNEL_TO_NAME.get(ch, ch)}={pos}" for ch, pos in sorted(pose.items())),
         )
+    if live:
+        _log.info(
+            "Startup kept live readings (powered channels): %s",
+            ", ".join(f"{_CHANNEL_TO_NAME.get(ch, ch)}={pos}" for ch, pos in sorted(live.items())),
+        )
+    pose.update(live)
     return pose
 
 
@@ -836,10 +954,17 @@ def _remember_positions(channel_dict: "dict[int, int]") -> None:
 
 
 def set_servo(channel: int, position: int) -> None:
-    """Move channel to position (quarter-microseconds), clamped to channel limits."""
+    """Move channel to position (quarter-microseconds), clamped to channel limits.
+
+    The head servos (2/11) and the poker elbow/wrist (12/13) never move alone: use
+    set_servos with both, set_head_pose, or move_poker. A lone poker channel is
+    completed from its partner's current command; a lone head channel is refused."""
     if _program_servo_updates_blocked():
         return
     _require_independent_channels([channel])
+    if channel in HEAD_PAIR or channel in POKER_PAIR:
+        set_servos({channel: int(position)})
+        return
     position = _clamp(channel, _voice_hold_position(channel, position))
     if not SERVOS_ENABLED:
         _log.debug("set_servo no-op: SERVOS_ENABLED=False (ch=%d pos=%d)", channel, position)
@@ -925,11 +1050,26 @@ def get_servo(channel: int) -> "int | None":
         return struct.unpack("<H", data)[0]
 
 
-def set_servos(channel_dict: "dict[int, int]") -> None:
-    """Set multiple channels in one pass. channel_dict maps channel int → position."""
-    if _program_servo_updates_blocked():
+def set_servos(channel_dict: "dict[int, int]", *, parking: bool = False) -> None:
+    """Set multiple channels in one pass. channel_dict maps channel int → position.
+
+    Head channels 2 and 11 must both be present and form a pair the linkage can take
+    (ValueError otherwise). The poker elbow/wrist are completed from their current
+    command when one is missing, checked against the clearance ceiling, and routed
+    through the staged move (one joint at a time) on a background thread; the other
+    channels are sent at once. ``parking`` lets the shutdown/sleep park finish after
+    the pose latch, like the throttle's own park path."""
+    if _program_servo_updates_blocked() and not (parking and not _manual_override.is_set()):
         return
     _require_independent_channels(channel_dict)
+    channel_dict = _complete_poker_pair({int(ch): int(pos) for ch, pos in channel_dict.items()})
+    _validate_pairs(channel_dict)
+    poker = {ch: channel_dict.pop(ch) for ch in POKER_PAIR if ch in channel_dict}
+    if poker:
+        move_poker(poker[head_pose.POKER_ELBOW_CH], poker[head_pose.POKER_WRIST_CH],
+                   block=False, parking=parking)
+    if not channel_dict:
+        return
     channel_dict = {ch: _clamp(ch, int(_voice_hold_position(ch, pos))) for ch, pos in channel_dict.items()}
     if not SERVOS_ENABLED:
         _log.debug("set_servos no-op: SERVOS_ENABLED=False")
@@ -943,6 +1083,132 @@ def set_servos(channel_dict: "dict[int, int]") -> None:
             _send_set_target(channel, position)
         _remember_positions(channel_dict)
     _record_servo_positions(channel_dict)
+
+
+def set_head_pose(
+    pitch: "float | None" = None,
+    tilt: "float | None" = None,
+    *,
+    lift: "int | None" = None,
+    neck: "int | None" = None,
+) -> dict[int, int]:
+    """Command the two-servo head as a pitch (-1 down .. 1 up) and a tilt (-1 cocked to
+    Rex's left .. 1 right), keeping whichever axis is left out where it is; optional
+    lift/neck pulses ride in the same write. Returns the targets sent."""
+    pitch0, tilt0 = commanded_head_pose()
+    targets = head_pose.head_pulses(pitch0 if pitch is None else pitch, tilt0 if tilt is None else tilt)
+    if lift is not None:
+        targets[_channel("headlift")] = int(lift)
+    if neck is not None:
+        targets[_channel("neck")] = int(neck)
+    set_servos(targets)
+    return targets
+
+
+def _poker_stage_seconds(stage: "dict[int, int]", current: "dict[int, int]", speed: int) -> float:
+    """Time for the Maestro to glide one stage: speed units are 100 q-us per second."""
+    travel = max(abs(int(stage[ch]) - int(current.get(ch, stage[ch]))) for ch in POKER_PAIR)
+    return travel / (max(1, int(speed)) * 100.0) + 0.15
+
+
+def move_poker(
+    elbow: int,
+    wrist: int,
+    *,
+    speed: int = 20,
+    acceleration: int = 5,
+    block: bool = True,
+    parking: bool = False,
+) -> bool:
+    """Move the poker elbow (12) and wrist (13) together to a clear pose, in stages.
+
+    The elbow can rise fully only while the wrist is at or below 1564 us; curled further
+    in, the wrist meets the arm and the elbow's ceiling falls. The target pair is checked
+    against the measured ceiling before anything moves (ValueError when it collides), and
+    the path is staged one joint at a time — elbow down to the lower of the current and
+    target elbow, then the wrist, then the elbow up — so the ceiling is never crossed on
+    the way. With ``block`` the caller waits for the glide; otherwise the stages run on a
+    background thread and a newer request supersedes an older one. Returns True when the
+    final stage was sent."""
+    global _poker_generation
+    target = {head_pose.POKER_ELBOW_CH: _clamp(head_pose.POKER_ELBOW_CH, int(elbow)),
+              head_pose.POKER_WRIST_CH: _clamp(head_pose.POKER_WRIST_CH, int(wrist))}
+    head_pose.validate_poker_pair(target)
+    if _program_servo_updates_blocked() and not (parking and not _manual_override.is_set()):
+        return False
+    with _lock:
+        start = {ch: int(_commanded_positions.get(ch, _channel_neutral(ch))) for ch in POKER_PAIR}
+    if not head_pose.poker_clear(start):
+        # A reading the ceiling does not explain (a board restart, a manual pose):
+        # drop the elbow first, from where the wrist says it may be.
+        start[head_pose.POKER_ELBOW_CH] = min(start[head_pose.POKER_ELBOW_CH],
+                                              head_pose.poker_elbow_max(start[head_pose.POKER_WRIST_CH]))
+    route = head_pose.poker_route(start, target)
+    if not SERVOS_ENABLED:
+        _log.debug("move_poker no-op: SERVOS_ENABLED=False (%s stages to %s)", len(route), target)
+        if _gui_servo_sim_enabled():
+            with _lock:
+                _remember_positions(target)
+            _record_servo_positions(target)
+        return True
+    with _poker_lock:
+        _poker_generation += 1
+        generation = _poker_generation
+
+    def run() -> bool:
+        current = dict(start)
+        for stage in route:
+            with _poker_lock:
+                if generation != _poker_generation:
+                    return False       # superseded by a newer poker move
+            if _program_servo_updates_blocked() and not (parking and not _manual_override.is_set()):
+                return False
+            with _lock:
+                for ch in POKER_PAIR:
+                    _send_set_acceleration(ch, acceleration)
+                    _send_set_speed(ch, speed)
+                for ch, pos in stage.items():
+                    _send_set_target(ch, pos)
+                _remember_positions(stage)
+            _record_servo_positions(stage)
+            wait = _poker_stage_seconds(stage, current, speed)
+            current = dict(stage)
+            if stage is not route[-1]:
+                time.sleep(wait)
+        return True
+
+    if block:
+        return run()
+    threading.Thread(target=run, daemon=True, name="poker-arm-stages").start()
+    return True
+
+
+def wait_for_arrival(targets: "dict[int, int]", timeout: float = 3.0, tolerance: int = 8) -> str:
+    """Poll the board until every channel reads within ``tolerance`` of its target, or
+    ``timeout`` passes. Returns "" on arrival, else the channels still short with their
+    pulses (``ch3@6400->6976``), which is also logged.
+
+    A Maestro that silently clamps a target outside the range stored in its own settings
+    looks exactly like a servo that never arrives; naming the channel is how the owner
+    tells the two apart (first live shutdown on the two-servo head timed out with a
+    bare error and nothing parked)."""
+    if not SERVOS_ENABLED or not targets:
+        return ""
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    short = ""
+    while True:
+        current: dict[int, int] = {}
+        for ch in targets:
+            reading = get_servo(ch)
+            if reading is not None:
+                current[ch] = int(reading)
+        short = head_pose.describe_short(targets, current, tolerance)
+        if not short or time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+    if short:
+        _log.warning("Servo arrival timeout after %.1fs: %s", timeout, short)
+    return short
 
 
 def pause_arm_idle() -> None:
@@ -984,11 +1250,16 @@ def set_face_tracking_baseline(
     *,
     neck: int | None = None,
     lift: int | None = None,
-    tilt: int | None = None,
+    pitch: float | None = None,
+    tilt: float | None = None,
+    head: "dict[int, int] | None" = None,
 ) -> None:
     """
     Store the last face-tracking head pose so speech gestures wobble around it
     instead of recentering away from the person Rex is addressing.
+
+    The head pair is given as ``pitch``/``tilt`` fractions (either alone keeps the
+    other axis where the baseline has it) or as a ready pulse pair in ``head``.
     """
     if _program_servo_updates_blocked():
         return
@@ -996,11 +1267,23 @@ def set_face_tracking_baseline(
     mapping = {
         _channel("neck"): neck,
         _channel("headlift"): lift,
-        _channel("headtilt"): tilt,
     }
     for channel, value in mapping.items():
         if value is not None:
             updates[channel] = _clamp(channel, int(value))
+    if head is not None:
+        pair = {ch: int(head[ch]) for ch in HEAD_PAIR}
+        head_pose.validate_head_pair(pair)
+        updates.update(pair)
+    elif pitch is not None or tilt is not None:
+        for name, value in (("pitch", pitch), ("tilt", tilt)):
+            if value is not None and abs(float(value)) > 1.5:
+                raise ValueError(f"head {name} is a fraction in -1..1, not quarter-microseconds: {value}")
+        with _lock:
+            current = {ch: _face_tracking_baseline.get(ch, _commanded_positions.get(ch)) for ch in HEAD_PAIR}
+        pitch0, tilt0 = _head_pair_pose(current)
+        updates.update(head_pose.head_pulses(pitch0 if pitch is None else pitch,
+                                             tilt0 if tilt is None else tilt))
     if not updates:
         return
     with _lock:
@@ -1039,13 +1322,18 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
     with _lock:
         _speech_emotion_frame = frame
         _speech_baseline.clear()
-        for channel in (_channel("neck"), _channel("headlift"), _channel("headtilt")):
+        for channel in (_channel("neck"), _channel("headlift")):
             baseline = _baseline_position(channel, ignore_commanded=channel in head_owned)
             if channel == _channel("headlift"):
                 baseline += int(_motion_float(motion, "lift_bias_qus", 0.0))
-            elif channel == _channel("headtilt"):
-                baseline += int(_motion_float(motion, "tilt_bias_qus", 0.0))
             _speech_baseline[channel] = _clamp(channel, baseline)
+        # The head pair's anchor is a pitch and a tilt (the gaze the head holds), with
+        # the emotion's chin bias — still written in the old tilt servo's units, so
+        # convert — added to the pitch. The sway orbits this anchor.
+        pair = {ch: _baseline_position(ch, ignore_commanded=ch in head_owned) for ch in HEAD_PAIR}
+        pitch0, tilt0 = _head_pair_pose(pair)
+        pitch0 += head_pose.pitch_from_legacy_delta(_motion_float(motion, "tilt_bias_qus", 0.0))
+        _speech_baseline.update(head_pose.head_pulses(pitch0, tilt0))
         _last_speech_move_at = 0.0
         _speech_hand_counter = 0
         _speech_elbow_target = None
@@ -1072,12 +1360,19 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
         # profile for the channels it holds and speech is yielding those anyway. The
         # rest of the head still gets the speech profile — otherwise a line that starts
         # mid-gesture is delivered at whatever slow profile happened to be loaded.
-        free_head = [ch for ch in config.HEAD_CHANNELS if ch not in head_owned]
+        free_head = [ch for ch in config.HEAD_CHANNELS if ch not in head_owned and ch not in HEAD_PAIR]
         if free_head:
             set_motion_profile(
                 free_head,
                 speed=head_speed,
                 acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
+            )
+        if not set(HEAD_PAIR).intersection(head_owned):
+            # The two head servos sway slowly together: their own gentle profile.
+            set_motion_profile(
+                list(HEAD_PAIR),
+                speed=_get_config_int("SERVO_SPEECH_HEAD_PAIR_SPEED", 20),
+                acceleration=_get_config_int("SERVO_SPEECH_HEAD_PAIR_ACCELERATION", 6),
             )
         # Don't reprofile the arm if a scripted gesture (wave-back) owns it — it set its
         # own fast speed for the wave and the speech motion is yielding the arm anyway.
@@ -1228,7 +1523,6 @@ def speech_reactive_move(intensity: float) -> None:
 
     neck_ch = _channel("neck")
     lift_ch = _channel("headlift")
-    tilt_ch = _channel("headtilt")
     visor_ch = _channel("visor")
     elbow_ch = _channel("elbow")
     hand_ch = _channel("hand")
@@ -1238,7 +1532,8 @@ def speech_reactive_move(intensity: float) -> None:
     with _lock:
         base_neck = _clamp(neck_ch, _speech_baseline.get(neck_ch, _baseline_position(neck_ch)))
         base_lift = _clamp(lift_ch, _speech_baseline.get(lift_ch, _baseline_position(lift_ch)))
-        base_tilt = _clamp(tilt_ch, _speech_baseline.get(tilt_ch, _baseline_position(tilt_ch)))
+        base_pair = {ch: _speech_baseline.get(ch, _baseline_position(ch)) for ch in HEAD_PAIR}
+    base_pitch, base_tilt = _head_pair_pose(base_pair)
 
     neck_wobble = int(
         _get_config_int("SERVO_SPEECH_NECK_WOBBLE_QUS", 260)
@@ -1250,47 +1545,41 @@ def speech_reactive_move(intensity: float) -> None:
         * _motion_float(motion, "lift_wobble_mult", 1.0)
         * (0.35 + expressive_intensity)
     )
-    tilt_wobble = int(
-        _get_config_int("SERVO_SPEECH_TILT_WOBBLE_QUS", 120)
-        * _motion_float(motion, "tilt_wobble_mult", 1.0)
-        * (0.35 + expressive_intensity)
-    )
 
-    # Tilt rides a smooth sine rather than a fresh random jump every update: the tilt
-    # linkage carries the whole head on a thin rod, and rapid random reversals there
-    # read as shaking (and stress the servo). Neck/lift are sturdier and keep the
-    # lively random wobble.
-    tilt_sway = math.sin(now * 2.4)
+    # The two head servos sway slowly TOGETHER around the anchor: a small nod with a
+    # slight cock to each side, on one smooth sine (never a fresh random jump — the
+    # whole head rides the linkage, and reversals there read as shaking). The neck
+    # and lift are sturdier and keep the lively random wobble.
+    period = max(0.5, _get_config_float("SERVO_SPEECH_SWAY_PERIOD_SECS", 2.4))
+    sway = math.sin(math.tau * now / period)
+    sway_scale = _motion_float(motion, "tilt_wobble_mult", 1.0) * (0.35 + expressive_intensity) / 1.35
+    pitch = base_pitch + _get_config_float("SERVO_SPEECH_PITCH_SWAY", 0.06) * sway * sway_scale
+    tilt = base_tilt + _get_config_float("SERVO_SPEECH_TILT_SWAY", 0.10) * sway * sway_scale
     targets: dict[int, int] = {
         neck_ch: _clamp(neck_ch, base_neck + random.randint(-neck_wobble, neck_wobble)),
         lift_ch: _clamp(lift_ch, base_lift + random.randint(-lift_wobble, lift_wobble)),
-        tilt_ch: _clamp(tilt_ch, base_tilt + int(tilt_wobble * tilt_sway)),
     }
+    targets.update(head_pose.head_pulses(pitch, tilt))
 
-    visor_cfg = config.SERVO_CHANNELS["visor"]
-    visor_floor_frac = max(0.0, min(1.0, _motion_float(motion, "visor_open_floor_frac", 0.55)))
-    # Only expressive profiles (anger) request the deep squint. Clamp AFTER
-    # jitter too, so a negative random offset cannot cross the camera boundary.
-    visor_hard_floor = max(
-        _get_config_int("VISOR_CAMERA_CLEAR_FLOOR_QUS", 5100),
-        int(_motion_float(motion, "visor_floor_qus", _get_config_int("VISOR_SPEECH_FLOOR_QUS", 5540))),
-    )
-    visor_offset = int(_motion_float(
-        motion, "visor_offset_qus", _get_config_int("VISOR_SPEECH_OFFSET_QUS", -460)))
-    visor_ceiling = min(visor_cfg["max"], max(visor_hard_floor, visor_cfg["max"] + visor_offset))
-    visor_open_floor = max(
-        visor_hard_floor,
-        int(visor_cfg["min"] + (visor_cfg["max"] - visor_cfg["min"]) * visor_floor_frac) + visor_offset,
-    )
+    # Visor (inverted since October 10: LOW pulses are UP). While talking it lives in
+    # the speaking band between the fully-expressive "up" edge and the camera-clear
+    # "down" edge; an emotion's open fraction says how far up its resting point sits
+    # and the wave opens it further from there. Clamp AFTER the jitter too, so a
+    # random offset can never cross the camera boundary.
+    up_edge, down_edge = (int(v) for v in getattr(config, "VISOR_SPEECH_RANGE_QUS", head_pose.VISOR_SPEECH))
+    down_edge = min(down_edge, _get_config_int("VISOR_CAMERA_CLEAR_MAX_QUS", head_pose.VISOR_CAMERA_CLEAR_MAX))
+    down_edge = min(down_edge, int(_motion_float(motion, "visor_down_qus", down_edge)))
+    open_frac = max(0.0, min(1.0, _motion_float(motion, "visor_open_floor_frac", 0.55)))
+    rest_point = down_edge - int((down_edge - up_edge) * open_frac)
     visor_wave = 0.5 + 0.5 * math.sin(now * 8.0)
     visor_swing = int(
-        (visor_ceiling - visor_open_floor)
+        (rest_point - up_edge)
         * (0.35 + 0.40 * expressive_intensity)
         * _motion_float(motion, "visor_swing_mult", 1.0)
     )
     targets[visor_ch] = _clamp(
         visor_ch,
-        max(visor_hard_floor, min(visor_ceiling, int(visor_open_floor + visor_wave * visor_swing) + random.randint(-45, 45))),
+        max(up_edge, min(down_edge, int(rest_point - visor_wave * visor_swing) + random.randint(-45, 45))),
     )
 
     elbow_lo, elbow_hi = config.SERVO_CHANNELS["elbow"]["min"], config.SERVO_CHANNELS["elbow"]["max"]
@@ -1380,6 +1669,11 @@ def speech_reactive_move(intensity: float) -> None:
         return
 
     set_servos(targets)
+
+
+def listening_pitch_nod() -> float:
+    """How far (pitch fraction) the listening nod dips the head pair."""
+    return _get_config_float("SERVO_LISTENING_PITCH_NOD", 0.07)
 
 
 # ── Listening motion (subtle "I'm thinking about what you said" feedback) ───────
@@ -1473,7 +1767,6 @@ def _listening_targets(now: float) -> dict[int, int]:
 
     neck_ch = _channel("neck")
     lift_ch = _channel("headlift")
-    tilt_ch = _channel("headtilt")
     visor_ch = _channel("visor")
     elbow_ch = _channel("elbow")
     hand_ch = _channel("hand")
@@ -1483,18 +1776,17 @@ def _listening_targets(now: float) -> dict[int, int]:
         base = dict(_face_tracking_baseline)
     base_neck = _clamp(neck_ch, base.get(neck_ch, _baseline_position(neck_ch)))
     base_lift = _clamp(lift_ch, base.get(lift_ch, _baseline_position(lift_ch)))
-    base_tilt = _clamp(tilt_ch, base.get(tilt_ch, _baseline_position(tilt_ch)))
+    base_pitch, base_tilt = _head_pair_pose({ch: base.get(ch, _baseline_position(ch)) for ch in HEAD_PAIR})
 
     def _sway(amp: int, period_key: str, phase_key: str) -> float:
         period = max(0.5, float(s.get(period_key) or 1.0))
         return amp * math.sin(math.tau * t / period + float(s.get(phase_key) or 0.0))
 
     # Smooth "mhm" nod: a raised-cosine dip (sin² easing — zero velocity at both
-    # ends). headlift lower = head down; headtilt is inverted (higher = looking
-    # down), so the nod biases lift DOWN and tilt slightly DOWN, then eases back.
+    # ends). The lift drops and the two head servos pitch the head slightly down
+    # together, keeping whatever cock the gaze has, then ease back.
     nod = math.sin(math.pi * _listening_nod_progress(now)) ** 2
     lift_nod = _get_config_int("SERVO_LISTENING_LIFT_NOD_QUS", 240)
-    tilt_amp = _get_config_int("SERVO_LISTENING_TILT_QUS", 80)
     neck_amp = _get_config_int("SERVO_LISTENING_NECK_QUS", 110)
     lift_sway = _get_config_int("SERVO_LISTENING_LIFT_SWAY_QUS", 90)
 
@@ -1504,20 +1796,20 @@ def _listening_targets(now: float) -> dict[int, int]:
             lift_ch,
             int(base_lift + _sway(lift_sway, "period_lift", "phase_lift") - nod * lift_nod),
         ),
-        tilt_ch: _clamp(tilt_ch, int(base_tilt + nod * tilt_amp)),
     }
+    targets.update(head_pose.head_pulses(base_pitch - nod * listening_pitch_nod(), base_tilt))
 
-    # Visor: slow, shallow flutter around a slightly-open resting position.
+    # Visor: slow, shallow flutter around the awake resting position, inside the
+    # speaking band (inverted servo: lower pulses are more open).
     visor_cfg = config.SERVO_CHANNELS["visor"]
     visor_swing = _get_config_int("SERVO_LISTENING_VISOR_QUS", 220)
-    targets[visor_ch] = _clamp(
-        visor_ch,
-        int(
-            visor_cfg["neutral"]
-            - visor_swing * 0.4
-            + visor_swing * (0.5 + 0.5 * math.sin(math.tau * t / max(0.5, float(s.get("period_visor") or 4.5)) + float(s.get("phase_visor") or 0.0)))
-        ),
+    up_edge, down_edge = (int(v) for v in getattr(config, "VISOR_SPEECH_RANGE_QUS", head_pose.VISOR_SPEECH))
+    flutter = int(
+        visor_cfg["neutral"]
+        + visor_swing * 0.4
+        - visor_swing * (0.5 + 0.5 * math.sin(math.tau * t / max(0.5, float(s.get("period_visor") or 4.5)) + float(s.get("phase_visor") or 0.0)))
     )
+    targets[visor_ch] = _clamp(visor_ch, max(up_edge, min(down_edge, flutter)))
 
     # Arms: slow continuous sways on their own (longer) periods — alive, never twitchy.
     elbow_cfg = config.SERVO_CHANNELS["elbow"]
@@ -1646,49 +1938,13 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
             _record_servo_positions(targets)
         return
 
-    targets = {
-        name: _clamp(cfg["ch"], cfg["neutral"])
-        for name, cfg in config.SERVO_CHANNELS.items()
-    }
-
-    # Read current positions
-    current: dict[str, int] = {}
-    for name, cfg in config.SERVO_CHANNELS.items():
-        pos = get_servo(cfg["ch"])
-        current[name] = _clamp(cfg["ch"], pos if pos is not None else targets[name])
-
-    # Step toward neutral
-    done = False
-    while not done:
-        # Re-check EVERY step, not just at entry: a neutral() already in flight
-        # when the shutdown droop latches used to keep streaming its remaining
-        # steps — so the head drooped into the rest pose and then rose right
-        # back up to neutral as this loop finished (field 2026-07-31).
-        if _program_servo_updates_blocked():
-            return
-        done = True
-        moves: dict[int, int] = {}
-        for name, cfg in config.SERVO_CHANNELS.items():
-            cur  = current[name]
-            tgt  = targets[name]
-            diff = tgt - cur
-            if diff == 0:
-                continue
-            done     = False
-            step     = min(step_us, abs(diff)) * (1 if diff > 0 else -1)
-            new_pos  = cur + step
-            current[name] = new_pos
-            moves[cfg["ch"]] = new_pos
-        if moves:
-            with _lock:
-                for ch, pos in moves.items():
-                    _send_set_target(ch, _clamp(ch, pos))
-                _remember_positions(moves)
-            time.sleep(step_delay)
-    _record_servo_positions({
-        cfg["ch"]: _clamp(cfg["ch"], cfg["neutral"])
-        for cfg in config.SERVO_CHANNELS.values()
-    })
+    # One interpolated glide for every channel (move_to keeps the two head servos
+    # arriving together and stages the poker elbow/wrist through clearance).
+    move_to(
+        {int(cfg["ch"]): _clamp(int(cfg["ch"]), int(cfg["neutral"])) for cfg in config.SERVO_CHANNELS.values()},
+        step_us=step_us,
+        step_delay=step_delay,
+    )
     reset_face_tracking_baseline()
 
 
@@ -1794,8 +2050,16 @@ def move_to(
     step_us: "int | dict[int, int]" = 40,
     step_delay: float = 0.02,
     start: "dict[int, int] | None" = None,
+    *,
+    parking: bool = False,
 ) -> None:
     """Smoothly interpolate specific channels to target positions (quarter-microseconds).
+
+    Head channels 2 and 11 must both be present (and form a pair the linkage can
+    take); they are stepped so they arrive together. A poker elbow/wrist target is
+    completed from its partner's current command and routed through the staged
+    clearance move instead of interpolating. ``parking`` lets the shutdown/sleep park
+    stream after the pose latch, like the throttle's own park path.
 
     The interpolation start point is read from the Maestro (proprioception) so the
     sweep begins wherever the servo actually is. Pass ``start`` to override that read
@@ -1806,10 +2070,21 @@ def move_to(
     channel or a per-channel mapping, which lets mechanically different linkages
     move together without forcing the stickier one to creep.
     """
-    if _program_servo_updates_blocked():
+    if _program_servo_updates_blocked() and not (parking and not _manual_override.is_set()):
         return
     _require_independent_channels(targets)
+    targets = _complete_poker_pair({int(ch): int(tgt) for ch, tgt in targets.items()})
     targets = {ch: _clamp(ch, int(tgt)) for ch, tgt in targets.items()}
+    _validate_pairs(targets)
+    # The poker elbow/wrist never interpolate freely: a straight line between two
+    # clear poses can cross the clearance ceiling, so they take the staged move on
+    # their own thread while the other channels glide here.
+    poker = {ch: targets.pop(ch) for ch in POKER_PAIR if ch in targets}
+    if poker:
+        move_poker(poker[head_pose.POKER_ELBOW_CH], poker[head_pose.POKER_WRIST_CH],
+                   speed=12, acceleration=3, block=False, parking=parking)
+    if not targets:
+        return
     if not SERVOS_ENABLED:
         _log.debug("move_to no-op: SERVOS_ENABLED=False")
         if _gui_servo_sim_enabled():
@@ -1828,12 +2103,27 @@ def move_to(
 
     _maybe_headlift_hum(targets, current)
 
+    # The two head servos must ARRIVE together: equal per-step increments would let
+    # the shorter travel finish first and park the pair, mid-glide, in a corner no
+    # pitch/tilt explains. Scale each head servo's step so both take the same
+    # number of steps (a straight line in pulse space between two valid pairs stays
+    # well inside the envelope).
+    pair_steps: dict[int, float] = {}
+    if set(HEAD_PAIR).issubset(targets):
+        travel = {ch: abs(targets[ch] - current[ch]) for ch in HEAD_PAIR}
+        longest = max(travel.values())
+        if longest:
+            base_step = max(1, int((step_us.get(HEAD_PAIR[0], 40) if isinstance(step_us, dict) else step_us)))
+            steps_needed = max(1, math.ceil(longest / base_step))
+            pair_steps = {ch: max(1.0, travel[ch] / steps_needed) for ch in HEAD_PAIR}
+    exact = {ch: float(pos) for ch, pos in current.items()}
+
     done = False
     while not done:
         # Same mid-flight abort as neutral(): once the shutdown latch (or the
         # manual override) engages, an in-progress interpolation must stop
         # streaming rather than finish marching to its stale target.
-        if _program_servo_updates_blocked():
+        if _program_servo_updates_blocked() and not (parking and not _manual_override.is_set()):
             return
         done = True
         moves: dict[int, int] = {}
@@ -1843,10 +2133,17 @@ def move_to(
             if diff == 0:
                 continue
             done = False
-            channel_step = step_us.get(ch, 40) if isinstance(step_us, dict) else step_us
-            channel_step = max(1, int(channel_step))
-            step = min(channel_step, abs(diff)) * (1 if diff > 0 else -1)
-            new_pos = cur + step
+            if ch in pair_steps:
+                channel_step = pair_steps[ch]
+                exact[ch] += min(channel_step, abs(tgt - exact[ch])) * (1 if diff > 0 else -1)
+                new_pos = int(round(exact[ch]))
+                if abs(tgt - exact[ch]) < 0.5:
+                    new_pos = tgt
+            else:
+                channel_step = step_us.get(ch, 40) if isinstance(step_us, dict) else step_us
+                channel_step = max(1, int(channel_step))
+                step = min(channel_step, abs(diff)) * (1 if diff > 0 else -1)
+                new_pos = cur + step
             current[ch] = new_pos
             moves[ch] = new_pos
         if moves:

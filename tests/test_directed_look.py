@@ -66,12 +66,22 @@ class DirectedLookTests(unittest.TestCase):
 
         self.assertEqual(interaction._directed_target_kind("filament spool"), "object")
 
-    def test_directed_look_left_and_right_use_configured_neck_limits(self):
+    def test_directed_look_left_and_right_are_relative(self):
+        """First live run October 10: Rex was following the owner at the neck's left
+        limit and "look left" (a fixed pose) swung his head back to the right. From
+        nearer the centre a side look goes to the 33-degree pose; already there or
+        beyond, a person's request goes on to the neck's limit and Rex's own repeated
+        step moves the neck not at all."""
         import config
+        from hardware import head_pose
         from sequences import animations
 
         neck_cfg = config.SERVO_CHANNELS["neck"]
         neck_ch = int(neck_cfg["ch"])
+
+        def at(neck):
+            return mock.patch.object(animations, "_current_body_pose",
+                                     return_value={0: neck, 1: 3600, **head_pose.head_pulses(0, 0)})
 
         with (
             mock.patch.object(animations.servos, "move_to") as move_to,
@@ -79,11 +89,18 @@ class DirectedLookTests(unittest.TestCase):
             mock.patch.object(animations.time, "sleep"),
             mock.patch.object(animations, "_record_directed_look"),
         ):
-            self.assertEqual(animations.directed_look_pose("left"), "left")
-            self.assertEqual(move_to.call_args.args[0][neck_ch], neck_cfg["min"])
-
-            self.assertEqual(animations.directed_look_pose("right"), "right")
-            self.assertEqual(move_to.call_args.args[0][neck_ch], neck_cfg["max"])
+            with at(int(neck_cfg["neutral"])):
+                self.assertEqual(animations.directed_look_pose("left"), "left")
+                self.assertEqual(move_to.call_args.args[0][neck_ch], head_pose.NECK_LOOK_LEFT)
+                self.assertEqual(animations.directed_look_pose("right"), "right")
+                self.assertEqual(move_to.call_args.args[0][neck_ch], head_pose.NECK_LOOK_RIGHT)
+            with at(int(neck_cfg["min"]) + 300):          # already far left
+                animations.directed_look_pose("left")
+                self.assertEqual(move_to.call_args.args[0][neck_ch], int(neck_cfg["min"]))
+                animations.directed_look_pose("left", requested=False)
+                self.assertEqual(move_to.call_args.args[0][neck_ch], int(neck_cfg["min"]) + 300)
+                # Never back toward the centre.
+                self.assertLess(move_to.call_args.args[0][neck_ch], head_pose.NECK_LOOK_LEFT)
 
     def test_directed_look_center_uses_configured_neutral_pose(self):
         import config
@@ -92,7 +109,7 @@ class DirectedLookTests(unittest.TestCase):
         channels = {
             name: int(cfg["ch"])
             for name, cfg in config.SERVO_CHANNELS.items()
-            if name in {"neck", "headlift", "headtilt"}
+            if name in {"neck", "headlift", "head_left", "head_right"}
         }
 
         with (
@@ -112,45 +129,83 @@ class DirectedLookTests(unittest.TestCase):
             targets[channels["headlift"]],
             config.SERVO_CHANNELS["headlift"]["neutral"],
         )
-        self.assertEqual(
-            targets[channels["headtilt"]],
-            config.SERVO_CHANNELS["headtilt"]["neutral"],
-        )
+        # Level and straight on both head servos.
+        self.assertEqual(targets[channels["head_left"]], config.SERVO_CHANNELS["head_left"]["neutral"])
+        self.assertEqual(targets[channels["head_right"]], config.SERVO_CHANNELS["head_right"]["neutral"])
 
-    def test_directed_look_up_and_down_use_configured_vertical_limits(self):
+    def test_directed_look_up_and_down_pitch_the_head_pair_and_keep_the_cock(self):
         import config
+        from hardware import head_pose
         from sequences import animations
 
-        lift_cfg = config.SERVO_CHANNELS["headlift"]
-        tilt_cfg = config.SERVO_CHANNELS["headtilt"]
-        lift_ch = int(lift_cfg["ch"])
-        tilt_ch = int(tilt_cfg["ch"])
+        lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
+        cocked = head_pose.head_pulses(0.0, 0.5)     # the head is already cocked right
 
         with (
             mock.patch.object(animations.servos, "move_to") as move_to,
             mock.patch.object(animations.servos, "set_face_tracking_baseline") as baseline,
             mock.patch.object(animations.time, "sleep"),
             mock.patch.object(animations, "_record_directed_look"),
+            mock.patch.object(animations, "_current_body_pose", return_value={0: 5472, 1: 3600, **cocked}),
         ):
             self.assertEqual(animations.directed_look_pose("up"), "up")
             up_targets = move_to.call_args.args[0]
-            self.assertEqual(up_targets[lift_ch], lift_cfg["max"])
-            self.assertEqual(up_targets[tilt_ch], tilt_cfg["min"])
-            baseline.assert_called_with(
-                neck=None,
-                lift=lift_cfg["max"],
-                tilt=tilt_cfg["min"],
-            )
+            self.assertEqual(up_targets[lift_ch], 4200)
+            pitch, tilt = head_pose.head_pose({ch: up_targets[ch] for ch in head_pose.HEAD_PAIR})
+            self.assertAlmostEqual(pitch, 0.8, places=1)
+            self.assertAlmostEqual(tilt, 0.5, places=1)          # the cock survives
+            self.assertEqual(baseline.call_args.kwargs["lift"], 4200)
+            self.assertEqual(baseline.call_args.kwargs["head"], {ch: up_targets[ch] for ch in head_pose.HEAD_PAIR})
 
             self.assertEqual(animations.directed_look_pose("down"), "down")
             down_targets = move_to.call_args.args[0]
-            self.assertEqual(down_targets[lift_ch], lift_cfg["min"])
-            self.assertEqual(down_targets[tilt_ch], tilt_cfg["max"])
-            baseline.assert_called_with(
-                neck=None,
-                lift=lift_cfg["min"],
-                tilt=tilt_cfg["max"],
-            )
+            self.assertEqual(down_targets[lift_ch], 3200)
+            pitch, tilt = head_pose.head_pose({ch: down_targets[ch] for ch in head_pose.HEAD_PAIR})
+            self.assertAlmostEqual(pitch, -0.8, places=1)
+            self.assertAlmostEqual(tilt, 0.5, places=1)
+            # The visor rides to the capture pose (inverted servo: a LOW pulse is up).
+            self.assertEqual(down_targets[3], config.VISOR_CAMERA_CAPTURE_QUS)
+
+    def test_tilt_steps_cock_the_head_and_keep_pitch_and_neck(self):
+        from hardware import head_pose
+        from sequences import animations
+
+        pitched = head_pose.head_pulses(-0.4, 0.0)
+        with (
+            mock.patch.object(animations.servos, "move_to") as move_to,
+            mock.patch.object(animations.servos, "set_face_tracking_baseline"),
+            mock.patch.object(animations.time, "sleep"),
+            mock.patch.object(animations, "_record_directed_look"),
+            mock.patch.object(animations, "_current_body_pose", return_value={0: 7000, 1: 3600, **pitched}),
+        ):
+            self.assertEqual(animations.directed_look_pose("tilt_left"), "tilt_left")
+            targets = move_to.call_args.args[0]
+            self.assertNotIn(0, targets)                      # neck untouched
+            self.assertNotIn(1, targets)                      # lift untouched
+            pitch, tilt = head_pose.head_pose({ch: targets[ch] for ch in head_pose.HEAD_PAIR})
+            self.assertAlmostEqual(pitch, -0.4, places=1)
+            self.assertAlmostEqual(tilt, -0.8, places=1)      # negative = Rex's own left (confirmed)
+            self.assertEqual(animations.directed_look_pose("tilt_right"), "tilt_right")
+            self.assertGreater(head_pose.head_pose({ch: move_to.call_args.args[0][ch] for ch in head_pose.HEAD_PAIR})[1], 0.7)
+            self.assertEqual(animations.directed_look_pose("tilt_straight"), "tilt_straight")
+            self.assertAlmostEqual(head_pose.head_pose({ch: move_to.call_args.args[0][ch] for ch in head_pose.HEAD_PAIR})[1], 0.0, places=1)
+            self.assertEqual(animations.directed_look_pose("level"), "level")
+            targets = move_to.call_args.args[0]
+            self.assertEqual(targets[1], 3600)
+            self.assertEqual({ch: targets[ch] for ch in head_pose.HEAD_PAIR}, head_pose.head_pulses(0, 0))
+
+    def test_parser_accepts_head_tilt_steps(self):
+        from intelligence import command_parser
+
+        for text, expected in (
+            ("tilt your head to the left", "tilt_left"),
+            ("Cock your head right.", "tilt_right"),
+            ("straighten your head", "tilt_straight"),
+            ("level your head", "level"),
+        ):
+            match = command_parser.parse(text)
+            self.assertIsNotNone(match, text)
+            self.assertEqual(match.args.get("direction"), expected, text)
 
     def test_bare_directional_look_moves_without_scene_analysis_or_speech(self):
         from intelligence import interaction

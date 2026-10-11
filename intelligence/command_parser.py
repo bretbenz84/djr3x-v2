@@ -492,6 +492,36 @@ def _has_specific_visual_target(text: str) -> bool:
     return any(len(w) > 2 for w in words)
 
 
+_HEAD_TILT_STEP_RE = re.compile(
+    r"^(?:tilt|cock|tip|lean)\s+(?:your\s+|the\s+)?head\s+(?:over\s+)?(?:to\s+)?(?:the\s+|your\s+)?"
+    r"(?P<side>left|right)(?:\s+side)?$"
+)
+_HEAD_STRAIGHT_STEP_RE = re.compile(
+    r"^(?:straighten\s+(?:up\s+|out\s+)?(?:your\s+|the\s+)?head"
+    r"|(?:un-?tilt|un-?cock)\s+(?:your\s+|the\s+)?head"
+    r"|(?:put|hold|keep)\s+(?:your\s+|the\s+)?head\s+straight"
+    r"|head\s+straight)$"
+)
+_HEAD_LEVEL_STEP_RE = re.compile(
+    r"^(?:level\s+(?:out\s+|off\s+)?(?:your\s+|the\s+)?head"
+    r"|(?:put|hold|keep)\s+(?:your\s+|the\s+)?head\s+level"
+    r"|look\s+level|head\s+level)$"
+)
+
+
+def _parse_head_tilt_step(clean: str) -> str | None:
+    """A named head step for the two-servo head: tilt_left / tilt_right (cock the
+    head to a side, keeping pitch and neck), tilt_straight, or level."""
+    m = _HEAD_TILT_STEP_RE.match(clean)
+    if m:
+        return f"tilt_{m.group('side')}"
+    if _HEAD_STRAIGHT_STEP_RE.match(clean):
+        return "tilt_straight"
+    if _HEAD_LEVEL_STEP_RE.match(clean):
+        return "level"
+    return None
+
+
 def _parse_directed_look(normalized: str, original: str) -> dict | None:
     """
     Parse physical gaze commands: "look left", "look at this", "look down here".
@@ -500,6 +530,17 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
     for cases where the user is directing Rex's head/camera toward a target.
     """
     clean = _strip_direct_command_leaders(_plain(normalized))
+    # The two-servo head (October 10 2026) can cock to a side: "tilt your head
+    # left", "cock your head to the right", "straighten your head", "level your
+    # head" are head steps of their own, routed like a directed look.
+    tilt_step = _parse_head_tilt_step(clean)
+    if tilt_step is not None:
+        return {
+            "direction": tilt_step,
+            "target_hint": "",
+            "search_target": False,
+            "utterance": original.strip(),
+        }
     # A bare directional word ("down", "up", "left", "right", "center") is NOT a
     # gaze command on its own: short STT fragments routinely clip a longer phrase
     # down to a single direction (e.g. "shut down" → "down"), and firing a silent

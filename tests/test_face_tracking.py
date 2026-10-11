@@ -3,7 +3,28 @@ from unittest import mock
 
 import numpy as np
 
+from hardware import head_pose
 from state import State
+
+
+def _decoded_head(updates):
+    """(pitch, tilt) the head pair in a set_servos update stands for."""
+    return head_pose.head_pose({ch: updates[ch] for ch in head_pose.HEAD_PAIR})
+
+
+def _level_positions(neck=6000, lift=6000, pitch=0.0, tilt=0.0):
+    pair = head_pose.head_pulses(pitch, tilt)
+    return {
+        "neck": neck,
+        "headlift": lift,
+        "head_left": pair[head_pose.HEAD_LEFT_CH],
+        "head_right": pair[head_pose.HEAD_RIGHT_CH],
+        "visor": 5120,
+        "elbow": 6720,
+        "hand": 6000,
+        "pokerarm": 6000,
+        "heroarm": 6000,
+    }
 
 try:
     import cv2  # noqa: F401
@@ -52,6 +73,8 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_presence_evidence_at = consciousness._startup_presence_evidence_at
         self.old_fallback_started = consciousness._startup_presence_fallback_started
         self.old_fallback_active = consciousness._startup_presence_fallback_active
+        self.old_attentive_cock = dict(consciousness._attentive_cock)
+        consciousness.reset_attentive_cock()
         self.frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
     def tearDown(self):
@@ -84,6 +107,8 @@ class FaceTrackingTests(unittest.TestCase):
         c._startup_presence_evidence_at = self.old_presence_evidence_at
         c._startup_presence_fallback_started = self.old_fallback_started
         c._startup_presence_fallback_active = self.old_fallback_active
+        c._attentive_cock.clear()
+        c._attentive_cock.update(self.old_attentive_cock)
 
     def _frame_with_patch(self, x: int, y: int) -> np.ndarray:
         rng = np.random.default_rng(1234)
@@ -92,19 +117,13 @@ class FaceTrackingTests(unittest.TestCase):
         frame[y:y + 36, x:x + 36] = np.repeat(patch[:, :, None], 3, axis=2)
         return frame
 
-    def _set_servo_positions(self):
+    def _set_servo_positions(self, *, pitch=0.0, tilt=0.0):
+        """Park the head at neck 6000 / lift 6000 with the two-servo head at (pitch, tilt),
+        publishing both the named pulses and the driver's head_pose like hardware/servos."""
         c = self.consciousness
         self_state = c.world_state.get("self_state")
-        self_state["servo_positions"] = {
-            "neck": 6000,
-            "headlift": 6000,
-            "headtilt": 4320,
-            "visor": 6000,
-            "elbow": 6720,
-            "hand": 6000,
-            "pokerarm": 6000,
-            "heroarm": 6000,
-        }
+        self_state["servo_positions"] = _level_positions(pitch=pitch, tilt=tilt)
+        self_state["head_pose"] = {"pitch": pitch, "tilt": tilt}
         c.world_state.update("self_state", self_state)
 
     def test_detection_hold_clears_stale_face_geometry(self):
@@ -197,7 +216,7 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertEqual(people[0].get("person_db_id"), 1)
         self.assertEqual(people[0].get("face_id"), "Bret")
 
-    def test_single_visible_face_recenters_neck_lift_and_tilt(self):
+    def test_single_visible_face_recenters_neck_lift_and_pitch(self):
         c = self.consciousness
         self._set_servo_positions()
         c.world_state.update("people", [{
@@ -223,38 +242,46 @@ class FaceTrackingTests(unittest.TestCase):
         updates = set_servos.call_args.args[0]
         neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
-        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
         # Corrections are relative to the STARTING pose (_set_servo_positions: neck 6000),
         # not the configured neutral — a left-of-center face pulls the neck below 6000.
         self.assertLess(updates[neck_ch], 6000)
         # The face sits above center, but the lift starts (6000) above the eye-level
-        # match ceiling — so the lift HOLDS (no update) and the TILT alone supplies
-        # the upward gaze. Matching never stretches the neck above the ceiling.
+        # match ceiling — so the lift HOLDS (no update) and the head's PITCH alone
+        # supplies the upward gaze. Matching never stretches the neck above the ceiling.
         self.assertNotIn(lift_ch, updates)
-        self.assertLess(updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"])
+        # Both head servos are written together; decoded, the head pitched UP and
+        # kept its tilt (straight: no attentive cock is scheduled on the first tick).
+        self.assertTrue(set(head_pose.HEAD_PAIR).issubset(updates))
+        pitch, tilt = _decoded_head(updates)
+        self.assertGreater(pitch, 0.0)
+        self.assertLessEqual(pitch, abs(head_pose.pitch_from_legacy_delta(
+            c.config.FACE_TRACKING_TILT_MAX_STEP_QUS)) + 0.01)
+        self.assertAlmostEqual(tilt, 0.0, delta=0.02)
         self.assertLessEqual(
             abs(updates[neck_ch] - 6000),
             c.config.FACE_TRACKING_NECK_MAX_STEP_QUS * c.config.FACE_TRACKING_EDGE_BOOST_MULT,
         )
-        # Two profile writes: neck+lift at tracking speed, tilt on its own softer profile.
+        # Two profile writes: neck+lift at tracking speed, BOTH head servos on their own
+        # softer profile (the old lone tilt channel's speed/acceleration knobs).
         self.assertEqual(set_profile.call_count, 2)
         self.assertIn(neck_ch, set_profile.call_args_list[0].args[0])
-        self.assertIn(tilt_ch, set_profile.call_args_list[1].args[0])
-        set_baseline.assert_called_once_with(
-            neck=updates[neck_ch],
-            lift=6000,  # held — no lift update above the match ceiling
-            tilt=updates[tilt_ch],
-        )
+        self.assertEqual(set(set_profile.call_args_list[1].args[0]), set(head_pose.HEAD_PAIR))
+        self.assertEqual(set_profile.call_args_list[1].kwargs["speed"],
+                         c.config.FACE_TRACKING_TILT_SERVO_SPEED)
+        set_baseline.assert_called_once()
+        kwargs = set_baseline.call_args.kwargs
+        self.assertEqual(kwargs["neck"], updates[neck_ch])
+        self.assertEqual(kwargs["lift"], 6000)  # held — no lift update above the match ceiling
+        self.assertAlmostEqual(kwargs["pitch"], pitch, delta=0.01)   # fractions, never qus
+        self.assertAlmostEqual(kwargs["tilt"], tilt, delta=0.01)
 
     def _run_one_face_tracking_tick(self, *, face_box, neck_start=6000, speech=False,
                                     rail_damp=True):
         """Run a single fresh face-tracking tick and return the set_servos updates dict."""
         c = self.consciousness
         self_state = c.world_state.get("self_state")
-        self_state["servo_positions"] = {
-            "neck": neck_start, "headlift": 6000, "headtilt": 4320, "visor": 6000,
-            "elbow": 6720, "hand": 6000, "pokerarm": 6000, "heroarm": 6000,
-        }
+        self_state["servo_positions"] = _level_positions(neck=neck_start)
+        self_state["head_pose"] = {"pitch": 0.0, "tilt": 0.0}
         c.world_state.update("self_state", self_state)
         c.world_state.update("people", [{
             "id": "person_1", "person_db_id": 1, "face_id": "Bret",
@@ -359,11 +386,10 @@ class FaceTrackingTests(unittest.TestCase):
         c = self.consciousness
         self._set_servo_positions()
         lift_neutral = c.config.SERVO_CHANNELS["headlift"]["neutral"]
-        tilt_neutral = c.config.SERVO_CHANNELS["headtilt"]["neutral"]
         c._adaptive_head_rest.clear()
         c._adaptive_head_rest.update({
             "lift": lift_neutral,
-            "tilt": tilt_neutral,
+            "pitch": 0.0,
             "samples": 0,
             "updated_at": 0.0,
         })
@@ -395,17 +421,16 @@ class FaceTrackingTests(unittest.TestCase):
         # learned rest clamps at neutral + REST_MAX_LIFT_OFFSET and may sit
         # above neutral — comparing against neutral was fixture rot.
         self.assertLess(c._adaptive_head_rest["lift"], 6000)
-        self.assertGreater(c._adaptive_head_rest["tilt"], tilt_neutral)
+        self.assertLess(c._adaptive_head_rest["pitch"], 0.0)   # a rest pitched DOWN
 
     def test_adaptive_rest_learns_upward_pose_from_high_face(self):
         c = self.consciousness
         self._set_servo_positions()
         lift_neutral = c.config.SERVO_CHANNELS["headlift"]["neutral"]
-        tilt_neutral = c.config.SERVO_CHANNELS["headtilt"]["neutral"]
         c._adaptive_head_rest.clear()
         c._adaptive_head_rest.update({
             "lift": lift_neutral,
-            "tilt": tilt_neutral,
+            "pitch": 0.0,
             "samples": 0,
             "updated_at": 0.0,
         })
@@ -432,12 +457,12 @@ class FaceTrackingTests(unittest.TestCase):
         ):
             c._step_face_tracking(self.frame)
 
-        # A high face teaches an upward TILT rest, but the LIFT rest is capped at the
+        # A high face teaches an upward PITCH rest, but the LIFT rest is capped at the
         # eye-level match ceiling — Rex looks up with his eyes, not a stretched neck.
         ceiling = c._lift_match_ceiling_qus()
         self.assertIsNotNone(ceiling)
         self.assertLessEqual(c._adaptive_head_rest["lift"], ceiling)
-        self.assertLess(c._adaptive_head_rest["tilt"], tilt_neutral)
+        self.assertGreater(c._adaptive_head_rest["pitch"], 0.0)
 
     def _run_vertical_tick(self, *, face_y, lift_start, ceiling_frac=None):
         """One tracking tick against a vertically-offset face; returns set_servos updates."""
@@ -472,16 +497,163 @@ class FaceTrackingTests(unittest.TestCase):
 
     def test_lift_matching_capped_at_ceiling_high_face(self):
         # Standing adult (face high in frame) with the lift already at the match
-        # ceiling: the lift must NOT rise further; the tilt supplies the upward gaze.
+        # ceiling: the lift must NOT rise further; the head's pitch supplies the upward gaze.
         c = self.consciousness
         ceiling = c._lift_match_ceiling_qus()
         updates = self._run_vertical_tick(face_y=60, lift_start=ceiling)
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
-        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
         self.assertNotIn(lift_ch, updates)  # held at the ceiling
-        self.assertLess(  # tilt looks up (inverted: lower = up)
-            updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"]
-        )
+        self.assertTrue(set(head_pose.HEAD_PAIR).issubset(updates))
+        pitch, tilt = _decoded_head(updates)
+        self.assertGreater(pitch, 0.0)              # pitched UP
+        self.assertAlmostEqual(tilt, 0.0, delta=0.02)
+
+    def test_low_face_pitches_the_head_down_and_keeps_the_tilt(self):
+        # Owner spec: a face low in the frame pitches the head DOWN; the tilt is left
+        # where the attentive-cock schedule has it (here: an active cock of +0.2 that the
+        # head already sits at — face following must not disturb it).
+        c = self.consciousness
+        c._attentive_cock.update({"next_at": 1.0, "until": 10_000.0, "tilt": 0.2})
+        self._set_servo_positions(pitch=0.0, tilt=0.2)
+        c.world_state.update("people", [{
+            "id": "person_1", "person_db_id": 1, "face_id": "Bret",
+            "face_visible": True, "face_box": (580, 560, 120, 120),   # center (640, 620): low
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=250.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline") as set_baseline,
+            mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
+        ):
+            c._step_face_tracking(self.frame)
+        updates = set_servos.call_args.args[0]
+        self.assertTrue(set(head_pose.HEAD_PAIR).issubset(updates))
+        pitch, tilt = _decoded_head(updates)
+        cap = abs(head_pose.pitch_from_legacy_delta(c.config.FACE_TRACKING_TILT_MAX_STEP_QUS))
+        self.assertLess(pitch, 0.0)                        # pitched DOWN...
+        self.assertGreaterEqual(pitch, -cap - 0.01)        # ...by at most the per-tick cap
+        self.assertAlmostEqual(tilt, 0.2, delta=0.02)      # the cock is kept
+        self.assertAlmostEqual(set_baseline.call_args.kwargs["tilt"], 0.2, delta=1e-6)
+        self.assertLess(set_baseline.call_args.kwargs["pitch"], 0.0)
+
+    def test_pitch_follows_the_degrees_formula(self):
+        # One tick, no caps biting: degrees = deg(pitch) - gain * share * (err_y/cy) * 29,
+        # then the smoothing alpha, i.e. the V3 program's vertical law.
+        c = self.consciousness
+        updates = self._run_vertical_tick(face_y=400, lift_start=6000)   # center y 460 of 720
+        error_y = 460 - 360.0
+        gain = float(c.config.FACE_TRACKING_VERTICAL_GAIN)
+        share = float(c.config.FACE_TRACKING_TILT_SHARE)
+        alpha = 1.0 - float(c.config.TRACKING_SMOOTHING_FACTOR)
+        degrees = 0.0 - gain * share * (error_y / 360.0) * 29.0
+        expected = alpha * head_pose.pitch_from_degrees(degrees)
+        cap = abs(head_pose.pitch_from_legacy_delta(c.config.FACE_TRACKING_TILT_MAX_STEP_QUS))
+        expected = max(-cap, expected)
+        pitch, _tilt = _decoded_head(updates)
+        self.assertLess(expected, 0.0)
+        self.assertAlmostEqual(pitch, expected, delta=0.01)
+
+    def test_attentive_cock_schedule_cocks_then_straightens(self):
+        # Every 10-25 s the head settles into a 0.15-0.3 cock to a random side for
+        # 3-8 s, then straightens; random is pinned so the schedule is deterministic.
+        c = self.consciousness
+        c.reset_attentive_cock()
+        draws = iter([12.0, 0.25, 4.0, 15.0, 0.18, 5.0])
+        with (
+            mock.patch.object(c.random, "uniform", side_effect=lambda a, b: next(draws)),
+            mock.patch.object(c.random, "choice", side_effect=lambda seq: seq[-1]),
+        ):
+            self.assertEqual(c._attentive_cock_tilt(100.0), 0.0)     # books the first cock
+            self.assertAlmostEqual(c._attentive_cock["next_at"], 112.0)
+            self.assertEqual(c._attentive_cock_tilt(111.9), 0.0)
+            self.assertAlmostEqual(c._attentive_cock_tilt(112.0), 0.25)   # cock begins (right)
+            self.assertAlmostEqual(c._attentive_cock["until"], 116.0)
+            self.assertAlmostEqual(c._attentive_cock_tilt(115.9), 0.25)   # held
+            self.assertEqual(c._attentive_cock_tilt(116.0), 0.0)         # straightens...
+            self.assertAlmostEqual(c._attentive_cock["next_at"], 131.0)  # ...and rebooks
+            self.assertEqual(c._attentive_cock_tilt(125.0), 0.0)
+            self.assertAlmostEqual(c._attentive_cock_tilt(131.0), 0.18)
+        self.assertEqual(c.ATTENTIVE_COCK_INTERVAL_SECS, (10.0, 25.0))
+        self.assertEqual(c.ATTENTIVE_COCK_HOLD_SECS, (3.0, 8.0))
+        self.assertEqual(c.ATTENTIVE_COCK_TILT, (0.15, 0.3))
+
+    def test_locked_face_eases_the_tilt_toward_the_attentive_cock(self):
+        # A centered face (no centering error) with an active cock: the only servo write
+        # is the head pair, tilting toward the cock one slew step per tick, pitch untouched.
+        c = self.consciousness
+        c._attentive_cock.update({"next_at": 1.0, "until": 10_000.0, "tilt": -0.25})
+        self._set_servo_positions()
+        c.world_state.update("people", [{
+            "id": "person_1", "person_db_id": 1, "face_id": "Bret",
+            "face_visible": True, "face_box": (580, 300, 120, 120),   # center (640, 360)
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=250.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline") as set_baseline,
+        ):
+            c._step_face_tracking(self.frame)
+        updates = set_servos.call_args.args[0]
+        self.assertEqual(set(updates), set(head_pose.HEAD_PAIR))
+        pitch, tilt = _decoded_head(updates)
+        self.assertAlmostEqual(pitch, 0.0, delta=0.02)
+        self.assertLess(tilt, -0.02)                                # cocking to Rex's left
+        self.assertGreaterEqual(tilt, -c.ATTENTIVE_COCK_STEP - 0.02)  # one slew step
+        self.assertAlmostEqual(set_baseline.call_args.kwargs["tilt"], -c.ATTENTIVE_COCK_STEP, delta=1e-6)
+
+    def test_camera_moved_counts_both_head_servos_and_the_lift(self):
+        # "The head moved, the camera view changed" counts the lift and BOTH head
+        # channels (pitch or cock) through head_pose.HEAD_SMALL, not only the neck.
+        c = self.consciousness
+        key = 777
+        level = head_pose.head_pulses(0.0, 0.0)
+        head_then = {1: 3600, 2: level[2], 11: level[11]}
+        c._last_seen_pose[key] = (0.0, 0.0, dict(head_then))
+        c._camera_moved_since.pop(key, None)
+        try:
+            def moved_with(changes=None):
+                head_now = dict(head_then)
+                head_now.update(changes or {})
+                with mock.patch.object(c, "_camera_pose", return_value=(0.0, 0.0, head_now)):
+                    result = c._camera_moved_since_seen(key, 1000.0)
+                c._camera_moved_since.pop(key, None)
+                return result
+            self.assertFalse(moved_with())
+            self.assertTrue(moved_with({11: head_then[11] + head_pose.HEAD_SMALL[11] + 1}))   # channel 11
+            self.assertFalse(moved_with({11: head_then[11] + head_pose.HEAD_SMALL[11] - 1}))
+            self.assertTrue(moved_with({2: head_then[2] - head_pose.HEAD_SMALL[2] - 1}))      # channel 2
+            self.assertTrue(moved_with({1: head_then[1] + head_pose.HEAD_SMALL[1] + 1}))      # the lift
+            # A cock alone (both servos the same way) reframes too.
+            cocked = head_pose.head_pulses(0.0, 0.6)
+            self.assertTrue(moved_with({2: cocked[2], 11: cocked[11]}))
+            # The old two-field pose (neck deg, base yaw deg) still works unchanged.
+            c._last_seen_pose[key] = (0.0, 0.0)
+            with mock.patch.object(c, "_camera_pose", return_value=(40.0, 0.0)):
+                self.assertTrue(c._camera_moved_since_seen(key, 1000.0))
+            c._camera_moved_since.pop(key, None)
+            with mock.patch.object(c, "_camera_pose", return_value=(1.0, 0.0, head_then)):
+                self.assertFalse(c._camera_moved_since_seen(key, 1000.0))
+        finally:
+            c._last_seen_pose.pop(key, None)
+            c._camera_moved_since.pop(key, None)
+
+    def test_camera_pose_publishes_the_head_pulses(self):
+        c = self.consciousness
+        self._set_servo_positions(pitch=0.3, tilt=-0.1)
+        pair = head_pose.head_pulses(0.3, -0.1)
+        with mock.patch("intelligence.motion_agency._come_neck_bearing_deg", return_value=5.0), \
+             mock.patch("intelligence.motion_agency._base_yaw_deg", return_value=None):
+            neck, yaw, head = c._camera_pose()
+        self.assertEqual((neck, yaw), (5.0, None))
+        self.assertEqual(head, {1: 6000, 2: pair[2], 11: pair[11]})
 
     def test_lift_matching_below_ceiling_may_still_rise_to_it(self):
         # From well below the ceiling, an above-center face may raise the lift — but
@@ -514,14 +686,13 @@ class FaceTrackingTests(unittest.TestCase):
     def test_speaker_gaze_center_search_uses_adaptive_vertical_rest(self):
         c = self.consciousness
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
-        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
         # A rest INSIDE the ±REST_MAX_LIFT_OFFSET clamp about neutral (3600 since
         # the 2026-08-19 retune) passes through untouched; the old fixture value
         # 5480 now clamps and asserted the clamp, not the pass-through.
         c._adaptive_head_rest.clear()
         c._adaptive_head_rest.update({
             "lift": 4400,
-            "tilt": 5010,
+            "pitch": -0.4,
             "samples": 4,
             "updated_at": 100.0,
         })
@@ -530,10 +701,45 @@ class FaceTrackingTests(unittest.TestCase):
             mock.patch.object(c.config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True),
             mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
         ):
-            targets = c._speaker_gaze_search_targets(0.0, 0.0)
+            targets = c._speaker_gaze_search_targets(0.0, 0.0, tilt=0.0)
 
         self.assertEqual(targets[lift_ch], 4400)
-        self.assertEqual(targets[tilt_ch], 5010)
+        pitch, tilt = _decoded_head(targets)
+        self.assertAlmostEqual(pitch, -0.4, delta=0.01)   # the rest pitch passes through
+        self.assertAlmostEqual(tilt, 0.0, delta=0.01)
+
+    def test_speaker_gaze_search_down_end_and_random_tilt(self):
+        # The "down" end is pitch -SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION, never past the
+        # adaptive rest toward UP; the visor sits at the capture pose (inverted visor: NOT
+        # the channel max, which is now fully down); a scan carries a +/-0.3 cock.
+        c = self.consciousness
+        visor_ch = c.config.SERVO_CHANNELS["visor"]["ch"]
+        frac = float(c.config.SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION)
+        self.assertAlmostEqual(frac, 0.65)
+        c._adaptive_head_rest.clear()
+        c._adaptive_head_rest.update({"lift": 3600, "pitch": 0.0, "samples": 4, "updated_at": 100.0})
+        with (
+            mock.patch.object(c.config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True),
+            mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
+        ):
+            down = c._speaker_gaze_search_targets(0.0, 1.0, tilt=0.0)
+            with mock.patch.object(c.random, "choice", side_effect=lambda seq: seq[0]):
+                left = c._speaker_gaze_search_targets(0.0, 0.0)
+            with mock.patch.object(c.random, "choice", side_effect=lambda seq: seq[-1]):
+                right = c._speaker_gaze_search_targets(0.0, 0.0)
+            # A rest already pitched further down than the fraction is kept (never pulled up).
+            c._adaptive_head_rest.update({"pitch": -0.7})
+            deeper = c._speaker_gaze_search_targets(0.0, 1.0, tilt=0.0)
+        self.assertAlmostEqual(_decoded_head(down)[0], -frac, delta=0.01)
+        self.assertEqual(down[visor_ch], int(c.config.VISOR_CAMERA_CAPTURE_QUS))
+        self.assertEqual(down[visor_ch], 4800)
+        self.assertNotEqual(down[visor_ch], int(c.config.SERVO_CHANNELS["visor"]["max"]))
+        self.assertAlmostEqual(_decoded_head(left)[1], -c.SEARCH_TILT, delta=0.01)
+        self.assertAlmostEqual(_decoded_head(right)[1], c.SEARCH_TILT, delta=0.01)
+        self.assertAlmostEqual(_decoded_head(left)[0], 0.0, delta=0.01)
+        self.assertAlmostEqual(_decoded_head(deeper)[0], -0.7, delta=0.01)
+        for targets in (down, left, right, deeper):
+            self.assertTrue(set(head_pose.HEAD_PAIR).issubset(targets))
 
     def test_face_loss_eases_vertical_pose_toward_adaptive_rest(self):
         c = self.consciousness
@@ -544,7 +750,7 @@ class FaceTrackingTests(unittest.TestCase):
         c._adaptive_head_rest.clear()
         c._adaptive_head_rest.update({
             "lift": 5500,
-            "tilt": 4800,
+            "pitch": -0.4,
             "samples": 3,
             "updated_at": 100.0,
         })
@@ -562,12 +768,20 @@ class FaceTrackingTests(unittest.TestCase):
             c._step_face_tracking(self.frame, [])
 
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
-        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
         updates = set_servos.call_args.args[0]
         self.assertEqual(updates[lift_ch], 5945)
-        self.assertEqual(updates[tilt_ch], 4375)
+        # The pitch eases toward the -0.4 rest one capped step (55 old q-us -> ~0.046)
+        # at a time, both head servos written together, the tilt staying straight.
+        step = abs(head_pose.pitch_from_legacy_delta(c.config.FACE_TRACKING_REST_RETURN_MAX_STEP_QUS))
+        pitch, tilt = _decoded_head(updates)
+        self.assertAlmostEqual(pitch, -step, delta=0.01)
+        self.assertAlmostEqual(tilt, 0.0, delta=0.01)
         set_profile.assert_called_once()
-        set_baseline.assert_called_once_with(neck=6000, lift=5945, tilt=4375)
+        set_baseline.assert_called_once()
+        kwargs = set_baseline.call_args.kwargs
+        self.assertEqual((kwargs["neck"], kwargs["lift"]), (6000, 5945))
+        self.assertAlmostEqual(kwargs["pitch"], -step, delta=1e-6)
+        self.assertEqual(kwargs["tilt"], 0.0)
 
     def test_recent_speaker_face_beats_larger_bystander(self):
         c = self.consciousness
@@ -650,9 +864,11 @@ class FaceTrackingTests(unittest.TestCase):
         lift_cfg = c.config.SERVO_CHANNELS["headlift"]
         neutral = int(lift_cfg["neutral"])
 
-        low_lift, _ = c._greeting_height_targets("low")
-        high_lift, _ = c._greeting_height_targets("high")
-        center_lift, _ = c._greeting_height_targets("center")
+        low_lift, low_pitch = c._greeting_height_targets("low")
+        high_lift, high_pitch = c._greeting_height_targets("high")
+        center_lift, center_pitch = c._greeting_height_targets("center")
+        # "low" pitches the head down with the lift drop, "high" up a touch, "center" level.
+        self.assertEqual((low_pitch, high_pitch, center_pitch), (-0.5, 0.4, 0.0))
 
         # "Well below/above" is measured against the travel actually available on
         # each side of neutral, so retuning the channel limits can't make these
@@ -679,9 +895,13 @@ class FaceTrackingTests(unittest.TestCase):
             c._apply_greeting_height("low")
 
         set_servos.assert_called_once()
-        self.assertLess(set_servos.call_args.args[0][lift_ch], neutral)  # head went low
+        targets = set_servos.call_args.args[0]
+        self.assertLess(targets[lift_ch], neutral)  # head went low
+        self.assertTrue(set(head_pose.HEAD_PAIR).issubset(targets))   # the pair, together
+        self.assertAlmostEqual(_decoded_head(targets)[0], -0.5, delta=0.01)   # pitched down
         self.assertTrue(set_baseline.called)
         self.assertLess(set_baseline.call_args.kwargs.get("lift"), neutral)
+        self.assertEqual(set_baseline.call_args.kwargs.get("pitch"), -0.5)
         # The head is pinned so it holds still long enough for dlib to lock.
         self.assertTrue(c.directed_gaze_hold_active(500.0))
 
@@ -763,11 +983,12 @@ class FaceTrackingTests(unittest.TestCase):
 
         updates = set_servos.call_args.args[0]
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
-        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
         visor_ch = c.config.SERVO_CHANNELS["visor"]["ch"]
         self.assertLess(updates[lift_ch], c.config.SERVO_CHANNELS["headlift"]["neutral"])
-        self.assertGreater(updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"])
-        self.assertEqual(updates[visor_ch], c.config.SERVO_CHANNELS["visor"]["max"])
+        pitch, tilt = _decoded_head(updates)
+        self.assertLess(pitch, 0.0)                                   # looking DOWN
+        self.assertAlmostEqual(abs(tilt), c.SEARCH_TILT, delta=0.01)  # with the scan's cock
+        self.assertEqual(updates[visor_ch], int(c.config.VISOR_CAMERA_CAPTURE_QUS))
         tracking = c.world_state.get("self_state").get("face_tracking") or {}
         self.assertTrue(tracking.get("searching"))
         # First beat of the randomized scan drops the gaze down (seated-person bias)

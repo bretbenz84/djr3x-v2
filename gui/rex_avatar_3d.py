@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QVBoxLayout
 import config
 from gui.mouth_leds import MouthAnimation
 from gui.avatar_rig import ASSET_DIR, SPEC, pose_matrices, spring_points, point
-from gui.rex_avatar import RexAvatar as AvatarState, normalize_servo, chest_render_state, _eye_color, _chest_gauge_color, _prand, _pick
+from gui.rex_avatar import RexAvatar as AvatarState, normalize_servo, head_norms, chest_render_state, _eye_color, _chest_gauge_color, _prand, _pick
 
 @lru_cache(maxsize=1)
 def _geometry_data():
@@ -202,9 +202,12 @@ class RexAvatar(AvatarState):
     """
     def __init__(self, parent=None, *, show_background=True):
         super().__init__(parent, show_background=show_background)
-        # Gravity-rest elbow, closed visor; missing channels retain last state.
-        for name, channel in config.SERVO_CHANNELS.items():
-            self._target[name] = normalize_servo(name, channel.get('rest', channel['neutral']))
+        # Gravity-rest elbow, head pair hanging fully down, closed visor; missing
+        # channels retain last state.
+        rest = {name: channel.get('rest', channel['neutral']) for name, channel in config.SERVO_CHANNELS.items()}
+        for name, value in rest.items():
+            self._target[name] = normalize_servo(name, value)
+        self._target.update(head_norms(rest))
         self._target['visor'] = 0.
         self._current = dict(self._target)
         self._rig = RigViewState()

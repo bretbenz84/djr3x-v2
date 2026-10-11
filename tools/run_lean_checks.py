@@ -19,7 +19,8 @@ MODULES = (
     "dialogue_act turn_plan turn_planner_slim_contract conversation_streaming "
     "voice_primary_identity voice_bearing_match active_speaker lean_multi_party "
     "game_roster_identity motion_swing motion_sequence motion_route_tool speaker_segments camping_identity_regression "
-    "come_here_regression voice_direction_quality come_target_acquisition come_arrival tof_fr_filter front_tof_corroboration tof_autonomy_gate"
+    "come_here_regression voice_direction_quality come_target_acquisition come_arrival tof_fr_filter front_tof_corroboration tof_autonomy_gate "
+    "head_pose servo_head_pair body_beats directed_look listening_motion servo_speech_emotion"
 ).split()
 
 

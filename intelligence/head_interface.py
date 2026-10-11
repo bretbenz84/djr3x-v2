@@ -23,7 +23,8 @@ Three implementations / paths
 DOF axis convention (matches the spec)
 --------------------------------------
 * ``yaw_deg``   — +left / -right (REP-103-ish; maps to the ``neck`` channel)
-* ``pitch_deg`` — +up / -down, 0 = level (maps to the inverted ``headtilt`` channel)
+* ``pitch_deg`` — +up / -down, 0 = level (maps to the two-servo head's PITCH fraction,
+  channels 2 + 11 driven against each other; see hardware/head_pose)
 * ``pole_mm``   — head height; + = raised/lean-in, 0 = settled (maps to ``headlift``)
 """
 
@@ -146,24 +147,44 @@ class RealHead:
         self._profile_and_set("neck", self._cfg.yaw_deg_to_neck_qus(deg), 140)
 
     def set_pitch(self, deg: float, max_vel_dps: float) -> None:
-        self._profile_and_set("headtilt", self._cfg.pitch_deg_to_tilt_qus(deg), 120)
+        # The two head servos (2 + 11) must always be written together: pitch rides
+        # through the driver's pose helper, which keeps the current tilt (cock).
+        try:
+            from hardware import servos  # lazy: hardware optional
+            import config
+
+            pair = [int(ch) for ch in getattr(config, "HEAD_PAIR_CHANNELS", (2, 11))]
+            servos.set_motion_profile(pair, speed=120, acceleration=8)
+            servos.set_head_pose(pitch=self._cfg.pitch_deg_to_head_pitch(deg))
+        except Exception as exc:  # pragma: no cover - hardware/serial edge
+            _log.debug("RealHead set pitch failed: %s", exc)
 
     def set_pole(self, mm: float, max_vel_mms: float) -> None:
         # Posture axis: deliberately slow.
         self._profile_and_set("headlift", self._cfg.pole_mm_to_lift_qus(mm), 35)
 
     def get_pose(self) -> HeadPose:
+        pitch = 0.0
         try:
             from world_state import world_state
 
-            positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
+            self_state = world_state.get("self_state") or {}
+            positions = self_state.get("servo_positions") or {}
             neck = int(positions.get("neck", self._cfg.neck_neutral))
-            tilt = int(positions.get("headtilt", self._cfg.tilt_neutral))
             lift = int(positions.get("headlift", self._cfg.lift_neutral))
+            head = self_state.get("head_pose") or {}
+            if head.get("pitch") is not None:
+                pitch = float(head["pitch"])
+            elif "head_left" in positions and "head_right" in positions:
+                from hardware import head_pose
+                pitch, _tilt = head_pose.head_pose(
+                    {head_pose.HEAD_LEFT_CH: int(positions["head_left"]),
+                     head_pose.HEAD_RIGHT_CH: int(positions["head_right"])}
+                )
         except Exception:
-            neck, tilt, lift = self._cfg.neck_neutral, self._cfg.tilt_neutral, self._cfg.lift_neutral
+            neck, lift = self._cfg.neck_neutral, self._cfg.lift_neutral
         return HeadPose(
             yaw_deg=self._cfg.neck_qus_to_yaw_deg(neck),
-            pitch_deg=self._cfg.tilt_qus_to_pitch_deg(tilt),
+            pitch_deg=self._cfg.head_pitch_to_deg(pitch),
             pole_mm=self._cfg.lift_qus_to_pole_mm(lift),
         )

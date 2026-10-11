@@ -17563,6 +17563,11 @@ def _compound_look_direction(text: str) -> Optional[str]:
     return m.group("direction").lower() if m else None
 
 
+# Named head steps (October 10 2026, two-servo head): cock the head to a side, straighten
+# it, or level it. Routed like a directed look but never photographed or reported.
+_HEAD_STEP_DIRECTIONS = frozenset({"tilt_left", "tilt_right", "tilt_straight", "level"})
+
+
 def _execute_directed_look_command(
     args: dict,
     person_id: Optional[int],
@@ -17574,6 +17579,30 @@ def _execute_directed_look_command(
     search_target = bool(args.get("search_target") and target_hint)
     target_kind = _directed_target_kind(target_hint) if target_hint else None
     bare_directional = not target_hint and not search_target
+    if direction in _HEAD_STEP_DIRECTIONS:
+        # A head STEP on the two-servo head ("tilt your head left", "straighten
+        # your head", "level your head"): a posture, not an inspection order. The
+        # head moves and holds it; no photo, no report of the view.
+        try:
+            from sequences import animations
+            consciousness.suspend_face_tracking(3.0)
+            try:
+                actual_direction = animations.directed_look_pose(direction)
+            finally:
+                try:
+                    consciousness.resume_face_tracking()
+                except Exception:
+                    pass
+            try:
+                consciousness.hold_directed_gaze(actual_direction)
+            except Exception as exc:
+                _log.debug("head step gaze hold failed: %s", exc)
+            return _silent_command_response(f"directed_look.{actual_direction}")
+        except Exception as exc:
+            _log.debug("head step command failed: %s", exc)
+            resp = "I tried, but my head servos are staging a tiny rebellion."
+            _speak_blocking(resp)
+            return resp
     search_start_direction = direction
     if (
         direction == "current"

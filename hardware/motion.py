@@ -39,6 +39,7 @@ _seq_lock = threading.Lock()
 _seq = 0
 _base_command_lock = threading.Lock()
 _stop_generation = 0
+_drive_stance_seq = None   # the base command whose done releases the drive stance
 
 _connected = False
 _last_port: "str | None" = None     # remembered for auto-reconnect after a drop
@@ -295,6 +296,14 @@ def _dispatch(msg: dict) -> None:
         if isinstance(seq, int):
             with _state_lock:
                 _remember(_dones, seq, msg)
+            if seq == _drive_stance_seq:
+                # The wheels stopped: the poker arm returns to its awake pose and the
+                # idle arm wander resumes; the head is the gaze's again.
+                try:
+                    from sequences import animations
+                    animations.release_drive_stance()
+                except Exception:
+                    _log.debug('drive stance release skipped', exc_info=True)
         if _on_done is not None:
             try:
                 _on_done(msg)
@@ -410,9 +419,19 @@ def send(obj: dict) -> "int | None":
         except Exception:
             _log.warning('Base command blocked: throttle retraction failed', exc_info=True)
             return None
+        # Drive stance (owner): neck centre, head level and straight, hero elbow up,
+        # poker swing high, poker elbow/wrist at their park — taken before the
+        # wheels turn and released when the firmware reports done.
+        try:
+            from sequences import animations
+            animations.drive_stance()
+        except Exception:
+            _log.debug('drive stance skipped', exc_info=True)
         seq = _send(obj, stop_generation=generation)
         if seq is not None:
             throttle_arm.base_motion_sent(seq)
+            global _drive_stance_seq
+            _drive_stance_seq = seq
         return seq
 
 

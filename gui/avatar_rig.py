@@ -2,6 +2,14 @@
 
 Coordinates retain the source assembly's Z-up metres. No hardware imports or
 commands: input values are normalized using the runtime's calibrated channels.
+
+The head is not a servo norm any more (October 10 2026 rework: two servos on one
+post). The rig takes ``head_pitch`` (norm 0 = fully down, 1 = fully up, level at
+:data:`LEVEL_PITCH_NORM`) and ``head_tilt`` (norm 0 = cocked to Rex's left, .5
+straight, 1 = right); :func:`pitch_norm` / :func:`tilt_norm` turn the
+``hardware.head_pose`` fractions into those norms. The visor norm keeps its
+meaning (0 closed, 1 open) even though the servo is now inverted — callers feed
+``head_pose.visor_frac``, never the raw pulse fraction.
 """
 from __future__ import annotations
 import json
@@ -44,6 +52,38 @@ def align(a, b):
         axis = np.cross(a, [1, 0, 0] if abs(a[0]) < .9 else [0, 1, 0])
     return rotation(axis, math.degrees(math.acos(dot)))
 
+def level_pitch_norm(spec=SPEC):
+    """The head_pitch norm at which the rig's head is level (0 degrees)."""
+    lo, hi = spec['limits']['head_pitch']
+    return (0 - lo) / (hi - lo) if hi != lo else .5
+
+LEVEL_PITCH_NORM = level_pitch_norm()
+
+def pitch_norm(pitch, spec=SPEC):
+    """A head_pose pitch fraction (-1 down .. +1 up) as the rig's head_pitch norm.
+
+    Piecewise so that pitch 0 lands exactly on the rig's level angle even though
+    the drawn travel is asymmetric (15 down, 30 up)."""
+    try:
+        pitch = float(pitch)
+    except (TypeError, ValueError):
+        pitch = 0.
+    if not math.isfinite(pitch):
+        pitch = 0.
+    pitch = max(-1., min(1., pitch))
+    level = level_pitch_norm(spec)
+    return level + pitch * (level if pitch < 0 else 1 - level)
+
+def tilt_norm(tilt):
+    """A head_pose tilt fraction (-1 Rex's left .. +1 right) as the rig's head_tilt norm."""
+    try:
+        tilt = float(tilt)
+    except (TypeError, ValueError):
+        tilt = 0.
+    if not math.isfinite(tilt):
+        tilt = 0.
+    return .5 + .5 * max(-1., min(1., tilt))
+
 def servo_values(norms, spec=SPEC):
     values = {}
     for name, (lo, hi) in spec['limits'].items():
@@ -62,7 +102,10 @@ def pose_matrices(norms, spec=SPEC):
     m['elbow'] = m['hero'] @ around(spec['elbow_pivot'], spec['elbow_axis'], v['elbow'])
     m['wrist'] = m['elbow'] @ around(spec['wrist_pivot'], spec['wrist_axis'], v['hand'])
     m['neck'] = translation([0, 0, v['headlift']]) @ rotation([0, 0, 1], v['neck'])
-    m['head'] = m['neck'] @ around(spec['head_pivot'], spec['head_axis'], -v['headtilt'])
+    # Pitch about the left-right head axis (positive degrees = up), then a side roll
+    # about the forward (camera) axis: positive cocks the head to Rex's own right.
+    m['head'] = (m['neck'] @ around(spec['head_pivot'], spec['head_axis'], -v['head_pitch'])
+                 @ around(spec['head_pivot'], spec['head_forward'], v['head_tilt']))
     m['visor'] = m['head'] @ around(spec['visor_pivot'], spec['visor_axis'], v['visor'])
     lower, upper = np.array(spec['piston_lower']), np.array(spec['piston_upper'])
     a, b = point(m['hero'], lower), point(m['elbow'], upper)

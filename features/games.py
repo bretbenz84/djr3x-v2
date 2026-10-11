@@ -270,7 +270,7 @@ def _ispy_scan_room() -> list[tuple[str, object]]:
     for view in _ISPY_SCAN_VIEWS:
         try:
             consciousness.hold_directed_gaze(view, secs=6.0)
-            animations.directed_look_pose(view)
+            animations.directed_look_pose(view, requested=False)
             frame = camera.capture_current_gaze(settle_secs=settle)
             if frame is not None:
                 views.append((view, frame))
@@ -367,7 +367,7 @@ def _ispy_glance_at_target() -> None:
         return
     try:
         from sequences import animations
-        animations.directed_look_pose(view)
+        animations.directed_look_pose(view, requested=False)
     except Exception as exc:
         _log.debug("[games] I Spy reveal glance failed: %s", exc)
 

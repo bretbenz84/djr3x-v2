@@ -159,7 +159,7 @@ Instead of starting `main.py` by hand, you can have macOS stay quietly ready and
 
 The same installer adds a **menu bar battery meter** (`tools/rex_battery_menubar.py`) when `MOTION_ESP32_PORT` is set: the drive base's charge, voltage, and current stay visible in the macOS menu bar even while the robot is off, by passively reading the ESP32's always-on telemetry stream. It releases the serial port automatically whenever `main.py` is running (same flock the supervisor uses for the mic) and reclaims it when Rex shuts down. A **"Set Battery to 100%"** menu item lets you sync the firmware's charge gauge the moment your charger's taper current says the pack is full. The same dropdown also carries a **drive joystick** — dragging it sends live drive setpoints straight to the ESP32, so you can move the robot without starting `main.py` (it holds the port only while Rex is off, same as the meter).
 
-It also adds a **"Servo Control" menu bar console** (`tools/rex_servo_menubar.py`) when `MAESTRO_PORT` is set: a dropdown with live sliders for all 11 Maestro servo channels (labelled with the current position in microseconds, initialized from the board's actual positions) plus a **"Restart Pololu"** action that sends the Maestro's go-home command. Sliders command the servos directly over the same wire protocol the robot uses. Like the battery meter, it releases the serial port automatically whenever `main.py` is running and reclaims it when Rex shuts down.
+It also adds a **"Servo Control" menu bar console** (`tools/rex_servo_menubar.py`) when `MAESTRO_PORT` is set: a dropdown with live sliders for all 14 Maestro servo channels (labelled with the current position in microseconds, initialized from the board's actual positions) plus a **"Restart Pololu"** action that sends the Maestro's go-home command. Sliders command the servos directly over the same wire protocol the robot uses. Each slider is independent, so the console cannot enforce the two-servo head envelope or the poker elbow/wrist clearance ceiling (see "Direction of travel" below) — move those pairs with care, one small step at a time. Like the battery meter, it releases the serial port automatically whenever `main.py` is running and reclaims it when Rex shuts down.
 
 And an **"LED Control" menu bar console** (`tools/rex_led_menubar.py`) when `ARDUINO_HEAD_PORT` or `ARDUINO_CHEST_PORT` is set: a dropdown with one button per animation the head and chest firmware support, so you can audition any LED pattern while the robot is off. Head "speak" animations are an equalizer that normally rides a `SPEAK_LEVEL` stream derived from live TTS audio, so clicking one also starts a synthetic level wave to make the mouth actually dance; chest speak patterns animate on their own. It starts in **Battery Meter Mode** (both ports released, buttons inert) because the battery meter needs those same exclusive-open ports to paint the chest charge gauge and the mouth's state-of-charge breathing while Rex is off — holding them permanently left the robot sitting dark on the charger. Toggle the top menu item, or just click any animation, to take the ports; the choice persists across relaunches. It reads ports straight from `.env` and never imports `config.py`, so it runs without API keys configured.
 
@@ -195,20 +195,30 @@ Connecting the Maestro before limits are programmed can drive a servo past its s
 
 ### Direction of travel
 
-**Among the original eight channels, `headtilt` is the only inverted channel.** Every other channel correlates: a higher quarter-microsecond value moves that joint in the direction named below, and a lower value moves it back.
+All 14 Maestro channels, after the October 10 2026 head rework. Two channels run **inverted** (a higher value moves the joint *against* its name): `head_right` and, since the rework, the `visor`. Every other channel correlates: a higher quarter-microsecond value moves that joint in the direction named below, and a lower value moves it back.
 
 | Ch | Channel | Higher value → | Lower value → |
 | --- | --- | --- | --- |
 | 0 | `neck` | head turns right | head turns left |
 | 1 | `headlift` | head physically higher | head lower |
-| 2 | `headtilt` | **inverted** — head tilted *down* | head tilted *up* |
-| 3 | `visor` | visor more open (lens clear) | visor closed over the lens |
+| 2 | `head_left` | head pitched *up* | head pitched *down* — where it hangs unpowered |
+| 3 | `visor` | **inverted** — visor *down* over the lens | visor *up* (lens clear) |
 | 4 | `elbow` | arm lifted up | arm hanging down — where it falls unpowered |
 | 5 | `hand` | wrist rotates one way | wrist rotates the other |
 | 6 | `pokerarm` | — | — |
 | 7 | `heroarm` | arm raised toward horizontal | arm hanging down the torso |
+| 8 | `throttle_shoulder` | see the throttle section below | — |
+| 9 | `throttle_elbow` | see the throttle section below | — |
+| 10 | `throttle_wrist` | see the throttle section below | — |
+| 11 | `head_right` | **inverted** — head pitched *down* — where it hangs unpowered | head pitched *up* |
+| 12 | `poker_elbow` | poker forearm raised up | poker forearm down |
+| 13 | `poker_wrist` | poker hand curled up and inward | poker hand down (5760 is straight) |
 
-The elbow's low end is also its **unpowered rest**: with the robot off the servos go limp and the arm falls there, so `config.SERVO_CHANNELS["elbow"]["rest"]` parks and starts it at that value. See "unpowered rest" in [config.py](config.py).
+**The two head servos are one unit.** `head_left` (2) and `head_right` (11) face each other on a single centre post: driven against each other they *pitch* the head, driven the same way they *cock* it sideways. They are never commanded alone — [hardware/head_pose.py](hardware/head_pose.py) turns a pitch (-1 down .. +1 up) and a tilt (-1 cocked to Rex's left .. +1 right) into the pair, and `hardware/servos.py` refuses a write that names one without the other or a pair no pitch/tilt explains. The visor's inversion dates from the same rework: awake/up is 5120 qus (1280 µs, the configured neutral), down/park is 6976.
+
+**The poker elbow and wrist need clearance staging.** The elbow (12) rises fully only with the wrist (13) at or below 1564 µs; curled further in, the wrist meets the arm and the elbow's ceiling falls (`head_pose.poker_elbow_max`). Every move between two clear poses is staged one joint at a time (`head_pose.poker_route`) so the ceiling is never crossed on the way.
+
+Three channels have an **unpowered rest**, where gravity puts the joint when the robot is off and the servos go limp, and `config.SERVO_CHANNELS[...]["rest"]` parks and starts each there: the hero `elbow` falls to its low end; the head pair rests fully down (`head_left` 1013 µs / `head_right` 1904 µs); and the poker arm stands at its park (`poker_elbow` 1920 µs / `poker_wrist` 1564 µs), which is where it is found when switched on. See "unpowered rest" in [config.py](config.py).
 
 ### Throttle arm commissioning (channels 8–10)
 

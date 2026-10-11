@@ -44,13 +44,20 @@ _DEFAULTS = {
         "servo_positions": {
             "neck": 6000,
             "headlift": 6000,
-            "headtilt": 4320,
-            "visor": 6000,
+            # Two-servo head (October 10 2026): the LEVEL pair. hardware/head_pose.py
+            # decodes the pair into the pitch/tilt published beside it.
+            "head_left": 5832,
+            "head_right": 6480,
+            "visor": 5120,          # Inverted servo: 5120 is awake / up.
             "elbow": 6720,
             "hand": 6000,
             "pokerarm": 6000,
             "heroarm": 6000,
+            "poker_elbow": 6000,
+            "poker_wrist": 3768,
         },
+        # Decoded head pose: pitch -1 down .. +1 up, tilt -1 Rex's left .. +1 right.
+        "head_pose": {"pitch": 0.0, "tilt": 0.0},
         "manual_servo_override": False,
         "body_state": "neutral",
         "face_tracking": {

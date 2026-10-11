@@ -142,7 +142,7 @@ class StartAndRevealTest(unittest.TestCase):
              mock.patch.object(games, "_rex_respond", side_effect=lambda ctx, pid=None: ctx):
             resp, done = games._ispy_handle("the red chair", None)
         self.assertTrue(done)
-        pose.assert_called_once_with("left")
+        pose.assert_called_once_with("left", requested=False)   # Rex's own glance: a repeat never swings back
 
     def test_stop_glances_at_target_view(self):
         games._game_state.update({
@@ -151,7 +151,7 @@ class StartAndRevealTest(unittest.TestCase):
         with mock.patch("sequences.animations.directed_look_pose") as pose, \
              mock.patch.object(games, "_rex_respond", side_effect=lambda ctx, pid=None: ctx):
             games._ispy_stop(None)
-        pose.assert_called_once_with("right")
+        pose.assert_called_once_with("right", requested=False)
 
     def test_wrong_guess_does_not_glance(self):
         games._game_state.update({

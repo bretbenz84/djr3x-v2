@@ -1208,11 +1208,10 @@ class CompoundGazeDirectionTest(unittest.TestCase):
             self.assertEqual(match.args.get("direction"), expected, text)
 
     def test_a_compound_pose_adds_no_new_servo_extreme(self):
-        """The head is 5 lb on an 8mm rod and the tilt servo is fragile.
+        """The head is 5 lb on its two head servos.
 
         A compound must be the SET UNION of its two single-axis poses in one
-        glided move_to — never a new tilt value. Captured without commanding
-        hardware.
+        glided move_to — never a new pitch. Captured without commanding hardware.
         """
         import config
         from sequences import animations
@@ -1235,9 +1234,9 @@ class CompoundGazeDirectionTest(unittest.TestCase):
 
         self.assertEqual(returned, "down_left")
         self.assertEqual(compound, {**down, **left})
-        tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
-        self.assertEqual(compound[tilt_ch], down[tilt_ch],
-                         "a compound must not command a tilt beyond plain 'down'")
+        for ch in config.HEAD_PAIR_CHANNELS:
+            self.assertEqual(compound[ch], down[ch],
+                             "a compound must not pitch the head beyond plain 'down'")
 
 
 class LegacyMemoryWriteGateTest(unittest.TestCase):

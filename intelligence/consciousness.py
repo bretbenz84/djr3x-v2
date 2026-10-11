@@ -30,6 +30,7 @@ import state as state_module
 from state import State
 from world_state import world_state
 from awareness.situation import assessor as _situation_assessor, SituationProfile
+from hardware import head_pose
 from intelligence import emotion_orchestrator
 from intelligence import episodic_hooks
 from intelligence import gaze_engine
@@ -537,12 +538,26 @@ _directed_gaze_hold: dict = {"until": 0.0, "direction": None, "started_at": 0.0}
 
 # Learned vertical rest gaze. Active face tracking still owns the exact gaze
 # baseline; this only changes where Rex settles/searches after a face disappears.
+# ``pitch`` is the two-servo head's pitch fraction (0 = level, + = up; hardware/head_pose).
 _adaptive_head_rest: dict = {
     "lift": int(config.SERVO_CHANNELS["headlift"]["neutral"]),
-    "tilt": int(config.SERVO_CHANNELS["headtilt"]["neutral"]),
+    "pitch": 0.0,
     "samples": 0,
     "updated_at": 0.0,
 }
+
+# Attentive cock while locked on a face (owner spec, October 10 2026): every 10-25 s the
+# head settles into a gentle cock of 0.15-0.3 to a random side for 3-8 s, then straightens.
+# Driven by the 12.5 Hz face-tracking step; ``tilt`` is the cock the step aims for (0 when
+# none), ``until`` the end of the current cock, ``next_at`` when the next one starts.
+_attentive_cock: dict = {"next_at": 0.0, "until": 0.0, "tilt": 0.0}
+ATTENTIVE_COCK_INTERVAL_SECS = (10.0, 25.0)
+ATTENTIVE_COCK_HOLD_SECS = (3.0, 8.0)
+ATTENTIVE_COCK_TILT = (0.15, 0.3)
+# A glance away (gaze aversion, idle wander) carries a cock of this much to a random side.
+GLANCE_COCK_TILT = (0.1, 0.25)
+# Room scans (speaker search, startup sweep) carry a tilt of this much to a random side.
+SEARCH_TILT = 0.3
 
 # Last time a mood-driven idle body gesture fired (monotonic), for cooldown spacing.
 _last_mood_gesture_at: float = 0.0
@@ -560,7 +575,7 @@ _idle_wander_lock = threading.Lock()
 _idle_wander: dict = {
     "active": False,        # currently looking around (face loop drives the motion)
     "until": 0.0,           # monotonic deadline for the wander
-    "waypoints": [],        # list of (neck, lift, tilt) poses to visit; last = return gaze
+    "waypoints": [],        # list of (neck, lift, pitch, tilt) poses to visit; last = return gaze
     "index": 0,             # current waypoint
     "reached_at": 0.0,      # when the current waypoint was reached (for dwell)
     "last_at": 0.0,         # last wander finish time (cooldown)
@@ -9717,16 +9732,30 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
         _relationship_prompt_in_flight.clear()
 
 
-def _camera_pose() -> "tuple[Optional[float], Optional[float]]":
-    """(neck yaw deg, base gyro yaw deg) — either None when not published."""
+def _camera_pose() -> "tuple[Optional[float], Optional[float], Optional[dict]]":
+    """(neck yaw deg, base gyro yaw deg, head pulses) — each None when not published.
+
+    The head pulses are the lift and BOTH head servos ({1, 2, 11} -> quarter-us) so a
+    pitch or cock that reframes the camera counts as camera motion, not only the neck."""
     neck = yaw = None
+    head = None
     try:
         from intelligence import motion_agency as _ma
         neck = _ma._come_neck_bearing_deg()
         yaw = _ma._base_yaw_deg()
     except Exception:
         pass
-    return neck, yaw
+    try:
+        positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
+        pulses = {
+            int(config.SERVO_CHANNELS[name]["ch"]): int(positions[name])
+            for name in ("headlift", "head_left", "head_right")
+            if positions.get(name) is not None and name in config.SERVO_CHANNELS
+        }
+        head = pulses or None
+    except Exception:
+        head = None
+    return neck, yaw, head
 
 
 def presence_notes(now: Optional[float] = None) -> list[str]:
@@ -9778,8 +9807,11 @@ def _camera_moved_since_seen(key, now: float) -> bool:
     seen = _last_seen_pose.get(key)
     if not seen:
         return False
-    neck_then, yaw_then = seen
-    neck_now, yaw_now = _camera_pose()
+    neck_then, yaw_then = seen[0], seen[1]
+    head_then = seen[2] if len(seen) > 2 else None
+    now_pose = _camera_pose() or (None, None, None)
+    neck_now, yaw_now = now_pose[0], now_pose[1]
+    head_now = now_pose[2] if len(now_pose) > 2 else None
     moved = False
     try:
         if neck_then is not None and neck_now is not None:
@@ -9788,7 +9820,11 @@ def _camera_moved_since_seen(key, now: float) -> bool:
         if not moved and yaw_then is not None and yaw_now is not None:
             d = (float(yaw_now) - float(yaw_then) + 180.0) % 360.0 - 180.0
             moved = abs(d) > float(getattr(config, "PRESENCE_CAMERA_MOVED_BASE_DEG", 15.0))
-    except (TypeError, ValueError):
+        if not moved and head_then and head_now:
+            # The lift or either head servo (pitch OR cock) past HEAD_SMALL reframes
+            # the camera just like a neck turn does.
+            moved = head_pose.head_reframes(head_then, head_now)
+    except (TypeError, ValueError, KeyError):
         moved = False
     if not moved:
         _camera_moved_since.pop(key, None)
@@ -12178,6 +12214,91 @@ def _clamp_servo(name: str, value: float) -> int:
     return max(int(cfg["min"]), min(int(cfg["max"]), int(round(value))))
 
 
+def _current_head_pose() -> "tuple[float, float]":
+    """(pitch, tilt) of the two-servo head from proprioception: the driver publishes
+    ``self_state["head_pose"]`` on every write; failing that, fit the two named channels;
+    failing that, level and straight."""
+    try:
+        self_state = world_state.get("self_state") or {}
+        pose = self_state.get("head_pose")
+        if isinstance(pose, dict) and pose.get("pitch") is not None:
+            return float(pose.get("pitch") or 0.0), float(pose.get("tilt") or 0.0)
+        positions = self_state.get("servo_positions") or {}
+        if positions.get("head_left") is not None and positions.get("head_right") is not None:
+            return head_pose.head_pose({
+                head_pose.HEAD_LEFT_CH: int(positions["head_left"]),
+                head_pose.HEAD_RIGHT_CH: int(positions["head_right"]),
+            })
+    except Exception:
+        pass
+    return 0.0, 0.0
+
+
+def _current_head_pulses() -> "dict[int, int]":
+    """The two head servos' current pulses (from proprioception, else from the pose)."""
+    try:
+        positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
+        if positions.get("head_left") is not None and positions.get("head_right") is not None:
+            return {
+                head_pose.HEAD_LEFT_CH: int(positions["head_left"]),
+                head_pose.HEAD_RIGHT_CH: int(positions["head_right"]),
+            }
+    except Exception:
+        pass
+    return head_pose.head_pulses(*_current_head_pose())
+
+
+def _clamp_pitch(value: float) -> float:
+    return max(-1.0, min(1.0, float(value)))
+
+
+def _limited_pitch_step(current: float, target: float, max_step: float) -> float:
+    """One tick of a pitch or tilt fraction toward ``target``, moving at most ``max_step``."""
+    max_step = max(1e-4, float(max_step or 1e-4))
+    delta = float(target) - float(current)
+    if abs(delta) <= max_step:
+        return _clamp_pitch(target)
+    return _clamp_pitch(float(current) + (max_step if delta > 0 else -max_step))
+
+
+def _legacy_pitch_cap(attr: str, default: int) -> float:
+    """A per-tick step cap written in the OLD tilt servo's quarter-microseconds
+    (``*_TILT_MAX_STEP_QUS`` etc.) as a pitch/tilt fraction per tick."""
+    try:
+        qus = int(getattr(config, attr, default) or default)
+    except (TypeError, ValueError):
+        qus = int(default)
+    return abs(head_pose.pitch_from_legacy_delta(abs(qus))) or abs(
+        head_pose.pitch_from_legacy_delta(int(default))
+    )
+
+
+def _legacy_pitch_span(qus: float) -> float:
+    """An OLD-tilt-servo offset magnitude (quarter-us) as a pitch magnitude."""
+    return abs(head_pose.pitch_from_legacy_delta(abs(float(qus))))
+
+
+# The driver publishes the head pose rounded to 3 decimals; re-encoding it can differ
+# from the commanded pulses by a couple of quarter-microseconds, so a pair that moves
+# neither servo by at least this much is not a move.
+_HEAD_PAIR_MIN_DELTA_QUS = 4
+
+
+def _head_pair_updates(pitch: float, tilt: float, *, min_delta: int = _HEAD_PAIR_MIN_DELTA_QUS) -> "dict[int, int]":
+    """The pulse pair for (pitch, tilt), or {} when it would move neither head servo
+    by ``min_delta``. Always both channels or neither (the driver refuses a lone one)."""
+    pair = head_pose.head_pulses(_clamp_pitch(pitch), _clamp_pitch(tilt))
+    current = _current_head_pulses()
+    if all(abs(int(pair[ch]) - int(current.get(ch, pair[ch]))) < int(min_delta) for ch in pair):
+        return {}
+    return pair
+
+
+def _random_side_tilt(low: float, high: float) -> float:
+    """A cock of ``low``..``high`` to a random side (negative = Rex's own left)."""
+    return random.choice((-1.0, 1.0)) * random.uniform(float(low), float(high))
+
+
 def _limited_tracking_step(name: str, current: int, target: int, max_step: int) -> int:
     max_step = max(1, int(max_step or 1))
     delta = int(target) - int(current)
@@ -12233,32 +12354,37 @@ def _start_idle_head_wander(now: float) -> None:
     pre-wander gaze (where the person was), so he reliably looks back and can re-acquire."""
     neck_cfg = config.SERVO_CHANNELS["neck"]
     lift_cfg = config.SERVO_CHANNELS["headlift"]
-    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
     neck_neutral = int(neck_cfg["neutral"])
     lift_neutral = int(lift_cfg["neutral"])
-    tilt_neutral = int(tilt_cfg["neutral"])
 
+    start_pitch, start_tilt = _current_head_pose()
     start_pose = (
         _current_servo_position("neck"),
         _current_servo_position("headlift"),
-        _current_servo_position("headtilt"),
+        float(start_pitch),
+        float(start_tilt),
     )
     neck_range = int(getattr(config, "IDLE_HEAD_WANDER_NECK_RANGE_QUS", 2600) or 0)
     lift_range = int(getattr(config, "IDLE_HEAD_WANDER_LIFT_RANGE_QUS", 800) or 0)
-    tilt_range = int(getattr(config, "IDLE_HEAD_WANDER_TILT_RANGE_QUS", 200) or 0)
+    # The pitch range is still written in the OLD tilt servo's quarter-us (200 = ~0.17 of
+    # the pitch travel); waypoints pitch around where the head IS, not around level.
+    pitch_range = _legacy_pitch_span(int(getattr(config, "IDLE_HEAD_WANDER_TILT_RANGE_QUS", 200) or 0))
     wp_min = int(getattr(config, "IDLE_HEAD_WANDER_WAYPOINTS_MIN", 2) or 1)
     wp_max = max(wp_min, int(getattr(config, "IDLE_HEAD_WANDER_WAYPOINTS_MAX", 3) or 1))
     count = random.randint(wp_min, wp_max)
 
-    waypoints: list[tuple[int, int, int]] = []
+    waypoints: list[tuple[int, int, float, float]] = []
     for _ in range(count):
         waypoints.append((
             _clamp_servo("neck", neck_neutral + random.uniform(-neck_range, neck_range)),
             _clamp_servo("headlift", lift_neutral + random.uniform(-lift_range, lift_range)),
-            _clamp_servo("headtilt", tilt_neutral + random.uniform(-tilt_range, tilt_range)),
+            _clamp_pitch(start_pitch + random.uniform(-pitch_range, pitch_range)),
+            # A glance away carries a cock to a random side (within +/-SEARCH_TILT).
+            _random_side_tilt(GLANCE_COCK_TILT[0], SEARCH_TILT),
         ))
-    # Final waypoint: look back where the person was, so he re-acquires the face.
-    waypoints.append((int(start_pose[0]), int(start_pose[1]), int(start_pose[2])))
+    # Final waypoint: look back where the person was — neck, lift, pitch AND tilt exactly —
+    # so he re-acquires the face.
+    waypoints.append(start_pose)
 
     dur = random.uniform(
         float(getattr(config, "IDLE_HEAD_WANDER_MIN_DURATION_SECS", 3.0)),
@@ -12352,24 +12478,35 @@ def _drive_idle_head_wander(servo_mod, now: float) -> None:
             return
 
         target = waypoints[index]
-        names = ("neck", "headlift", "headtilt")
+        names = ("neck", "headlift")
         cur = (
             _current_servo_position("neck"),
             _current_servo_position("headlift"),
-            _current_servo_position("headtilt"),
         )
         max_step = int(getattr(config, "IDLE_HEAD_WANDER_MAX_STEP_QUS", 160))
         tol = int(getattr(config, "IDLE_HEAD_WANDER_WAYPOINT_TOLERANCE_QUS", 70))
         updates: dict[int, int] = {}
         reached = True
         next_pose = {}
-        for name, c_, t_ in zip(names, cur, target):
+        for name, c_, t_ in zip(names, cur, target[:2]):
             nxt = _limited_tracking_step(name, c_, int(t_), max_step)
             next_pose[name] = nxt
             if abs(nxt - c_) >= 2:
                 updates[int(config.SERVO_CHANNELS[name]["ch"])] = nxt
             if abs(int(t_) - c_) > tol:
                 reached = False
+        # The head pair steps in pitch/tilt units, rate-limited by the same (converted)
+        # per-tick cap, and is written as a pair or not at all.
+        cur_pitch, cur_tilt = _current_head_pose()
+        target_pitch = float(target[2]) if len(target) > 2 else cur_pitch
+        target_tilt = float(target[3]) if len(target) > 3 else cur_tilt
+        head_step = _legacy_pitch_span(max_step)
+        head_tol = _legacy_pitch_span(tol)
+        next_pose["pitch"] = _limited_pitch_step(cur_pitch, target_pitch, head_step)
+        next_pose["tilt"] = _limited_pitch_step(cur_tilt, target_tilt, head_step)
+        updates.update(_head_pair_updates(next_pose["pitch"], next_pose["tilt"]))
+        if abs(target_pitch - cur_pitch) > head_tol or abs(target_tilt - cur_tilt) > head_tol:
+            reached = False
 
         if updates:
             try:
@@ -12384,7 +12521,8 @@ def _drive_idle_head_wander(servo_mod, now: float) -> None:
             # Keep breathing/speech orbit anchored to where he's actually looking.
             try:
                 servo_mod.set_face_tracking_baseline(
-                    neck=next_pose["neck"], lift=next_pose["headlift"], tilt=next_pose["headtilt"],
+                    neck=next_pose["neck"], lift=next_pose["headlift"],
+                    pitch=next_pose["pitch"], tilt=next_pose["tilt"],
                 )
             except Exception:
                 pass
@@ -12411,7 +12549,7 @@ def _lift_match_ceiling_qus() -> Optional[int]:
     near max for whole interactions — the neck read as over-extended and left zero
     headroom for expressive pops (excitement/alarm). Matching a face may still pull
     the lift DOWN freely (children, seated people), but never above this ceiling;
-    the tilt supplies the upward gaze instead. Expressive moves (body beats, moods,
+    the head's pitch supplies the upward gaze instead. Expressive moves (body beats, moods,
     speech motion) are not routed through this and keep the full range."""
     frac = float(getattr(config, "FACE_TRACKING_LIFT_MATCH_CEILING_FRAC", 0.5) or 1.0)
     if frac >= 1.0:
@@ -12428,14 +12566,10 @@ def _adaptive_head_rest_enabled() -> bool:
 
 
 def _adaptive_head_rest_limit(name: str, value: float) -> int:
+    """Clamp a learned LIFT rest to +/-FACE_TRACKING_REST_MAX_LIFT_OFFSET_QUS about neutral."""
     cfg = config.SERVO_CHANNELS[name]
     neutral = int(cfg["neutral"])
-    attr = (
-        "FACE_TRACKING_REST_MAX_LIFT_OFFSET_QUS"
-        if name == "headlift"
-        else "FACE_TRACKING_REST_MAX_TILT_OFFSET_QUS"
-    )
-    max_offset = int(getattr(config, attr, 0) or 0)
+    max_offset = int(getattr(config, "FACE_TRACKING_REST_MAX_LIFT_OFFSET_QUS", 0) or 0)
     if max_offset <= 0:
         return neutral
     low = max(int(cfg["min"]), neutral - max_offset)
@@ -12443,35 +12577,46 @@ def _adaptive_head_rest_limit(name: str, value: float) -> int:
     return max(low, min(high, int(round(value))))
 
 
-def _adaptive_head_rest_target() -> tuple[int, int]:
+def _adaptive_rest_pitch_limit(value: float) -> float:
+    """Clamp a learned PITCH rest about level. The knob is still written in the OLD tilt
+    servo's quarter-us (FACE_TRACKING_REST_MAX_TILT_OFFSET_QUS) and converts to a pitch
+    magnitude through head_pose.pitch_from_legacy_delta."""
+    max_offset = int(getattr(config, "FACE_TRACKING_REST_MAX_TILT_OFFSET_QUS", 0) or 0)
+    if max_offset <= 0:
+        return 0.0
+    span = _legacy_pitch_span(max_offset)
+    return max(-span, min(span, _clamp_pitch(value)))
+
+
+def _adaptive_head_rest_target() -> tuple[int, float]:
+    """(lift qus, pitch fraction) the head settles to when no face is being centered."""
     if not _adaptive_head_rest_enabled() or int(_adaptive_head_rest.get("samples") or 0) <= 0:
-        return (
-            int(config.SERVO_CHANNELS["headlift"]["neutral"]),
-            int(config.SERVO_CHANNELS["headtilt"]["neutral"]),
-        )
+        return (int(config.SERVO_CHANNELS["headlift"]["neutral"]), 0.0)
     return (
         _adaptive_head_rest_limit("headlift", float(_adaptive_head_rest.get("lift") or 0.0)),
-        _adaptive_head_rest_limit("headtilt", float(_adaptive_head_rest.get("tilt") or 0.0)),
+        _adaptive_rest_pitch_limit(float(_adaptive_head_rest.get("pitch") or 0.0)),
     )
 
 
-def _mood_rest_bias() -> tuple[int, int]:
-    """(headlift_delta, headtilt_delta) the current body mood adds to the RESTING head
-    pose — where the head settles when no face is actively being centered. Riding the
-    rest pose (not the live centering output) means mood never fights face-tracking.
-    Clamped to config offsets; gated + failure-safe (0,0 when disabled/unavailable)."""
+def _mood_rest_bias() -> tuple[int, float]:
+    """(headlift_delta_qus, head_pitch_delta) the current body mood adds to the RESTING
+    head pose — where the head settles when no face is actively being centered. Riding
+    the rest pose (not the live centering output) means mood never fights face-tracking.
+    Clamped to config offsets (the pitch clamp BODY_MOOD_REST_MAX_TILT_OFFSET_QUS is
+    still written in the old tilt servo's quarter-us and converts to a pitch magnitude);
+    gated + failure-safe ((0, 0.0) when disabled/unavailable)."""
     try:
         from intelligence import body_mood
         if not body_mood.enabled():
-            return (0, 0)
-        lift_d, tilt_d = body_mood.head_bias()
+            return (0, 0.0)
+        lift_d, pitch_d = body_mood.head_bias()
     except Exception:
-        return (0, 0)
+        return (0, 0.0)
     max_lift = int(getattr(config, "BODY_MOOD_REST_MAX_LIFT_OFFSET_QUS", 1100) or 0)
-    max_tilt = int(getattr(config, "BODY_MOOD_REST_MAX_TILT_OFFSET_QUS", 320) or 0)
+    max_pitch = _legacy_pitch_span(int(getattr(config, "BODY_MOOD_REST_MAX_TILT_OFFSET_QUS", 320) or 0))
     lift_d = max(-max_lift, min(max_lift, int(lift_d)))
-    tilt_d = max(-max_tilt, min(max_tilt, int(tilt_d)))
-    return (lift_d, tilt_d)
+    pitch_d = max(-max_pitch, min(max_pitch, float(pitch_d)))
+    return (lift_d, pitch_d)
 
 
 def _face_area_fraction(candidate: dict, frame_w: int, frame_h: int) -> float:
@@ -12496,7 +12641,7 @@ def _note_adaptive_head_rest(
     frame_w: int,
     frame_h: int,
     lift: int,
-    tilt: int,
+    pitch: float,
     now: float,
 ) -> None:
     if not _adaptive_head_rest_enabled():
@@ -12513,20 +12658,20 @@ def _note_adaptive_head_rest(
     alpha = max(0.0, min(1.0, alpha))
     if alpha <= 0.0:
         return
-    old_lift, old_tilt = _adaptive_head_rest_target()
+    old_lift, old_pitch = _adaptive_head_rest_target()
     samples = int(_adaptive_head_rest.get("samples") or 0)
     if samples <= 0:
         alpha = max(alpha, 0.35)
     new_lift = _adaptive_head_rest_limit("headlift", old_lift + alpha * (int(lift) - old_lift))
-    new_tilt = _adaptive_head_rest_limit("headtilt", old_tilt + alpha * (int(tilt) - old_tilt))
+    new_pitch = _adaptive_rest_pitch_limit(old_pitch + alpha * (float(pitch) - old_pitch))
     # The learned rest is pure eye-level matching — it obeys the lift match ceiling
-    # (a tall face teaches an upward TILT rest instead of a stretched neck).
+    # (a tall face teaches an upward PITCH rest instead of a stretched neck).
     lift_ceiling = _lift_match_ceiling_qus()
     if lift_ceiling is not None:
         new_lift = min(new_lift, lift_ceiling)
     _adaptive_head_rest.update({
         "lift": new_lift,
-        "tilt": new_tilt,
+        "pitch": round(new_pitch, 4),
         "samples": samples + 1,
         "updated_at": now,
     })
@@ -12540,9 +12685,9 @@ def _step_adaptive_head_rest_return(
 ) -> bool:
     # The mood bias can express posture even before an adaptive rest pose is learned,
     # so proceed when EITHER a learned rest exists OR a mood bias is active.
-    bias_lift, bias_tilt = _mood_rest_bias()
+    bias_lift, bias_pitch = _mood_rest_bias()
     has_learned_rest = _adaptive_head_rest_enabled() and int(_adaptive_head_rest.get("samples") or 0) > 0
-    if not has_learned_rest and bias_lift == 0 and bias_tilt == 0:
+    if not has_learned_rest and bias_lift == 0 and bias_pitch == 0.0:
         return False
     delay = float(getattr(config, "FACE_TRACKING_REST_RETURN_AFTER_LOST_SECS", 0.8) or 0.0)
     if lost_age_secs is not None and lost_age_secs < max(0.0, delay):
@@ -12557,29 +12702,31 @@ def _step_adaptive_head_rest_return(
     except Exception:
         return False
 
-    target_lift, target_tilt = _adaptive_head_rest_target()
+    target_lift, target_pitch = _adaptive_head_rest_target()
     # The matching part of the rest target obeys the lift ceiling; the mood bias is
     # EXPRESSIVE posture and may ride above it (that's what the headroom is for).
     lift_ceiling = _lift_match_ceiling_qus()
     if lift_ceiling is not None:
         target_lift = min(target_lift, lift_ceiling)
-    # Compose the mood posture onto the settling target (clamped to servo limits).
+    # Compose the mood posture onto the settling target (clamped to servo limits / the
+    # pitch range). The rest pose is straight: any cock left over eases back to 0.
     target_lift = _clamp_servo("headlift", target_lift + bias_lift)
-    target_tilt = _clamp_servo("headtilt", target_tilt + bias_tilt)
+    target_pitch = _clamp_pitch(target_pitch + bias_pitch)
+    target_tilt = 0.0
     current_neck = _current_servo_position("neck")
     current_lift = _current_servo_position("headlift")
-    current_tilt = _current_servo_position("headtilt")
+    current_pitch, current_tilt = _current_head_pose()
     max_step = int(getattr(config, "FACE_TRACKING_REST_RETURN_MAX_STEP_QUS", 55) or 55)
+    head_step = _legacy_pitch_span(max_step)
     next_lift = _limited_tracking_step("headlift", current_lift, target_lift, max_step)
-    next_tilt = _limited_tracking_step("headtilt", current_tilt, target_tilt, max_step)
+    next_pitch = _limited_pitch_step(current_pitch, target_pitch, head_step)
+    next_tilt = _limited_pitch_step(current_tilt, target_tilt, head_step)
 
     lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
-    tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
     updates: dict[int, int] = {}
     if abs(next_lift - current_lift) >= 2:
         updates[lift_ch] = next_lift
-    if abs(next_tilt - current_tilt) >= 2:
-        updates[tilt_ch] = next_tilt
+    updates.update(_head_pair_updates(next_pitch, next_tilt))
     if not updates:
         return False
     try:
@@ -12595,7 +12742,8 @@ def _step_adaptive_head_rest_return(
         servo_mod.set_face_tracking_baseline(
             neck=current_neck,
             lift=updates.get(lift_ch, current_lift),
-            tilt=updates.get(tilt_ch, current_tilt),
+            pitch=next_pitch,
+            tilt=next_tilt,
         )
     except Exception as exc:
         _log.debug("adaptive rest baseline update failed: %s", exc)
@@ -12679,7 +12827,8 @@ def _step_mood_expression(snapshot: dict, profile: "SituationProfile") -> None:
                 _mood_owns_visor = False
                 target = body_mood.idle_visor_target(now)
                 if target is None and releasing:
-                    target = max(body_mood.visor_lens_clear_floor(),
+                    # Inverted visor: the camera-clear EDGE is the highest pulse allowed.
+                    target = min(body_mood.visor_camera_clear_max(),
                                  int(config.SERVO_CHANNELS["visor"]["neutral"]))
             else:
                 _mood_owns_visor = True
@@ -12893,11 +13042,17 @@ def _maybe_log_face_tracking_move(
 
     neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
     lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
-    tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
+    target_head = "-"
+    if set(head_pose.HEAD_PAIR).issubset(updates):
+        try:
+            t_pitch, t_tilt = head_pose.head_pose({ch: updates[ch] for ch in head_pose.HEAD_PAIR})
+            target_head = f"pitch={t_pitch:.2f},tilt={t_tilt:.2f}"
+        except Exception:
+            target_head = "?"
     _log.info(
         "face_tracking: lock=%s person_id=%s center=(%.1f,%.1f) frame=%dx%d "
-        "error=(%.1f,%.1f) current=(neck=%d,lift=%d,tilt=%d) "
-        "target=(neck=%s,lift=%s,tilt=%s)",
+        "error=(%.1f,%.1f) current=(neck=%d,lift=%d,pitch=%.2f,tilt=%.2f) "
+        "target=(neck=%s,lift=%s,%s)",
         candidate.get("key"),
         candidate.get("person_id"),
         candidate.get("center", (0.0, 0.0))[0],
@@ -12908,10 +13063,11 @@ def _maybe_log_face_tracking_move(
         error_y,
         current["neck"],
         current["headlift"],
-        current["headtilt"],
+        float(current.get("pitch", 0.0)),
+        float(current.get("tilt", 0.0)),
         updates.get(neck_ch, "-"),
         updates.get(lift_ch, "-"),
-        updates.get(tilt_ch, "-"),
+        target_head,
     )
 
 
@@ -13077,25 +13233,25 @@ def _speaker_gaze_search_label(neck_frac, vert_frac: float) -> str:
     return f"{horiz}_{vert}"
 
 
-def _speaker_gaze_search_targets(neck_frac, vert_frac: float) -> dict[int, int]:
+def _speaker_gaze_search_targets(neck_frac, vert_frac: float, tilt: "float | None" = None) -> dict[int, int]:
     """Resolve a ``(neck_frac, vert_frac)`` search waypoint to servo targets.
 
     ``neck_frac``: ``-1..1`` (left..right), or ``None`` to hold the current heading.
-    ``vert_frac``: ``0..1`` (level/adaptive-rest .. fully down). Visor is held open so
-    the camera keeps a clear view while searching.
+    ``vert_frac``: ``0..1`` (level/adaptive-rest .. fully down). The visor is held at the
+    capture pose (inverted visor: a LOW pulse) so the camera keeps a clear view while
+    searching. A room scan carries a cock of +/-SEARCH_TILT to a random side unless
+    ``tilt`` is given; the two head servos are always set together.
     """
     neck_cfg = config.SERVO_CHANNELS["neck"]
     lift_cfg = config.SERVO_CHANNELS["headlift"]
-    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
     visor_cfg = config.SERVO_CHANNELS["visor"]
 
     neck_ch = int(neck_cfg["ch"])
     lift_ch = int(lift_cfg["ch"])
-    tilt_ch = int(tilt_cfg["ch"])
     visor_ch = int(visor_cfg["ch"])
 
     neutral_neck = int(neck_cfg["neutral"])
-    rest_lift, rest_tilt = _adaptive_head_rest_target()
+    rest_lift, rest_pitch = _adaptive_head_rest_target()
 
     # Inline fallbacks mirror the config defaults so config stays the one source of truth.
     neck_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_NECK_FRACTION", 1.0))
@@ -13109,15 +13265,10 @@ def _speaker_gaze_search_targets(neck_frac, vert_frac: float) -> dict[int, int]:
     else:
         neck = neutral_neck - (neutral_neck - int(neck_cfg["min"])) * neck_fraction * (-float(neck_frac))
 
-    # Down end of the pitch range. Tilt is inverted (larger PWM points lower); lift
-    # points lower with smaller PWM. Never push past the adaptive rest toward "up".
-    down_tilt = max(
-        _clamp_servo(
-            "headtilt",
-            int(tilt_cfg["neutral"]) + (int(tilt_cfg["max"]) - int(tilt_cfg["neutral"])) * down_tilt_fraction,
-        ),
-        rest_tilt,
-    )
+    # Down end of the pitch range: pitch -SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION (negative
+    # = down), but never past the adaptive rest toward "up"; the lift points lower with
+    # a smaller PWM, likewise never above the rest.
+    down_pitch = min(rest_pitch, -_clamp_pitch(down_tilt_fraction))
     down_lift = min(
         _clamp_servo(
             "headlift",
@@ -13128,14 +13279,16 @@ def _speaker_gaze_search_targets(neck_frac, vert_frac: float) -> dict[int, int]:
 
     vert = max(0.0, min(1.0, float(vert_frac)))
     lift = rest_lift + (down_lift - rest_lift) * vert
-    tilt = rest_tilt + (down_tilt - rest_tilt) * vert
+    pitch = rest_pitch + (down_pitch - rest_pitch) * vert
+    if tilt is None:
+        tilt = random.choice((-SEARCH_TILT, SEARCH_TILT))
 
     targets: dict[int, int] = {
-        visor_ch: int(visor_cfg["max"]),
+        visor_ch: int(getattr(config, "VISOR_CAMERA_CAPTURE_QUS", head_pose.VISOR_UP)),
         neck_ch: neck,
         lift_ch: lift,
-        tilt_ch: tilt,
     }
+    targets.update(head_pose.head_pulses(pitch, float(tilt)))
     return {
         channel: _clamp_servo(_CHANNEL_TO_SERVO_NAME[channel], value)
         if channel in _CHANNEL_TO_SERVO_NAME else int(value)
@@ -13213,7 +13366,7 @@ def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> 
         servo_mod.set_face_tracking_baseline(
             neck=targets.get(int(config.SERVO_CHANNELS["neck"]["ch"])),
             lift=targets.get(int(config.SERVO_CHANNELS["headlift"]["ch"])),
-            tilt=targets.get(int(config.SERVO_CHANNELS["headtilt"]["ch"])),
+            head={ch: targets[ch] for ch in head_pose.HEAD_PAIR},
         )
     except Exception as exc:
         _log.debug("speaker gaze search baseline update failed: %s", exc)
@@ -13229,41 +13382,44 @@ def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> 
 
 # ── Greet-at-their-height (Part C) ──────────────────────────────────────────────
 
-def _greeting_height_targets(vertical: str) -> tuple[int, int]:
-    """Map a person's vertical position in frame to (headlift, headtilt) targets.
+GREET_HEIGHT_LOW_PITCH = -0.5     # chin down to meet a seated / low person
+GREET_HEIGHT_HIGH_PITCH = 0.4     # look up a touch at a standing / tall one
+
+
+def _greeting_height_targets(vertical: str) -> tuple[int, float]:
+    """Map a person's vertical position in frame to (headlift qus, head pitch) targets.
 
     "low" → head drops toward its minimum (greet a seated/short/low person where
-    they are); "high" → head rises toward its maximum (meet a standing/tall person);
-    "center" → neutral. Headtilt is inverted (larger = looking down) and gets a
-    gentle matching nudge so the camera points the way the head leans.
+    they are) with the head pitched down (-0.5); "high" → head rises toward its
+    maximum (meet a standing/tall person) pitched up a touch (+0.4); "center" →
+    neutral lift, level. The pitch nudge points the camera the way the head leans.
     """
     lift_cfg = config.SERVO_CHANNELS["headlift"]
-    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
     lift_neutral, lift_min, lift_max = int(lift_cfg["neutral"]), int(lift_cfg["min"]), int(lift_cfg["max"])
-    tilt_neutral, tilt_min, tilt_max = int(tilt_cfg["neutral"]), int(tilt_cfg["min"]), int(tilt_cfg["max"])
 
     v = str(vertical or "center").strip().lower()
     if v == "low":
         frac = float(getattr(config, "GREET_HEIGHT_LOW_LIFT_FRACTION", 0.88))
         lift = lift_neutral - frac * (lift_neutral - lift_min)
-        tilt = tilt_neutral + 0.5 * (tilt_max - tilt_neutral)   # look down
+        pitch = GREET_HEIGHT_LOW_PITCH
     elif v == "high":
         frac = float(getattr(config, "GREET_HEIGHT_HIGH_LIFT_FRACTION", 0.85))
         lift = lift_neutral + frac * (lift_max - lift_neutral)
-        tilt = tilt_neutral - 0.4 * (tilt_neutral - tilt_min)   # look up a touch
+        pitch = GREET_HEIGHT_HIGH_PITCH
     else:
-        lift, tilt = lift_neutral, tilt_neutral
-    return _clamp_servo("headlift", lift), _clamp_servo("headtilt", tilt)
+        lift, pitch = lift_neutral, 0.0
+    return _clamp_servo("headlift", lift), _clamp_pitch(pitch)
 
 
 def _apply_greeting_height(vertical: str) -> None:
     """Pin head-lift to greet a person at their physical height and hold it.
 
-    Sets the lift/tilt now, makes it the face-tracking baseline (so breathing/speech
-    orbit this height instead of recentering), and arms a directed-gaze hold so the
-    speaker scan, idle wander, and adaptive-rest drift all stand down while the head
-    holds still long enough for dlib to lock. The instant a face is locked, normal
-    face tracking takes over and fine-centers on it (neck-tilt stays the fine axis).
+    Sets the lift/pitch now (both head servos together, keeping the current cock), makes
+    it the face-tracking baseline (so breathing/speech orbit this height instead of
+    recentering), and arms a directed-gaze hold so the speaker scan, idle wander, and
+    adaptive-rest drift all stand down while the head holds still long enough for dlib
+    to lock. The instant a face is locked, normal face tracking takes over and
+    fine-centers on it (neck + pitch stay the fine axes).
     """
     if not bool(getattr(config, "GREET_HEIGHT_ENABLED", True)):
         return
@@ -13272,23 +13428,24 @@ def _apply_greeting_height(vertical: str) -> None:
     except Exception:
         return
 
-    lift, tilt = _greeting_height_targets(vertical)
+    lift, pitch = _greeting_height_targets(vertical)
     lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
-    tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
+    _cur_pitch, cur_tilt = _current_head_pose()
+    head = head_pose.head_pulses(pitch, cur_tilt)
     try:
         servo_mod.set_motion_profile(
-            [lift_ch, tilt_ch],
+            [lift_ch, *head_pose.HEAD_PAIR],
             speed=int(getattr(config, "GREET_HEIGHT_SERVO_SPEED", 90)),
             acceleration=int(getattr(config, "SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION", 20)),
         )
     except Exception as exc:
         _log.debug("greeting height motion profile failed: %s", exc)
     try:
-        servo_mod.set_servos({lift_ch: lift, tilt_ch: tilt})
+        servo_mod.set_servos({lift_ch: lift, **head})
     except Exception as exc:
         _log.debug("greeting height set_servos failed: %s", exc)
     try:
-        servo_mod.set_face_tracking_baseline(lift=lift, tilt=tilt)
+        servo_mod.set_face_tracking_baseline(lift=lift, pitch=pitch, tilt=cur_tilt)
     except Exception as exc:
         _log.debug("greeting height baseline failed: %s", exc)
 
@@ -13296,7 +13453,7 @@ def _apply_greeting_height(vertical: str) -> None:
     # is what keeps the head steady at the greeting height while dlib tries to lock.
     hold_secs = float(getattr(config, "GREET_HEIGHT_HOLD_SECS", 6.0))
     hold_directed_gaze("hold", secs=hold_secs)
-    _log.info("[greet_height] vertical=%s lift=%d tilt=%d hold=%.1fs", vertical, lift, tilt, hold_secs)
+    _log.info("[greet_height] vertical=%s lift=%d pitch=%.2f hold=%.1fs", vertical, lift, pitch, hold_secs)
 
 
 def _vertical_from_box(candidate: Optional[dict], frame_h: int) -> str:
@@ -13370,7 +13527,6 @@ def _run_openai_presence_fallback() -> None:
         settle = float(getattr(config, "STARTUP_OPENAI_PRESENCE_SETTLE_SECS", 0.35))
         neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
         lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
-        tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
 
         for neck_frac, vert_frac in directions:
             now = time.monotonic()
@@ -13404,7 +13560,7 @@ def _run_openai_presence_fallback() -> None:
                 servo_mod.set_face_tracking_baseline(
                     neck=targets.get(neck_ch),
                     lift=targets.get(lift_ch),
-                    tilt=targets.get(tilt_ch),
+                    head={ch: targets[ch] for ch in head_pose.HEAD_PAIR},
                 )
             except Exception:
                 pass
@@ -13508,7 +13664,7 @@ def _record_face_tracking_state(
                 )
             except Exception:
                 pass
-        rest_lift, rest_tilt = _adaptive_head_rest_target()
+        rest_lift, rest_pitch = _adaptive_head_rest_target()
         tracking.update({
             "locked": bool(locked),
             "visible": bool(visible),
@@ -13526,7 +13682,7 @@ def _record_face_tracking_state(
             "lost_age_secs": round(lost_age_secs, 2) if lost_age_secs is not None else None,
             "adaptive_rest": {
                 "lift": rest_lift,
-                "tilt": rest_tilt,
+                "pitch": round(float(rest_pitch), 3),
                 "samples": int(_adaptive_head_rest.get("samples") or 0),
             },
         })
@@ -13643,17 +13799,32 @@ def _maybe_log_face_jump_reject(cx, cy, now) -> None:
 _gaze_drive: dict = {"phase": "idle"}  # phase: idle | away | returning
 
 
+def _anchor_pose(anchor) -> "tuple[int, int, float, float]":
+    """(neck, lift, pitch, tilt) of a captured gaze anchor. Anchors are
+    ``(neck, lift, pitch, tilt)``; a short one keeps the head level and straight."""
+    neck = int(anchor[0])
+    lift = int(anchor[1])
+    pitch = float(anchor[2]) if len(anchor) > 2 else 0.0
+    tilt = float(anchor[3]) if len(anchor) > 3 else 0.0
+    return neck, lift, pitch, tilt
+
+
 def _capture_gaze_anchor(decision) -> None:
     """Remember where the head was looking (the on-target face gaze) before averting,
     so the return lands back on the partner and centering can re-lock."""
     _gaze_drive["phase"] = "away"
+    pitch, tilt = _current_head_pose()
     _gaze_drive["anchor"] = (
         _current_servo_position("neck"),
         _current_servo_position("headlift"),
-        _current_servo_position("headtilt"),
+        float(pitch),
+        float(tilt),
     )
     _gaze_drive["return_since"] = 0.0
     _gaze_drive["segment"] = getattr(decision, "segment_id", None)
+    # A glance away carries a gentle cock to a random side; the return straightens it
+    # back to the anchor's tilt exactly.
+    _gaze_drive["cock"] = _random_side_tilt(*GLANCE_COCK_TILT)
     # Start the look-away from rest so it RAMPS in (soft ease-in), not a snap.
     _gaze_drive["vel"] = {}
 
@@ -13674,21 +13845,22 @@ def _drive_gaze_aversion(servo_mod, now: float, decision, anchor: tuple) -> None
         cfg = gaze_engine.get_engine().cfg
     except Exception:
         return
-    neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
-    lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
-    tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
-    anchor_neck, anchor_lift, _anchor_tilt = anchor
+    anchor_neck, anchor_lift = int(anchor[0]), int(anchor[1])
 
     neck_off = cfg.yaw_deg_to_neck_qus(decision.yaw_offset_deg) - cfg.neck_neutral
     target_neck = _clamp_servo("neck", anchor_neck + neck_off)
-    target_tilt = _clamp_servo("headtilt", cfg.pitch_deg_to_tilt_qus(decision.pitch_offset_deg))
+    target_pitch = cfg.pitch_deg_to_head_pitch(decision.pitch_offset_deg)
     target_lift = _clamp_servo("headlift", anchor_lift + cfg.pole_bias_qus(decision.pole_mm))
+    # The look-away carries a cock to a random side (picked once per aversion).
+    cock = _gaze_drive.get("cock")
+    if cock is None:
+        cock = _gaze_drive["cock"] = _random_side_tilt(*GLANCE_COCK_TILT)
 
     _step_gaze_targets(
-        servo_mod, target_neck, target_lift, target_tilt,
+        servo_mod, target_neck, target_lift, target_pitch, float(cock),
         neck_step=int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 240)),
         lift_step=int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 70)),
-        tilt_step=int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 130)),
+        pitch_step=_legacy_pitch_cap("GAZE_AVERSION_TILT_MAX_STEP_QUS", 130),
     )
     _record_face_tracking_state(locked=False, visible=False)
 
@@ -13702,12 +13874,12 @@ def _drive_gaze_return(servo_mod, now: float) -> bool:
         return True
     if not _gaze_drive.get("return_since"):
         _gaze_drive["return_since"] = now
-    target_neck, target_lift, target_tilt = anchor
+    target_neck, target_lift, target_pitch, target_tilt = _anchor_pose(anchor)
     reached = _step_gaze_targets(
-        servo_mod, int(target_neck), int(target_lift), int(target_tilt),
+        servo_mod, int(target_neck), int(target_lift), target_pitch, target_tilt,
         neck_step=int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 240)),
         lift_step=int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 70)),
-        tilt_step=int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 130)),
+        pitch_step=_legacy_pitch_cap("GAZE_AVERSION_TILT_MAX_STEP_QUS", 130),
         tolerance=int(getattr(config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420)),
     )
     _record_face_tracking_state(locked=False, visible=False)
@@ -13779,7 +13951,7 @@ def request_object_glance(label: str, *, source: str = "") -> bool:
     max_yaw = float(getattr(config, "OBJECT_GLANCE_MAX_BEARING_DEG", 26.0))
     max_pitch = float(getattr(config, "OBJECT_GLANCE_MAX_PITCH_DEG", 14.0))
     # +yaw => RIGHT of frame => neck toward max (validated _face_x_to_neck_target
-    # convention); +pitch => UP (tilt is inverted, gaze cfg handles that).
+    # convention); +pitch => UP (the gaze cfg maps degrees onto the head's pitch).
     yaw = max(-max_yaw, min(max_yaw, (cx - 0.5) * 2.0 * max_yaw))
     pitch = max(-max_pitch, min(max_pitch, (0.5 - cy) * 2.0 * max_pitch))
     with _object_glance_lock:
@@ -13850,7 +14022,7 @@ def _drive_object_glance(servo_mod, now: float) -> bool:
             else (
                 _current_servo_position("neck"),
                 _current_servo_position("headlift"),
-                _current_servo_position("headtilt"),
+                *_current_head_pose(),
             )
         )
         _gaze_release()
@@ -13862,17 +14034,17 @@ def _drive_object_glance(servo_mod, now: float) -> bool:
     except Exception:
         _object_glance_release()
         return False
-    anchor_neck, anchor_lift, _anchor_tilt = anchor
+    anchor_neck, anchor_lift, anchor_pitch, anchor_tilt = _anchor_pose(anchor)
     neck_off = cfg.yaw_deg_to_neck_qus(float(state.get("yaw_deg") or 0.0)) - cfg.neck_neutral
     target_neck = _clamp_servo("neck", anchor_neck + neck_off)
-    target_tilt = _clamp_servo(
-        "headtilt", cfg.pitch_deg_to_tilt_qus(float(state.get("pitch_deg") or 0.0))
-    )
+    # The glance is AT something: pitch to it, keep the anchor's cock as it is.
+    target_pitch = cfg.pitch_deg_to_head_pitch(float(state.get("pitch_deg") or 0.0))
+    target_tilt = anchor_tilt
     target_lift = int(anchor_lift)
 
     neck_step = int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 240))
     lift_step = int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 70))
-    tilt_step = int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 130))
+    pitch_step = _legacy_pitch_cap("GAZE_AVERSION_TILT_MAX_STEP_QUS", 130)
     tolerance = int(getattr(config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420))
     hold_secs = float(getattr(config, "OBJECT_GLANCE_HOLD_SECS", 2.6))
     max_secs = float(getattr(config, "OBJECT_GLANCE_MAX_SECS", 7.0))
@@ -13883,8 +14055,8 @@ def _drive_object_glance(servo_mod, now: float) -> bool:
                 _object_glance["moved"] = True
             _gaze_drive["vel"] = {}  # soft ease-in from rest
         reached = _step_gaze_targets(
-            servo_mod, target_neck, target_lift, target_tilt,
-            neck_step=neck_step, lift_step=lift_step, tilt_step=tilt_step,
+            servo_mod, target_neck, target_lift, target_pitch, target_tilt,
+            neck_step=neck_step, lift_step=lift_step, pitch_step=pitch_step,
             tolerance=tolerance,
         )
         _record_face_tracking_state(locked=False, visible=False)
@@ -13896,8 +14068,8 @@ def _drive_object_glance(servo_mod, now: float) -> bool:
 
     if phase == "hold":
         _step_gaze_targets(
-            servo_mod, target_neck, target_lift, target_tilt,
-            neck_step=neck_step, lift_step=lift_step, tilt_step=tilt_step,
+            servo_mod, target_neck, target_lift, target_pitch, target_tilt,
+            neck_step=neck_step, lift_step=lift_step, pitch_step=pitch_step,
             tolerance=tolerance,
         )
         _record_face_tracking_state(locked=False, visible=False)
@@ -13910,8 +14082,8 @@ def _drive_object_glance(servo_mod, now: float) -> bool:
 
     # returning
     reached = _step_gaze_targets(
-        servo_mod, int(anchor_neck), int(anchor_lift), int(_anchor_tilt),
-        neck_step=neck_step, lift_step=lift_step, tilt_step=tilt_step,
+        servo_mod, int(anchor_neck), int(anchor_lift), anchor_pitch, anchor_tilt,
+        neck_step=neck_step, lift_step=lift_step, pitch_step=pitch_step,
         tolerance=tolerance,
     )
     _record_face_tracking_state(locked=False, visible=False)
@@ -13922,16 +14094,17 @@ def _drive_object_glance(servo_mod, now: float) -> bool:
     return True
 
 
-def _gaze_ramped_step(name: str, current: int, target: int, max_vel: int, accel: float) -> tuple[int, float]:
-    """One velocity+acceleration-limited tick toward ``target`` (qus). Returns
-    (next_position, velocity). The per-axis velocity is carried in ``_gaze_drive['vel']``
+def _ramped_toward(axis: str, current: float, target: float, max_vel: float, accel: float) -> tuple[float, float]:
+    """One velocity+acceleration-limited tick toward ``target`` on ``axis`` (any unit).
+    Returns (next, velocity). The per-axis velocity is carried in ``_gaze_drive['vel']``
     so a look-away eases IN from rest (accel-limited) and eases OUT near the target
     (the desired velocity shrinks with the remaining distance) — a soft drift, not a
     constant-speed snap."""
     vel = _gaze_drive.setdefault("vel", {})
-    prev_v = float(vel.get(name, 0.0))
-    delta = float(int(target) - int(current))
-    max_vel = max(1.0, float(max_vel))
+    prev_v = float(vel.get(axis, 0.0))
+    delta = float(target) - float(current)
+    max_vel = max(1e-6, float(max_vel))
+    accel = max(1e-6, float(accel))
     desired = max(-max_vel, min(max_vel, delta))  # close the gap, capped at top speed
     if desired > prev_v + accel:
         v = prev_v + accel
@@ -13939,21 +14112,36 @@ def _gaze_ramped_step(name: str, current: int, target: int, max_vel: int, accel:
         v = prev_v - accel
     else:
         v = desired
-    nxt = current + v
+    nxt = float(current) + v
     if (v > 0 and nxt > target) or (v < 0 and nxt < target):  # don't overshoot
         nxt = float(target)
-        v = nxt - current
-    nxt_clamped = _clamp_servo(name, nxt)
-    vel[name] = v
-    return int(round(nxt_clamped)), v
+        v = nxt - float(current)
+    vel[axis] = v
+    return nxt, v
+
+
+def _gaze_ramped_step(name: str, current: int, target: int, max_vel: int, accel: float) -> tuple[int, float]:
+    """One ramped tick of a quarter-us servo channel (neck / lift) toward ``target``;
+    see :func:`_ramped_toward`. Returns (next_position, velocity)."""
+    nxt, v = _ramped_toward(name, int(current), int(target), max(1.0, float(max_vel)), accel)
+    return _clamp_servo(name, nxt), v
+
+
+def _gaze_ramped_head_step(axis: str, current: float, target: float, max_vel: float, accel: float) -> tuple[float, float]:
+    """One ramped tick of the head's pitch or tilt FRACTION toward ``target``."""
+    nxt, v = _ramped_toward(axis, float(current), float(target), max_vel, accel)
+    return _clamp_pitch(nxt), v
 
 
 def _step_gaze_targets(
-    servo_mod, target_neck: int, target_lift: int, target_tilt: int,
-    *, neck_step: int, lift_step: int, tilt_step: int, tolerance: int = 0,
+    servo_mod, target_neck: int, target_lift: int, target_pitch: float, target_tilt: float,
+    *, neck_step: int, lift_step: int, pitch_step: float, tolerance: int = 0,
 ) -> bool:
-    """Ramp the three head channels one tick toward the targets (soft ease-in/out via
-    a per-axis velocity); return True when all are within ``tolerance``. The
+    """Ramp the head one tick toward the targets — neck and lift in quarter-us, the
+    two-servo head's pitch and tilt as fractions (both at ``pitch_step`` per tick,
+    written as a pair or not at all) — with a soft ease-in/out via a per-axis velocity;
+    return True when all are within ``tolerance`` (quarter-us for the neck/lift, the
+    same tolerance converted from the old tilt servo's quarter-us for pitch/tilt). The
     ``*_step`` args are the per-tick velocity CAP (top speed); the acceleration is that
     cap divided by GAZE_AVERSION_RAMP_TICKS. Updates the gaze baseline so breathing
     orbits the new pose (matches the wander/rest drivers)."""
@@ -13961,9 +14149,8 @@ def _step_gaze_targets(
     specs = (
         ("neck", int(target_neck), int(neck_step)),
         ("headlift", int(target_lift), int(lift_step)),
-        ("headtilt", int(target_tilt), int(tilt_step)),
     )
-    next_pose: dict[str, int] = {}
+    next_pose: dict[str, float] = {}
     updates: dict[int, int] = {}
     reached = True
     tol = max(2, int(tolerance))
@@ -13975,6 +14162,15 @@ def _step_gaze_targets(
             updates[int(config.SERVO_CHANNELS[name]["ch"])] = nxt
         if abs(target - nxt) > tol:
             reached = False
+    cur_pitch, cur_tilt = _current_head_pose()
+    head_vel = max(1e-4, float(pitch_step))
+    head_tol = _legacy_pitch_span(tol)
+    for axis, cur, target in (("pitch", cur_pitch, float(target_pitch)), ("tilt", cur_tilt, float(target_tilt))):
+        nxt, _v = _gaze_ramped_head_step(axis, cur, _clamp_pitch(target), head_vel, head_vel / ramp)
+        next_pose[axis] = nxt
+        if abs(_clamp_pitch(target) - nxt) > head_tol:
+            reached = False
+    updates.update(_head_pair_updates(next_pose["pitch"], next_pose["tilt"]))
     if updates:
         try:
             servo_mod.set_motion_profile(
@@ -13987,7 +14183,8 @@ def _step_gaze_targets(
         servo_mod.set_servos(updates)
         try:
             servo_mod.set_face_tracking_baseline(
-                neck=next_pose["neck"], lift=next_pose["headlift"], tilt=next_pose["headtilt"],
+                neck=int(next_pose["neck"]), lift=int(next_pose["headlift"]),
+                pitch=float(next_pose["pitch"]), tilt=float(next_pose["tilt"]),
             )
         except Exception:
             pass
@@ -14113,6 +14310,45 @@ def _maybe_drive_gaze(servo_mod, now: float, speech_active: bool) -> bool:
         _log.debug("gaze engine step error: %s", exc)
         _gaze_release()
         return False
+
+
+# Vertical half field of view of the camera (degrees): the pitch correction for a face at
+# the frame's top/bottom edge, before the vertical gain and the pitch share.
+FACE_TRACKING_VERTICAL_HALF_FOV_DEG = 29.0
+# Per-tick slew of the tilt toward the attentive cock (fraction of the tilt travel), so a
+# cock settles in over roughly half a second at 12.5 Hz instead of snapping.
+ATTENTIVE_COCK_STEP = 0.04
+
+
+def _attentive_cock_tilt(now: float) -> float:
+    """The cock the head aims for this tick while locked on a face: 0 while straight,
+    a scheduled 0.15-0.3 to a random side for 3-8 s every 10-25 s. The schedule lives in
+    module state (``_attentive_cock``); tests drive it through ``random``."""
+    st = _attentive_cock
+    until = float(st.get("until") or 0.0)
+    if until > 0.0:
+        if now < until:
+            return float(st.get("tilt") or 0.0)
+        # The cock is over: straighten and book the next one.
+        st["until"] = 0.0
+        st["tilt"] = 0.0
+        st["next_at"] = now + random.uniform(*ATTENTIVE_COCK_INTERVAL_SECS)
+        return 0.0
+    next_at = float(st.get("next_at") or 0.0)
+    if next_at <= 0.0 or next_at > now + ATTENTIVE_COCK_INTERVAL_SECS[1] + 1.0:
+        # First tick (or a clock that jumped backwards): start the interval now.
+        st["next_at"] = now + random.uniform(*ATTENTIVE_COCK_INTERVAL_SECS)
+        return 0.0
+    if now >= next_at:
+        st["tilt"] = _random_side_tilt(*ATTENTIVE_COCK_TILT)
+        st["until"] = now + random.uniform(*ATTENTIVE_COCK_HOLD_SECS)
+        return float(st["tilt"])
+    return 0.0
+
+
+def reset_attentive_cock() -> None:
+    """Forget the cock schedule (tests, and a lost lock starting afresh)."""
+    _attentive_cock.update({"next_at": 0.0, "until": 0.0, "tilt": 0.0})
 
 
 def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
@@ -14330,10 +14566,8 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         frame_w, frame_h = _frame_size(frame)
         neck_cfg = config.SERVO_CHANNELS["neck"]
         lift_cfg = config.SERVO_CHANNELS["headlift"]
-        tilt_cfg = config.SERVO_CHANNELS["headtilt"]
         neck_ch = int(neck_cfg["ch"])
         lift_ch = int(lift_cfg["ch"])
-        tilt_ch = int(tilt_cfg["ch"])
 
         alpha = max(0.0, min(1.0, 1.0 - float(getattr(config, "TRACKING_SMOOTHING_FACTOR", 0.2))))
         gain = float(getattr(config, "FACE_TRACKING_CENTERING_GAIN", 1.15))
@@ -14341,14 +14575,17 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         dead_zone = float(getattr(config, "TRACKING_DEAD_ZONE_PX", 40))
         neck_max_step = int(getattr(config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420))
         lift_max_step = int(getattr(config, "FACE_TRACKING_LIFT_MAX_STEP_QUS", 300))
-        tilt_max_step = int(getattr(config, "FACE_TRACKING_TILT_MAX_STEP_QUS", 130))
+        # The head's per-tick PITCH cap: the knob is still written in the old tilt
+        # servo's quarter-us (95 of 1184 = ~0.08 of the pitch travel per tick).
+        pitch_max_step = _legacy_pitch_cap("FACE_TRACKING_TILT_MAX_STEP_QUS", 95)
         if speaker_target:
             gain = float(getattr(config, "SPEAKER_GAZE_ACTIVE_CENTERING_GAIN", gain))
             vertical_gain = float(getattr(config, "SPEAKER_GAZE_ACTIVE_VERTICAL_GAIN", vertical_gain))
             dead_zone = float(getattr(config, "SPEAKER_GAZE_ACTIVE_DEAD_ZONE_PX", dead_zone))
             neck_max_step = int(getattr(config, "SPEAKER_GAZE_NECK_MAX_STEP_QUS", neck_max_step))
             lift_max_step = int(getattr(config, "SPEAKER_GAZE_LIFT_MAX_STEP_QUS", lift_max_step))
-            tilt_max_step = int(getattr(config, "SPEAKER_GAZE_TILT_MAX_STEP_QUS", tilt_max_step))
+            if getattr(config, "SPEAKER_GAZE_TILT_MAX_STEP_QUS", None) is not None:
+                pitch_max_step = _legacy_pitch_cap("SPEAKER_GAZE_TILT_MAX_STEP_QUS", 50)
         # Calm face-centering while Rex is speaking so it doesn't fight the speech
         # motion / speaker-gaze pose: gentler gain + steps, wider dead-zone (only
         # correct for large offsets). Speaker-gaze still points the head; this just
@@ -14359,7 +14596,7 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             vertical_gain *= calm
             neck_max_step = max(1, int(neck_max_step * calm))
             lift_max_step = max(1, int(lift_max_step * calm))
-            tilt_max_step = max(1, int(tilt_max_step * calm))
+            pitch_max_step = max(1e-3, pitch_max_step * calm)
             dead_zone = max(dead_zone, float(getattr(config, "FACE_TRACKING_SPEECH_DEAD_ZONE_PX", 90)))
         cx, cy = candidate["center"]
         frame_cx = frame_w / 2.0
@@ -14367,11 +14604,12 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
 
         current_neck = _current_servo_position("neck")
         current_lift = _current_servo_position("headlift")
-        current_tilt = _current_servo_position("headtilt")
+        current_pitch, current_tilt = _current_head_pose()
         current_positions = {
             "neck": current_neck,
             "headlift": current_lift,
-            "headtilt": current_tilt,
+            "pitch": current_pitch,
+            "tilt": current_tilt,
         }
         updates: dict[int, int] = {}
 
@@ -14404,10 +14642,10 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             vertical_gain *= live_damping
             neck_max_step = max(1, int(neck_max_step * live_damping))
             lift_max_step = max(1, int(lift_max_step * live_damping))
-            tilt_max_step = max(1, int(tilt_max_step * live_damping))
+            pitch_max_step = max(1e-3, pitch_max_step * live_damping)
         # Reversal damping is PERSISTENT: one damped tick per sign flip never stopped
         # the hunt (full gain resumed the very next tick, overshot again, flipped
-        # again — the head visibly shook, worst on the fragile tilt linkage). A
+        # again — the head visibly shook, worst on the head-pitch linkage). A
         # reversal now arms a hold window during which the axis stays damped.
         damp_hold = max(0.0, float(getattr(config, "FACE_TRACKING_REVERSAL_HOLD_SECS", 0.6)))
         if _tracking_error_reversed(
@@ -14438,7 +14676,7 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         if damped_y:
             vertical_gain *= reversal_damping
             lift_max_step = max(1, int(lift_max_step * reversal_damping))
-            tilt_max_step = max(1, int(tilt_max_step * reversal_damping))
+            pitch_max_step = max(1e-3, pitch_max_step * reversal_damping)
         # Edge boost: the flat per-tick cap made a face far off-centre re-face in
         # ~5s (cap 180 x live damping 0.45 = 81 qus/tick). Scale the cap with the
         # error so big lateral moves sweep fast while near-centre behavior — dead
@@ -14480,18 +14718,18 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         else:
             _neck_smooth = float(current_neck)
 
+        next_pitch = current_pitch
         if bool(getattr(config, "FACE_TRACKING_VERTICAL_ENABLED", True)):
             if abs(error_y) > dead_zone and frame_cy > 0:
                 lift_span = (int(lift_cfg["max"]) - int(lift_cfg["min"])) / 2.0
-                tilt_span = (int(tilt_cfg["max"]) - int(tilt_cfg["min"])) / 2.0
-                # Split the vertical error between lift and tilt instead of letting
+                # Split the vertical error between lift and pitch instead of letting
                 # BOTH correct the full error — that summed to ~2x the intended gain,
                 # a built-in overshoot that kept the vertical axis hunting (and shook
-                # the fragile tilt linkage hardest).
+                # the head linkage hardest).
                 tilt_share = max(0.0, min(1.0, float(getattr(config, "FACE_TRACKING_TILT_SHARE", 0.35))))
                 # Eye-level matching never lifts the head above the match ceiling
                 # (see _lift_match_ceiling_qus). When the face is above center and
-                # the lift is at/over the ceiling, the TILT takes the full vertical
+                # the lift is at/over the ceiling, the PITCH takes the full vertical
                 # gain so Rex still looks up — with his eyes, not his neck.
                 lift_ceiling = _lift_match_ceiling_qus()
                 gazing_up = error_y < 0
@@ -14506,44 +14744,43 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
                     # Cap at the ceiling; if an expressive move left the lift above
                     # it, hold rather than yank down (the rest return settles it).
                     target_lift = min(target_lift, max(lift_ceiling, current_lift))
-                target_tilt = _clamp_servo(
-                    "headtilt",
-                    current_tilt + (error_y / frame_cy) * tilt_span * vertical_gain * tilt_share,
+                # Pitch works in degrees above level: a face low in the frame (error_y
+                # > 0) pitches the head DOWN by its share of the vertical half field of
+                # view, then back to a pitch fraction, capped per tick and smoothed.
+                degrees = head_pose.degrees_from_pitch(current_pitch) - (
+                    (error_y / frame_cy) * FACE_TRACKING_VERTICAL_HALF_FOV_DEG * vertical_gain * tilt_share
                 )
+                target_pitch = head_pose.pitch_from_degrees(degrees)
                 next_lift = _clamp_servo(
                     "headlift",
                     current_lift + alpha * (target_lift - current_lift),
                 )
-                next_tilt = _clamp_servo(
-                    "headtilt",
-                    current_tilt + alpha * (target_tilt - current_tilt),
-                )
+                next_pitch = _clamp_pitch(current_pitch + alpha * (target_pitch - current_pitch))
                 next_lift = _limited_tracking_step(
                     "headlift",
                     current_lift,
                     next_lift,
                     lift_max_step,
                 )
-                next_tilt = _limited_tracking_step(
-                    "headtilt",
-                    current_tilt,
-                    next_tilt,
-                    tilt_max_step,
-                )
+                next_pitch = _limited_pitch_step(current_pitch, next_pitch, pitch_max_step)
                 if abs(next_lift - current_lift) >= 2:
                     updates[lift_ch] = next_lift
-                if abs(next_tilt - current_tilt) >= 2:
-                    updates[tilt_ch] = next_tilt
+
+        # Attentive cock: while locked on a face the tilt eases toward the scheduled
+        # cock (0 when none), so following the face keeps whatever cock is current and
+        # a new cock settles in over a few ticks rather than snapping.
+        cock_tilt = _attentive_cock_tilt(now)
+        next_tilt = _limited_pitch_step(current_tilt, cock_tilt, ATTENTIVE_COCK_STEP)
+        updates.update(_head_pair_updates(next_pitch, next_tilt))
 
         baseline_neck = updates.get(neck_ch, current_neck)
         baseline_lift = updates.get(lift_ch, current_lift)
-        baseline_tilt = updates.get(tilt_ch, current_tilt)
         _note_adaptive_head_rest(
             candidate=candidate,
             frame_w=frame_w,
             frame_h=frame_h,
             lift=baseline_lift,
-            tilt=baseline_tilt,
+            pitch=next_pitch,
             now=now,
         )
         if updates or abs(error_x) > dead_zone or abs(error_y) > dead_zone:
@@ -14564,11 +14801,11 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
                     speed=int(getattr(config, "FACE_TRACKING_SERVO_SPEED", 140)),
                     acceleration=int(getattr(config, "FACE_TRACKING_SERVO_ACCELERATION", 16)),
                 )
-                # The tilt linkage carries the whole head on a thin rod — give it its
-                # own slower, softer profile so its (small, capped) corrections glide
-                # instead of snapping at the shared head speed.
+                # The two head servos carry the whole head — give BOTH their own slower,
+                # softer profile so their (small, capped) corrections glide instead of
+                # snapping at the shared head speed.
                 servo_mod.set_motion_profile(
-                    [tilt_ch],
+                    list(head_pose.HEAD_PAIR),
                     speed=int(getattr(config, "FACE_TRACKING_TILT_SERVO_SPEED", 24)),
                     acceleration=int(getattr(config, "FACE_TRACKING_TILT_SERVO_ACCELERATION", 10)),
                 )
@@ -14578,7 +14815,8 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         servo_mod.set_face_tracking_baseline(
             neck=baseline_neck,
             lift=baseline_lift,
-            tilt=baseline_tilt,
+            pitch=next_pitch,
+            tilt=next_tilt,
         )
         _face_tracking_last_error_key = candidate_key
         _face_tracking_last_error_x = float(error_x)

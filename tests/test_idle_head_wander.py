@@ -4,12 +4,18 @@ when the conversation lulls while Rex is locked on a face, he looks around the r
 returns his gaze, and may randomly re-greet.
 """
 
+import contextlib
 import unittest
 from unittest import mock
 
 import config
+from hardware import head_pose
 from state import State
 from intelligence import consciousness as c
+
+
+def _decoded_head(updates):
+    return head_pose.head_pose({ch: updates[ch] for ch in head_pose.HEAD_PAIR})
 
 
 class _WanderBase(unittest.TestCase):
@@ -48,11 +54,18 @@ class _WanderBase(unittest.TestCase):
         m.listening_motion_active.return_value = listening
         return m
 
-    def _at_pose(self, neck=6000, lift=6000, tilt=4320):
-        return mock.patch.object(
+    def _at_pose(self, neck=6000, lift=6000, pitch=0.0, tilt=0.0):
+        """Park the proprioception at a pose: neck/lift by name, the head as pitch/tilt."""
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(
             c, "_current_servo_position",
-            side_effect=lambda n: {"neck": neck, "headlift": lift, "headtilt": tilt}[n],
-        )
+            side_effect=lambda n: {"neck": neck, "headlift": lift}[n],
+        ))
+        stack.enter_context(mock.patch.object(c, "_current_head_pose", return_value=(pitch, tilt)))
+        stack.enter_context(mock.patch.object(
+            c, "_current_head_pulses", return_value=head_pose.head_pulses(pitch, tilt),
+        ))
+        return stack
 
 
 class ConversationIdleTest(_WanderBase):
@@ -69,12 +82,13 @@ class ConversationIdleTest(_WanderBase):
 class StartWanderTest(_WanderBase):
     def test_start_builds_route_returning_to_gaze_and_releases_lock(self):
         c._face_tracking_lock = {"key": 1, "person_id": 1, "last_seen_at": 999.0}
-        with self._at_pose(neck=6000, lift=6000, tilt=4320):
+        with self._at_pose(neck=6000, lift=6000, pitch=0.12, tilt=-0.2):
             c._start_idle_head_wander(1000.0)
         self.assertTrue(c._idle_wander["active"])
         wps = c._idle_wander["waypoints"]
         self.assertGreaterEqual(len(wps), 2)
-        self.assertEqual(wps[-1], (6000, 6000, 4320))   # last waypoint = return to pre-wander gaze
+        # Last waypoint = return to the pre-wander gaze EXACTLY: neck, lift, pitch and tilt.
+        self.assertEqual(wps[-1], (6000, 6000, 0.12, -0.2))
         self.assertEqual(c._face_tracking_lock, {})      # let go of the lock to look away
 
     def test_waypoints_within_servo_limits(self):
@@ -82,14 +96,30 @@ class StartWanderTest(_WanderBase):
         with self._at_pose():
             c._start_idle_head_wander(1000.0)
         n = config.SERVO_CHANNELS["neck"]
-        for (neck, lift, tilt) in c._idle_wander["waypoints"]:
+        for (neck, lift, pitch, tilt) in c._idle_wander["waypoints"]:
             self.assertGreaterEqual(neck, n["min"])
             self.assertLessEqual(neck, n["max"])
+            self.assertLessEqual(abs(pitch), 1.0)
+            self.assertLessEqual(abs(tilt), 1.0)
+
+    def test_waypoints_pitch_near_current_and_carry_a_cock(self):
+        # Pitch within +/-0.17 (the old 200 q-us range converted) of where the head IS,
+        # not of level; and each look-away carries a cock of up to 0.3 to a random side.
+        c._face_tracking_lock = {"key": 1, "person_id": 1, "last_seen_at": 999.0}
+        pitch_range = abs(head_pose.pitch_from_legacy_delta(config.IDLE_HEAD_WANDER_TILT_RANGE_QUS))
+        self.assertAlmostEqual(pitch_range, 0.169, delta=0.002)
+        for _ in range(20):
+            with self._at_pose(pitch=-0.3, tilt=0.0):
+                c._start_idle_head_wander(1000.0)
+            for (neck, lift, pitch, tilt) in c._idle_wander["waypoints"][:-1]:
+                self.assertLessEqual(abs(pitch - (-0.3)), pitch_range + 1e-6)
+                self.assertGreaterEqual(abs(tilt), c.GLANCE_COCK_TILT[0] - 1e-6)
+                self.assertLessEqual(abs(tilt), c.SEARCH_TILT + 1e-6)
 
 
 class DriveWanderTest(_WanderBase):
     def _set_wander(self, **over):
-        base = {"active": True, "until": 2000.0, "waypoints": [(9000, 6000, 4320)],
+        base = {"active": True, "until": 2000.0, "waypoints": [(9000, 6000, 0.0, 0.0)],
                 "index": 0, "reached_at": 0.0}
         base.update(over)
         with c._idle_wander_lock:
@@ -107,6 +137,28 @@ class DriveWanderTest(_WanderBase):
         self.assertIn(neck_ch, updates)
         self.assertGreater(updates[neck_ch], 6000)  # moving toward 9000
         self.assertTrue(c._idle_wander["active"])    # not done yet
+
+    def test_drive_steps_head_pair_toward_a_cocked_waypoint(self):
+        # A waypoint with a pitch and a cock moves BOTH head servos together, rate-limited
+        # in pitch/tilt units, and the breathing baseline follows as fractions.
+        self._set_wander(waypoints=[(6000, 6000, -0.5, 0.25)])
+        c._engaged_last_touch_at = 1000.0
+        servo = self._servo()
+        with self._at_pose(neck=6000, lift=6000, pitch=0.0, tilt=0.0):
+            c._drive_idle_head_wander(servo, 1100.0)
+        updates = servo.set_servos.call_args.args[0]
+        self.assertEqual(set(updates), set(head_pose.HEAD_PAIR))   # the pair, nothing else
+        pitch, tilt = _decoded_head(updates)
+        step = abs(head_pose.pitch_from_legacy_delta(config.IDLE_HEAD_WANDER_MAX_STEP_QUS))
+        self.assertLess(pitch, 0.0)                     # heading down toward -0.5...
+        self.assertAlmostEqual(pitch, -step, delta=0.01)  # ...one capped step at a time
+        self.assertGreater(tilt, 0.0)                   # cocking toward +0.25
+        self.assertLessEqual(tilt, step + 0.01)
+        kwargs = servo.set_face_tracking_baseline.call_args.kwargs
+        self.assertEqual((kwargs["neck"], kwargs["lift"]), (6000, 6000))
+        self.assertAlmostEqual(kwargs["pitch"], -step, delta=1e-6)
+        self.assertAlmostEqual(kwargs["tilt"], step, delta=1e-6)
+        self.assertTrue(c._idle_wander["active"])
 
     def test_drive_aborts_on_speech_without_regreet(self):
         self._set_wander()
@@ -137,10 +189,10 @@ class DriveWanderTest(_WanderBase):
         self.assertTrue(c._idle_wander["pending_regreet"])   # completed → eligible to re-greet
 
     def test_drive_advances_waypoint_after_dwell(self):
-        self._set_wander(waypoints=[(6000, 6000, 4320), (9000, 6000, 4320)], index=0, reached_at=0.0)
+        self._set_wander(waypoints=[(6000, 6000, 0.0, 0.0), (9000, 6000, 0.0, 0.0)], index=0, reached_at=0.0)
         c._engaged_last_touch_at = 1000.0
         servo = self._servo()
-        # Already AT waypoint 0 (6000,6000,4320): first drive stamps reached_at...
+        # Already AT waypoint 0 (6000, 6000, level, straight): first drive stamps reached_at...
         with self._at_pose(neck=6000):
             c._drive_idle_head_wander(servo, 1100.0)
         self.assertGreater(c._idle_wander["reached_at"], 0.0)

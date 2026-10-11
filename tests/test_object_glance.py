@@ -12,7 +12,13 @@ import time
 import unittest
 from unittest import mock
 
+from hardware import head_pose
 from intelligence import consciousness as c
+
+
+def _decoded_head(updates):
+    """(pitch, tilt) a set_servos update's head pair stands for."""
+    return head_pose.head_pose({ch: updates[ch] for ch in head_pose.HEAD_PAIR})
 
 
 class _FakeServos:
@@ -29,8 +35,11 @@ class _FakeServos:
     def set_motion_profile(self, channels, speed=0, acceleration=0):
         pass
 
-    def set_face_tracking_baseline(self, neck=None, lift=None, tilt=None):
-        pass
+    def set_face_tracking_baseline(self, neck=None, lift=None, pitch=None, tilt=None, head=None):
+        # Floats only for the head pair, like the real driver (qus here is a bug).
+        for value in (pitch, tilt):
+            if value is not None and abs(float(value)) > 1.5:
+                raise ValueError(f"head pose fraction out of range: {value}")
 
     def set_servos(self, updates):
         self.writes.append(dict(updates))
@@ -39,11 +48,17 @@ class _FakeServos:
         }
         self_state = c.world_state.get("self_state") or {}
         positions = dict(self_state.get("servo_positions") or {})
+        # The two head servos are always written together (the driver refuses one).
+        present = set(head_pose.HEAD_PAIR).intersection(int(ch) for ch in updates)
+        assert not present or present == set(head_pose.HEAD_PAIR), updates
         for ch, pos in updates.items():
             name = by_ch.get(int(ch))
             if name:
                 positions[name] = int(pos)
         self_state["servo_positions"] = positions
+        if present:
+            pitch, tilt = head_pose.head_pose({ch: positions[by_ch[ch]] for ch in head_pose.HEAD_PAIR})
+            self_state["head_pose"] = {"pitch": round(pitch, 3), "tilt": round(tilt, 3)}
         c.world_state.update("self_state", self_state)
 
 
@@ -55,9 +70,13 @@ class ObjectGlanceTestBase(unittest.TestCase):
         c._object_glance_release()
         self.addCleanup(self._restore)
         self_state = dict(c.world_state.get("self_state") or {})
+        level = head_pose.head_pulses(0.0, 0.0)
         self_state["servo_positions"] = {
-            "neck": 6000, "headlift": 6000, "headtilt": 4320, "visor": 6000,
+            "neck": 6000, "headlift": 6000, "visor": 5120,
+            "head_left": level[head_pose.HEAD_LEFT_CH],
+            "head_right": level[head_pose.HEAD_RIGHT_CH],
         }
+        self_state["head_pose"] = {"pitch": 0.0, "tilt": 0.0}
         c.world_state.update("self_state", self_state)
 
     def _restore(self):
@@ -142,11 +161,18 @@ class DriveObjectGlanceTest(ObjectGlanceTestBase):
         now, owned = self._run_until(servos, "hold", start=1000.0)
         self.assertTrue(owned)
         anchor = c._object_glance["anchor"]
-        self.assertEqual(tuple(anchor), (6000, 6000, 4320))
+        self.assertEqual(tuple(anchor), (6000, 6000, 0.0, 0.0))
         # The head actually moved toward the object (neck away from anchor).
         moved_neck = c._current_servo_position("neck")
         self.assertNotEqual(moved_neck, 6000)
         self.assertGreater(moved_neck, 6000 - 1)  # right of frame -> toward neck max
+        # High in frame -> the head PITCHED up, as a pair, keeping the anchor's cock.
+        head_writes = [w for w in servos.writes if head_pose.HEAD_LEFT_CH in w]
+        self.assertTrue(head_writes)
+        pitch, tilt = _decoded_head(head_writes[-1])
+        self.assertGreater(pitch, 0.05)
+        self.assertAlmostEqual(tilt, 0.0, delta=0.03)
+        self.assertGreater(c._current_head_pose()[0], 0.05)
 
         # Hold expires -> returning -> idle, ending back at the anchor pose.
         now2, _ = self._run_until(servos, "returning", start=now + 5.0)
@@ -159,6 +185,10 @@ class DriveObjectGlanceTest(ObjectGlanceTestBase):
         # tolerance — it need not land exactly, just back near the anchor.
         tol = int(getattr(c.config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420))
         self.assertLessEqual(abs(c._current_servo_position("neck") - 6000), tol)
+        # ...and the head pitched back toward level (the anchor's pitch AND tilt).
+        pitch, tilt = c._current_head_pose()
+        self.assertLessEqual(abs(pitch), abs(head_pose.pitch_from_legacy_delta(tol)) + 0.01)
+        self.assertAlmostEqual(tilt, 0.0, delta=0.03)
 
     def test_never_moved_glance_expires_quietly(self):
         self._seed_object()

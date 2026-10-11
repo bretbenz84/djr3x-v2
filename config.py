@@ -2698,19 +2698,31 @@ SERVO_SPEECH_UPDATE_INTERVAL_SECS = 0.12
 SERVO_SPEECH_ARM_INTENSITY_MULT = 1.8
 SERVO_SPEECH_NECK_WOBBLE_QUS = 260
 SERVO_SPEECH_LIFT_WOBBLE_QUS = 160
-SERVO_SPEECH_TILT_WOBBLE_QUS = 120
+# The two head servos sway slowly TOGETHER while Rex talks: a small nod with a slight
+# cock to each side, around the pose the gaze is holding. Pitch and tilt are fractions
+# of the measured head travel (hardware/head_pose.py); the pair rides its own gentle
+# Maestro profile so the sway glides instead of chattering with the neck wobble.
+SERVO_SPEECH_PITCH_SWAY = 0.06
+SERVO_SPEECH_TILT_SWAY = 0.10
+SERVO_SPEECH_SWAY_PERIOD_SECS = 2.4   # one full there-and-back of the sway
+SERVO_SPEECH_HEAD_PAIR_SPEED = 20
+SERVO_SPEECH_HEAD_PAIR_ACCELERATION = 6
 SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS = 0.35
 SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS = 0.75
 SERVO_SPEECH_HAND_DIVISOR = 3
-# Camera repositioned 2026-09-25: 1275 µs is the lowest lens-clear position.
-# Ordinary speech stays relaxed at 1385 µs; angry speech explicitly requests the
-# lower expressive floor. Sleep/privacy retain the physical closed position.
-VISOR_CAMERA_CLEAR_FLOOR_QUS = 5100
-VISOR_CAMERA_CAPTURE_QUS = 6720  # 1680 µs capture pose; surprise may open further
-VISOR_SPEECH_FLOOR_QUS = 5540
-VISOR_SPEECH_OFFSET_QUS = -460  # shift ordinary speech down with the 115 µs neutral change
+# Visor, October 10 2026: the servo now runs INVERTED — low pulses raise the visor,
+# high pulses lower it. The September calibration is mirrored inside the same
+# 4544-6976 travel. Up/awake 5120, down/park 6976, speaking inside 4880-5520 (5520
+# is the mirrored camera-hiding edge). Deliberate captures lift it to 4800. The real
+# endpoints and the pulse where it starts to hide the camera are UNREAD on the
+# robot: the mirroring is a guess until the owner measures them.
+VISOR_UP_QUS = 5120
+VISOR_DOWN_QUS = 6976
+VISOR_CAMERA_CLEAR_MAX_QUS = 5520    # lowest the visor may sit while the camera must see
+VISOR_CAMERA_CAPTURE_QUS = 4800      # 1200 µs capture pose; surprise may open further
+VISOR_SPEECH_RANGE_QUS = (4880, 5520)
 SERVO_IDLE_VISOR_ENABLED = True
-SERVO_IDLE_VISOR_AMPLITUDE_QUS = 180  # ±45 µs around neutral; no idle squint
+SERVO_IDLE_VISOR_RANGE_QUS = (4770, 5470)   # slow idle drift around the awake 5120
 SERVO_IDLE_VISOR_PERIOD_SECS = 7.0
 # Pokerarm sways back and forth while speaking on a SLOWER cadence than the hero arm
 # (which re-targets every update frame) — a slow, deliberate beat, yet far livelier
@@ -2734,7 +2746,7 @@ SERVO_LISTENING_NOD_SECS = 1.4        # duration of one smooth nod (down and bac
 SERVO_LISTENING_NOD_MIN_GAP_SECS = 2.5   # pause between nods (randomized in range)
 SERVO_LISTENING_NOD_MAX_GAP_SECS = 6.0
 SERVO_LISTENING_LIFT_NOD_QUS = 240    # downward head-lift nod depth
-SERVO_LISTENING_TILT_QUS = 80         # head-tilt nod (inverted: + = looking down)
+SERVO_LISTENING_PITCH_NOD = 0.07      # head-pair pitch dip in the nod (fraction of travel)
 SERVO_LISTENING_NECK_QUS = 110        # neck sway amplitude around the tracked gaze
 SERVO_LISTENING_NECK_PERIOD_SECS = 7.0
 SERVO_LISTENING_LIFT_SWAY_QUS = 90    # gentle breathing-like lift sway between nods
@@ -2751,17 +2763,31 @@ SERVO_LISTENING_MAX_SECS = 20.0       # safety: auto-stop if a stop is ever miss
 # and SERVO_<NAME>_MAX_US using Maestro Control Center microsecond values.
 # The .env file wins over inherited shell env for servo safety keys, and invalid
 # or incomplete servo limit values raise at startup instead of falling back.
-# DIRECTION OF TRAVEL: among the original eight, headtilt is inverted (low values = head
-# high, high values = head low). Every other channel correlates — a higher value
-# moves the joint the way its name implies, so a higher elbow lifts the arm and a
-# lower one lets it hang. The README's "Direction of travel" table is the
-# authoritative copy.
+# DIRECTION OF TRAVEL (October 10 2026 rework; the README's "Direction of travel"
+# table is the authoritative copy):
+#   head_left  (2)  low = head down,  high = head up      } driven against each other
+#   head_right (11) low = head up,    high = head down    } they pitch; together, they cock
+#   visor      (3)  low = visor UP,   high = visor DOWN   (inverted since the rework)
+#   poker_elbow (12) low = down, high = up
+#   poker_wrist (13) low = down, high = curled up and inward
+# Every other channel correlates — a higher value moves the joint the way its name
+# implies, so a higher elbow lifts the arm and a lower one lets it hang.
+#
+# THE HEAD IS TWO SERVOS ON ONE POST. Never command head_left or head_right alone:
+# hardware/head_pose.py turns a pitch (-1 down .. +1 up) and a tilt (-1 cocked to
+# Rex's left .. +1 right) into the pair, and hardware/servos.py refuses a write that
+# sets one without the other or a pair no pitch/tilt explains. The limits below are
+# the owner's measured extremes (microseconds x 4) — calibrated channel limits, not
+# just poses. Never widen one without a new reading from him.
 #
 # An optional "rest" is where the channel ends up when the robot is UNPOWERED and
 # the servo goes limp — gravity's answer, not a pose we choose. It is the FIRST
 # target commanded after a cold connect and the pose shutdown() parks in; see
 # servos._assert_startup_rest_pose_locked() for why that matters. Channels the
-# droid's own weight doesn't move omit it and rest at neutral.
+# droid's own weight doesn't move omit it and rest at neutral. The Maestro ignores
+# speed limits for the first target to an off channel, so a wrong rest pose makes
+# the joint jump (first live run: an assumed elbow-down rest dropped the poker arm
+# at once; it stands at its PARK when switched on).
 SERVO_CHANNELS = {
     "neck":     {"ch": 0, "min": 1984, "max": 8960, "neutral": 5472},
     # Neutral retuned 6000 -> 3600 qus (900 us) on 2026-08-19: the lift gear
@@ -2772,8 +2798,13 @@ SERVO_CHANNELS = {
     # bottom of the old travel is below anything the rebuilt lift gear should be
     # driven to.
     "headlift": {"ch": 1, "min": 2600, "max": 7744, "neutral": 3600},
-    "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
-    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6100},  # 1525 µs — relaxed open expression
+    # Two-servo head (October 10 2026). Neutrals are the owner's LEVEL reading
+    # (1458 / 1620 us); rests are the fully-down pair (1013 / 1904 us), where the
+    # head hangs with the power off.
+    "head_left":  {"ch": 2,  "min": 4032, "max": 8128, "neutral": 5832, "rest": 4052},
+    "head_right": {"ch": 11, "min": 5248, "max": 7616, "neutral": 6480, "rest": 7616},
+    # Inverted since October 10: neutral is the awake "visor up" pulse (1280 µs).
+    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 5120},
     # A higher value lifts the arm, so the MIN end is the arm hanging down —
     # rest = 6300, the lowest value the limits allow. Powered down the servo is
     # limp and the arm falls to exactly there, so parking and starting here is
@@ -2788,6 +2819,14 @@ SERVO_CHANNELS = {
     "hand":     {"ch": 5, "min": 1984, "max": 9984, "neutral": 6000},
     "pokerarm": {"ch": 6, "min": 3968, "max": 8000, "neutral": 6000},
     "heroarm":  {"ch": 7, "min": 3968, "max": 8000, "neutral": 6000},
+    # Poker elbow and wrist (October 10 2026). A COUPLED pair with a measured
+    # clearance ceiling (hardware/head_pose.poker_elbow_max): the elbow rises fully
+    # only while the wrist is at or below 1564 us. servos.py refuses a lone channel
+    # or a pair above the ceiling and stages every move one joint at a time. Neutral
+    # is the awake 45-degree pose (1500 / 942 us); rest is the owner's park
+    # (1920 / 1564 us), where the arm stands when switched on.
+    "poker_elbow": {"ch": 12, "min": 3456, "max": 7680, "neutral": 6000, "rest": 7680},
+    "poker_wrist": {"ch": 13, "min": 1984, "max": 9944, "neutral": 3768, "rest": 6256},
 }
 
 
@@ -2977,15 +3016,19 @@ for _kind in ('STARTUP', 'IDLE', 'SPEECH', 'PARK', 'RETRACT'):
 def servo_rest_position(name: str) -> int:
     """Where a channel sits with the robot powered down (gravity's pose).
 
-    Channels that carry no weight — everything but the elbow today — have no
-    "rest" of their own and simply rest at neutral.
+    Weight-loaded channels (the hero elbow, the two head servos, the poker
+    elbow/wrist) declare one; the others simply rest at neutral.
     """
     cfg = SERVO_CHANNELS[name]
     return int(cfg.get("rest", cfg["neutral"]))
 
 
-HEAD_CHANNELS = [0, 1, 2, 3]
+# Everything the camera rides on, plus the visor in front of it. Both head servos
+# are here: a profile or hold that names one must name the other.
+HEAD_CHANNELS = [0, 1, 2, 3, 11]
+HEAD_PAIR_CHANNELS = [2, 11]
 ARM_CHANNELS  = [4, 5, 6, 7]
+POKER_CHANNELS = [12, 13]
 
 # Seconds to wait after raising visor and centering neck before capturing a frame
 CAMERA_POSE_SETTLE_SECS = 0.5
@@ -4852,9 +4895,13 @@ BODY_MOOD_IDLE_GESTURE_MIN_INTENSITY = 0.4 # only express an idle mood gesture a
 BODY_MOOD_IDLE_GESTURE_COOLDOWN_SECS = 25.0  # min spacing between idle mood gestures
 BODY_MOOD_IDLE_GESTURE_CHANCE = 0.35       # per-eligible-tick probability of an idle mood gesture
 BODY_MOOD_REST_MAX_LIFT_OFFSET_QUS = 1100  # clamp the mood head-lift bias on the rest pose
-BODY_MOOD_REST_MAX_TILT_OFFSET_QUS = 320   # clamp the mood head-tilt bias on the rest pose
+BODY_MOOD_REST_MAX_TILT_OFFSET_QUS = 320   # clamp the mood head-pitch bias on the rest pose
+                                           # (in the OLD tilt servo's q-us: 1184 = full down, 416 = full up;
+                                           # hardware/head_pose.pitch_from_legacy_delta converts)
 # Sustained suspicion/anger may squint to 1275 µs without covering the camera.
-BODY_MOOD_VISOR_LENS_CLEAR_FLOOR = VISOR_CAMERA_CLEAR_FLOOR_QUS
+# Inverted visor (October 10): the camera-safe EDGE is the highest pulse (lowest visor)
+# a squint may reach; an angry squint narrows the visor DOWN to it.
+BODY_MOOD_VISOR_CAMERA_CLEAR_QUS = VISOR_CAMERA_CLEAR_MAX_QUS
 BODY_MOOD_VISOR_SERVO_SPEED = 30           # Maestro speed for gentle mood visor moves (0-255)
 BODY_MOOD_VISOR_SERVO_ACCELERATION = 8     # Maestro acceleration for mood visor moves (0-255)
 

@@ -2174,10 +2174,13 @@ class TravelGlanceSlightDownTest(unittest.TestCase):
             animations.travel_glance_pose("center", "down-slight")
         targets = move_to.call_args[0][0]
         lift_cfg = config.SERVO_CHANNELS["headlift"]
-        tilt_cfg = config.SERVO_CHANNELS["headtilt"]
         self.assertEqual(targets[int(lift_cfg["ch"])], int(lift_cfg["neutral"]))
-        self.assertEqual(targets[int(tilt_cfg["ch"])], animations.HEADTILT_SLIGHT_DOWN)
-        self.assertGreater(animations.HEADTILT_SLIGHT_DOWN, int(tilt_cfg["neutral"]))
+        # The two head servos pitch the head slightly down, straight (no cock).
+        from hardware import head_pose
+        pitch, tilt = head_pose.head_pose({ch: targets[ch] for ch in head_pose.HEAD_PAIR})
+        self.assertAlmostEqual(pitch, animations.PITCH_SLIGHT_DOWN, places=1)
+        self.assertAlmostEqual(tilt, 0.0, places=1)
+        self.assertLess(animations.PITCH_SLIGHT_DOWN, 0)
 
 
 class IdleWanderTest(unittest.TestCase):

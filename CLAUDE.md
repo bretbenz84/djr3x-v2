@@ -154,6 +154,21 @@ Keep legacy recovery/attribution/motion adapters until live equivalence is prove
 Owner decisions persist: batch STT, finish the pending reply before later speech,
 and retain existing forward swing escape. Heading alternatives remain OFF.
 
+### Servo rework 2026-10-10 (two-servo head, poker elbow/wrist, inverted visor)
+
+Read `docs/servo_rework_2026_10_10.md` before touching anything that moves the head,
+the visor or the poker arm. The head is TWO servos (channels 2 and 11) commanded only
+as a pitch and a tilt through `hardware/head_pose.head_pulses`; `hardware/servos.py`
+raises ValueError on a lone head channel or a pair outside the linkage's envelope, so a
+test fixture that writes `{2: x}` alone is a bug in the fixture. There is no
+`"headtilt"` channel any more. The visor is inverted (low pulse = up; 5120 awake, 6976
+down). The poker elbow/wrist (12/13) move only through `servos.move_poker`, staged under
+the clearance ceiling. Run `venv/bin/python tools/run_lean_checks.py head_pose
+servo_head_pair body_beats directed_look listening_motion servo_speech_emotion` after
+servo changes. Still unverified on the robot: visor endpoints and camera-hiding pulse,
+the shutdown arrival timeout cause, linkage binding inside the envelope, poker clearance
+of the body, how the expressions read.
+
 ### Date-rot
 
 Several fixtures hardcode event dates ("2026-06-01") that silently cross the

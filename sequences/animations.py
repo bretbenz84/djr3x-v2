@@ -25,7 +25,7 @@ import logging
 import config
 import state as _state_module
 from state import State as _State
-from hardware import servos, leds_head, leds_chest
+from hardware import head_pose, servos, leds_head, leds_chest
 from sequences import throttle_arm
 from world_state import world_state
 
@@ -77,23 +77,50 @@ HEADLIFT_NEUTRAL = 3600  # normal talking height (owner-tuned, 900 us)
 HEADLIFT_UP      = 4600  # head above neutral (excited, happy, nod) [neutral + 1000]
 HEADLIFT_HIGH    = 5100  # head raised high (surprised)          [neutral + 1500]
 
-# Ch 2 — Headtilt: 3904–5504, neutral 4320, INVERTED (low value = head tilted up)
-HEADTILT_NEUTRAL     = 4320
-HEADTILT_UP          = 3904
-HEADTILT_DOWN        = 5504
-HEADTILT_SLIGHT_UP   = 4000
-HEADTILT_SLIGHT_DOWN = 4700
+# Ch 2 + 11 — the two-servo head (October 10 2026). The head is a PITCH (-1 fully down,
+# 0 level, +1 fully up) and a TILT (-1 cocked to Rex's own left, 0 straight, +1 right);
+# hardware/head_pose.head_pulses turns the two into the pair of pulses, and the servo
+# layer refuses one channel without the other. These are the expressive pitches the
+# beats use (absolute, as the old HEADTILT_* values were). A beat that pitches the head
+# keeps whatever cock the head already has unless it names a tilt.
+PITCH_FULL_DOWN   = -1.0    # the shutdown/sleep rest: the head hangs here unpowered
+PITCH_DOWN        = -0.8    # the look_down step
+PITCH_SLIGHT_DOWN = -0.3
+PITCH_LEVEL       = 0.0
+PITCH_SLIGHT_UP   = 0.35
+PITCH_UP          = 0.8     # the look_up step
+TILT_STRAIGHT     = 0.0
+TILT_LOOK         = 0.8     # the tilt_left / tilt_right steps (negative = Rex's left)
+HEAD_LEVEL_PAIR   = head_pose.head_pulses(PITCH_LEVEL, TILT_STRAIGHT)       # {2: 5832, 11: 6480}
+HEAD_DOWN_PAIR    = head_pose.head_pulses(PITCH_FULL_DOWN, TILT_STRAIGHT)   # {2: 4052, 11: 7616}
 
-# Ch 3 — Visor: higher = more open; 1275 µs is the camera-clear squint.
-VISOR_CLOSED  = 4544   # sleep / privacy — covers camera lens
-VISOR_SQUINT  = int(config.VISOR_CAMERA_CLEAR_FLOOR_QUS)
-VISOR_HALF    = 5940   # default resting open — clear of camera lens
-VISOR_NEUTRAL = int(config.SERVO_CHANNELS["visor"]["neutral"])
-VISOR_OPEN    = 6976   # max — wide-eyed surprise
+
+def _head(current: "dict[int, int] | None", pitch: "float | None" = None,
+          tilt: "float | None" = None) -> dict[int, int]:
+    """The head pair for a pitch and/or tilt, keeping the other axis where ``current``
+    (a channel-keyed pose holding channels 2 and 11, or None for the commanded pose)
+    has it."""
+    if current is not None and all(ch in current for ch in head_pose.HEAD_PAIR):
+        pitch0, tilt0 = head_pose.head_pose({ch: int(current[ch]) for ch in head_pose.HEAD_PAIR})
+    else:
+        pitch0, tilt0 = servos.commanded_head_pose()
+    return head_pose.head_pulses(pitch0 if pitch is None else pitch, tilt0 if tilt is None else tilt)
+
+
+# Ch 3 — Visor, INVERTED since October 10 2026: LOW pulses raise it, HIGH pulses lower
+# it, inside the same 4544–6976 travel. The September numbers are mirrored (11520 - x);
+# the real endpoints and the pulse where it starts to hide the camera are unread on the
+# robot, so the camera-clear edge below is a guess kept on the safe side.
+VISOR_CLOSED  = int(config.VISOR_DOWN_QUS)            # 6976 — down / park / sleep, covers the lens
+VISOR_SQUINT  = int(config.VISOR_CAMERA_CLEAR_MAX_QUS)  # 5520 — narrowed as far as the camera allows
+VISOR_HALF    = 5320   # relaxed, a touch lower than the awake position
+VISOR_NEUTRAL = int(config.SERVO_CHANNELS["visor"]["neutral"])   # 5120 — awake, up
+VISOR_OPEN    = head_pose.VISOR_WIDE                  # 4544 — thrown fully up, wide-eyed surprise
+VISOR_CAPTURE = int(config.VISOR_CAMERA_CAPTURE_QUS)  # 4800 — deliberate camera captures
 
 # Ch 4 — Elbow: 6300–7424, neutral 6720. Higher value = arm lifted UP, lower =
-# arm hanging down (headtilt is the only inverted channel on the droid; see the
-# README's "Direction of travel" table). 7424, not the old 7560, because the
+# arm hanging down (see the README's "Direction of travel" table for every
+# channel's sense). 7424, not the old 7560, because the
 # Maestro's own stored channel-4 limit is 1856 us and clipped anything past it
 # (measured on the robot 2026-08-22).
 #
@@ -127,20 +154,35 @@ HEROARM_NEUTRAL = 6000
 HEROARM_FORWARD = 4800
 HEROARM_BACK    = 7200
 
-# The pose shutdown() / sleep() park the head in — head fully lowered, looking down,
-# visor closed, neck centred. startup() seeds its slow raise from this so it never
-# depends on a fresh-connect proprioception read to know where it's starting from.
+# Ch 12 + 13 — Poker elbow and wrist (October 10 2026), the owner's console readings.
+# A coupled pair: the elbow rises fully only while the wrist is at or below 1564 us,
+# so every move goes through servos.move_poker, which stages it one joint at a time.
+POKER_PARK = dict(head_pose.POKER_PARK)   # elbow 1920 / wrist 1564 us: where the arm stands switched on
+POKER_UP   = dict(head_pose.POKER_UP)     # 45 degrees up, hand level (1500 / 942 us): the awake pose
+POKER_OUT  = dict(head_pose.POKER_OUT)    # straight out (1057 / 1389 us)
+POKER_DOWN = dict(head_pose.POKER_DOWN)   # elbow down, wrist straight (864 / 1440 us)
+POKER_LIFECYCLE_SPEED, POKER_LIFECYCLE_ACCEL = 12, 3   # the slow startup/shutdown pace
+POKER_POSE_SPEED, POKER_POSE_ACCEL = 20, 5             # a requested pose
+
+# The pose shutdown() / sleep() park the head in — head fully lowered on both head
+# servos, visor down, neck centred, lift at its floor. startup() seeds its slow raise
+# from this so it never depends on a fresh-connect proprioception read to know where
+# it's starting from.
 #
 # The elbow is here for the mirror-image reason: powered down, the servos go limp
 # and the arm falls to ELBOW_REST regardless of where we left it. Parking there
 # means the pose survives the power cut, so the next cold boot's first elbow
-# target matches the arm's actual position instead of yanking it (2026-08-22).
+# target matches the arm's actual position instead of yanking it (2026-08-22). The
+# poker elbow/wrist park the same way (the arm stands at its park when switched on).
 SHUTDOWN_REST_POSE = {
     0: NECK_CENTER,
-    1: HEADLIFT_FLOOR,
-    2: HEADTILT_DOWN,
+    1: int(config.SERVO_CHANNELS["headlift"]["min"]),   # 2600
+    2: HEAD_DOWN_PAIR[2],
+    11: HEAD_DOWN_PAIR[11],
     3: VISOR_CLOSED,
     4: ELBOW_REST,
+    12: POKER_PARK[12],
+    13: POKER_PARK[13],
 }
 
 # Idle arm wander should read as intentional arm motion, not servo creep. The
@@ -153,13 +195,17 @@ _IDLE_HEROARM_SWING_RANGE_QUS = (1300, 2000)
 _IDLE_HEROARM_MIN_TRAVEL_QUS = 900
 _IDLE_POKERARM_SWING_RANGE_QUS = (800, 1500)
 _IDLE_POKERARM_MIN_TRAVEL_QUS = 550
+# The poker elbow/wrist wander slowly around the awake 45-degree pose in short steps,
+# always through the staged clearance move.
+_IDLE_POKER_PAIR_STEP_QUS = (300, 900)
+_IDLE_POKER_PAIR_SPEED = (7, 15)
 
 
 # ---------------------------------------------------------------------------
 # Body beats
 # ---------------------------------------------------------------------------
 
-_BODY_BEAT_HEAD_CHANNELS = (0, 1, 2, 3)
+_BODY_BEAT_HEAD_CHANNELS = (0, 1, 2, 3, 11)
 _BODY_BEAT_ARM_CHANNELS = (4, 5, 6, 7)
 _BODY_BEAT_CHANNELS: dict[str, tuple[int, ...]] = {
     "agreement_nod": _BODY_BEAT_HEAD_CHANNELS,
@@ -327,7 +373,7 @@ def _beat_suspicious_glance(snapshot: dict[int, int]) -> None:
         {
             0: NECK_CENTER + side * 1250,
             1: HEADLIFT_NEUTRAL + 220,
-            2: HEADTILT_SLIGHT_DOWN,
+            **_head(snapshot, PITCH_SLIGHT_DOWN),
             3: VISOR_SQUINT,
         },
         step_us=80,
@@ -343,7 +389,7 @@ def _beat_proud_dj_pose(snapshot: dict[int, int]) -> None:
     _move_body(
         {
             1: HEADLIFT_HIGH,
-            2: HEADTILT_SLIGHT_UP,
+            **_head(snapshot, PITCH_SLIGHT_UP),
             3: VISOR_OPEN,
             4: ELBOW_DOWN,
             5: HAND_RIGHT,
@@ -369,7 +415,7 @@ def _beat_offended_recoil(snapshot: dict[int, int]) -> None:
         {
             0: NECK_CENTER + side * 520,
             1: HEADLIFT_HIGH,
-            2: HEADTILT_UP,
+            **_head(snapshot, PITCH_UP),
             3: VISOR_OPEN,
             4: ELBOW_DOWN,
             5: HAND_NEUTRAL,
@@ -385,26 +431,30 @@ def _beat_offended_recoil(snapshot: dict[int, int]) -> None:
 
 
 def _beat_thinking_tilt(snapshot: dict[int, int]) -> None:
+    # At last a real tilt: the head cocks 0.6 to one side (away from any lean it has)
+    # while the neck drifts the other way and the head rises a touch.
     side = random.choice([-1, 1])
+    _pitch0, tilt0 = head_pose.head_pose({ch: snapshot[ch] for ch in head_pose.HEAD_PAIR})
+    cock = -0.6 if tilt0 > 0.2 else 0.6
     _move_body(
         {
             0: NECK_CENTER + side * 850,
             1: HEADLIFT_NEUTRAL + 260,
-            2: HEADTILT_SLIGHT_UP,
+            **_head(snapshot, PITCH_SLIGHT_UP, cock),
             3: VISOR_HALF,
         },
         step_us=55,
         step_delay=0.014,
     )
     time.sleep(0.36)
-    _move_body({0: NECK_CENTER + side * 1150, 2: HEADTILT_NEUTRAL}, step_us=45, step_delay=0.014)
+    _move_body({0: NECK_CENTER + side * 1150, **_head(snapshot, PITCH_LEVEL, cock)}, step_us=45, step_delay=0.014)
     time.sleep(0.16)
     _restore_body_pose(snapshot)
 
 
 def _beat_dramatic_visor_peek(snapshot: dict[int, int]) -> None:
     side = random.choice([-1, 1])
-    _move_body({1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP, 3: VISOR_HALF}, step_us=115, step_delay=0.006)
+    _move_body({1: HEADLIFT_UP, **_head(snapshot, PITCH_SLIGHT_UP), 3: VISOR_HALF}, step_us=115, step_delay=0.006)
     time.sleep(0.10)
     _move_body({3: VISOR_OPEN, 0: NECK_CENTER + side * 700}, step_us=130, step_delay=0.005)
     time.sleep(0.20)
@@ -415,7 +465,7 @@ def _beat_tiny_victory_dance(snapshot: dict[int, int]) -> None:
     _move_body(
         {
             1: HEADLIFT_UP,
-            2: HEADTILT_SLIGHT_UP,
+            **_head(snapshot, PITCH_SLIGHT_UP),
             3: VISOR_OPEN,
             4: ELBOW_DOWN,
             5: HAND_RIGHT,
@@ -467,7 +517,7 @@ def _beat_anger_flash(snapshot: dict[int, int]) -> None:
         {
             0: NECK_CENTER + side * 320,
             1: HEADLIFT_UP,
-            2: HEADTILT_DOWN,
+            **_head(snapshot, PITCH_DOWN),
             3: VISOR_SQUINT,   # dip the visor below neutral — narrowed, displeased
                                # squint (this is the beat insults route to)
             4: ELBOW_DOWN,
@@ -481,7 +531,7 @@ def _beat_anger_flash(snapshot: dict[int, int]) -> None:
     for turn in (-side, side, -side):
         _move_body({0: NECK_CENTER + turn * 480}, step_us=150, step_delay=0.004)
         time.sleep(0.045)
-    _move_body({3: VISOR_HALF, 2: HEADTILT_SLIGHT_DOWN}, step_us=85, step_delay=0.006)
+    _move_body({3: VISOR_HALF, **_head(snapshot, PITCH_SLIGHT_DOWN)}, step_us=85, step_delay=0.006)
     time.sleep(0.08)
     _restore_body_pose(snapshot)
 
@@ -493,7 +543,7 @@ def _beat_disgust_recoil(snapshot: dict[int, int]) -> None:
         {
             0: NECK_CENTER + side * 900,
             1: HEADLIFT_UP,
-            2: HEADTILT_DOWN,
+            **_head(snapshot, PITCH_DOWN),
             3: VISOR_NEUTRAL,
             5: away_hand,
             7: HEROARM_BACK,
@@ -512,7 +562,7 @@ def _beat_happy_bounce(snapshot: dict[int, int]) -> None:
         {
             0: NECK_CENTER,
             1: HEADLIFT_UP,
-            2: HEADTILT_SLIGHT_UP,
+            **_head(snapshot, PITCH_SLIGHT_UP),
             3: VISOR_OPEN,
             4: ELBOW_DOWN,
             7: HEROARM_FORWARD,
@@ -562,7 +612,7 @@ def _beat_disbelief_stare(snapshot: dict[int, int]) -> None:
         {
             0: NECK_CENTER + side * 240,
             1: HEADLIFT_NEUTRAL + 220,
-            2: HEADTILT_DOWN,
+            **_head(snapshot, PITCH_DOWN),
             3: VISOR_OPEN,
         },
         step_us=70,
@@ -576,19 +626,64 @@ def _beat_disbelief_stare(snapshot: dict[int, int]) -> None:
     _restore_body_pose(snapshot)
 
 
+def _run_head_expression(name: str, snapshot: dict[int, int], *, subtle: bool = False) -> None:
+    """One finite expression on the two-servo head (hardware/head_pose.HEAD_EXPRESSIONS):
+    the pair glides through its cocks and dips at the expression's own Maestro pace,
+    dwells, and returns EXACTLY to where the head was. Nothing is held afterwards.
+
+    Direct targets at a chosen speed, not a streamed interpolation: the pair's travel
+    time is the sum of the stage distances at that speed (Maestro speed units are 100
+    quarter-microseconds per second), so each dwell starts once the pose has arrived."""
+    current = {ch: int(snapshot[ch]) for ch in head_pose.HEAD_PAIR}
+    steps = head_pose.expression_steps(name, current, subtle=subtle)
+    channels = list(head_pose.HEAD_PAIR)
+    servos.begin_head_gesture(channels)
+    try:
+        last = dict(current)
+        for step in steps:
+            servos.set_motion_profile(channels, speed=step["speed"], acceleration=step["acceleration"])
+            servos.set_servos(step["targets"])
+            travel = max(abs(step["targets"][ch] - last[ch]) for ch in channels)
+            time.sleep(min(2.5, travel / (step["speed"] * 100.0) + 0.08) + step["dwell"])
+            last = dict(step["targets"])
+    finally:
+        servos.end_head_gesture()
+        servos.set_motion_profile(
+            channels,
+            speed=int(getattr(config, "SERVO_DEFAULT_SPEED", 40)),
+            acceleration=int(getattr(config, "SERVO_DEFAULT_ACCELERATION", 8)),
+        )
+
+
 def _beat_agreement_nod(snapshot: dict[int, int]) -> None:
-    _move_body({3: VISOR_OPEN, 1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP}, step_us=95, step_delay=0.005)
-    time.sleep(0.05)
-    for _ in range(2):
-        _move_body({1: HEADLIFT_NEUTRAL + 160, 2: HEADTILT_SLIGHT_DOWN}, step_us=120, step_delay=0.004)
-        time.sleep(0.055)
-        _move_body({1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP}, step_us=120, step_delay=0.004)
-        time.sleep(0.055)
-    _restore_body_pose(snapshot)
+    # The two head servos pitch the head down 0.3 and back up through 0.1, then home:
+    # a real nod of the head, not a bounce of the lift.
+    _run_head_expression("nod", snapshot)
+
+
+def _beat_head_tilt(snapshot: dict[int, int]) -> None:
+    # One cock of the head to the side (away from any lean already there), held, and back.
+    _run_head_expression("tilt", snapshot)
+
+
+def _beat_perplexed(snapshot: dict[int, int]) -> None:
+    # The dog's double head-cock: 0.6 to one side, swing to 0.6 the other, each held
+    # 0.7 s, pitched a touch down throughout — something does not add up.
+    _run_head_expression("perplexed", snapshot)
+
+
+def _beat_head_wiggle(snapshot: dict[int, int]) -> None:
+    # Three quick little cocks alternating sides: playful.
+    _run_head_expression("wiggle", snapshot)
+
+
+def _beat_sympathetic(snapshot: dict[int, int]) -> None:
+    # One slow 0.45 cock with the head 0.15 down, held 1.2 s: sympathy.
+    _run_head_expression("sympathetic", snapshot)
 
 
 def _beat_disagreement_shake(snapshot: dict[int, int]) -> None:
-    _move_body({1: HEADLIFT_NEUTRAL + 140, 2: HEADTILT_SLIGHT_DOWN, 3: VISOR_HALF}, step_us=85, step_delay=0.006)
+    _move_body({1: HEADLIFT_NEUTRAL + 140, **_head(snapshot, PITCH_SLIGHT_DOWN), 3: VISOR_HALF}, step_us=85, step_delay=0.006)
     for side in (-1, 1, -1, 1):
         _move_body({0: NECK_CENTER + side * 1150}, step_us=145, step_delay=0.0035)
         time.sleep(0.050)
@@ -602,7 +697,7 @@ def _beat_sad_droop(snapshot: dict[int, int]) -> None:
         {
             0: NECK_CENTER,
             1: HEADLIFT_DOWN,
-            2: HEADTILT_SLIGHT_DOWN,
+            **_head(snapshot, PITCH_SLIGHT_DOWN),
             3: VISOR_HALF,
         },
         step_us=45,
@@ -618,13 +713,13 @@ def _beat_eye_roll(snapshot: dict[int, int]) -> None:
     # across and back. Languid on purpose: a slow roll, not a snap.
     side = random.choice([-1, 1])
     _move_body(
-        {2: HEADTILT_UP, 3: VISOR_OPEN, 0: NECK_CENTER + side * 320},
+        {**_head(snapshot, PITCH_UP), 3: VISOR_OPEN, 0: NECK_CENTER + side * 320},
         step_us=60,
         step_delay=0.013,
     )
     time.sleep(0.12)
     _move_body(
-        {0: NECK_CENTER - side * 320, 2: HEADTILT_SLIGHT_DOWN},
+        {0: NECK_CENTER - side * 320, **_head(snapshot, PITCH_SLIGHT_DOWN)},
         step_us=52,
         step_delay=0.015,
     )
@@ -660,13 +755,13 @@ def _beat_mic_drop(snapshot: dict[int, int]) -> None:
     # dismissively. The punctuation on a line he knows landed.
     side = random.choice([-1, 1])
     _move_body(
-        {7: HEROARM_FORWARD, 1: HEADLIFT_UP, 2: HEADTILT_UP, 3: VISOR_OPEN},
+        {7: HEROARM_FORWARD, 1: HEADLIFT_UP, **_head(snapshot, PITCH_UP), 3: VISOR_OPEN},
         step_us=110,
         step_delay=0.006,
     )
     time.sleep(0.24)
     _move_body(
-        {7: HEROARM_BACK, 0: NECK_CENTER + side * 720, 2: HEADTILT_SLIGHT_DOWN},
+        {7: HEROARM_BACK, 0: NECK_CENTER + side * 720, **_head(snapshot, PITCH_SLIGHT_DOWN)},
         step_us=210,
         step_delay=0.003,
     )
@@ -716,6 +811,12 @@ _BODY_BEAT_RUNNERS = {
     "double_take": _beat_double_take,
     "mic_drop": _beat_mic_drop,
     "spit_take": _beat_spit_take,
+    # Two-servo head expressions (October 10 2026): finite, return the head exactly
+    # to where it was, hold nothing. The conversation model chooses them.
+    "head_tilt": _beat_head_tilt,
+    "perplexed": _beat_perplexed,
+    "head_wiggle": _beat_head_wiggle,
+    "sympathetic": _beat_sympathetic,
 }
 
 _BODY_BEAT_ALIASES = {
@@ -724,6 +825,18 @@ _BODY_BEAT_ALIASES = {
     "yes": "agreement_nod",
     "yes_nod": "agreement_nod",
     "nod": "agreement_nod",
+    "tilt": "head_tilt",
+    "head_cock": "head_tilt",
+    "cock_head": "head_tilt",
+    "tilt_head": "head_tilt",
+    "confused": "perplexed",
+    "puzzled": "perplexed",
+    "double_head_cock": "perplexed",
+    "wiggle": "head_wiggle",
+    "head_shimmy": "head_wiggle",
+    "sympathy": "sympathetic",
+    "sympathetic_tilt": "sympathetic",
+    "tender": "sympathetic",
     "angry": "anger_flash",
     "anger": "anger_flash",
     "mad": "anger_flash",
@@ -893,20 +1006,38 @@ def startup() -> None:
     # Pace: the old 25/0.025 (~1000 qus/s) wake read as sluggish (owner 2026-08-11:
     # "the startup servo movements are slow"). 60/0.02 streams ~3000 qus/s — still
     # under the startup profile's physical cap (speed 40 ≈ 4000 qus/s) and ramped
-    # by the per-channel acceleration, so the fragile headtilt still GLIDES (never
-    # snap the tilt — 5 lb head on an 8 mm rod), just ~3x brisker.
+    # by the per-channel acceleration, so the head still GLIDES (never snap the 5 lb
+    # head), just ~3x brisker. The two head servos go from fully down to the owner's
+    # level reading together; the visor comes UP to 5120 (inverted servo).
+    #
+    # The seed is the rest pose unless connect() read a live pulse on a channel (the
+    # program restarted with the servos powered): then the glide starts from where the
+    # board says the joint is, not from a rest it never went to.
+    head_targets = {1: HEADLIFT_NEUTRAL, **HEAD_LEVEL_PAIR, 3: VISOR_NEUTRAL}
+    commanded = servos.commanded_positions()
     lift_thread = threading.Thread(
         target=servos.move_to,
-        args=({1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL, 3: VISOR_HALF},),
+        args=(head_targets,),
         kwargs={
             "step_us": 60,
             "step_delay": 0.02,
-            "start": {ch: SHUTDOWN_REST_POSE[ch] for ch in (1, 2, 3)},
+            "start": {ch: commanded.get(ch, SHUTDOWN_REST_POSE[ch]) for ch in head_targets},
         },
         daemon=True,
         name="startup_lift",
     )
     lift_thread.start()
+    # The poker arm stands at its park when switched on; awake it sits 45 degrees up
+    # with the hand level. Take it there in clearance stages (wrist first, then the
+    # elbow) at the slow lifecycle pace, alongside the head. Owner: without this the
+    # arm stayed at park and "looked wrong".
+    poker_thread = threading.Thread(
+        target=_poker_lifecycle_move,
+        args=(POKER_UP,),
+        daemon=True,
+        name="startup_poker",
+    )
+    poker_thread.start()
 
     # Look around as if waking up — randomly choose left-right or right-left. The
     # first turn starts from the centred rest pose for the same reason as the lift.
@@ -929,6 +1060,46 @@ def startup() -> None:
     # Return to center.
     servos.move_to({0: NECK_CENTER}, step_us=70, step_delay=0.025)
     time.sleep(0.2)
+    poker_thread.join(timeout=8.0)
+
+
+def _poker_lifecycle_move(target: dict[int, int], *, parking: bool = False) -> None:
+    """The staged poker elbow/wrist glide at the slow lifecycle pace; never raises."""
+    try:
+        servos.move_poker(
+            target[12], target[13],
+            speed=POKER_LIFECYCLE_SPEED, acceleration=POKER_LIFECYCLE_ACCEL,
+            block=True, parking=parking,
+        )
+    except Exception as exc:
+        _log.warning("[animations] poker arm lifecycle move to %s failed: %s", target, exc)
+
+
+def poker_pose(name: str, *, async_: bool = False) -> bool:
+    """Take the poker elbow/wrist to a named pose (poker_up, poker_out, poker_down,
+    poker_park) in clearance stages. Returns False for an unknown name."""
+    key = str(name or "").strip().lower()
+    if not key.startswith("poker_"):
+        key = "poker_" + key
+    target = head_pose.POKER_POSES.get(key)
+    if target is None:
+        return False
+    servos.pause_arm_idle()
+
+    def run() -> None:
+        try:
+            servos.move_poker(target[12], target[13], speed=POKER_POSE_SPEED,
+                              acceleration=POKER_POSE_ACCEL, block=True)
+        except Exception as exc:
+            _log.warning("[animations] poker pose %s failed: %s", key, exc)
+        finally:
+            servos.resume_arm_idle()
+
+    if async_:
+        threading.Thread(target=run, daemon=True, name=f"poker_pose_{key}").start()
+    else:
+        run()
+    return True
 
 
 # Boot-time "looking around the room while models load" motion. Tuned to read as
@@ -938,7 +1109,8 @@ _BOOT_SCAN_STEP_DELAY_SECS = 0.018
 _BOOT_SCAN_DWELL_RANGE_SECS = (0.25, 0.6)
 _BOOT_SCAN_MIN_NECK_JUMP_FRACTION = 0.22   # ensure each look visibly moves the head
 _BOOT_SCAN_DOWN_LIFT_FRACTION = 0.32       # how far the headlift may dip below neutral
-_BOOT_SCAN_DOWN_TILT_FRACTION = 0.50       # how far the headtilt may angle down
+_BOOT_SCAN_DOWN_PITCH = -0.5               # how far the head may pitch down (fraction of travel)
+_BOOT_SCAN_TILT = 0.3                      # room scans carry a random cock up to this
 
 
 def boot_scan_thread(stop_event: "threading.Event") -> None:
@@ -954,12 +1126,10 @@ def boot_scan_thread(stop_event: "threading.Event") -> None:
     try:
         neck_cfg = config.SERVO_CHANNELS["neck"]
         lift_cfg = config.SERVO_CHANNELS["headlift"]
-        tilt_cfg = config.SERVO_CHANNELS["headtilt"]
         neck_min, neck_max = int(neck_cfg["min"]), int(neck_cfg["max"])
-        lift_neutral, tilt_neutral = int(lift_cfg["neutral"]), int(tilt_cfg["neutral"])
+        lift_neutral = int(lift_cfg["neutral"])
         # Pitch dips from level toward "down" (people sit/stand below the head camera).
         lift_down = lift_neutral - int((lift_neutral - int(lift_cfg["min"])) * _BOOT_SCAN_DOWN_LIFT_FRACTION)
-        tilt_down = tilt_neutral + int((int(tilt_cfg["max"]) - tilt_neutral) * _BOOT_SCAN_DOWN_TILT_FRACTION)
         min_jump = int((neck_max - neck_min) * _BOOT_SCAN_MIN_NECK_JUMP_FRACTION)
 
         last_neck: int | None = None
@@ -977,19 +1147,20 @@ def boot_scan_thread(stop_event: "threading.Event") -> None:
                     break
                 neck = random.randint(neck_min, neck_max)
             last_neck = neck
-            # Pair the turn with a random pitch so each move is two-axis (diagonal).
+            # Pair the turn with a random pitch so each move is two-axis (diagonal),
+            # and a random cock of the head: a room scan on the two-servo head.
             f = random.random()
             lift = lift_neutral + int((lift_down - lift_neutral) * f)
-            tilt = tilt_neutral + int((tilt_down - tilt_neutral) * f)
             servos.move_to(
-                {0: neck, 1: lift, 2: tilt},
+                {0: neck, 1: lift,
+                 **head_pose.head_pulses(_BOOT_SCAN_DOWN_PITCH * f, random.uniform(-_BOOT_SCAN_TILT, _BOOT_SCAN_TILT))},
                 step_us=_BOOT_SCAN_STEP_US,
                 step_delay=_BOOT_SCAN_STEP_DELAY_SECS,
             )
             stop_event.wait(random.uniform(*_BOOT_SCAN_DWELL_RANGE_SECS))
 
         servos.move_to(
-            {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL},
+            {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, **HEAD_LEVEL_PAIR},
             step_us=40,
             step_delay=0.02,
         )
@@ -1000,10 +1171,10 @@ def boot_scan_thread(stop_event: "threading.Event") -> None:
 def shutdown() -> None:
     """Shutdown: stop breathing, droop to the rest pose, LEDs off.
 
-    Visor close, neck recenter, head-lift droop and head-tilt down all travel
-    together in a SINGLE move_to so the droid powers down in one motion, instead
-    of the old visor→tilt→lift sequence. (Headtilt is inverted: HEADTILT_DOWN is
-    the "looking down" value.)
+    Visor down, neck recenter, head-lift droop and the two head servos to fully
+    down all travel together in a SINGLE move_to so the droid powers down in one
+    motion, instead of the old visor→tilt→lift sequence. The poker arm goes back to
+    its park in clearance stages (wrist first, then the elbow up) alongside.
 
     Timing: step_us=50 / step_delay=0.012 makes the droop brisk and apparent (~1s
     over the ~4000-unit head-lift travel) rather than the old ~4s crawl, while
@@ -1048,14 +1219,20 @@ def shutdown() -> None:
     )
 
     throttle_arm.request_park()
+    # The poker arm walks back to its park in clearance stages on its own thread,
+    # beside the head droop. Its stage writes carry the parking flag so the latch
+    # below cannot strand it half way (the throttle's park gets the same pass).
+    poker_thread = threading.Thread(
+        target=_poker_lifecycle_move, args=(POKER_PARK,), kwargs={"parking": True},
+        daemon=True, name="shutdown_poker",
+    )
+    poker_thread.start()
     # The elbow travels with the head: powered off the arm falls to ELBOW_REST
     # anyway, so taking it there under control now is what makes the next cold
     # boot's first elbow target a no-op instead of a violent yank (see
     # SHUTDOWN_REST_POSE).
-    servos.move_to(
-        {3: VISOR_CLOSED, 0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN, 4: ELBOW_REST},
-        step_us=50, step_delay=0.012,
-    )
+    head_rest = {ch: SHUTDOWN_REST_POSE[ch] for ch in (3, 0, 1, 2, 11, 4)}
+    servos.move_to(head_rest, step_us=50, step_delay=0.012)
     # Freeze the pose the INSTANT the rest targets are commanded — before the
     # settle sleep, not after. The Maestro finishes the physical travel on its
     # own; every quarter-second the latch is delayed is a window where another
@@ -1069,10 +1246,26 @@ def shutdown() -> None:
     # The head is now protected from late speech/scene writes while the separate
     # throttle worker finishes only its tuck/park route on channels 8–10.
     throttle_arm.park()
+    poker_thread.join(timeout=6.0)
     # Give the head time to physically arrive at FLOOR before LEDs off / serial
     # close. Don't rely on the shutdown-audio join window (skipped when audio is
     # disabled), or a correct-speed droop could still be cut short.
     time.sleep(float(getattr(config, "SHUTDOWN_DROOP_SETTLE_SECS", 0.8)))
+    # Then READ BACK: a channel still short of its park is named with its pulse
+    # (ch3@6400->6976). The first shutdown on the two-servo head timed out with a
+    # bare error and nothing parked; the Maestro silently clamping a target outside
+    # the range stored in its own settings looks exactly like a servo that never
+    # arrives, and the visor park 6976 is the prime suspect because it had never
+    # been sent before. This is what tells the owner which it was.
+    try:
+        short = servos.wait_for_arrival(
+            {**head_rest, **POKER_PARK},
+            timeout=float(getattr(config, "SHUTDOWN_ARRIVAL_TIMEOUT_SECS", 3.0)),
+        )
+        if short:
+            _log.warning("[animations] shutdown park not reached: %s", short)
+    except Exception as exc:
+        _log.debug("[animations] shutdown arrival check skipped: %s", exc)
     # Fade the LEDs out (lifelike power-down) rather than snapping them off. _shutdown()
     # already kicked off this fade in lockstep with the audio + droop; FADEOFF is
     # idempotent in firmware, so this is a harmless re-assert (and keeps shutdown()
@@ -1108,13 +1301,19 @@ def sleep() -> None:
         acceleration=int(getattr(config, "SHUTDOWN_DROOP_SERVO_ACCELERATION", 14)),
     )
     throttle_arm.request_park()
+    poker_thread = threading.Thread(
+        target=_poker_lifecycle_move, args=(POKER_PARK,), kwargs={"parking": True},
+        daemon=True, name="sleep_poker",
+    )
+    poker_thread.start()
     servos.move_to({3: VISOR_CLOSED}, step_us=25, step_delay=0.035)
     time.sleep(0.25)
     servos.move_to(
         {
             0: NECK_CENTER,
-            1: HEADLIFT_FLOOR,
-            2: HEADTILT_DOWN,
+            1: SHUTDOWN_REST_POSE[1],
+            2: HEAD_DOWN_PAIR[2],
+            11: HEAD_DOWN_PAIR[11],
             3: VISOR_CLOSED,
             4: ELBOW_NEUTRAL,
             5: HAND_NEUTRAL,
@@ -1126,24 +1325,31 @@ def sleep() -> None:
     )
     servos.latch_sleep_pose()
     throttle_arm.park()
+    poker_thread.join(timeout=6.0)
 
 
 def wake() -> None:
-    """Wake from sleep: head raises, visor opens, active LEDs restore."""
+    """Wake from sleep: head raises to level, visor comes up, the poker arm returns to
+    its awake pose in clearance stages, active LEDs restore."""
     servos.release_sleep_latch()
     throttle_arm.start()
     leds_chest.active()
+    poker_thread = threading.Thread(
+        target=_poker_lifecycle_move, args=(POKER_UP,), daemon=True, name="wake_poker",
+    )
+    poker_thread.start()
     servos.move_to(
         {
             1: HEADLIFT_NEUTRAL,
-            2: HEADTILT_NEUTRAL,
-            3: VISOR_HALF,
+            **HEAD_LEVEL_PAIR,
+            3: VISOR_NEUTRAL,
         },
         step_us=35,
         step_delay=0.02,
     )
     leds_head.active()
     leds_head.set_eye_color(255, 200, 0)
+    poker_thread.join(timeout=8.0)
     servos.resume_arm_idle()
 
 
@@ -1161,13 +1367,18 @@ def idle() -> None:
 def wander_thread() -> None:
     """
     Background thread: slow, subtle multi-channel head movements during IDLE/ACTIVE.
-    Randomly picks from neck scans, headtilt shifts, thoughtful glances, and resets.
-    Suppressed while speaking or in SLEEP/SHUTDOWN states.
+    Randomly picks from neck scans, small pitch drifts, thoughtful glances, and
+    resets. Suppressed while speaking or in SLEEP/SHUTDOWN states.
     Call as a daemon thread from main.py alongside breathing_thread.
 
     When nobody is detected in frame, the thread runs more frequently and uses
-    wider neck/headtilt sweeps — Rex actively looks around as if scanning for
-    company, instead of holding gaze on a person who isn't there.
+    wider neck sweeps — Rex actively looks around as if scanning for company,
+    instead of holding gaze on a person who isn't there.
+
+    On the two-servo head (October 10): each move drifts the pitch a little
+    (+/-0.03) and the cock a little (+/-0.06); glances away cock the head 0.1-0.25
+    to a random side; room scans carry a random cock up to +/-0.3; the visor idles
+    inside 4770-5470 with an occasional slow half-blink down to 5520.
     """
     while True:
         # No one in frame → wander more often and sweep further.
@@ -1190,54 +1401,67 @@ def wander_thread() -> None:
         neck_scan_range = (700, 1800) if alone else (300, 700)
         neck_lean_range = (300, 1000) if alone else (200, 500)
         neck_nudge_range = (400, 1000) if alone else (-250, 250)
-        tilt_scan_amp    = 180 if alone else 80
+        scan_tilt = 0.3 if alone else 0.15        # room scans carry a random cock
 
+        pitch0, tilt0 = servos.commanded_head_pose()
+        drift = lambda: head_pose.head_pulses(            # a little living drift per move
+            pitch0 + random.uniform(-0.03, 0.03), tilt0 + random.uniform(-0.06, 0.06))
+        level = head_pose.head_pulses(PITCH_LEVEL, TILT_STRAIGHT)
         choice = random.randint(0, 4)
 
         if choice == 0:
-            # Slow neck turn with slight headtilt — like scanning the room
+            # Slow neck turn with a cock of the head — like scanning the room
             side = random.choice([-1, 1])
             neck = NECK_CENTER + side * random.randint(*neck_scan_range)
-            tilt = HEADTILT_NEUTRAL + random.randint(-tilt_scan_amp, tilt_scan_amp)
-            servos.move_to({0: neck, 2: tilt}, step_us=20, step_delay=0.03)
+            pair = head_pose.head_pulses(pitch0 + random.uniform(-0.03, 0.03), random.uniform(-scan_tilt, scan_tilt))
+            servos.move_to({0: neck, **pair}, step_us=20, step_delay=0.03)
             time.sleep(random.uniform(0.8, 2.0))
-            servos.move_to({0: NECK_CENTER, 2: HEADTILT_NEUTRAL}, step_us=20, step_delay=0.03)
+            servos.move_to({0: NECK_CENTER, **level}, step_us=20, step_delay=0.03)
 
         elif choice == 1:
-            # Thoughtful upward glance — head lifts and tilts slightly up
+            # Thoughtful upward glance — head lifts and pitches slightly up, a
+            # small cock to a random side (a glance away)
             lift = HEADLIFT_NEUTRAL + random.randint(100, 250)
-            servos.move_to({1: lift, 2: HEADTILT_SLIGHT_UP}, step_us=20, step_delay=0.03)
+            cock = random.choice([-1, 1]) * random.uniform(0.1, 0.25)
+            servos.move_to({1: lift, **head_pose.head_pulses(PITCH_SLIGHT_UP, cock)}, step_us=20, step_delay=0.03)
             time.sleep(random.uniform(0.8, 1.5))
-            servos.move_to({1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL}, step_us=20, step_delay=0.03)
+            servos.move_to({1: HEADLIFT_NEUTRAL, **level}, step_us=20, step_delay=0.03)
 
         elif choice == 2:
-            # Downward contemplative look — slight neck lean + head lower + tilt down
+            # Downward contemplative look — slight neck lean + head lower + pitch down
             side = random.choice([-1, 1])
             neck = NECK_CENTER + side * random.randint(*neck_lean_range)
+            cock = random.choice([-1, 1]) * random.uniform(0.1, 0.25)
             servos.move_to(
-                {0: neck, 1: HEADLIFT_NEUTRAL - 200, 2: HEADTILT_SLIGHT_DOWN},
+                {0: neck, 1: HEADLIFT_NEUTRAL - 200, **head_pose.head_pulses(PITCH_SLIGHT_DOWN, cock)},
                 step_us=20, step_delay=0.03,
             )
             time.sleep(random.uniform(1.0, 2.0))
-            servos.move_to({0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL}, step_us=20, step_delay=0.03)
+            servos.move_to({0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, **level}, step_us=20, step_delay=0.03)
 
         elif choice == 3:
-            # Slow re-center — settle back to neutral from any drift
+            # Slow re-center — settle back to level and straight from any drift
             servos.move_to(
-                {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL},
+                {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, **level},
                 step_us=15, step_delay=0.03,
             )
 
         else:
-            # Subtle visor adjustment + small neck lean
-            visor_nudge = VISOR_HALF + random.randint(-80, 80)
+            # Subtle visor adjustment + small neck lean + a drift of the head. The
+            # visor idles inside its range (inverted servo: lower is more open); one
+            # time in four it does a slow half-blink down to the camera-clear edge.
+            lo, hi = (int(v) for v in getattr(config, "SERVO_IDLE_VISOR_RANGE_QUS", head_pose.VISOR_IDLE))
+            visor_nudge = random.randint(lo, hi)
             if alone:
                 neck_nudge = NECK_CENTER + random.choice([-1, 1]) * random.randint(*neck_nudge_range)
             else:
                 neck_nudge = NECK_CENTER + random.randint(*neck_nudge_range)
-            servos.move_to({3: visor_nudge, 0: neck_nudge}, step_us=20, step_delay=0.03)
+            servos.move_to({3: visor_nudge, 0: neck_nudge, **drift()}, step_us=20, step_delay=0.03)
             time.sleep(random.uniform(0.8, 1.5))
-            servos.move_to({3: VISOR_HALF, 0: NECK_CENTER}, step_us=20, step_delay=0.03)
+            if random.random() < 0.25:
+                servos.move_to({3: head_pose.VISOR_SPEECH[1]}, step_us=25, step_delay=0.03)
+                time.sleep(random.uniform(0.2, 0.6))
+            servos.move_to({3: VISOR_NEUTRAL, 0: NECK_CENTER}, step_us=20, step_delay=0.03)
 
 
 def arm_wander_thread() -> None:
@@ -1268,8 +1492,40 @@ def arm_wander_thread() -> None:
                     },
                     step_delay=_IDLE_ARM_STEP_DELAY_SECS,
                 )
+                # The poker elbow and wrist wander slowly around the awake 45-degree
+                # pose in short steps, always through the staged clearance move.
+                if random.random() < 0.6:
+                    servos.move_poker(
+                        *_idle_poker_pair_target(), speed=random.randint(*_IDLE_POKER_PAIR_SPEED),
+                        acceleration=3, block=True,
+                    )
+        except Exception as exc:
+            _log.debug("[animations] idle arm wander failed: %s", exc)
         finally:
             _arm_motion_lock.release()
+
+
+def _idle_poker_pair_target() -> tuple[int, int]:
+    """A new resting point for the poker elbow and wrist, each a short step from where
+    it is, inside the idle band around the awake pose and under the clearance ceiling."""
+    current = _current_body_pose((12, 13))
+    target = {}
+    for ch in head_pose.POKER_PAIR:
+        low, high = head_pose.POKER_IDLE[ch]
+        here = int(current.get(ch, head_pose.POKER_UP[ch]))
+        value = None
+        for _ in range(8):
+            candidate = here + random.choice((-1, 1)) * random.randint(*_IDLE_POKER_PAIR_STEP_QUS)
+            if low <= candidate <= high:
+                value = candidate
+                break
+        if value is None:
+            middle = (low + high) // 2
+            value = max(low, min(high, here + (1 if here < middle else -1) * _IDLE_POKER_PAIR_STEP_QUS[0]))
+        target[ch] = value
+    if not head_pose.poker_clear(target):
+        target[12] = head_pose.poker_elbow_max(target[13])
+    return target[12], target[13]
 
 
 # ---------------------------------------------------------------------------
@@ -1296,14 +1552,45 @@ def headshake(count: int = 2) -> None:
 
 
 def thinking() -> None:
-    """Rex considering something: slight upward tilt, sideways glance."""
-    servos.set_servos({2: HEADTILT_SLIGHT_UP, 0: NECK_CENTER + 1000})
+    """Rex considering something: slight upward pitch with a cock of the head, sideways glance."""
+    servos.set_servos({**_head(None, PITCH_SLIGHT_UP, 0.4), 0: NECK_CENTER + 1000})
 
 
 def surprised() -> None:
-    """Genuine surprise beat: quick head-up + visor fully open."""
+    """Genuine surprise beat: quick head-up + visor thrown fully up."""
     servos.set_servos({1: HEADLIFT_HIGH, 3: VISOR_OPEN})
     time.sleep(0.3)
+
+
+def head_expression(name: str, *, subtle: bool = False, async_: bool = True) -> bool:
+    """Play one of the two-servo head expressions (nod, tilt, perplexed, wiggle,
+    sympathetic) from wherever the head is, returning it exactly there afterwards.
+    ``subtle`` halves the amounts. Rides the body-beat lock so it never fights a beat."""
+    key = str(name or "").strip().lower()
+    if key not in head_pose.HEAD_EXPRESSIONS:
+        return False
+
+    def run() -> bool:
+        if not _body_beat_allowed():
+            return False
+        if not _body_beat_lock.acquire(blocking=False):
+            return False
+        try:
+            snapshot = _current_body_pose(tuple(head_pose.HEAD_PAIR))
+            _suspend_face_tracking(4.0)
+            with _motion_lock:
+                _run_head_expression(key, snapshot, subtle=subtle)
+            return True
+        except Exception as exc:
+            _log.debug("[animations] head expression %s failed: %s", key, exc)
+            return False
+        finally:
+            _body_beat_lock.release()
+
+    if async_:
+        threading.Thread(target=run, daemon=True, name=f"head_expression_{key}").start()
+        return True
+    return run()
 
 
 # ---------------------------------------------------------------------------
@@ -1311,8 +1598,9 @@ def surprised() -> None:
 # ---------------------------------------------------------------------------
 
 def camera_pose() -> None:
-    """Visor fully open + neck centered before image capture. Waits 0.5 s to settle."""
-    servos.set_servos({0: NECK_CENTER, 3: VISOR_OPEN})
+    """Visor up to the capture pose + neck centered before image capture. Waits 0.5 s
+    to settle."""
+    servos.set_servos({0: NECK_CENTER, 3: VISOR_CAPTURE})
     time.sleep(0.5)
 
 
@@ -1411,13 +1699,34 @@ def _record_directed_look(direction: str, target: str = "") -> None:
         pass
 
 
-def directed_look_pose(direction: str = "current", target: str = "") -> str:
+# The head steps a person (or Rex's own plan) can ask for by name, beside the cardinal
+# looks. Pitch/tilt are fractions of the two-servo head's travel (hardware/head_pose):
+# look_down/look_up pitch by 0.8 and keep the cock; tilt_left/tilt_right cock by 0.8
+# and keep the pitch and neck; look_level levels and straightens; tilt_straight only
+# straightens.
+_NAMED_HEAD_STEPS = {
+    "level": head_pose.HEAD_POSES["look_level"],
+    "tilt_left": head_pose.HEAD_POSES["tilt_left"],
+    "tilt_right": head_pose.HEAD_POSES["tilt_right"],
+    "tilt_straight": head_pose.HEAD_POSES["tilt_straight"],
+}
+_DIRECTED_LOOK_DIRECTIONS = {"left", "right", "up", "down", "center", "current", *_NAMED_HEAD_STEPS}
+
+
+def directed_look_pose(direction: str = "current", target: str = "", *, requested: bool = True) -> str:
     """
     Move Rex's head toward a requested direction for a user-directed visual check.
 
     Returns the normalized direction actually used. Unlike camera_pose(), this
     intentionally preserves side/up/down gaze so the next frame represents what
     Rex was asked to inspect.
+
+    Side looks are RELATIVE (first live run on the two-servo head, October 10: Rex
+    was following the owner at the neck's left limit, "look left" was a fixed pose
+    and swung his head back to the right). From anywhere nearer the centre a side
+    look goes to the 33-degree pose; already there or beyond on that side, a
+    person's request (``requested=True``) goes on to the neck's limit, and Rex's own
+    repeated step (``requested=False``) moves the neck not at all.
     """
     norm = (direction or "current").strip().lower()
     if norm in {"here", "this", "that", "there", "pointed", "show"}:
@@ -1426,13 +1735,19 @@ def directed_look_pose(direction: str = "current", target: str = "") -> str:
         norm = _opposite_direction()
     elif norm in {"centre", "front", "forward", "ahead", "straight"}:
         norm = "center"
+    elif norm in {"look_level", "straight_ahead"}:
+        norm = "level"
+    elif norm in {"tilt_straight", "untilt", "straighten"}:
+        norm = "tilt_straight"
     elif norm.replace("-", "_").replace(" ", "_") in _COMPOUND_DIRECTED_LOOKS:
         # Accept a diagonal. Without this the whitelist below coerced
         # "down_left" to "current" and the head never moved at all -- the
         # second half of the 2026-08-13 dog-on-the-floor failure, and the
         # reason a compound could not simply be threaded through by the parser.
         norm = norm.replace("-", "_").replace(" ", "_")
-    elif norm not in {"left", "right", "up", "down", "center", "current"}:
+    elif norm.replace("-", "_").replace(" ", "_") in _NAMED_HEAD_STEPS:
+        norm = norm.replace("-", "_").replace(" ", "_")
+    elif norm not in _DIRECTED_LOOK_DIRECTIONS:
         norm = "current"
 
     settle = float(getattr(config, "DIRECTED_LOOK_SETTLE_SECS", 0.65))
@@ -1440,48 +1755,42 @@ def directed_look_pose(direction: str = "current", target: str = "") -> str:
     step_delay = float(getattr(config, "DIRECTED_LOOK_STEP_DELAY_SECS", 0.032))
 
     neck_cfg = config.SERVO_CHANNELS["neck"]
-    lift_cfg = config.SERVO_CHANNELS["headlift"]
-    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
-    visor_cfg = config.SERVO_CHANNELS["visor"]
     neck_ch = int(neck_cfg["ch"])
-    lift_ch = int(lift_cfg["ch"])
-    tilt_ch = int(tilt_cfg["ch"])
-    visor_ch = int(visor_cfg["ch"])
+    lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
+    visor_ch = int(config.SERVO_CHANNELS["visor"]["ch"])
 
-    targets = {visor_ch: int(visor_cfg["max"])}
+    current = _current_body_pose((0, 1, 2, 11))
+    targets = {visor_ch: VISOR_CAPTURE}
+    head_spec: dict[str, float] = {}
     # One pose, not two moves. A compound ("down_left") puts its yaw and its
-    # pitch into the SAME move_to targets dict, so neck, headlift and headtilt
-    # interpolate together in a single glide -- posing the axes as two
-    # sequential calls would jerk the 5 lb head twice, which the inverted
-    # headtilt on its 8mm rod must never see. Per-axis values are byte-identical
-    # to the single-axis poses, so a diagonal never commands a tilt beyond what
-    # a plain "down" already commands: down_left is exactly down's lift/tilt
+    # pitch into the SAME move_to targets dict, so neck, headlift and both head
+    # servos interpolate together in a single glide -- posing the axes as two
+    # sequential calls would jerk the 5 lb head twice. Per-axis values are
+    # identical to the single-axis poses, so a diagonal never pitches beyond what
+    # a plain "down" already commands: down_left is exactly down's lift/pitch
     # plus left's neck.
-    for part in (norm.split("_") if "_" in norm else [norm]):
-        if part == "left":
-            targets[neck_ch] = int(neck_cfg["min"])
-        elif part == "right":
-            targets[neck_ch] = int(neck_cfg["max"])
+    for part in (norm.split("_") if norm in _COMPOUND_DIRECTED_LOOKS else [norm]):
+        if part in ("left", "right"):
+            targets[neck_ch] = head_pose.neck_look_target(part, current[neck_ch], further=requested)
         elif part == "up":
-            targets[lift_ch] = int(lift_cfg["max"])
-            # Headtilt is inverted: lower values tilt the head/camera upward.
-            targets[tilt_ch] = int(tilt_cfg["min"])
+            head_spec.update(head_pose.HEAD_POSES["look_up"])
         elif part == "down":
-            targets[lift_ch] = int(lift_cfg["min"])
-            targets[tilt_ch] = int(tilt_cfg["max"])
+            head_spec.update(head_pose.HEAD_POSES["look_down"])
         elif part == "center":
-            targets.update({
-                neck_ch: int(neck_cfg["neutral"]),
-                lift_ch: int(lift_cfg["neutral"]),
-                tilt_ch: int(tilt_cfg["neutral"]),
-            })
+            targets[neck_ch] = int(neck_cfg["neutral"])
+            head_spec.update(head_pose.HEAD_POSES["look_level"])
+        elif part in _NAMED_HEAD_STEPS:
+            head_spec.update(_NAMED_HEAD_STEPS[part])
+    if head_spec:
+        targets.update(head_pose.head_targets(head_spec, current))
 
     with _motion_lock:
         servos.move_to(targets, step_us=step_us, step_delay=step_delay)
+        pair = {ch: targets[ch] for ch in head_pose.HEAD_PAIR} if all(ch in targets for ch in head_pose.HEAD_PAIR) else None
         servos.set_face_tracking_baseline(
             neck=targets.get(neck_ch),
             lift=targets.get(lift_ch),
-            tilt=targets.get(tilt_ch),
+            head=pair,
         )
         time.sleep(settle)
     _record_directed_look(norm, target)
@@ -1512,16 +1821,14 @@ def travel_glance_pose(side: str = "center", pitch: str = "level",
 
     neck_cfg = config.SERVO_CHANNELS["neck"]
     lift_cfg = config.SERVO_CHANNELS["headlift"]
-    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
     visor_cfg = config.SERVO_CHANNELS["visor"]
     neck_ch = int(neck_cfg["ch"])
     lift_ch = int(lift_cfg["ch"])
-    tilt_ch = int(tilt_cfg["ch"])
     step_us = int(getattr(config, "DIRECTED_LOOK_STEP_QUS", 30))
     step_delay = float(getattr(config, "DIRECTED_LOOK_STEP_DELAY_SECS", 0.032))
 
     neck_neutral = int(neck_cfg["neutral"])
-    targets = {int(visor_cfg["ch"]): int(visor_cfg["max"])}
+    targets = {int(visor_cfg["ch"]): VISOR_CAPTURE}
     if side == "left":
         targets[neck_ch] = neck_neutral + int((int(neck_cfg["min"]) - neck_neutral) * fraction)
     elif side == "right":
@@ -1529,31 +1836,32 @@ def travel_glance_pose(side: str = "center", pitch: str = "level",
     else:
         targets[neck_ch] = neck_neutral
 
+    # Half the look_up/look_down pitch, head straight (the come-here alignment
+    # measures off a level, straight head).
     lift_neutral = int(lift_cfg["neutral"])
-    tilt_neutral = int(tilt_cfg["neutral"])
     if pitch == "up":
-        # Headtilt is inverted: lower values tilt the head/camera upward.
         targets[lift_ch] = (lift_neutral + int(lift_cfg["max"])) // 2
-        targets[tilt_ch] = (tilt_neutral + int(tilt_cfg["min"])) // 2
+        head_pitch = PITCH_UP / 2
     elif pitch == "down":
         targets[lift_ch] = (lift_neutral + int(lift_cfg["min"])) // 2
-        targets[tilt_ch] = (tilt_neutral + int(tilt_cfg["max"])) // 2
+        head_pitch = PITCH_DOWN / 2
     elif pitch in ("down-slight", "slight-down"):
         # Approach gaze: the head stays at height, only the camera dips a touch
         # so floor clutter directly ahead is in frame while a standing person's
         # face still is (owner 2026-08-19: come-here should look slightly down).
         targets[lift_ch] = lift_neutral
-        targets[tilt_ch] = HEADTILT_SLIGHT_DOWN
+        head_pitch = PITCH_SLIGHT_DOWN
     else:
         targets[lift_ch] = lift_neutral
-        targets[tilt_ch] = tilt_neutral
+        head_pitch = PITCH_LEVEL
+    targets.update(head_pose.head_pulses(head_pitch, TILT_STRAIGHT))
 
     with _motion_lock:
         servos.move_to(targets, step_us=step_us, step_delay=step_delay)
         servos.set_face_tracking_baseline(
             neck=targets.get(neck_ch),
             lift=targets.get(lift_ch),
-            tilt=targets.get(tilt_ch),
+            head={ch: targets[ch] for ch in head_pose.HEAD_PAIR},
         )
 
 
@@ -1856,19 +2164,20 @@ def pride_flourish(*, async_: bool = True) -> bool:
 def _pride_flourish_profile(kind: str) -> "dict[int, tuple[int, int]]":
     """Per-channel (speed, acceleration) for the flourish's entry or return.
 
-    Each of the three channels gets its own numbers because they are mechanically
-    nothing alike: the wrist has 8000 q-us of travel and needs real speed to cross it
-    inside the entry, the visor has 2432 and barely needs any, and the headtilt carries
-    a ~5 lb head on an 8 mm rod (see [[djr3x-headtilt-fragile]] — the one channel here
-    that must never snap, which is why its numbers are the most conservative and the
-    return is gentler than the entry).
+    Each channel gets its own numbers because they are mechanically nothing alike: the
+    wrist has 8000 q-us of travel and needs real speed to cross it inside the entry,
+    the visor has 2432 and barely needs any, and the two head servos carry a ~5 lb
+    head (the channels here that must never snap, which is why their numbers are the
+    most conservative and the return is gentler than the entry).
     """
     suffix = "ENTRY" if kind == "entry" else "RETURN"
+    head_profile = (
+        int(getattr(config, f"PRIDE_FLOURISH_TILT_{suffix}_SPEED", 45 if kind == "entry" else 30)),
+        int(getattr(config, f"PRIDE_FLOURISH_TILT_{suffix}_ACCEL", 15 if kind == "entry" else 10)),
+    )
     return {
-        2: (
-            int(getattr(config, f"PRIDE_FLOURISH_TILT_{suffix}_SPEED", 45 if kind == "entry" else 30)),
-            int(getattr(config, f"PRIDE_FLOURISH_TILT_{suffix}_ACCEL", 15 if kind == "entry" else 10)),
-        ),
+        2: head_profile,
+        11: head_profile,
         3: (
             int(getattr(config, f"PRIDE_FLOURISH_VISOR_{suffix}_SPEED", 60 if kind == "entry" else 40)),
             int(getattr(config, f"PRIDE_FLOURISH_VISOR_{suffix}_ACCEL", 20 if kind == "entry" else 12)),
@@ -1898,9 +2207,12 @@ def _restore_flourish_profile() -> None:
         head_speed = int(getattr(config, "SERVO_SPEECH_HEAD_SPEED", 45))
         arm_speed = int(getattr(config, "SERVO_SPEECH_ARM_SPEED", 35))
         accel = int(getattr(config, "SERVO_SPEECH_ACCELERATION", 8))
-        for channel, speed in ((2, head_speed), (3, head_speed), (5, arm_speed)):
+        pair_speed = int(getattr(config, "SERVO_SPEECH_HEAD_PAIR_SPEED", 20))
+        pair_accel = int(getattr(config, "SERVO_SPEECH_HEAD_PAIR_ACCELERATION", 6))
+        for channel, speed, acc in ((2, pair_speed, pair_accel), (11, pair_speed, pair_accel),
+                                    (3, head_speed, accel), (5, arm_speed, accel)):
             servos.set_speed(channel, speed)
-            servos.set_acceleration(channel, accel)
+            servos.set_acceleration(channel, acc)
         return
     if servos.listening_motion_active():
         speed = int(getattr(config, "SERVO_LISTENING_SPEED", 22))
@@ -1908,7 +2220,7 @@ def _restore_flourish_profile() -> None:
     else:
         speed = int(getattr(config, "SERVO_DEFAULT_SPEED", 40))
         accel = int(getattr(config, "SERVO_DEFAULT_ACCELERATION", 8))
-    for channel in (2, 3, 5):
+    for channel in (2, 11, 3, 5):
         servos.set_speed(channel, speed)
         servos.set_acceleration(channel, accel)
 
@@ -1935,20 +2247,20 @@ def _run_pride_flourish() -> bool:
         # A moment's wait rather than an instant bail: a transient idle-arm wander
         # shouldn't be what swallows the flourish.
         arm_acquired = _arm_motion_lock.acquire(timeout=0.4)
-        snapshot = _current_body_pose((2, 3, 5) if arm_acquired else (2, 3))
-        pose = {2: HEADTILT_DOWN, 3: VISOR_OPEN}
+        snapshot = _current_body_pose((2, 11, 3, 5) if arm_acquired else (2, 11, 3))
+        pose = {**_head(snapshot, PITCH_DOWN), 3: VISOR_OPEN}
         if arm_acquired:
             pose[5] = _clamp_channel_position(5, wrist)
         else:
             _log.info("[animations] pride flourish: arm busy — head only")
 
         _log.info(
-            "[animations] pride flourish: tilt->%d visor->%d wrist->%s hold=%.2fs",
-            HEADTILT_DOWN, VISOR_OPEN, pose.get(5), hold,
+            "[animations] pride flourish: head pitch->%.1f visor->%d wrist->%s hold=%.2fs",
+            PITCH_DOWN, VISOR_OPEN, pose.get(5), hold,
         )
         # Claim the head (and the arm if we got it) so the 0.12 s speech/listening ticks
         # can't overwrite the pose mid-hold — without this there is nothing to see.
-        servos.begin_head_gesture([2, 3])
+        servos.begin_head_gesture([2, 11, 3])
         if arm_acquired:
             servos.begin_arm_gesture()
         _suspend_face_tracking(entry + hold + ret + 0.5)
@@ -1982,4 +2294,70 @@ def _run_pride_flourish() -> bool:
 
 def dismissal() -> None:
     """Dismissive head-turn away."""
-    servos.set_servos({0: NECK_CENTER + 2500, 2: HEADTILT_SLIGHT_DOWN})
+    servos.set_servos({0: NECK_CENTER + 2500, **_head(None, PITCH_SLIGHT_DOWN)})
+
+
+# ---------------------------------------------------------------------------
+# Drive stance
+# ---------------------------------------------------------------------------
+
+# Held while the wheels move (owner, September 27 / October 10): neck centre, head
+# level and straight, hero elbow fully up, poker swing at its highest, poker
+# elbow/wrist at their park.
+DRIVE_STANCE = {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, **HEAD_LEVEL_PAIR, 4: ELBOW_UP, 6: 8000}
+
+
+_drive_stance_token = 0
+
+
+def drive_stance(*, timeout: float = 6.0) -> bool:
+    """Take the drive stance before the base moves: the head and arms in one glide,
+    the poker elbow/wrist to their park in clearance stages (waited for, bounded by
+    ``timeout``). Idle arm wander stands down until release_drive_stance()."""
+    global _drive_stance_token
+    _drive_stance_token += 1
+    servos.pause_arm_idle()
+    ok = True
+    try:
+        servos.set_motion_profile(list(DRIVE_STANCE), speed=35, acceleration=8)
+        servos.set_servos(dict(DRIVE_STANCE))
+        done = threading.Event()
+
+        def park() -> None:
+            try:
+                servos.move_poker(POKER_PARK[12], POKER_PARK[13], speed=POKER_POSE_SPEED,
+                                  acceleration=POKER_POSE_ACCEL, block=True)
+            except Exception as exc:
+                _log.warning("[animations] drive stance poker park failed: %s", exc)
+            finally:
+                done.set()
+
+        threading.Thread(target=park, daemon=True, name="drive_stance_poker").start()
+        ok = done.wait(timeout)
+    except Exception as exc:
+        _log.warning("[animations] drive stance failed: %s", exc)
+        ok = False
+    return ok
+
+
+def release_drive_stance(*, grace: float = 1.5) -> None:
+    """The wheels stopped: after a short grace (a come errand drives in segments; the
+    arm should not bounce park/up between them) the poker arm returns to its awake
+    pose in stages and the idle arm wander resumes. A newer drive stance cancels the
+    return. The head is left to face tracking."""
+    token = _drive_stance_token
+
+    def run() -> None:
+        time.sleep(max(0.0, grace))
+        if token != _drive_stance_token:
+            return   # another base command took the stance again
+        try:
+            servos.move_poker(POKER_UP[12], POKER_UP[13], speed=POKER_POSE_SPEED,
+                              acceleration=POKER_POSE_ACCEL, block=True)
+        except Exception as exc:
+            _log.debug("[animations] poker return after drive failed: %s", exc)
+        finally:
+            if token == _drive_stance_token:
+                servos.resume_arm_idle()
+
+    threading.Thread(target=run, daemon=True, name="drive_stance_release").start()
